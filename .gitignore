@@ -57,3 +57,8 @@ scripts/
 bin/
 *.exe
 *.dll
+
+# === 参考项目（不上传 Git）===
+.references/
+docs/reference/
+docs/plans/
