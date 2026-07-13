@@ -127,6 +127,14 @@ async def lifespan(app: FastAPI):
     await init_database()
     logger.info("数据库初始化完成")
 
+    # 初始化模块数据库（chinese / fc2 / uncensored / pornhub）
+    try:
+        from app.db.module_db import ModuleDatabase
+        await ModuleDatabase.init_all()
+        logger.info("模块数据库初始化完成（chinese/fc2/uncensored/pornhub）")
+    except Exception as e:
+        logger.warning(f"模块数据库初始化失败: {e}")
+
     # 执行数据库迁移
     try:
         from app.db.migrations import run_migrations
@@ -449,6 +457,17 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.warning(f"数据库关闭失败: {e}")
+
+    # 模块数据库关闭
+    try:
+        from app.db.module_db import ModuleDatabase
+        await _safe_close(
+            "模块数据库",
+            ModuleDatabase.close_all(),
+            SHUTDOWN_TIMEOUT_DB,
+        )
+    except Exception as e:
+        logger.warning(f"模块数据库关闭失败: {e}")
 
     logger.info("应用关闭")
 
