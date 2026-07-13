@@ -1,0 +1,59 @@
+# === 运行时数据 ===
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+qa-data/
+data/
+
+# === 配置文件（不含示例） ===
+config.yaml
+
+# === 构建产物 ===
+node_modules/
+dist/
+webdist/
+release-build/
+release-green/
+release/
+build/
+*.egg-info/
+
+# === 缓存 ===
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.cache/
+.ruff_cache/
+
+# === IDE 和系统文件 ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === 环境文件 ===
+.env
+.env.local
+
+# === 日志 ===
+logs/
+*.log
+
+# === 临时文件 ===
+tmp_*
+nul
+NUL
+
+# === 工具脚本 ===
+tools/
+scripts/
+
+# === 二进制/第三方库 ===
+bin/
+*.exe
+*.dll

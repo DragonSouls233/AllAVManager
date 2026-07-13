@@ -1,0 +1,22 @@
+{
+  "version": "2.4.0",
+  "patch_level": "fix30",
+  "build_date": "2026-07-11",
+  "patches": [
+    "fix4~fix20: 刮削引擎+代理+补丁系统全套修复",
+    "fix21: 图片显示路径适配服务端存储（cover/poster/thumb 端点查 output_dir）+ 迁移脚本更新DB图片路径",
+    "fix22: 对比功能修复 - JavBus 解析 bug (番号从 date/ href 提取，非img@ title) + JavDB 登录页检测 + 前端 URL 占位符动态切换",
+    "fix23: 对比功能增强 - 番号后缀识别（-C中字/-U破解/-UC中字破解），LocalCode/OnlineVideo 增加 is_uncensored 字段，前端增加破解标记列",
+    "fix24: 补丁刮削完整修复 - 后端增加 status/progress/current_code 字段+实时进度回调+检测阶段详细日志+跳过原因统计+单片120s超时防卡死；前端修复字段映射+进度始终显示+跳过选项UI控件；新增 /movies/dirs 端点",
+    "fix25: 番号详情页字段显示修复 - 后端 genre/tag 从 str 改为 list[str] 并解析 JSON；前端 displayGenres 增加字符串解析兼容+新增標籤展示区域",
+    "fix26: engine.patch() 完成后增加状态日志（成功/部分/失败 + 字段/图片统计）",
+    "fix27: 图片下载URL相对路径修复 - JavBus _get_sample_images 补全完整URL + strategy _download_missing_images 兜底补全",
+    "fix28: list_movies 端点 genre/tag 未解析修复",
+    "fix29: 番号详情页全面精装修 - 标题置顶醒目+番号/导演/片商/系列/类别/标签可点击筛选+底部三大推荐区(演员作品+同系列+同类别)",
+    "fix30: 新增文件夹刷新功能(POST /movies/refresh-folders)+Electron桌面端修复+后端自动探测+QA Bug修复"
+  ],
+  "scrapers": 55,
+  "xray": true,
+  "nfo_cache": true,
+  "data_structure": "data/movies/<code>/ + data/avatars/"
+}

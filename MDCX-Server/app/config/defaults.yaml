@@ -1,0 +1,57 @@
+# 默认配置文件
+# 所有配置项均可通过环境变量覆盖
+app_name: 龙魂视频管理系统
+
+server:
+  host: 0.0.0.0
+  port: 8420
+  workers: 1
+  debug: false
+
+database:
+  url: sqlite+aiosqlite:///data/database/scraper.db
+  pool_size: 5
+  echo: false
+
+scraper:
+  media_dirs: []
+  output_dir: ./output
+  concurrent_limit: 5
+  retry_count: 3
+  timeout: 30
+  language: zh
+
+proxy:
+  http: null
+  socks5: null
+  enabled: false
+
+emby:
+  url: null
+  api_key: null
+  enabled: false
+
+jellyfin:
+  url: null
+  api_key: null
+  enabled: false
+
+translate:
+  engine: google
+  api_key: null
+  api_base: null
+  source_lang: ja
+  target_lang: zh
+
+webhook:
+  telegram_token: null
+  telegram_chat_id: null
+  discord_url: null
+  wechat_url: null
+  enabled: false
+
+log:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_enabled: true
+  console_enabled: true

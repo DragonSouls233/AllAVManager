@@ -1,0 +1,394 @@
+# =============================================================================
+# MDCX 企业档 Kubernetes 部署清单（all-in-one）
+#
+# 适用场景：
+#   - 大规模生产环境
+#   - 多副本水平扩展
+#   - 自动扩缩容（HPA）
+#   - 集成外部 PostgreSQL/Redis 集群
+#   - Prometheus 监控
+#
+# 架构：
+#   Ingress --> Service --> Deployment (HPA 自动扩缩)
+#                    \--> Secret/ConfigMap
+#                    \--> PVC 持久化
+#
+# 部署：
+#   # 1. 修改下方 Secret/ConfigMap 中的敏感信息
+#   # 2. 应用清单
+#   kubectl apply -f deploy/kubernetes/mdcx.yaml
+#   # 3. 查看部署状态
+#   kubectl -n mdcx get pods,svc,ingress,hpa
+#   # 4. 查看日志
+#   kubectl -n mdcx logs -f deployment/mdcx
+#
+# 清理：
+#   kubectl delete -f deploy/kubernetes/mdcx.yaml
+#
+# 前置条件：
+#   - 已配置 StorageClass（用于 PVC）
+#   - 已部署 Ingress Controller（nginx-ingress 或 traefik）
+#   - 已有 PostgreSQL/Redis（集群内或外部）
+#   - 已配置 TLS 证书（cert-manager 或手动）
+# =============================================================================
+
+---
+# ---------- 命名空间 ----------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+    app.kubernetes.io/part-of: mdcx
+    monitoring: enabled
+
+---
+# ---------- 配置项（非敏感） ----------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mdcx-config
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+data:
+  MDCX_DEPLOY_TIER: "enterprise"
+  MDCX_HOST: "0.0.0.0"
+  MDCX_PORT: "8420"
+  MDCX_LOG_LEVEL: "info"
+  MDCX_STATIC_DIR: "/app/static"
+  MDCX_DATA_DIR: "/app/data"
+  MDCX_OUTPUT_DIR: "/media"
+  TZ: "Asia/Shanghai"
+  LANG: "C.UTF-8"
+  # PostgreSQL 连接（主机/端口/库名，密码在 Secret 中）
+  MDCX_DB_HOST: "postgres.mdcx.svc.cluster.local"
+  MDCX_DB_PORT: "5432"
+  MDCX_DB_NAME: "mdcx"
+  MDCX_DB_USER: "mdcx"
+  MDCX_DB_POOL_SIZE: "30"
+  # Redis 连接
+  MDCX_REDIS_URL: "redis://redis.mdcx.svc.cluster.local:6379/0"
+
+---
+# ---------- 敏感配置（必须修改！） ----------
+# 生产环境建议改用外部 Secret 管理工具（Sealed Secrets / External Secrets / Vault）
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mdcx-secret
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+type: Opaque
+stringData:
+  # PostgreSQL 密码
+  MDCX_DB_PASSWORD: "CHANGE_ME_TO_STRONG_PASSWORD"
+  # Redis 密码
+  MDCX_REDIS_PASSWORD: "CHANGE_ME_REDIS_PASSWORD"
+  # JWT 密钥
+  MDCX_JWT_SECRET: "CHANGE_ME_TO_RANDOM_64_CHAR_STRING"
+
+---
+# ---------- 持久化存储 ----------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mdcx-data
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard  # 按集群 StorageClass 调整
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mdcx-media
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+spec:
+  accessModes:
+    - ReadWriteMany  # 多副本共享（需支持 RWX 的 StorageClass，如 NFS/CephFS）
+  storageClassName: nfs-client  # 按集群 StorageClass 调整
+  resources:
+    requests:
+      storage: 500Gi
+
+---
+# ---------- 应用部署 ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mdcx
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+    app.kubernetes.io/version: "latest"
+spec:
+  replicas: 2  # 初始副本数，HPA 会自动调整
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mdcx
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mdcx
+        app.kubernetes.io/version: "latest"
+      annotations:
+        # Prometheus 抓取注解
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8420"
+        prometheus.io/path: "/api/v1/health/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: mdcx
+          image: mdcx:latest  # 替换为实际镜像仓库地址
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8420
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: mdcx-config
+            - secretRef:
+                name: mdcx-secret
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            failureThreshold: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: media
+              mountPath: /media
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Python 需写 __pycache__，保持可写
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mdcx-data
+        - name: media
+          persistentVolumeClaim:
+            claimName: mdcx-media
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+      # 反亲和：将 Pod 调度到不同节点
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mdcx
+                topologyKey: kubernetes.io/hostname
+      # 拓扑分布约束
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: mdcx
+
+---
+# ---------- 服务（Service） ----------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mdcx
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mdcx
+  ports:
+    - name: http
+      port: 8420
+      targetPort: http
+      protocol: TCP
+
+---
+# ---------- Ingress 入口 ----------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mdcx
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+  annotations:
+    # nginx-ingress 注解
+    nginx.ingress.kubernetes.io/proxy-body-size: "4G"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # WebSocket 支持
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+    # 限流（每秒 20 请求，突发 100）
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/limit-burst: "100"
+    # cert-manager 自动签发
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mdcx.example.com  # 替换为实际域名
+      secretName: mdcx-tls
+  rules:
+    - host: mdcx.example.com  # 替换为实际域名
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mdcx
+                port:
+                  name: http
+
+---
+# ---------- 水平自动扩缩容（HPA） ----------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mdcx
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mdcx
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+
+---
+# ---------- PodDisruptionBudget（保证可用性） ----------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mdcx
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mdcx
+
+---
+# ---------- ServiceMonitor（Prometheus 抓取，可选） ----------
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mdcx
+  namespace: mdcx
+  labels:
+    app.kubernetes.io/name: mdcx
+    release: prometheus  # 匹配 Prometheus Operator 的 release 标签
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mdcx
+  endpoints:
+    - port: http
+      path: /api/v1/health/metrics
+      interval: 30s
+      scrapeTimeout: 10s

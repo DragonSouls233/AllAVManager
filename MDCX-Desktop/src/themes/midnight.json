@@ -1,0 +1,19 @@
+{
+  "name": "midnight",
+  "display_name": "午夜深蓝",
+  "description": "深邃的午夜蓝调，适合夜间长时间使用的护眼配色",
+  "colors": {
+    "primary": "#5b8def",
+    "success": "#4ade80",
+    "warning": "#fbbf24",
+    "danger": "#f87171",
+    "info": "#94a3b8",
+    "background": "#0f172a",
+    "surface": "#1e293b",
+    "text": "#e2e8f0",
+    "border": "#334155",
+    "link": "#7dd3fc"
+  },
+  "radius": 10,
+  "font_size": 14
+}

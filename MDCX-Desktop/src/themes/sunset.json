@@ -1,0 +1,19 @@
+{
+  "name": "sunset",
+  "display_name": "日落橙红",
+  "description": "温暖的日落橙红色调，充满活力与热情",
+  "colors": {
+    "primary": "#f97316",
+    "success": "#84cc16",
+    "warning": "#facc15",
+    "danger": "#ef4444",
+    "info": "#94a3b8",
+    "background": "#fff7ed",
+    "surface": "#ffffff",
+    "text": "#431407",
+    "border": "#fed7aa",
+    "link": "#ea580c"
+  },
+  "radius": 12,
+  "font_size": 14
+}

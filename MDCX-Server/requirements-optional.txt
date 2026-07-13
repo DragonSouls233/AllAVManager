@@ -1,0 +1,29 @@
+# MDCX 服务端可选依赖
+#
+# 这些依赖非必需,但安装后可启用高级反爬能力,提升对 Cloudflare 等防护站点的抓取成功率。
+# 安装方式: pip install -r requirements-optional.txt
+#
+# 反爬降级链(优先级从高到低,见 app/crawlers/javdb.py):
+#   1. StealthyFetcher (scrapling)      — 自动绕过 Cloudflare,资源占用中
+#   2. 带 Cookie 的 httpx               — 复用浏览器 Cookie(无需额外依赖)
+#   3. cloudscraper                     — 纯 Python Cloudflare 绕过,轻量
+#   4. undetected-chromedriver          — 启动真实 Chrome,资源占用高,最后兜底
+#   5. 普通 AsyncHttpClient             — 无反爬能力的基础请求
+#
+# 注:scrapling 与 undetected-chromedriver 都会拉起浏览器内核,部署到无头服务器时
+#     需额外安装 Chromium/Chrome。cloudscraper 为纯 Python 实现,无外部依赖。
+
+# Cloudflare 隐身抓取(StealthyFetcher,基于 Camoufox/Playwright)
+scrapling>=0.2.9
+
+# Cloudflare 纯 Python 绕过(challenge 求解)
+cloudscraper>=1.2.71
+
+# undetected-chromedriver(真实 Chrome 兜底,需本机已安装 Chrome)
+undetected-chromedriver>=3.5.5
+
+# MediaPipe(v4.1 B4 人脸对齐 + 5 点面部标志点检测,免费,用于 face_crop 模块的优先检测方案)
+mediapipe>=0.10.14
+
+# Playwright(同步 Cookie 登录 app.utils.cookie_login 懒加载依赖,需额外 patchright install 下载浏览器内核)
+playwright>=1.40.0

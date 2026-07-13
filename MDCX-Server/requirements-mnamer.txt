@@ -1,0 +1,21 @@
+# MDCX mnamer 引擎依赖（独立分组，避免污染 requirements.txt）
+#
+# 仅在启用「智能重命名 / mnamer 引擎」时需要安装。
+# 详见 O:\MDCX\MDCX-Server\app\external\mnamer\ORIGIN.md
+#
+# 安装方式：
+#   pip install -r requirements-mnamer.txt
+#
+# 来源：mnamer 2.5+ 的 pyproject.toml [project.dependencies]
+# 许可：均为 MIT / BSD / Apache-2.0（与我们的 MIT 兼容）
+
+# mnamer 运行时
+appdirs~=1.4.4
+babelfish~=0.6.1
+guessit~=3.8.0
+requests>=2.33.1,<2.35.0
+requests-cache~=1.3.2
+teletype~=1.3.4
+
+# 构建期（仅 import mnamer 时需要,生产环境无 setuptools_scm 也能跑）
+setuptools-scm>=10.0.0

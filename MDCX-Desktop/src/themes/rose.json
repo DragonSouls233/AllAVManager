@@ -1,0 +1,19 @@
+{
+  "name": "rose",
+  "display_name": "玫瑰粉樱",
+  "description": "浪漫的玫瑰粉色调，柔美精致，个性十足",
+  "colors": {
+    "primary": "#e11d48",
+    "success": "#16a34a",
+    "warning": "#f59e0b",
+    "danger": "#be123c",
+    "info": "#94a3b8",
+    "background": "#fff1f2",
+    "surface": "#ffffff",
+    "text": "#4c0519",
+    "border": "#fecdd3",
+    "link": "#be123c"
+  },
+  "radius": 14,
+  "font_size": 14
+}

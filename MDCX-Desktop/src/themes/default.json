@@ -1,0 +1,19 @@
+{
+  "name": "default",
+  "display_name": "经典蓝紫",
+  "description": "与系统默认一致的经典蓝紫色调，清爽舒适",
+  "colors": {
+    "primary": "#409eff",
+    "success": "#67c23a",
+    "warning": "#e6a23c",
+    "danger": "#f56c6c",
+    "info": "#909399",
+    "background": "#f0f2f5",
+    "surface": "#ffffff",
+    "text": "#303133",
+    "border": "#ebeef5",
+    "link": "#409eff"
+  },
+  "radius": 8,
+  "font_size": 14
+}

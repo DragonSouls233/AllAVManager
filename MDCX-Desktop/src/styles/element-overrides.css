@@ -1,0 +1,199 @@
+/* ============================================
+   Element Plus 主题变量覆盖
+   对应 MDCX-UI-Design-Complete.md §5.3
+   将 EP 默认主题变量映射到 MDCX 设计 Token
+   ============================================ */
+
+:root {
+  /* === 主色映射（EP 主色 → MDCX 品牌色）=== */
+  --el-color-primary:           var(--primary-color);
+  --el-color-primary-light-3:   var(--primary-light);
+  --el-color-primary-light-5:   var(--primary-light);
+  --el-color-primary-light-7:   var(--primary-light);
+  --el-color-primary-light-8:   var(--primary-light);
+  --el-color-primary-light-9:   var(--brand-gradient-soft);
+  --el-color-primary-dark-2:    var(--primary-dark);
+
+  /* === 语义色映射 === */
+  --el-color-success:           var(--success-color);
+  --el-color-success-light-3:   var(--success-color);
+  --el-color-success-light-5:   var(--success-color);
+  --el-color-success-light-7:   var(--success-color);
+  --el-color-success-light-9:   rgba(103, 194, 58, 0.1);
+
+  --el-color-warning:           var(--warning-color);
+  --el-color-warning-light-3:   var(--warning-color);
+  --el-color-warning-light-5:   var(--warning-color);
+  --el-color-warning-light-7:   var(--warning-color);
+  --el-color-warning-light-9:   rgba(230, 162, 60, 0.1);
+
+  --el-color-danger:            var(--danger-color);
+  --el-color-danger-light-3:    var(--danger-color);
+  --el-color-danger-light-5:    var(--danger-color);
+  --el-color-danger-light-7:    var(--danger-color);
+  --el-color-danger-light-9:    rgba(245, 108, 108, 0.1);
+
+  --el-color-error:             var(--danger-color);
+  --el-color-info:              var(--info-color);
+  --el-color-info-light-3:      var(--info-color);
+  --el-color-info-light-5:      var(--info-color);
+  --el-color-info-light-7:      var(--info-color);
+  --el-color-info-light-9:      rgba(144, 147, 153, 0.1);
+
+  /* === 背景色映射 === */
+  --el-bg-color:                var(--bg-card);
+  --el-bg-color-page:           var(--bg-page);
+  --el-bg-color-overlay:        var(--bg-card);
+
+  /* === 文字色映射 === */
+  --el-text-color-primary:      var(--text-primary);
+  --el-text-color-regular:      var(--text-regular);
+  --el-text-color-secondary:    var(--text-secondary);
+  --el-text-color-placeholder:  var(--text-placeholder);
+  --el-text-color-disabled:     var(--text-placeholder);
+
+  /* === 边框色映射 === */
+  --el-border-color:            var(--border-color);
+  --el-border-color-light:      var(--border-light);
+  --el-border-color-lighter:    var(--border-light);
+  --el-border-color-extra-light: var(--border-light);
+  --el-border-color-dark:       var(--border-color);
+  --el-border-color-darker:    var(--border-color);
+
+  /* === 填充色映射 === */
+  --el-fill-color-blank:        var(--bg-card);
+  --el-fill-color-light:       var(--bg-page);
+  --el-fill-color-lighter:     var(--bg-page);
+  --el-fill-color-extra-light:  var(--bg-page);
+  --el-fill-color-dark:        var(--border-color);
+  --el-fill-color-darker:      var(--border-color);
+
+  /* === 圆角映射 === */
+  --el-border-radius-base:      var(--radius-md);
+  --el-border-radius-small:     var(--radius-sm);
+  --el-border-radius-round:     var(--radius-lg);
+  --el-border-radius-circle:   100%;
+
+  /* === 阴影映射 === */
+  --el-box-shadow:              var(--shadow-md);
+  --el-box-shadow-light:        var(--shadow-sm);
+  --el-box-shadow-lighter:      var(--shadow-sm);
+  --el-box-shadow-dark:         var(--shadow-lg);
+
+  /* === 字体大小映射 === */
+  --el-font-size-extra-large:   var(--font-size-xl);
+  --el-font-size-large:         var(--font-size-lg);
+  --el-font-size-medium:        var(--font-size-base);
+  --el-font-size-base:          var(--font-size-base);
+  --el-font-size-small:         var(--font-size-sm);
+  --el-font-size-extra-small:   var(--font-size-xs);
+
+  /* === 过渡映射 === */
+  --el-transition-duration:     var(--duration-fast);
+  --el-transition-duration-fast: var(--duration-fast);
+}
+
+/* === 暗黑模式 EP 覆盖 === */
+html.dark {
+  --el-bg-color:                var(--bg-card);
+  --el-bg-color-page:           var(--bg-page);
+  --el-bg-color-overlay:        var(--bg-card);
+
+  --el-text-color-primary:      var(--text-primary);
+  --el-text-color-regular:      var(--text-regular);
+  --el-text-color-secondary:    var(--text-secondary);
+  --el-text-color-placeholder:  var(--text-placeholder);
+  --el-text-color-disabled:     var(--text-placeholder);
+
+  --el-border-color:            var(--border-color);
+  --el-border-color-light:      var(--border-light);
+  --el-border-color-lighter:    var(--border-light);
+  --el-border-color-extra-light: var(--border-light);
+
+  --el-fill-color-blank:        var(--bg-card);
+  --el-fill-color-light:       var(--bg-page);
+  --el-fill-color-lighter:     var(--bg-page);
+  --el-fill-color-extra-light:  var(--bg-page);
+  --el-fill-color-dark:        var(--border-color);
+  --el-fill-color-darker:      var(--border-color);
+
+  --el-box-shadow:              var(--shadow-md);
+  --el-box-shadow-light:        var(--shadow-sm);
+  --el-box-shadow-lighter:      var(--shadow-sm);
+  --el-box-shadow-dark:         var(--shadow-lg);
+}
+
+/* === EP 组件细节调整 === */
+
+/* 卡片圆角统一 */
+.el-card {
+  border-radius: var(--radius-lg) !important;
+}
+
+/* 按钮圆角 */
+.el-button {
+  border-radius: var(--radius-md);
+}
+
+/* 输入框圆角 */
+.el-input__wrapper {
+  border-radius: var(--radius-md) !important;
+}
+
+/* 对话框圆角 */
+.el-dialog {
+  border-radius: var(--radius-lg) !important;
+}
+
+/* 表格头部 */
+.el-table th.el-table__cell {
+  background: var(--bg-page) !important;
+  color: var(--text-regular) !important;
+  font-weight: var(--font-weight-semibold);
+}
+
+/* 标签圆角 */
+.el-tag {
+  border-radius: var(--radius-sm);
+}
+
+/* 菜单项 hover */
+.el-menu-item:hover {
+  background: var(--bg-page) !important;
+}
+
+/* 菜单激活项 */
+.el-menu-item.is-active {
+  color: var(--primary-color) !important;
+  background: var(--brand-gradient-soft) !important;
+}
+
+/* 滚动条样式 */
+.el-scrollbar__bar {
+  background: var(--border-color) !important;
+}
+
+/* 分页器 */
+.el-pagination .el-pager li.is-active {
+  background: var(--primary-color) !important;
+  color: var(--color-text-inverse) !important;
+}
+
+/* 进度条 */
+.el-progress-bar__inner {
+  background: var(--primary-color) !important;
+}
+
+/* 开关 */
+.el-switch.is-checked .el-switch__core {
+  background: var(--primary-color) !important;
+  border-color: var(--primary-color) !important;
+}
+
+/* 选项卡 */
+.el-tabs__item.is-active {
+  color: var(--primary-color) !important;
+}
+.el-tabs__active-bar {
+  background: var(--primary-color) !important;
+}

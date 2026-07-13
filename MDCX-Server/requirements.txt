@@ -1,0 +1,78 @@
+# MDCX 服务端依赖
+# 自动生成 - 锁定当前已验证版本
+
+# Web 框架
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+
+# 数据验证
+pydantic==2.12.5
+pydantic-settings==2.13.1
+
+# 数据库
+sqlalchemy==2.0.47
+aiosqlite==0.22.1
+
+# 文件/配置
+aiofiles==25.1.0
+pyyaml==6.0.3
+python-multipart==0.0.22
+
+# HTTP 客户端
+curl-cffi==0.11.4
+httpx[socks]==0.28.1
+
+# HTML 解析
+lxml==6.1.1
+parsel==1.11.0
+beautifulsoup4==4.14.3
+
+# 图像处理
+pillow==12.1.1
+
+# 中文转换
+zhconv==1.4.3
+
+# 任务调度
+apscheduler==3.11.2
+
+# 数值计算
+numpy==2.4.2
+
+# 认证
+python-jose[cryptography]==3.5.0
+passlib==1.7.4
+
+# 系统托盘
+pystray==0.19.5
+
+# 目录实时监听
+watchdog==6.0.0
+
+# 视频指纹计算（pHash）
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Prometheus 监控指标
+prometheus-client==0.21.1
+
+# 模板引擎 (Jinja2 命名模板, app.services.naming 启动级依赖)
+jinja2
+
+# 异步 HTTP (cookiecloud / gfriends_importer 服务启动级依赖)
+aiohttp
+
+# 系统指标 (SystemStatus 页运行时依赖)
+psutil
+
+# 同步 HTTP (代理测试 / 健康检查运行时依赖)
+requests
+
+# mnamer 重命名引擎依赖 (app.external.mnamer 为启动级 bundled 源码, 其顶层 import 在 app.main 加载时即触发)
+requests_cache
+appdirs
+teletype
+guessit
+
+# DMM crawler 依赖 (app.crawlers.md 模块顶层 import, dmm crawler 启动时注册)
+patchright

@@ -1,0 +1,19 @@
+{
+  "name": "forest",
+  "display_name": "森林绿意",
+  "description": "清新的森林绿色调，自然宁静，缓解视觉疲劳",
+  "colors": {
+    "primary": "#16a34a",
+    "success": "#65a30d",
+    "warning": "#ca8a04",
+    "danger": "#dc2626",
+    "info": "#94a3b8",
+    "background": "#f0fdf4",
+    "surface": "#ffffff",
+    "text": "#14532d",
+    "border": "#bbf7d0",
+    "link": "#15803d"
+  },
+  "radius": 6,
+  "font_size": 14
+}

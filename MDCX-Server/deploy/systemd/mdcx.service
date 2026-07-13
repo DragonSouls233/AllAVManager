@@ -1,0 +1,82 @@
+# =============================================================================
+# MDCX systemd 服务单元（Linux 部署）
+#
+# 安装方法：
+#   sudo cp deploy/systemd/mdcx.service /etc/systemd/system/mdcx.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable mdcx           # 开机自启
+#   sudo systemctl start mdcx            # 启动
+#   sudo systemctl status mdcx           # 查看状态
+#   sudo systemctl stop mdcx             # 停止
+#   sudo journalctl -u mdcx -f           # 查看日志
+#
+# 环境变量配置：
+#   编辑下方 Environment= 行，或在 /etc/mdcx/mdcx.env 文件中设置
+#
+# 卸载：
+#   sudo systemctl disable --now mdcx
+#   sudo rm /etc/systemd/system/mdcx.service && sudo systemctl daemon-reload
+# =============================================================================
+
+[Unit]
+Description=MDCX - 龙魂视频管理系统
+Documentation=https://github.com/MDCX/MDCX
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+# 若依赖 PostgreSQL/Redis，取消下行注释
+# Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=mdcx
+Group=mdcx
+
+# 工作目录与启动命令（请按实际安装路径调整）
+WorkingDirectory=/opt/mdcx
+ExecStart=/opt/mdcx/venv/bin/python /opt/mdcx/server.py --host 0.0.0.0 --port 8420 --no-browser
+ExecStop=/opt/mdcx/venv/bin/python /opt/mdcx/server.py --stop
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+
+# 环境变量
+Environment="MDCX_DEPLOY_TIER=lite"
+Environment="MDCX_HOST=0.0.0.0"
+Environment="MDCX_PORT=8420"
+Environment="MDCX_LOG_LEVEL=info"
+Environment="MDCX_STATIC_DIR=/opt/mdcx/static"
+Environment="MDCX_DATA_DIR=/opt/mdcx/data"
+Environment="MDCX_OUTPUT_DIR=/var/lib/mdcx/media"
+Environment="TZ=Asia/Shanghai"
+Environment="LANG=C.UTF-8"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/opt/mdcx"
+
+# 若使用外部 env 文件
+# EnvironmentFile=/etc/mdcx/mdcx.env
+
+# 资源限制
+LimitNOFILE=65535
+LimitNPROC=65535
+LimitCORE=infinity
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/mdcx/data /var/lib/mdcx /var/log/mdcx
+ReadOnlyPaths=/opt/mdcx/app /opt/mdcx/static
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdcx
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,109 @@
+# =============================================================================
+# MDCX 标准档部署（单容器 Docker）
+#
+# 适用场景：
+#   - 个人 NAS、小型服务器
+#   - 单用户或少量并发
+#   - 快速体验、轻量生产
+#
+# 特性：
+#   - 单容器（app），SQLite 数据库
+#   - 持久化数据卷（数据库/配置/日志/媒体）
+#   - 端口直接暴露 8420
+#   - 自动健康检查 + 自动重启
+#
+# 使用：
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose down
+#
+# 构建镜像（在项目根目录 o:\MDCX 执行）：
+#   docker compose build
+# 或手动构建：
+#   docker build -f MDCX-Server/Dockerfile -t mdcx:latest .
+# =============================================================================
+
+services:
+  mdcx:
+    # 镜像名：本地构建
+    image: mdcx:latest
+    build:
+      context: ..
+      dockerfile: MDCX-Server/Dockerfile
+      args:
+        BUILD_FRONTEND: "true"
+        PYTHON_VERSION: "3.11"
+        NODE_VERSION: "20"
+
+    container_name: mdcx
+    hostname: mdcx
+    restart: unless-stopped
+
+    # 端口映射
+    ports:
+      - "${MDCX_PORT:-8420}:8420"
+
+    # 环境变量
+    environment:
+      MDCX_DEPLOY_TIER: standard
+      MDCX_HOST: 0.0.0.0
+      MDCX_PORT: 8420
+      MDCX_LOG_LEVEL: ${MDCX_LOG_LEVEL:-info}
+      MDCX_STATIC_DIR: /app/static
+      MDCX_DATA_DIR: /app/data
+      MDCX_OUTPUT_DIR: /media
+      TZ: Asia/Shanghai
+      # 时区
+      LANG: C.UTF-8
+
+    # 数据卷持久化
+    volumes:
+      # 数据库、配置、日志、备份
+      - mdcx-data:/app/data
+      # 媒体库（刮削目标目录）
+      - ${MEDIA_DIR:-./media}:/media
+      # 可选：挂载本地媒体源（刮削扫描目录）
+      # - /path/to/your/movies:/source:ro
+
+    # 健康检查（继承镜像 HEALTHCHECK）
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8420/api/v1/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    # 资源限制（轻量级）
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+    # 日志驱动限制
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    # 安全加固
+    security_opt:
+      - no-new-privileges:true
+
+    # 网络
+    networks:
+      - mdcx-net
+
+volumes:
+  mdcx-data:
+    driver: local
+    name: mdcx-data
+
+networks:
+  mdcx-net:
+    driver: bridge
+    name: mdcx-net

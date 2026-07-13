@@ -1,0 +1,115 @@
+# MDCX Docker 构建忽略清单
+# 减少构建上下文体积、加速构建、避免敏感文件泄露
+
+# === 版本控制 ===
+.git
+.gitignore
+.gitattributes
+.github
+.gitlab
+
+# === IDE / 编辑器 ===
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Python 缓存与虚拟环境 ===
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+venv/
+.venv/
+env/
+.env
+.env.local
+.env.*.local
+
+# === Node.js 缓存 ===
+**/node_modules/
+**/.npm/
+**/.yarn/
+**/.pnpm-store/
+
+# === 构建产物（容器内会重新构建） ===
+MDCX-Desktop/dist/
+MDCX-Desktop/dist-electron/
+MDCX-Desktop/release/
+MDCX-Desktop/release-green/
+MDCX-Server/static/assets/
+MDCX-Server/static/*.js
+MDCX-Server/static/*.css
+# 保留 static/index.html 作为存在性标记？不，全部忽略，容器内重新构建
+
+# === 运行时数据（不应打包进镜像） ===
+MDCX-Server/data/database/
+MDCX-Server/data/logs/
+MDCX-Server/data/config/config.yaml
+MDCX-Server/data/backups/
+MDCX-Server/data/cache/
+MDCX-Server/data/*.pid
+MDCX-Server/data/*.lock
+data/database/
+data/logs/
+data/backups/
+
+# === Electron 打包产物（容器部署不需要） ===
+win-unpacked/
+MDCX-Desktop/release/
+MDCX-Desktop/release-green/
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+
+# === 参考项目源码（仅用于学习，不打包） ===
+.参考/
+.参考/**
+
+# === 旧副本 ===
+docker-scraper/
+docker-scraper.zip
+
+# === 文档与测试 ===
+**/*.md
+**/CONTRIBUTING
+**/LICENSE
+**/changelog.*
+MDCX-Server/tests/
+MDCX-Server/_schema_test.py
+MDCX-Server/_test_merger.py
+MDCX-Desktop/scripts/qa-*.mjs
+
+# === Windows 特定二进制（容器为 Linux） ===
+MDCX-Server/ffmpeg.exe
+MDCX-Server/ffplay.exe
+MDCX-Server/ffprobe.exe
+MDCX-Server/*.bat
+MDCX-Server/start.bat
+MDCX-Server/start.sh
+
+# === 日志与调试 ===
+*.log
+debug.log
+MDCX-Server/data/logs/*.log
+
+# === Docker 自身文件 ===
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# === CI/CD ===
+.github/
+.gitlab-ci.yml
+.circleci/

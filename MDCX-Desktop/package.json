@@ -1,0 +1,86 @@
+{
+  "name": "mdcx-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MDCX 桌面客户端",
+  "author": "MDCX-Project",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && electron-builder",
+    "build:win": "vite build && electron-builder --win portable",
+    "build:green": "vite build && electron-builder --win portable --config.directories.output=release-green",
+    "build:mac": "vite build && electron-builder --mac",
+    "preview": "vite preview",
+    "qa:media": "node scripts/qa-media-paths.mjs && node scripts/qa-api-media.mjs",
+    "qa:desktop": "node scripts/qa-media-paths.mjs && node scripts/qa-api-media.mjs && node scripts/qa-actor-detail.mjs && node scripts/qa-compare-actors.mjs",
+    "qa:bpages": "node scripts/qa-bpages.mjs --live"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@vueuse/core": "^12.4.0",
+    "artplayer": "^5.2.2",
+    "axios": "^1.7.9",
+    "dayjs": "^1.11.13",
+    "electron-updater": "^6.3.9",
+    "element-plus": "^2.9.1",
+    "hls.js": "^1.6.16",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.12",
+    "vite": "^6.0.7",
+    "vite-plugin-electron": "^1.1.0",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  },
+  "build": {
+    "appId": "com.mdcx.desktop",
+    "productName": "MDCX",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "MDCX-Project",
+      "repo": "MDCX-Desktop",
+      "private": false
+    },
+    "win": {
+      "rcedit": null,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "MDCX-Desktop-${version}-portable.exe"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "public/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "public/icon.png"
+    }
+  }
+}

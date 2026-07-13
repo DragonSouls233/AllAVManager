@@ -1,0 +1,19 @@
+{
+  "name": "cinema",
+  "display_name": "影院沉浸",
+  "description": "沉浸式深色影院体验，Indigo 主色 + 玻璃拟态",
+  "colors": {
+    "primary": "#6366F1",
+    "success": "#10B981",
+    "warning": "#F59E0B",
+    "danger": "#EF4444",
+    "info": "#6B7280",
+    "background": "#0B0E14",
+    "surface": "#151B23",
+    "text": "#E5E7EB",
+    "border": "#1F2937",
+    "link": "#818CF8"
+  },
+  "radius": 12,
+  "font_size": 14
+}
