@@ -75,7 +75,35 @@ async def get_dashboard_stats(
     today_scraped = await session.scalar(
         select(func.count(Movie.id)).where(Movie.scraped_at >= today_start)
     ) or 0
-    
+
+    # 模块统计（从模块数据库汇总）
+    module_stats = {}
+    try:
+        from app.db.module_db import ModuleDatabase
+        for mod_name in ["chinese", "uncensored", "fc2", "pornhub"]:
+            try:
+                mod_db = ModuleDatabase.get_instance(mod_name)
+                mod_session = await mod_db.get_session()
+                try:
+                    from sqlalchemy import text
+                    movie_count = await mod_session.scalar(
+                        text("SELECT COUNT(*) FROM movies")
+                    ) or 0
+                    actor_count = 0
+                    try:
+                        actor_count = await mod_session.scalar(
+                            text("SELECT COUNT(*) FROM actors")
+                        ) or 0
+                    except Exception:
+                        pass
+                    module_stats[mod_name] = {"movies": movie_count, "actors": actor_count}
+                finally:
+                    await mod_session.close()
+            except Exception:
+                module_stats[mod_name] = {"movies": 0, "actors": 0}
+    except Exception:
+        pass
+
     return {
         "movies": {
             "total": movie_total,
@@ -96,6 +124,7 @@ async def get_dashboard_stats(
             "recent_scraped": recent_scraped,
             "today_scraped": today_scraped,
         },
+        "modules": module_stats,
     }
 
 

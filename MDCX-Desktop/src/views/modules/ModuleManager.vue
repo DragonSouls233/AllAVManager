@@ -26,6 +26,9 @@
             <el-button size="small" @click="triggerScan(mod.name)" :loading="scanning[mod.name]">
               扫描
             </el-button>
+            <el-button size="small" @click="viewMovies(mod.name)" :disabled="!mod.enabled">
+              <el-icon><VideoCamera /></el-icon>
+            </el-button>
             <el-button size="small" @click="editDirs(mod)">
               <el-icon><Edit /></el-icon>
             </el-button>
@@ -55,8 +58,12 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Edit, VideoCamera } from '@element-plus/icons-vue'
 import { getModules, getModuleStats, scanModule, getModulesConfig, updateModulesConfig, toggleModuleEnabled } from '@/api/modules'
+
+const router = useRouter()
 
 const modules = ref([])
 const stats = ref({})
@@ -107,6 +114,11 @@ async function toggleModule(name, enabled) {
   } finally {
     toggling.value[name] = false
   }
+}
+
+function viewMovies(name) {
+  const routes = { jav: '/movies', chinese: '/chinese', fc2: '/fc2', uncensored: '/uncensored', pornhub: '/pornhub' }
+  router.push(routes[name] || '/movies')
 }
 
 function editDirs(mod) {

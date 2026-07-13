@@ -4,7 +4,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config.manager import get_config, get_config_manager
 from app.db.module_db import ModuleDatabase
@@ -152,3 +152,114 @@ async def toggle_module(module_name: str, enabled: bool = True):
     if errors:
         raise HTTPException(status_code=400, detail=errors)
     return {"status": "ok", "module": module_name, "enabled": enabled}
+
+
+# ===== 跨模块聚合查询 =====
+
+_MODEL_MAP = {
+    "chinese": ("app.db.chinese_models", "ChineseMovie"),
+    "uncensored": ("app.db.uncensored_models", "UncensoredMovie"),
+    "fc2": ("app.db.fc2_models", "Fc2Movie"),
+    "pornhub": ("app.db.pornhub_models", "PornhubMovie"),
+}
+
+
+@router.get("/unified/movies")
+async def unified_list_movies(module_name: str = Query(None, description="按模块筛选，不传则返回全部"),
+                              skip: int = 0, limit: int = 20):
+    """跨模块聚合影片列表
+
+    支持按 module_name 筛选单个模块，或不传参数返回所有模块聚合结果。
+    每个影片记录附带 module_name 字段标识来源。
+    """
+    all_items = []
+    modules_to_query = [module_name] if module_name else list(_MODEL_MAP.keys())
+
+    for mod_name in modules_to_query:
+        if mod_name not in _MODEL_MAP:
+            continue
+        db = ModuleDatabase.get_instance(mod_name)
+        session = await db.get_session()
+        try:
+            import importlib
+            model_path, model_class = _MODEL_MAP[mod_name]
+            mod = importlib.import_module(model_path)
+            model = getattr(mod, model_class)
+
+            from sqlalchemy import select
+            stmt = select(model).order_by(model.created_at.desc()).offset(skip).limit(limit)
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            for r in rows:
+                all_items.append({
+                    "id": r.id,
+                    "module_name": mod_name,
+                    "code": getattr(r, "code", None),
+                    "title": getattr(r, "title", None),
+                    "cover_url": getattr(r, "cover_url", None),
+                    "actor": getattr(r, "actor", None),
+                    "file_path": getattr(r, "file_path", None),
+                    "status": getattr(r, "status", "pending"),
+                    "created_at": str(getattr(r, "created_at", "")),
+                })
+        finally:
+            await session.close()
+
+    # 按创建时间排序后截取
+    all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    total = len(all_items)
+    return {"total": total, "items": all_items[skip: skip + limit]}
+
+
+@router.get("/unified/search")
+async def unified_search(keyword: str = Query(..., min_length=1), limit: int = 50):
+    """跨模块全局搜索
+
+    在所有已启用模块中搜索 keyword（匹配番号或标题）
+    """
+    results = []
+    config = get_config()
+    # 检查各模块是否启用
+    enabled_map = {
+        "chinese": getattr(config.modules, "chinese", None),
+        "uncensored": getattr(config.modules, "uncensored", None),
+        "fc2": getattr(config.modules, "fc2", None),
+        "pornhub": getattr(config.modules, "pornhub", None),
+    }
+
+    for mod_name, mod_config in enabled_map.items():
+        if mod_name not in _MODEL_MAP:
+            continue
+        if mod_config is not None and getattr(mod_config, "enabled", True) is False:
+            continue
+
+        db = ModuleDatabase.get_instance(mod_name)
+        session = await db.get_session()
+        try:
+            import importlib
+            model_path, model_class = _MODEL_MAP[mod_name]
+            mod = importlib.import_module(model_path)
+            model = getattr(mod, model_class)
+
+            from sqlalchemy import select, or_
+            stmt = select(model).where(
+                or_(
+                    getattr(model, "code", "").like(f"%{keyword}%"),
+                    getattr(model, "title", "").like(f"%{keyword}%"),
+                )
+            ).limit(limit)
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            for r in rows:
+                results.append({
+                    "id": r.id,
+                    "module_name": mod_name,
+                    "code": getattr(r, "code", None),
+                    "title": getattr(r, "title", None),
+                    "cover_url": getattr(r, "cover_url", None),
+                    "status": getattr(r, "status", "pending"),
+                })
+        finally:
+            await session.close()
+
+    return {"total": len(results), "items": results}

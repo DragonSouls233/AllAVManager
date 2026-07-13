@@ -637,11 +637,11 @@
     </transition>
 
     <!-- 全局搜索弹窗 -->
-    <el-dialog v-model="globalSearchVisible" title="全局搜索" width="560px" :close-on-click-modal="true" destroy-on-close>
+    <el-dialog v-model="globalSearchVisible" title="全局搜索" width="600px" :close-on-click-modal="true" destroy-on-close>
       <div class="global-search-wrap">
         <el-input
           v-model="globalSearchKeyword"
-          placeholder="输入番号、演员、标签、导演..."
+          placeholder="输入番号、演员、标签、标题..."
           size="large"
           clearable
           @keyup.enter="doGlobalSearch"
@@ -649,26 +649,27 @@
         >
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
-        <div class="search-hints" v-if="globalSearchKeyword.trim().length < 1">
+        <div class="search-hints" v-if="globalSearchKeyword.trim().length < 2">
           <span class="hint-label">快速搜索提示：</span>
           <span class="hint-tag" @click="doQuickSearch('番号')">按番号</span>
           <span class="hint-tag" @click="doQuickSearch('演员')">按演员</span>
           <span class="hint-tag" @click="doQuickSearch('标签')">按标签</span>
-          <span class="hint-tag" @click="doQuickSearch('导演')">按导演</span>
+          <span class="hint-tag" @click="doQuickSearch('标题')">按标题</span>
         </div>
-        <div class="search-results" v-if="globalSearchKeyword.trim().length >= 1">
-          <div class="search-section">
-            <h4 class="search-section-title">
-              <el-icon><VideoCamera /></el-icon> 影片
-              <el-button text size="small" type="primary" @click="doGlobalSearch">查看更多</el-button>
-            </h4>
+        <div class="search-results" v-if="globalSearchKeyword.trim().length >= 2 && globalSearchResults.length">
+          <el-divider />
+          <div v-for="r in globalSearchResults" :key="r.module_name + '_' + r.id"
+               class="search-result-item" @click="goToModuleItem(r)">
+            <span class="search-result-module" :class="'mod-' + r.module_name">
+              {{ moduleLabels[r.module_name] || r.module_name }}
+            </span>
+            <span class="search-result-title">{{ r.title || r.code }}</span>
+            <span class="search-result-code">{{ r.code }}</span>
           </div>
-          <div class="search-section">
-            <h4 class="search-section-title">
-              <el-icon><User /></el-icon> 演员
-              <el-button text size="small" type="primary" @click="goSearchActors">搜索演员</el-button>
-            </h4>
-          </div>
+        </div>
+        <div v-if="globalSearchKeyword.trim().length >= 2 && globalSearchDone && !globalSearchResults.length"
+             style="text-align:center;color:#999;padding:20px;">
+          未找到匹配的结果
         </div>
       </div>
     </el-dialog>
@@ -693,7 +694,7 @@ import {
 } from '@element-plus/icons-vue'
 import { getNsfwConfig, updateNsfwConfig, toggleNsfwMode } from '@/api'
 import { getSystemHealth, getDashboardStats, getTaskStats, getVersion, getTags } from '@/api'
-import { getModulesConfig } from '@/api/modules'
+import { getModulesConfig, unifiedSearch } from '@/api/modules'
 import { useThemeStore } from '@/stores/theme'
 import { useAuthStore } from '@/stores/auth'
 import { useUndoStore } from '@/stores/undo'
@@ -714,12 +715,23 @@ const excludeCache = computed(() => {
 const globalSearchVisible = ref(false)
 const globalSearchKeyword = ref('')
 const globalSearchInput = ref(null)
+const globalSearchResults = ref([])
+const globalSearchDone = ref(false)
 
-const doGlobalSearch = () => {
+const moduleLabels = { chinese: '国产', uncensored: '无码', fc2: 'FC2', pornhub: 'PORNHub', jav: 'JAV' }
+
+const doGlobalSearch = async () => {
   const kw = globalSearchKeyword.value.trim()
-  if (!kw) return
-  globalSearchVisible.value = false
-  router.push(`/movies?search=${encodeURIComponent(kw)}`)
+  if (kw.length < 2) return
+  globalSearchDone.value = false
+  try {
+    const res = await unifiedSearch(kw)
+    globalSearchResults.value = res.items || []
+  } catch {
+    globalSearchResults.value = []
+  } finally {
+    globalSearchDone.value = true
+  }
 }
 
 const doQuickSearch = (type) => {
@@ -727,11 +739,9 @@ const doQuickSearch = (type) => {
   router.push('/movies')
 }
 
-const goSearchActors = () => {
-  const kw = globalSearchKeyword.value.trim()
+const goToModuleItem = (item) => {
   globalSearchVisible.value = false
-  if (kw) router.push(`/actors?search=${encodeURIComponent(kw)}`)
-  else router.push('/actors')
+  router.push(`/${item.module_name}/movies/${item.id}`)
 }
 const collapsed = ref(false)
 
@@ -1477,6 +1487,45 @@ const logout = () => {
 
 .nsfw-panel :deep(.el-divider) {
   margin: 8px 0;
+}
+
+/* ===== 全局搜索结果 ===== */
+.search-result-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.search-result-item:hover {
+  background: var(--el-color-primary-light-9, #ecf5ff);
+}
+.search-result-module {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: bold;
+  min-width: 40px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.mod-chinese { background: #fef0f0; color: #dc2626; }
+.mod-uncensored { background: #fdf6ec; color: #e6a23c; }
+.mod-fc2 { background: #ecf5ff; color: #409eff; }
+.mod-pornhub { background: #f0fdf4; color: #16a34a; }
+.search-result-title {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result-code {
+  font-size: 11px;
+  color: #999;
+  flex-shrink: 0;
 }
 
 /* ===== 自动更新对话框 ===== */

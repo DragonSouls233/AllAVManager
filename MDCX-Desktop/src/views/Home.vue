@@ -82,6 +82,17 @@
       </el-col>
     </el-row>
 
+    <!-- 多模块统计 -->
+    <el-row :gutter="12" class="module-stats-row" v-if="stats.modules && Object.keys(stats.modules).length">
+      <el-col :xs="6" :sm="3" v-for="(m, key) in stats.modules" :key="key">
+        <div class="module-stat-item" @click="$router.push(moduleStatRoutes[key] || '/')">
+          <div class="module-stat-name">{{ moduleStatLabels[key] || key }}</div>
+          <div class="module-stat-num">{{ m.movies || 0 }}</div>
+          <div class="module-stat-sub">影片 / {{ m.actors || 0 }} 演员</div>
+        </div>
+      </el-col>
+    </el-row>
+
     <!-- 继续观看（最近播放） -->
     <el-card shadow="never" class="content-card" v-if="continueWatching.length">
       <template #header>
@@ -274,6 +285,9 @@ const tagCount = ref(0)
 const crawlerCount = ref(0)
 const loadingMovies = ref(false)
 const loadingTasks = ref(false)
+
+const moduleStatLabels = { chinese: '国产', uncensored: '无码', fc2: 'FC2', pornhub: 'PORNHub' }
+const moduleStatRoutes = { chinese: '/chinese', uncensored: '/uncensored', fc2: '/fc2', pornhub: '/pornhub' }
 
 const handleCoverError = (event) => {
   event.target.src = defaultCover(event.target.alt)
@@ -710,5 +724,40 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 500;
   color: var(--el-text-color-regular);
+}
+
+/* ===== 多模块统计 ===== */
+.module-stats-row {
+  margin: 0;
+}
+.module-stat-item {
+  text-align: center;
+  padding: 12px 8px;
+  cursor: pointer;
+  border-radius: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  transition: all 0.2s;
+  background: var(--el-bg-color);
+}
+.module-stat-item:hover {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  transform: translateY(-1px);
+}
+.module-stat-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 4px;
+}
+.module-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--el-color-primary);
+}
+.module-stat-sub {
+  font-size: 11px;
+  color: var(--el-text-color-disabled);
+  margin-top: 2px;
 }
 </style>
