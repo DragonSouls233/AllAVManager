@@ -323,6 +323,81 @@ const routes = [
         component: () => import('@/views/RefreshFolders.vue')
       },
       {
+        path: 'chinese',
+        name: 'Chinese',
+        component: () => import('@/views/chinese/Movies.vue')
+      },
+      {
+        path: 'chinese/movies',
+        name: 'ChineseMovies',
+        component: () => import('@/views/chinese/Movies.vue')
+      },
+      {
+        path: 'chinese/movies/:id',
+        name: 'ChineseMovieDetail',
+        component: () => import('@/views/chinese/MovieDetail.vue')
+      },
+      {
+        path: 'chinese/actors',
+        name: 'ChineseActors',
+        component: () => import('@/views/chinese/Actors.vue')
+      },
+      {
+        path: 'chinese/actors/:id',
+        name: 'ChineseActorDetail',
+        component: () => import('@/views/chinese/ActorDetail.vue')
+      },
+      {
+        path: 'fc2',
+        name: 'Fc2',
+        component: () => import('@/views/fc2/Movies.vue')
+      },
+      {
+        path: 'fc2/movies',
+        name: 'Fc2Movies',
+        component: () => import('@/views/fc2/Movies.vue')
+      },
+      {
+        path: 'fc2/movies/:id',
+        name: 'Fc2MovieDetail',
+        component: () => import('@/views/fc2/MovieDetail.vue')
+      },
+      {
+        path: 'uncensored',
+        name: 'Uncensored',
+        component: () => import('@/views/uncensored/Movies.vue')
+      },
+      {
+        path: 'uncensored/movies',
+        name: 'UncensoredMovies',
+        component: () => import('@/views/uncensored/Movies.vue')
+      },
+      {
+        path: 'uncensored/movies/:id',
+        name: 'UncensoredMovieDetail',
+        component: () => import('@/views/uncensored/MovieDetail.vue')
+      },
+      {
+        path: 'pornhub',
+        name: 'Pornhub',
+        component: () => import('@/views/pornhub/Movies.vue')
+      },
+      {
+        path: 'pornhub/movies',
+        name: 'PornhubMovies',
+        component: () => import('@/views/pornhub/Movies.vue')
+      },
+      {
+        path: 'pornhub/movies/:id',
+        name: 'PornhubMovieDetail',
+        component: () => import('@/views/pornhub/MovieDetail.vue')
+      },
+      {
+        path: 'modules',
+        name: 'Modules',
+        component: () => import('@/views/modules/ModuleManager.vue')
+      },
+      {
         path: 'onboarding',
         name: 'Onboarding',
         meta: { public: true },

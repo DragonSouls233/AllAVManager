@@ -4,7 +4,7 @@ API 路由模块
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray
+from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, pornhub_routes
 
 api_router = APIRouter()
 
@@ -74,3 +74,8 @@ api_router.include_router(nfo_scrape.router, prefix="/nfo-scrape", tags=["NFO免
 api_router.include_router(fanart.router, prefix="/fanart", tags=["Fanart背景图"])
 api_router.include_router(auto_organize.router, prefix="/auto-organize", tags=["自动整理规则"])
 api_router.include_router(proxy_xray.router, prefix="/proxy/xray", tags=["内置Xray代理"])
+api_router.include_router(chinese_routes.router, tags=["国产模块"])
+api_router.include_router(modules.router, tags=["模块管理"])
+api_router.include_router(fc2_routes.router, tags=["FC2模块"])
+api_router.include_router(uncensored_routes.router, tags=["无码模块"])
+api_router.include_router(pornhub_routes.router, tags=["PORNHub模块"])

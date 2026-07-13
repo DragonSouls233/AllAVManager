@@ -33,6 +33,37 @@
           <template #title>首页</template>
         </el-menu-item>
 
+        <el-sub-menu index="modules">
+          <template #title>
+            <el-icon><Grid /></el-icon>
+            <span>多模块</span>
+          </template>
+          <el-menu-item index="/movies">
+            <el-icon><VideoCamera /></el-icon>
+            <template #title>JAV 有码</template>
+          </el-menu-item>
+          <el-menu-item index="/uncensored">
+            <el-icon><View /></el-icon>
+            <template #title>JAV 无码</template>
+          </el-menu-item>
+          <el-menu-item index="/fc2">
+            <el-icon><Film /></el-icon>
+            <template #title>FC2</template>
+          </el-menu-item>
+          <el-menu-item index="/chinese">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>国产</template>
+          </el-menu-item>
+          <el-menu-item index="/pornhub">
+            <el-icon><Promotion /></el-icon>
+            <template #title>PORNHub</template>
+          </el-menu-item>
+          <el-menu-item index="/modules">
+            <el-icon><Setting /></el-icon>
+            <template #title>模块管理</template>
+          </el-menu-item>
+        </el-sub-menu>
+
         <el-sub-menu index="content">
           <template #title>
             <el-icon><Files /></el-icon>
@@ -1091,6 +1122,16 @@ const pageTitle = computed(() => {
     '/': '首页概览',
     '/movies': '番号库',
     '/actors': '演员',
+    '/chinese': '国产影片',
+    '/chinese/movies': '国产影片',
+    '/chinese/actors': '国产演员',
+    '/fc2': 'FC2 影片',
+    '/fc2/movies': 'FC2 影片',
+    '/uncensored': '无码影片',
+    '/uncensored/movies': '无码影片',
+    '/pornhub': 'PORNHub 影片',
+    '/pornhub/movies': 'PORNHub 影片',
+    '/modules': '模块管理',
     '/crawlers': '爬虫管理',
     '/compare': '本地与在线对比',
     '/compare-actors': '对比演员库',

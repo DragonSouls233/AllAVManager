@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.config.module_models import ModulesConfig
+
 
 class ServerConfig(BaseModel):
     """服务器配置"""
@@ -917,6 +919,7 @@ class Config(BaseModel):
     app_name: str = Field(default="龙魂视频管理系统", title="应用名称")
 
     # 嵌套配置
+    modules: ModulesConfig = Field(default_factory=ModulesConfig, title="模块管理配置")
     server: ServerConfig = Field(default_factory=ServerConfig, title="服务器配置")
     database: DatabaseConfig = Field(default_factory=DatabaseConfig, title="数据库配置")
     scraper: ScraperConfig = Field(default_factory=ScraperConfig, title="刮削配置")

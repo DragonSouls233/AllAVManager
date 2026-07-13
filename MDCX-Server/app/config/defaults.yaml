@@ -2,6 +2,41 @@
 # 所有配置项均可通过环境变量覆盖
 app_name: 龙魂视频管理系统
 
+# ===== 5 模块配置 =====
+modules:
+  jav:
+    enabled: true
+    media_dirs: []
+  uncensored:
+    enabled: false
+    media_dirs: []
+  fc2:
+    enabled: false
+    media_dirs: []
+  chinese:
+    enabled: false
+    media_dirs: []
+    actor_from_folder: true
+    folder_depth: 1
+    folder_pattern: []
+    actor_blacklist:
+      - 新建文件夹
+      - 合集
+      - 精选
+      - unknown
+      - 未分类
+      - tmp
+      - temp
+      - downloads
+    auto_create_actor: true
+    studio_names_as_folder: false
+  pornhub:
+    enabled: false
+    media_dirs: []
+  scanner:
+    concurrent_limit: 5
+    retry_count: 3
+
 server:
   host: 0.0.0.0
   port: 8420
