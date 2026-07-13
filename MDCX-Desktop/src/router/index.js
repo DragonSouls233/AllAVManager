@@ -363,6 +363,16 @@ const routes = [
         component: () => import('@/views/fc2/MovieDetail.vue')
       },
       {
+        path: 'fc2/actors',
+        name: 'Fc2Actors',
+        component: () => import('@/views/fc2/Actors.vue')
+      },
+      {
+        path: 'fc2/actors/:id',
+        name: 'Fc2ActorDetail',
+        component: () => import('@/views/fc2/ActorDetail.vue')
+      },
+      {
         path: 'uncensored',
         name: 'Uncensored',
         component: () => import('@/views/uncensored/Movies.vue')
@@ -378,6 +388,16 @@ const routes = [
         component: () => import('@/views/uncensored/MovieDetail.vue')
       },
       {
+        path: 'uncensored/actors',
+        name: 'UncensoredActors',
+        component: () => import('@/views/uncensored/Actors.vue')
+      },
+      {
+        path: 'uncensored/actors/:id',
+        name: 'UncensoredActorDetail',
+        component: () => import('@/views/uncensored/ActorDetail.vue')
+      },
+      {
         path: 'pornhub',
         name: 'Pornhub',
         component: () => import('@/views/pornhub/Movies.vue')
@@ -391,6 +411,16 @@ const routes = [
         path: 'pornhub/movies/:id',
         name: 'PornhubMovieDetail',
         component: () => import('@/views/pornhub/MovieDetail.vue')
+      },
+      {
+        path: 'pornhub/actors',
+        name: 'PornhubActors',
+        component: () => import('@/views/pornhub/Actors.vue')
+      },
+      {
+        path: 'pornhub/actors/:id',
+        name: 'PornhubActorDetail',
+        component: () => import('@/views/pornhub/ActorDetail.vue')
       },
       {
         path: 'modules',

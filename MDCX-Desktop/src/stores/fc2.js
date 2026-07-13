@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getFc2Movies, getFc2Movie } from '@/api/fc2'
+  import { getFc2Movies, getFc2Movie, getFc2Actors, getFc2Actor } from '@/api/fc2'
 import { scanModule } from '@/api/modules'
 
 export const useFc2Store = defineStore('fc2', () => {
   const movies = ref([])
   const total = ref(0)
+  const actors = ref([])
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
@@ -25,9 +26,19 @@ export const useFc2Store = defineStore('fc2', () => {
     return await getFc2Movie(id)
   }
 
+  async function loadActors() {
+    const res = await getFc2Actors()
+    actors.value = res || []
+    return actors.value
+  }
+
+  async function loadActorDetail(id) {
+    return await getFc2Actor(id)
+  }
+
   async function triggerScan() {
     return await scanModule('fc2')
   }
 
-  return { movies, total, loading, page, pageSize, loadMovies, loadMovieDetail, triggerScan }
+  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
 })

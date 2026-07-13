@@ -13,6 +13,43 @@ def get_fc2_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("fc2")
 
 
+@router.get("/actors")
+async def list_actors():
+    """列出 FC2 演员列表"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Actor
+        from sqlalchemy import select
+        stmt = select(Fc2Actor).order_by(Fc2Actor.movie_count.desc())
+        result = await session.execute(stmt)
+        actors = result.scalars().all()
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source} for a in actors]
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}")
+async def get_actor(actor_id: int):
+    """获取 FC2 演员详情"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Actor
+        from sqlalchemy import select
+        stmt = select(Fc2Actor).where(Fc2Actor.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        return {"id": actor.id, "name": actor.name, "alias": actor.alias,
+                "avatar_url": actor.avatar_url, "source": actor.source,
+                "movie_count": actor.movie_count,
+                "created_at": str(actor.created_at)}
+    finally:
+        await session.close()
+
+
 @router.get("/movies")
 async def list_movies(skip: int = 0, limit: int = 20):
     """列出 FC2 模块影片列表"""

@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getUncensoredMovies, getUncensoredMovie } from '@/api/uncensored'
+import { getUncensoredMovies, getUncensoredMovie, getUncensoredActors, getUncensoredActor } from '@/api/uncensored'
 import { scanModule } from '@/api/modules'
 
 export const useUncensoredStore = defineStore('uncensored', () => {
   const movies = ref([])
   const total = ref(0)
+  const actors = ref([])
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
@@ -25,9 +26,19 @@ export const useUncensoredStore = defineStore('uncensored', () => {
     return await getUncensoredMovie(id)
   }
 
+  async function loadActors() {
+    const res = await getUncensoredActors()
+    actors.value = res || []
+    return actors.value
+  }
+
+  async function loadActorDetail(id) {
+    return await getUncensoredActor(id)
+  }
+
   async function triggerScan() {
     return await scanModule('uncensored')
   }
 
-  return { movies, total, loading, page, pageSize, loadMovies, loadMovieDetail, triggerScan }
+  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
 })

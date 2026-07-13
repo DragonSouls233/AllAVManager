@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getPornhubMovies, getPornhubMovie } from '@/api/pornhub'
+import { getPornhubMovies, getPornhubMovie, getPornhubActors, getPornhubActor } from '@/api/pornhub'
 import { scanModule } from '@/api/modules'
 
 export const usePornhubStore = defineStore('pornhub', () => {
   const movies = ref([])
   const total = ref(0)
+  const actors = ref([])
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
@@ -25,9 +26,19 @@ export const usePornhubStore = defineStore('pornhub', () => {
     return await getPornhubMovie(id)
   }
 
+  async function loadActors() {
+    const res = await getPornhubActors()
+    actors.value = res || []
+    return actors.value
+  }
+
+  async function loadActorDetail(id) {
+    return await getPornhubActor(id)
+  }
+
   async function triggerScan() {
     return await scanModule('pornhub')
   }
 
-  return { movies, total, loading, page, pageSize, loadMovies, loadMovieDetail, triggerScan }
+  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
 })

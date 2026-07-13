@@ -42,11 +42,11 @@
             <el-icon><VideoCamera /></el-icon>
             <template #title>JAV 有码</template>
           </el-menu-item>
-          <el-menu-item index="/uncensored">
+          <el-menu-item index="/uncensored" v-if="moduleEnabled.uncensored !== false">
             <el-icon><View /></el-icon>
             <template #title>JAV 无码</template>
           </el-menu-item>
-          <el-menu-item index="/fc2">
+          <el-menu-item index="/fc2" v-if="moduleEnabled.fc2 !== false">
             <el-icon><Film /></el-icon>
             <template #title>FC2</template>
           </el-menu-item>
@@ -54,7 +54,7 @@
             <el-icon><DataAnalysis /></el-icon>
             <template #title>国产</template>
           </el-menu-item>
-          <el-menu-item index="/pornhub">
+          <el-menu-item index="/pornhub" v-if="moduleEnabled.pornhub !== false">
             <el-icon><Promotion /></el-icon>
             <template #title>PORNHub</template>
           </el-menu-item>
@@ -693,6 +693,7 @@ import {
 } from '@element-plus/icons-vue'
 import { getNsfwConfig, updateNsfwConfig, toggleNsfwMode } from '@/api'
 import { getSystemHealth, getDashboardStats, getTaskStats, getVersion, getTags } from '@/api'
+import { getModulesConfig } from '@/api/modules'
 import { useThemeStore } from '@/stores/theme'
 import { useAuthStore } from '@/stores/auth'
 import { useUndoStore } from '@/stores/undo'
@@ -839,6 +840,30 @@ const undoStore = useUndoStore()
 // 头像刮削全局 Store（进度浮层 + 全局通知）
 const avatarStore = useAvatarScrapeStore()
 
+// 模块启用状态（默认全部启用，加载配置后更新）
+const moduleEnabled = ref({
+  jav: true,
+  uncensored: true,
+  fc2: true,
+  chinese: true,
+  pornhub: true
+})
+
+async function loadModuleConfig() {
+  try {
+    const config = await getModulesConfig()
+    if (config) {
+      for (const [name, cfg] of Object.entries(config)) {
+        if (cfg && typeof cfg.enabled === 'boolean') {
+          moduleEnabled.value[name] = cfg.enabled
+        }
+      }
+    }
+  } catch {
+    // 静默失败，保持默认全部启用
+  }
+}
+
 const healthStatus = ref('unknown') // ok / warn / error / unknown
 const stats = reactive({
   movies: 0,
@@ -912,6 +937,8 @@ async function loadHealthAndStats() {
 onMounted(() => {
   // 主题已在 main.js 初始化，这里仅需加载 NSFW 配置
   loadNsfwConfig()
+  // 加载模块启用状态配置
+  loadModuleConfig()
   // 初始化 Electron 自动更新监听
   initUpdater()
   // 启动状态栏定时刷新（首次立即加载，之后每 30 秒刷新）

@@ -1,11 +1,17 @@
 import { api } from './index'
 
-/** 获取 PORNHub 影片列表 */
+export async function getPornhubActors() {
+  return api.get('/pornhub/actors')
+}
+
+export async function getPornhubActor(id) {
+  return api.get(`/pornhub/actors/${id}`)
+}
+
 export async function getPornhubMovies(params = {}) {
   return api.get('/pornhub/movies', { params })
 }
 
-/** 获取 PORNHub 影片详情 */
 export async function getPornhubMovie(id) {
   return api.get(`/pornhub/movies/${id}`)
 }

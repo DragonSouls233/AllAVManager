@@ -13,6 +13,43 @@ def get_pornhub_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("pornhub")
 
 
+@router.get("/actors")
+async def list_actors():
+    """列出 PORNHub 演员列表"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select
+        stmt = select(PornhubActor).order_by(PornhubActor.movie_count.desc())
+        result = await session.execute(stmt)
+        actors = result.scalars().all()
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source} for a in actors]
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}")
+async def get_actor(actor_id: int):
+    """获取 PORNHub 演员详情"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select
+        stmt = select(PornhubActor).where(PornhubActor.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        return {"id": actor.id, "name": actor.name, "alias": actor.alias,
+                "avatar_url": actor.avatar_url, "source": actor.source,
+                "movie_count": actor.movie_count,
+                "created_at": str(actor.created_at)}
+    finally:
+        await session.close()
+
+
 @router.get("/movies")
 async def list_movies(skip: int = 0, limit: int = 20):
     """列出 PORNHub 模块影片列表"""
