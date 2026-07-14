@@ -4,7 +4,7 @@ API 路由模块
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, pornhub_routes, western_routes
+from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, pornhub_routes, western_routes, download, site_manage
 
 api_router = APIRouter()
 
@@ -80,3 +80,5 @@ api_router.include_router(fc2_routes.router, tags=["FC2模块"])
 api_router.include_router(uncensored_routes.router, tags=["无码模块"])
 api_router.include_router(pornhub_routes.router, tags=["PORNHub模块"])
 api_router.include_router(western_routes.router, tags=["欧美模块"])
+api_router.include_router(download.router, tags=["下载管理"])
+api_router.include_router(site_manage.router, tags=["站点注册表"])

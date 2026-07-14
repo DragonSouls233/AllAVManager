@@ -62,6 +62,14 @@
             <el-icon><VideoCamera /></el-icon>
             <template #title>欧美</template>
           </el-menu-item>
+          <el-menu-item index="/download" v-if="moduleEnabled.western !== false">
+            <el-icon><Download /></el-icon>
+            <template #title>下载管理</template>
+          </el-menu-item>
+          <el-menu-item index="/sites">
+            <el-icon><Connection /></el-icon>
+            <template #title>站点注册表</template>
+          </el-menu-item>
           <el-menu-item index="/modules">
             <el-icon><Setting /></el-icon>
             <template #title>模块管理</template>
@@ -1175,6 +1183,8 @@ const pageTitle = computed(() => {
     '/pornhub/movies': 'PORNHub 影片',
     '/western': '欧美影片',
     '/western/movies': '欧美影片',
+    '/download': '下载管理',
+    '/sites': '站点注册表',
     '/modules': '模块管理',
     '/crawlers': '爬虫管理',
     '/compare': '本地与在线对比',

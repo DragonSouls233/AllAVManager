@@ -453,6 +453,16 @@ const routes = [
         component: () => import('@/views/western/Config.vue')
       },
       {
+        path: 'download',
+        name: 'DownloadManager',
+        component: () => import('@/views/download/DownloadManager.vue')
+      },
+      {
+        path: 'sites',
+        name: 'SiteRegistry',
+        component: () => import('@/views/sites/SiteRegistry.vue')
+      },
+      {
         path: 'modules',
         name: 'Modules',
         component: () => import('@/views/modules/ModuleManager.vue')
