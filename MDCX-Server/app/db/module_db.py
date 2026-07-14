@@ -101,10 +101,24 @@ class ModuleDatabase:
 
     @classmethod
     async def init_all(cls) -> dict[str, "ModuleDatabase"]:
+        """初始化所有模块数据库
+
+        需显式导入各模块的模型文件，确保 SQLAlchemy Metadata 有完整的表注册。
+        """
+        # 显式导入所有模块模型以确保表被创建
+        import app.db.chinese_models  # noqa: F401
+        import app.db.uncensored_models  # noqa: F401
+        import app.db.fc2_models  # noqa: F401
+        import app.db.pornhub_models  # noqa: F401
+
         instances = {}
         for name in ["chinese", "uncensored", "fc2", "pornhub"]:
             db = cls.get_instance(name)
             await db.init()
+            # 每个数据库引擎单独创建表
+            async with db.engine.begin() as conn:
+                await conn.execute(text("PRAGMA journal_mode=WAL"))
+                await conn.run_sync(ModuleBase.metadata.create_all)
             instances[name] = db
         return instances
 

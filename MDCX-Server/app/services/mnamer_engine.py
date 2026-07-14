@@ -38,14 +38,25 @@ if _EXTERNAL_MNAMER not in sys.path and Path(_EXTERNAL_MNAMER).exists():
     sys.path.insert(0, _EXTERNAL_MNAMER)
 
 # mnamer 内部包（不暴露给上层）
-from mnamer.exceptions import (  # noqa: E402
-    MnamerException,
-    MnamerNetworkException,
-    MnamerNotFoundException,
-)
-from mnamer.metadata import Metadata, MetadataMovie  # noqa: E402
-from mnamer.setting_store import SettingStore  # noqa: E402
-from mnamer.target import Target  # noqa: E402
+try:
+    from mnamer.exceptions import (  # noqa: E402
+        MnamerException,
+        MnamerNetworkException,
+        MnamerNotFoundException,
+    )
+    from mnamer.metadata import Metadata, MetadataMovie  # noqa: E402
+    from mnamer.setting_store import SettingStore  # noqa: E402
+    from mnamer.target import Target  # noqa: E402
+    _MNAMER_AVAILABLE = True
+except ImportError:
+    MnamerException = Exception
+    MnamerNetworkException = Exception
+    MnamerNotFoundException = Exception
+    Metadata = None
+    MetadataMovie = None
+    SettingStore = None
+    Target = None
+    _MNAMER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +107,13 @@ class MnamerEngine:
 
     def __init__(self) -> None:
         self._settings_cache: dict[str, SettingStore] = {}
-        logger.info("MnamerEngine 初始化完成（mnamer 整包已就绪）")
+        self.settings: SettingStore | None = SettingStore() if _MNAMER_AVAILABLE else None
+        self._loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+        self._guard: bool = False  # 防止重复初始化
+        if _MNAMER_AVAILABLE:
+            logger.info("MnamerEngine 初始化完成（mnamer 整包已就绪）")
+        else:
+            logger.warning("MnamerEngine 初始化完成（mnamer 不可用，仅支持命名模板预览）")
 
     # -------------------------------------------------------
     # 异步查询

@@ -87,12 +87,12 @@ async def get_dashboard_stats(
                 try:
                     from sqlalchemy import text
                     movie_count = await mod_session.scalar(
-                        text("SELECT COUNT(*) FROM movies")
+                        text(f"SELECT COUNT(*) FROM {mod_name}_movies")
                     ) or 0
                     actor_count = 0
                     try:
                         actor_count = await mod_session.scalar(
-                            text("SELECT COUNT(*) FROM actors")
+                            text(f"SELECT COUNT(*) FROM {mod_name}_actors")
                         ) or 0
                     except Exception:
                         pass

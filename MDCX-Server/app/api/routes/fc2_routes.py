@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.db.module_db import ModuleDatabase
 
-router = APIRouter(prefix="/api/v1/fc2", tags=["FC2模块"])
+router = APIRouter(prefix="/fc2", tags=["FC2模块"])
 
 
 def get_fc2_db() -> ModuleDatabase:

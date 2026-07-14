@@ -731,8 +731,8 @@ def create_app() -> FastAPI:
         # SPA 路由：所有非 API 请求返回 index.html
         @app.api_route("/{full_path:path}", methods=["GET"], include_in_schema=False)
         async def serve_spa(full_path: str):
-            # 排除 api 和 assets 路径
-            if full_path.startswith("api/") or full_path.startswith("assets/"):
+            # 排除 api、assets、webdav 等路径
+            if any(full_path.startswith(p) for p in ("api/", "assets/", "webdav/", "emby/", "tvbox/")):
                 return {"detail": "Not Found"}
             # 静态资源直接返回文件（不经过 SPA）
             target = (static_dir / full_path).resolve()

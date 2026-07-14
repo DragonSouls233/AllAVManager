@@ -13,7 +13,7 @@ from app.db.module_db import ModuleBase
 
 class Fc2Movie(ModuleBase):
     """FC2 影片模型"""
-    __tablename__ = "movies"
+    __tablename__ = "fc2_movies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
@@ -56,7 +56,7 @@ class Fc2Movie(ModuleBase):
 
 class Fc2Actor(ModuleBase):
     """FC2 演员表"""
-    __tablename__ = "actors"
+    __tablename__ = "fc2_actors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, unique=True)

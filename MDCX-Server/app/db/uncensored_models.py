@@ -14,7 +14,7 @@ from app.db.module_db import ModuleBase
 
 class UncensoredMovie(ModuleBase):
     """无码影片模型"""
-    __tablename__ = "movies"
+    __tablename__ = "uncensored_movies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
@@ -57,7 +57,7 @@ class UncensoredMovie(ModuleBase):
 
 class UncensoredActor(ModuleBase):
     """无码演员表"""
-    __tablename__ = "actors"
+    __tablename__ = "uncensored_actors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, unique=True)

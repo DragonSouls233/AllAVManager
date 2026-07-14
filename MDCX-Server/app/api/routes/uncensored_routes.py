@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.db.module_db import ModuleDatabase
 
-router = APIRouter(prefix="/api/v1/uncensored", tags=["无码模块"])
+router = APIRouter(prefix="/uncensored", tags=["无码模块"])
 
 
 def get_uncensored_db() -> ModuleDatabase:

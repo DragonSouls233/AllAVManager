@@ -60,7 +60,7 @@ class PornhubMovie(ModuleBase):
 
 class PornhubActor(ModuleBase):
     """PORNHub 演员表"""
-    __tablename__ = "actors"
+    __tablename__ = "pornhub_actors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, unique=True)

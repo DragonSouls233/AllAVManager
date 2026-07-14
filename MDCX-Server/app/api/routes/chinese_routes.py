@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.db.module_db import ModuleDatabase
 from app.scraper.folder_actor import extract_actor_from_folder, DEFAULT_BLACKLIST
 
-router = APIRouter(prefix="/api/v1/chinese", tags=["国产模块"])
+router = APIRouter(prefix="/chinese", tags=["国产模块"])
 
 
 def get_chinese_db() -> ModuleDatabase:

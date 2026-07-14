@@ -13,7 +13,7 @@ from app.db.module_db import ModuleBase
 
 class ChineseMovie(ModuleBase):
     """国产影片模型"""
-    __tablename__ = "movies"
+    __tablename__ = "chinese_movies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
@@ -55,8 +55,8 @@ class ChineseMovie(ModuleBase):
 
 
 class ChineseActor(ModuleBase):
-    """国产演员表（主要来自文件夹名）"""
-    __tablename__ = "actors"
+    """国产演员表"""
+    __tablename__ = "chinese_actors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, unique=True)

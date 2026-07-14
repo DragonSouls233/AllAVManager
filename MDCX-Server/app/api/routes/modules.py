@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.config.manager import get_config, get_config_manager
 from app.db.module_db import ModuleDatabase
 
-router = APIRouter(prefix="/api/v1/modules", tags=["模块管理"])
+router = APIRouter(prefix="/modules", tags=["模块管理"])
 
 
 SCANNER_MAP = {
@@ -47,16 +47,16 @@ async def list_modules():
     """列出所有模块及其状态"""
     config = get_config()
     return [
-        {"name": "jav", "enabled": True, "media_dirs": config.jav.media_dirs},
-        {"name": "uncensored", "enabled": config.uncensored.enabled,
-         "media_dirs": config.uncensored.media_dirs},
-        {"name": "fc2", "enabled": config.fc2.enabled,
-         "media_dirs": config.fc2.media_dirs},
-        {"name": "chinese", "enabled": config.chinese.enabled,
-         "media_dirs": config.chinese.media_dirs,
-         "actor_from_folder": config.chinese.actor_from_folder},
-        {"name": "pornhub", "enabled": config.pornhub.enabled,
-         "media_dirs": config.pornhub.media_dirs},
+        {"name": "jav", "enabled": True, "media_dirs": getattr(config.modules.jav, "media_dirs", [])},
+        {"name": "uncensored", "enabled": getattr(config.modules.uncensored, "enabled", False),
+         "media_dirs": getattr(config.modules.uncensored, "media_dirs", [])},
+        {"name": "fc2", "enabled": getattr(config.modules.fc2, "enabled", False),
+         "media_dirs": getattr(config.modules.fc2, "media_dirs", [])},
+        {"name": "chinese", "enabled": getattr(config.modules.chinese, "enabled", False),
+         "media_dirs": getattr(config.modules.chinese, "media_dirs", []),
+         "actor_from_folder": getattr(config.modules.chinese, "actor_from_folder", False)},
+        {"name": "pornhub", "enabled": getattr(config.modules.pornhub, "enabled", False),
+         "media_dirs": getattr(config.modules.pornhub, "media_dirs", [])},
     ]
 
 
@@ -70,19 +70,29 @@ async def get_module_stats(module_name: str):
     session = await db.get_session()
     try:
         from sqlalchemy import select, func
-        from app.db.module_db import ModuleBase
-        if not hasattr(ModuleBase, "metadata"):
-            return {"name": module_name, "movie_count": 0, "actor_count": 0}
+        import importlib
+        # 根据模块名动态加载对应的 Movie 和 Actor 模型
+        model_map = {
+            "chinese": ("app.db.chinese_models", "ChineseMovie", "ChineseActor"),
+            "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor"),
+            "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
+            "pornhub": ("app.db.pornhub_models", "PornhubMovie", "PornhubActor"),
+        }
+        mod_path, movie_cls, actor_cls = model_map[module_name]
+        mod = importlib.import_module(mod_path)
+        movie_model = getattr(mod, movie_cls)
+        actor_model = getattr(mod, actor_cls) if hasattr(mod, actor_cls) else None
 
-        movie_stmt = select(func.count()).select_from(
-            ModuleBase.metadata.tables["movies"]
-        ) if "movies" in ModuleBase.metadata.tables else None
-        actor_stmt = select(func.count()).select_from(
-            ModuleBase.metadata.tables["actors"]
-        ) if "actors" in ModuleBase.metadata.tables else None
+        movie_stmt = select(func.count()).select_from(movie_model.__table__)
+        movie_count = (await session.execute(movie_stmt)).scalar() or 0
 
-        movie_count = (await session.execute(movie_stmt)).scalar() if movie_stmt else 0
-        actor_count = (await session.execute(actor_stmt)).scalar() if actor_stmt else 0
+        actor_count = 0
+        if actor_model:
+            try:
+                actor_stmt = select(func.count()).select_from(actor_model.__table__)
+                actor_count = (await session.execute(actor_stmt)).scalar() or 0
+            except Exception:
+                pass
 
         return {"name": module_name, "movie_count": movie_count, "actor_count": actor_count}
     finally:

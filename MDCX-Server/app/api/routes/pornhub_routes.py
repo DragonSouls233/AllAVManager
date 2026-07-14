@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.db.module_db import ModuleDatabase
 
-router = APIRouter(prefix="/api/v1/pornhub", tags=["PORNHub模块"])
+router = APIRouter(prefix="/pornhub", tags=["PORNHub模块"])
 
 
 def get_pornhub_db() -> ModuleDatabase:
