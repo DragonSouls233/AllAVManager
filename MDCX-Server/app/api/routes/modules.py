@@ -17,6 +17,7 @@ SCANNER_MAP = {
     "fc2": ("app.tasks.fc2_scanner", "Fc2Scanner"),
     "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
     "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
+    "western": ("app.tasks.western_scanner", "WesternScanner"),
 }
 
 
@@ -57,13 +58,15 @@ async def list_modules():
          "actor_from_folder": getattr(config.modules.chinese, "actor_from_folder", False)},
         {"name": "pornhub", "enabled": getattr(config.modules.pornhub, "enabled", False),
          "media_dirs": getattr(config.modules.pornhub, "media_dirs", [])},
+        {"name": "western", "enabled": getattr(config.modules.western, "enabled", False),
+         "media_dirs": getattr(config.modules.western, "media_dirs", [])},
     ]
 
 
 @router.get("/{module_name}/stats")
 async def get_module_stats(module_name: str):
     """获取模块统计信息"""
-    if module_name not in ["chinese", "uncensored", "fc2", "pornhub"]:
+    if module_name not in ["chinese", "uncensored", "fc2", "pornhub", "western"]:
         return {"name": module_name, "movie_count": 0, "actor_count": 0, "error": "未知模块"}
 
     db = ModuleDatabase.get_instance(module_name)
@@ -77,6 +80,7 @@ async def get_module_stats(module_name: str):
             "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor"),
             "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
             "pornhub": ("app.db.pornhub_models", "PornhubMovie", "PornhubActor"),
+            "western": ("app.db.western_models", "WesternMovie", "WesternActor"),
         }
         mod_path, movie_cls, actor_cls = model_map[module_name]
         mod = importlib.import_module(mod_path)
@@ -104,7 +108,7 @@ async def scan_module(module_name: str):
     """触发模块扫描"""
     if module_name == "chinese":
         return await _run_scan("chinese")
-    elif module_name in ("fc2", "uncensored", "pornhub"):
+    elif module_name in ("fc2", "uncensored", "pornhub", "western"):
         return await _run_scan(module_name)
     return {"module": module_name, "message": "扫描功能待实现"}
 
@@ -146,7 +150,7 @@ async def update_modules_config(updates: dict[str, Any]):
 @router.patch("/{module_name}/toggle")
 async def toggle_module(module_name: str, enabled: bool = True):
     """切换模块启用状态"""
-    if module_name not in ("jav", "uncensored", "fc2", "chinese", "pornhub"):
+    if module_name not in ("jav", "uncensored", "fc2", "chinese", "pornhub", "western"):
         raise HTTPException(status_code=400, detail=f"未知模块: {module_name}")
 
     manager = get_config_manager()
@@ -171,6 +175,7 @@ _MODEL_MAP = {
     "uncensored": ("app.db.uncensored_models", "UncensoredMovie"),
     "fc2": ("app.db.fc2_models", "Fc2Movie"),
     "pornhub": ("app.db.pornhub_models", "PornhubMovie"),
+    "western": ("app.db.western_models", "WesternMovie"),
 }
 
 
@@ -235,6 +240,7 @@ async def unified_search(keyword: str = Query(..., min_length=1), limit: int = 5
         "uncensored": getattr(config.modules, "uncensored", None),
         "fc2": getattr(config.modules, "fc2", None),
         "pornhub": getattr(config.modules, "pornhub", None),
+        "western": getattr(config.modules, "western", None),
     }
 
     for mod_name, mod_config in enabled_map.items():

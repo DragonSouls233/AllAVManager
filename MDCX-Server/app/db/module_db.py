@@ -110,9 +110,10 @@ class ModuleDatabase:
         import app.db.uncensored_models  # noqa: F401
         import app.db.fc2_models  # noqa: F401
         import app.db.pornhub_models  # noqa: F401
+        import app.db.western_models  # noqa: F401
 
         instances = {}
-        for name in ["chinese", "uncensored", "fc2", "pornhub"]:
+        for name in ["chinese", "uncensored", "fc2", "pornhub", "western"]:
             db = cls.get_instance(name)
             await db.init()
             # 每个数据库引擎单独创建表

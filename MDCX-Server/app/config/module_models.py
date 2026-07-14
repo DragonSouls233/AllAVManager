@@ -51,11 +51,23 @@ class ScannerConfig(BaseModel):
     retry_count: int = Field(default=3, ge=0, le=10, title="重试次数")
 
 
+class WesternModuleConfig(ModuleConfig):
+    """欧美模块配置"""
+
+    theporndb_api_key: str = Field(default="", title="ThePornDB API Key")
+    iafd_enabled: bool = Field(default=True, title="启用 IAFD 演员数据")
+    site_prefix_mapping: dict[str, str] = Field(
+        default_factory=dict,
+        title="自定义站点前缀映射（覆盖默认品牌列表）"
+    )
+
+
 class ModulesConfig(BaseModel):
-    """5 模块统一配置"""
-    jav: ModuleConfig = ModuleConfig()
+    """6 模块统一配置"""
+    jav: ModuleConfig = ModuleConfig(enabled=True)
     uncensored: ModuleConfig = ModuleConfig()
     fc2: ModuleConfig = ModuleConfig()
     chinese: ChineseModuleConfig = ChineseModuleConfig()
     pornhub: ModuleConfig = ModuleConfig()
+    western: WesternModuleConfig = WesternModuleConfig()
     scanner: ScannerConfig = ScannerConfig()
