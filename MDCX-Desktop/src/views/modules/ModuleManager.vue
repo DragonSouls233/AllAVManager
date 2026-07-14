@@ -74,8 +74,8 @@ const dirsDialog = ref(false)
 const editingModule = ref('')
 const editingDirs = ref('')
 
-const moduleIcons = { jav: '🇯🇵', uncensored: '🔞', fc2: '💿', chinese: '🇨🇳', pornhub: '🌐' }
-const moduleLabels = { jav: 'JAV 有码', uncensored: 'JAV 无码', fc2: 'FC2', chinese: '国产', pornhub: 'PORNHub' }
+const moduleIcons = { jav: '🇯🇵', uncensored: '🔞', fc2: '💿', chinese: '🇨🇳', pornhub: '🌐', western: '🌍' }
+const moduleLabels = { jav: 'JAV 有码', uncensored: 'JAV 无码', fc2: 'FC2', chinese: '国产', pornhub: 'PORNHub', western: '欧美' }
 
 async function loadModules() {
   modules.value = await getModules()

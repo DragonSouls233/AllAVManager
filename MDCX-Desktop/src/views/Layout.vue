@@ -58,6 +58,10 @@
             <el-icon><Promotion /></el-icon>
             <template #title>PORNHub</template>
           </el-menu-item>
+          <el-menu-item index="/western" v-if="moduleEnabled.western !== false">
+            <el-icon><VideoCamera /></el-icon>
+            <template #title>欧美</template>
+          </el-menu-item>
           <el-menu-item index="/modules">
             <el-icon><Setting /></el-icon>
             <template #title>模块管理</template>
@@ -718,7 +722,7 @@ const globalSearchInput = ref(null)
 const globalSearchResults = ref([])
 const globalSearchDone = ref(false)
 
-const moduleLabels = { chinese: '国产', uncensored: '无码', fc2: 'FC2', pornhub: 'PORNHub', jav: 'JAV' }
+const moduleLabels = { chinese: '国产', uncensored: '无码', fc2: 'FC2', pornhub: 'PORNHub', jav: 'JAV', western: '欧美' }
 
 const doGlobalSearch = async () => {
   const kw = globalSearchKeyword.value.trim()
@@ -856,7 +860,8 @@ const moduleEnabled = ref({
   uncensored: true,
   fc2: true,
   chinese: true,
-  pornhub: true
+  pornhub: true,
+  western: true
 })
 
 async function loadModuleConfig() {
@@ -1168,6 +1173,8 @@ const pageTitle = computed(() => {
     '/uncensored/movies': '无码影片',
     '/pornhub': 'PORNHub 影片',
     '/pornhub/movies': 'PORNHub 影片',
+    '/western': '欧美影片',
+    '/western/movies': '欧美影片',
     '/modules': '模块管理',
     '/crawlers': '爬虫管理',
     '/compare': '本地与在线对比',
@@ -1515,6 +1522,7 @@ const logout = () => {
 .mod-uncensored { background: #fdf6ec; color: #e6a23c; }
 .mod-fc2 { background: #ecf5ff; color: #409eff; }
 .mod-pornhub { background: #f0fdf4; color: #16a34a; }
+.mod-western { background: #fdf2f8; color: #db2777; }
 .search-result-title {
   flex: 1;
   font-size: 13px;

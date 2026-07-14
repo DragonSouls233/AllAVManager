@@ -423,6 +423,36 @@ const routes = [
         component: () => import('@/views/pornhub/ActorDetail.vue')
       },
       {
+        path: 'western',
+        name: 'Western',
+        component: () => import('@/views/western/Movies.vue')
+      },
+      {
+        path: 'western/movies',
+        name: 'WesternMovies',
+        component: () => import('@/views/western/Movies.vue')
+      },
+      {
+        path: 'western/movies/:id',
+        name: 'WesternMovieDetail',
+        component: () => import('@/views/western/MovieDetail.vue')
+      },
+      {
+        path: 'western/actors',
+        name: 'WesternActors',
+        component: () => import('@/views/western/Actors.vue')
+      },
+      {
+        path: 'western/actors/:id',
+        name: 'WesternActorDetail',
+        component: () => import('@/views/western/ActorDetail.vue')
+      },
+      {
+        path: 'western/config',
+        name: 'WesternConfig',
+        component: () => import('@/views/western/Config.vue')
+      },
+      {
         path: 'modules',
         name: 'Modules',
         component: () => import('@/views/modules/ModuleManager.vue')
