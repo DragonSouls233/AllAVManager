@@ -42,7 +42,7 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -172,6 +172,7 @@ class AdultTimeAuthCache:
             logger.warning(f"AT auth 写入失败: {e}")
 
 
+@register_crawler
 class AdultTimeCrawler(BaseCrawler):
     """AdultTime 60+ 子站点统一刮削器
 
@@ -221,7 +222,7 @@ class AdultTimeCrawler(BaseCrawler):
             return cached
 
         homepage = self._homepage_url(site)
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         async with AsyncHttpClient(proxy=proxy, timeout=15) as client:
             try:
                 resp = await client.get(
@@ -267,7 +268,7 @@ class AdultTimeCrawler(BaseCrawler):
             "X-Algolia-API-Key": api_key,
             "User-Agent": USER_AGENT,
         }
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         async with AsyncHttpClient(proxy=proxy, timeout=20) as client:
             try:
                 resp = await client.post(url, json=body, headers=headers)

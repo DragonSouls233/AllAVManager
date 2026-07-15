@@ -107,7 +107,7 @@ class HttpEngine:
             DownloadResult
         """
         result = DownloadResult(engine="http")
-        proxy = get_proxy() if self.config.use_proxy else None
+        proxy = get_effective_proxy_url() if self.config.use_proxy else None
 
         proxy_url = None
         if proxy:
@@ -184,7 +184,7 @@ class HttpEngine:
 
     async def get_info(self, url: str) -> Optional[dict]:
         """获取文件信息"""
-        proxy = get_proxy() if self.config.use_proxy else None
+        proxy = get_effective_proxy_url() if self.config.use_proxy else None
         async with aiohttp.ClientSession() as session:
             file_size = await self._get_file_size(url, session)
             if not file_size:

@@ -39,7 +39,7 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -438,7 +438,7 @@ class AyloAPICrawler(BaseCrawler):
 
         # 请求站点根域获取 token（参考 P0 _create_headers_for.get_instance_token）
         url = self._domain_to_url(domain)
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         async with AsyncHttpClient(proxy=proxy, timeout=20) as client:
             try:
                 resp = await client.get(url, headers={"User-Agent": AYLO_USER_AGENT})
@@ -470,7 +470,7 @@ class AyloAPICrawler(BaseCrawler):
             return None
 
         headers = self._build_headers(domain, token)
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         async with AsyncHttpClient(proxy=proxy, timeout=30) as client:
             try:
                 resp = await client.get(url, headers=headers)

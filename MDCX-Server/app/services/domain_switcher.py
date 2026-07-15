@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -122,7 +122,7 @@ class DomainSwitcher:
     async def test_url(self, url: str) -> DomainStatus:
         """测试单个 URL 可用性"""
         status = DomainStatus(url=url)
-        proxy = get_proxy() if self.config.use_proxy else None
+        proxy = get_effective_proxy_url() if self.config.use_proxy else None
 
         async with AsyncHttpClient(proxy=proxy, timeout=self.config.timeout) as client:
             start = time.time()

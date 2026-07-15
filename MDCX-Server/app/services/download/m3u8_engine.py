@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.services.download.download_models import DownloadConfig, DownloadResult
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -71,7 +71,7 @@ class M3U8Engine:
 
     def __init__(self, config: Optional[M3U8EngineConfig] = None):
         self.config = config or M3U8EngineConfig()
-        self.proxy = get_proxy() if self.config.use_proxy else None
+        self.proxy = get_effective_proxy_url() if self.config.use_proxy else None
 
     async def parse_playlist(self, url: str) -> Optional[M3U8Playlist]:
         """解析 m3u8 播放列表"""

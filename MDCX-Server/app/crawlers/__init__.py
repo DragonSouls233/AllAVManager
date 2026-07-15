@@ -33,6 +33,12 @@ from app.crawlers import uncensored, uncensored_detail
 # 导入 FC2 扩展爬虫
 from app.crawlers import fc2_extended, fc2_extended_detail
 
+# 导入欧美刮削器（Vixen / NaughtyAmerica / AdultTime / AyloAPI）
+from app.crawlers.western import vixen_network, naughtyamerica, adulttime, aylo_api, theporndb
+
+# 导入国产模块增强爬虫
+from app.crawlers import chinese
+
 __all__ = [
     "BaseCrawler",
     "ScrapeResult",

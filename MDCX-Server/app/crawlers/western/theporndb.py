@@ -181,7 +181,7 @@ class ThePornDBCrawler(BaseCrawler):
         from app.services.proxy_manager import get_proxy
         from app.utils.http_client import AsyncHttpClient
 
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         headers = self._get_headers()
 
         async with AsyncHttpClient(proxy=proxy) as client:
@@ -213,11 +213,11 @@ class ThePornDBCrawler(BaseCrawler):
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """搜索欧美影片"""
-        from app.services.proxy_manager import get_proxy
+        from app.services.proxy_manager import get_effective_proxy_url
         from app.utils.http_client import AsyncHttpClient
 
         results = []
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         headers = self._get_headers()
 
         async with AsyncHttpClient(proxy=proxy) as client:

@@ -32,7 +32,7 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -144,6 +144,7 @@ def construct_image_url(trailer_url: str, scene_url: str) -> Optional[str]:
     return f"https://images4.naughtycdn.com/cms/nacmscontent/v1/scenes/{prefix}/{name}/scene/horizontal/{resolution}c.jpg"
 
 
+@register_crawler
 class NaughtyAmericaCrawler(BaseCrawler):
     """NaughtyAmerica 多子站点统一刮削器
 
@@ -183,7 +184,7 @@ class NaughtyAmericaCrawler(BaseCrawler):
     async def _api_scene_from_id(self, scene_id: str) -> Optional[dict]:
         """API 抓取（参考 P0 NA api_scene_from_id）"""
         api_url = f"https://api.naughtyapi.com/tools/scenes/scenes?id={scene_id}"
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         max_retries = 8
         backoff = 0.5
 
@@ -221,7 +222,7 @@ class NaughtyAmericaCrawler(BaseCrawler):
         if scene_id:
             scene["code"] = str(scene_id)
 
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         async with AsyncHttpClient(proxy=proxy, timeout=15) as client:
             try:
                 resp = await client.get(url, headers=self._headers)

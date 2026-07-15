@@ -35,6 +35,7 @@
 import asyncio
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -52,7 +53,7 @@ from app.crawlers.provider import register_crawler
 from app.services.domain_switcher import DomainSwitcher, make_madouqu_switcher
 from app.services.magnet_extractor import MagnetInfo, MagnetExtractor
 from app.services.smart_cache import SmartCache, get_smart_cache
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -164,7 +165,7 @@ class MadouCrawler(BaseCrawler):
 
     async def _get_client(self) -> AsyncHttpClient:
         """获取或创建 HTTP 客户端"""
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         return AsyncHttpClient(proxy=proxy, timeout=30)
 
     async def _request(self, url: str, retry_count: int = 0) -> Optional[str]:

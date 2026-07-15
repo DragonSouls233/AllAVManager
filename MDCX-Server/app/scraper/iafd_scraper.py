@@ -41,7 +41,7 @@ from app.scraper.actor_profile_scrapers import (
     ActorProfile,
     BaseActorProfileScraper,
 )
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -178,7 +178,7 @@ class IAFDScraper(BaseActorProfileScraper):
 
     async def _fetch(self, url: str, retries: int = 3) -> Optional[str]:
         """使用内置代理获取 HTML（重试 + 退避）"""
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
         async with AsyncHttpClient(proxy=proxy, timeout=30) as client:
             for attempt in range(retries):
                 try:

@@ -32,7 +32,7 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -129,6 +129,7 @@ def upgrade_image(image_url: str, candidate_url: str) -> str:
     return high_res if high_res != image_url else image_url
 
 
+@register_crawler
 class VixenNetworkCrawler(BaseCrawler):
     """Vixen Network 品牌站群通用刮削器
 
@@ -191,7 +192,7 @@ class VixenNetworkCrawler(BaseCrawler):
         """执行 GraphQL 查询（参考 P0 Site.callGraphQL）"""
         url = self._api_url(site_key)
         headers = {**self._headers, "Referer": referer}
-        proxy = get_proxy()
+        proxy = get_effective_proxy_url()
 
         for attempt in range(MAX_403_REATTEMPTS):
             async with AsyncHttpClient(proxy=proxy, timeout=30) as client:
