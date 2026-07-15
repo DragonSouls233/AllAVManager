@@ -33,10 +33,14 @@ def _get_thumbnail_dir(movie_id: int) -> Path:
 
 def _get_video_duration(file_path: str) -> float:
     """用 ffprobe 获取视频时长（秒）"""
+    from app.utils.bin_tools import get_ffprobe_path
+    ffprobe = get_ffprobe_path()
+    if not os.path.isfile(ffprobe):
+        return 0.0
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
+                ffprobe, "-v", "quiet",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 file_path,
@@ -76,7 +80,9 @@ def generate_thumbnails(
     返回:
         生成的截图文件路径列表
     """
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         logger.warning("ffmpeg 未安装，无法生成缩略图")
         return []
 

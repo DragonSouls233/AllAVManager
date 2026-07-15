@@ -50,10 +50,14 @@ def _get_sprite_dir(movie_id: int) -> Path:
 
 def _get_video_duration(file_path: str) -> float:
     """用 ffprobe 获取视频时长（秒）"""
+    from app.utils.bin_tools import get_ffprobe_path
+    ffprobe = get_ffprobe_path()
+    if not os.path.isfile(ffprobe):
+        return 0.0
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
+                ffprobe, "-v", "quiet",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 file_path,
@@ -94,7 +98,9 @@ def _build_sprite_with_imagemagick(images: list[Path], output: Path, cols: int) 
 def _build_sprite_with_ffmpeg(images: list[Path], output: Path, cols: int, rows: int,
                               thumb_w: int, thumb_h: int) -> bool:
     """用 ffmpeg 拼接精灵图（无 ImageMagick 时的回退方案）"""
-    if not shutil.which("ffmpeg") or not images:
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg) or not images:
         return False
     try:
         # ffmpeg 拼接：先按行拼接，再按列拼接
@@ -115,7 +121,7 @@ def _build_sprite_with_ffmpeg(images: list[Path], output: Path, cols: int, rows:
         layout = "|".join(f"{(i % cols) * thumb_w}_{(i // cols) * thumb_h}" for i in range(n))
         filter_complex = ";".join(filter_parts) + f";{xstack_inputs}xstack=inputs={n}:layout={layout}[v]"
 
-        cmd = ["ffmpeg", "-y", *inputs, "-filter_complex", filter_complex,
+        cmd = [ffmpeg, "-y", *inputs, "-filter_complex", filter_complex,
                "-frames:v", "1", "-q:v", str(DEFAULT_QUALITY), str(output)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
                                 encoding="utf-8", errors="replace")
@@ -181,7 +187,8 @@ def generate_thumbnail_sprite(
             "duration": float,      # 视频时长
         }
     """
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    if not os.path.isfile(get_ffmpeg_path()):
         logger.warning("ffmpeg 未安装，无法生成进度条缩略图")
         return {"error": "ffmpeg 未安装"}
 
@@ -348,12 +355,14 @@ def _capture_frame_at(video_path: str, ts: float, out_path: Path,
     Returns:
         是否成功
     """
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         return False
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-y",
+                ffmpeg, "-y",
                 "-ss", f"{ts:.3f}",
                 "-i", str(video_path),
                 "-frames:v", "1",
@@ -542,7 +551,9 @@ def generate_smart_thumbnails(
         生成的缩略图绝对路径列表（按评分从高到低排序）。
         若 ffmpeg 缺失或视频时长无法获取，返回空列表。
     """
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         logger.warning("ffmpeg 未安装，无法生成智能缩略图")
         return []
 

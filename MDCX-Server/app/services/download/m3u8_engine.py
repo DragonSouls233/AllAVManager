@@ -25,8 +25,12 @@ from app.services.download.download_models import DownloadConfig, DownloadResult
 from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
+from app.utils.bin_tools import get_tool_path
 
 logger = get_logger(__name__)
+
+# ffmpeg 二进制路径：优先项目 bin/ 目录，其次系统 PATH
+FFMPEG_BIN = get_tool_path("ffmpeg")
 
 
 @dataclass
@@ -61,7 +65,7 @@ class M3U8EngineConfig:
     max_retries: int = 3
     timeout: int = 60
     output_dir: str = "./downloads"
-    ffmpeg_path: str = "ffmpeg"
+    ffmpeg_path: str = str(FFMPEG_BIN)   # ffmpeg 可执行文件路径（默认项目 bin/ 目录）
     use_proxy: bool = True
     max_download_size_mb: int = 0  # 0 = 不限
 

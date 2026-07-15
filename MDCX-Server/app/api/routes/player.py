@@ -356,11 +356,15 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
     """
     import json
     import subprocess
+    from app.utils.bin_tools import get_ffprobe_path
+
+    ffprobe = get_ffprobe_path()
+    if not os.path.isfile(ffprobe):
+        return []
 
     try:
         cmd = [
-            "ffprobe",
-            "-v", "quiet",
+            ffprobe, "-v", "quiet",
             "-print_format", "json",
             "-show_streams",
             "-select_streams", "a",  # 仅音频流

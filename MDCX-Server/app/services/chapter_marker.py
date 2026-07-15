@@ -41,9 +41,13 @@ def _get_chapters_file(movie_id: int) -> Path:
 
 def _get_video_duration(file_path: str) -> float:
     """获取视频时长"""
+    from app.utils.bin_tools import get_ffprobe_path
+    ffprobe = get_ffprobe_path()
+    if not os.path.isfile(ffprobe):
+        return 0.0
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet",
+            [ffprobe, "-v", "quiet",
              "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1",
              file_path],
@@ -225,7 +229,9 @@ def auto_detect_chapters(
             "chapters": list,    # 所有章节
         }
     """
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         return {"error": "ffmpeg 未安装"}
 
     video_path = Path(file_path)
@@ -239,7 +245,7 @@ def auto_detect_chapters(
     try:
         # ffmpeg 场景检测：showframes + scene score
         cmd = [
-            "ffmpeg", "-i", str(video_path),
+            ffmpeg, "-i", str(video_path),
             "-filter:v", f"select='gt(scene,{threshold})'",
             "-show_frames",
             "-show_entries", "frame=pkt_pts_time",
@@ -260,7 +266,7 @@ def auto_detect_chapters(
         # 实际场景检测需要逐帧分析，这里用简化的 ffmpeg filter
         # 用 ffmpeg 输出场景变化时间戳
         cmd = [
-            "ffmpeg", "-i", str(video_path),
+            ffmpeg, "-i", str(video_path),
             "-filter:v", f"select='gt(scene,{threshold})',showinfo",
             "-f", "null", "-",
         ]
@@ -312,7 +318,9 @@ def auto_detect_chapters(
 
 def generate_chapter_thumbnails(movie_id: int, file_path: str, thumb_width: int = 320) -> dict:
     """为所有章节生成缩略图"""
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         return {"error": "ffmpeg 未安装"}
 
     chapters = load_chapters(movie_id)
@@ -337,7 +345,7 @@ def generate_chapter_thumbnails(movie_id: int, file_path: str, thumb_width: int 
 
         try:
             result = subprocess.run(
-                ["ffmpeg", "-y",
+                [ffmpeg, "-y",
                  "-ss", f"{ch['start']:.3f}",
                  "-i", str(video_path),
                  "-frames:v", "1",

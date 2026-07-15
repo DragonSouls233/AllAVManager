@@ -537,11 +537,12 @@ class NFOGenerator:
             streamdetails Element，或 None（ffprobe 不可用/解析失败）
         """
         import json
-        import shutil
         import subprocess
 
-        ffprobe = shutil.which("ffprobe")
-        if not ffprobe:
+        from app.utils.bin_tools import get_tool_path
+
+        ffprobe = get_tool_path("ffprobe")
+        if not os.path.isfile(ffprobe):
             return None
 
         try:

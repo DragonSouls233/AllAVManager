@@ -28,8 +28,12 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from app.utils.logger import get_logger
+from app.utils.bin_tools import get_tool_path
 
 logger = get_logger(__name__)
+
+# yt-dlp 二进制路径：优先项目 bin/ 目录，其次系统 PATH
+YTDLP_BIN = get_tool_path("yt-dlp")
 
 
 @dataclass
@@ -62,7 +66,7 @@ class YtDlpResult:
 @dataclass
 class YtDlpConfig:
     """yt-dlp 引擎配置"""
-    binary: str = "yt-dlp"           # yt-dlp 可执行文件路径
+    binary: str = str(YTDLP_BIN)         # yt-dlp 可执行文件路径（默认项目 bin/ 目录）
     output_dir: str = "./downloads"  # 下载根目录
     output_template: str = "%(title)s.%(ext)s"
     proxy: Optional[str] = None      # 代理 URL (SOCKS5/HTTP)

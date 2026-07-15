@@ -757,8 +757,10 @@ async def _build_streamdetails_async(file_path: str) -> Optional[ET.Element]:
     """
     import os
 
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
+    from app.utils.bin_tools import get_tool_path
+
+    ffprobe = get_tool_path("ffprobe")
+    if not os.path.isfile(ffprobe):
         return None
     if not file_path or not os.path.exists(file_path):
         return None

@@ -173,14 +173,16 @@ def list_subtitle_tracks(movie_id: int, file_path: str) -> list[dict]:
             }
         ]
     """
-    import shutil
-    if not shutil.which("ffprobe"):
+    import subprocess
+    from app.utils.bin_tools import get_tool_path
+
+    ffprobe = get_tool_path("ffprobe")
+    if not os.path.isfile(ffprobe):
         return []
 
     try:
-        import subprocess
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet",
+            [ffprobe, "-v", "quiet",
              "-print_format", "json",
              "-show_streams",
              "-select_streams", "s",

@@ -1614,9 +1614,11 @@ async def generate_hls_m3u8(movie_id: int, file_path: Path, force_transcode: boo
     """
     import subprocess
     import shutil
+    from app.utils.bin_tools import get_ffmpeg_path
     
     # 检查 ffmpeg 是否可用
-    if not shutil.which("ffmpeg"):
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         raise HTTPException(status_code=500, detail="FFmpeg 未安装，请先安装 FFmpeg")
     
     # 创建影片专属目录
@@ -1640,7 +1642,7 @@ async def generate_hls_m3u8(movie_id: int, file_path: Path, force_transcode: boo
     
     # 使用 ffmpeg 生成 HLS 切片
     cmd = [
-        "ffmpeg",
+        ffmpeg,
         "-i", str(file_path),
         "-hls_time", "10",
         "-hls_list_size", "0",
@@ -1741,8 +1743,10 @@ async def generate_hls_master_playlist(movie_id: int, file_path: Path) -> str:
         720p/playlist.m3u8
     """
     import subprocess
+    from app.utils.bin_tools import get_ffmpeg_path
 
-    if not shutil.which("ffmpeg"):
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         raise HTTPException(status_code=500, detail="FFmpeg 未安装")
 
     movie_hls_dir = HLS_CACHE_DIR / str(movie_id)
@@ -1856,10 +1860,14 @@ def get_video_codec_info(file_path: str) -> dict:
     """
     import subprocess
     import json
-    
+    from app.utils.bin_tools import get_tool_path
+
+    ffprobe = get_tool_path("ffprobe")
+    if not os.path.isfile(ffprobe):
+        return {}
+
     cmd = [
-        "ffprobe",
-        "-v", "quiet",
+        ffprobe, "-v", "quiet",
         "-print_format", "json",
         "-show_streams",
         "-show_format",

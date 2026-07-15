@@ -38,7 +38,9 @@ def compute_video_fingerprint(file_path: str) -> Optional[str]:
     返回:
         指纹 hex 字符串，失败返回 None
     """
-    if not shutil.which("ffmpeg"):
+    from app.utils.bin_tools import get_ffmpeg_path
+    ffmpeg = get_ffmpeg_path()
+    if not os.path.isfile(ffmpeg):
         logger.warning("ffmpeg 未安装，无法计算视频指纹")
         return None
 
@@ -59,7 +61,7 @@ def compute_video_fingerprint(file_path: str) -> Optional[str]:
 
         result = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg,
                 "-ss", str(seek_time),
                 "-i", str(video_path),
                 "-frames:v", "1",
@@ -95,10 +97,14 @@ def compute_video_fingerprint(file_path: str) -> Optional[str]:
 
 def _get_duration(file_path: str) -> float:
     """用 ffprobe 获取视频时长"""
+    from app.utils.bin_tools import get_ffprobe_path
+    ffprobe = get_ffprobe_path()
+    if not os.path.isfile(ffprobe):
+        return 0.0
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
+                ffprobe, "-v", "quiet",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 file_path,
