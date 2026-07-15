@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_session
 from app.db.models import PlayHistory, FavoriteItem, Movie
 from app.services.recommendation_engine import recommendation_engine
+from app.api.routes.auth import require_user
 
 router = APIRouter()
 
@@ -12,11 +13,12 @@ router = APIRouter()
 @router.get("")
 async def get_recommendations(
     limit: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    current_user: dict = Depends(require_user),
 ):
     """获取推荐列表"""
-    # TODO: 从 token 获取 user_id
-    items = await recommendation_engine.get_recommendations(None, limit, session)
+    user_id = current_user.get("id")
+    items = await recommendation_engine.get_recommendations(user_id, limit, session)
     # 计算用户统计（用于前端个性化说明：观影/收藏/评分次数）
     total_viewed = await session.scalar(select(func.count(PlayHistory.id)))
     total_favorites = await session.scalar(select(func.count(FavoriteItem.id)))

@@ -59,7 +59,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 天
 
 # 默认管理员账号
 DEFAULT_USERNAME = os.getenv("SCRAPER_AUTH_USERNAME", "admin")
-DEFAULT_PASSWORD = "admin123654!"
+DEFAULT_PASSWORD = os.getenv("SCRAPER_AUTH_PASSWORD", "")
 
 # 使用 SHA256 哈希密码（避免 passlib bcrypt 在 Python 3.13 上的兼容问题）
 security = HTTPBearer(auto_error=False)
@@ -69,8 +69,28 @@ _password_hash: Optional[str] = None
 def _get_password_hash() -> str:
     global _password_hash
     if _password_hash is None:
-        _password_hash = hashlib.sha256(DEFAULT_PASSWORD.encode()).hexdigest()
+        pwd = DEFAULT_PASSWORD or _load_default_password()
+        _password_hash = hashlib.sha256(pwd.encode()).hexdigest()
     return _password_hash
+
+
+def _load_default_password() -> str:
+    """首次启动时生成随机密码并持久化到文件，避免硬编码"""
+    pwd_file = PROJECT_ROOT / "data" / ".auth_password"
+    if pwd_file.exists():
+        saved = pwd_file.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    import secrets
+    pwd = secrets.token_urlsafe(16)
+    pwd_file.parent.mkdir(parents=True, exist_ok=True)
+    pwd_file.write_text(pwd, encoding="utf-8")
+    try:
+        os.chmod(pwd_file, 0o600)
+    except OSError:
+        pass
+    print(f"[auth] 默认管理员密码已生成并保存到 {pwd_file}")
+    return pwd
 
 
 # ===== 数据模型 =====

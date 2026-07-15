@@ -23,7 +23,7 @@ from typing import Optional
 import aiohttp
 
 from app.services.download.download_models import DownloadConfig, DownloadResult
-from app.services.proxy_manager import get_proxy
+from app.services.proxy_manager import get_effective_proxy_url
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

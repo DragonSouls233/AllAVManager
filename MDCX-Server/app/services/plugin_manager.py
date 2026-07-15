@@ -569,8 +569,8 @@ class Plugin(PluginBase):
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
         """实现抓取逻辑，返回 ScrapeResult 或 None"""
+        logger.warning("[插件 %s] scrape() 方法未实现（骨架方法），请安装对应插件或自定义脚本", self.name)
         base_url = self.get_config("base_url", "https://example.com")
-        # TODO: 实现抓取
         return None
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
@@ -613,7 +613,7 @@ class Plugin(PluginBase):
 
     async def translate(self, text: str, source_lang: str = "ja", target_lang: str = "zh") -> Optional[str]:
         """翻译文本，返回译文，失败返回 None"""
-        # TODO: 调用自定义翻译服务
+        logger.warning("[插件 %s] translate() 方法未实现（骨架方法），请安装对应翻译插件", self.name)
         return None
 
     async def translate_batch(self, texts: list[str]) -> list[Optional[str]]:
@@ -669,7 +669,7 @@ class Plugin(PluginBase):
             file_path: 原文件路径
             metadata: 元数据 dict（含 code/title/actors/studio/release_date 等）
         """
-        # TODO: 实现整理逻辑
+        logger.warning("[插件 %s] organize() 方法未实现（骨架方法），请安装对应整理插件", self.name)
         return file_path
 '''
 
@@ -705,6 +705,6 @@ class Plugin(PluginBase):
 
     async def send(self, title: str, message: str, level: str = "info", data: dict | None = None) -> bool:
         """发送通知，返回是否成功"""
-        # TODO: 实现发送逻辑
+        logger.warning("[插件 %s] send() 方法未实现（骨架方法），请安装对应通知插件", self.name)
         return False
 '''

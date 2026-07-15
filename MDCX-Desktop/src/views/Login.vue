@@ -139,7 +139,7 @@ const trustedEnabled = ref(false)
 
 const form = ref({
   username: 'admin',
-  password: 'admin123654!'
+  password: ''
 })
 
 // 简单 SHA-256 哈希（使用 Web Crypto API）

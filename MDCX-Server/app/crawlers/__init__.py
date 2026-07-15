@@ -11,19 +11,19 @@ from app.crawlers.provider import (
     list_crawlers,
 )
 
-# 导入原始爬虫以触发注册（fc2/dmm在顶层，fc2ppvdb/fc2club在md/中已注册）
-from app.crawlers import javbus, javdb, fc2, avsox, dmm, avmoo, javdatabase
+# 导入原始爬虫以触发注册
+from app.crawlers import javbus, javdb, fc2, avsox, avmoo, javdatabase
 
 # 导入 md 爬虫（包含 fc2ppvdb/fc2club 等，会自动注册）
 from app.crawlers import md
 
-# 导入 MDCX 迁移爬虫以触发注册
+# 导入 MDCX 迁移爬虫以触发注册（dmm/theporndb 已通过 md/western 导入，此处不再重复）
 from app.crawlers.md import (
-    airav, airav_cc, avbase, avsex, cableav, cnmdb, dahlia, dmm,
+    airav, airav_cc, avbase, avsex, cableav, cnmdb, dahlia,
     faleno, fantastica, fc2club, fc2hub, fc2ppvdb, freejavbt, getchu,
     getchu_dl, giga, hdouban, hscangku, iqqtv, jav321, javday,
     javdb_new, javlibrary, kin8, love6, lulubar, madouqu, mdtv,
-    mgstage, missav, mmtv, mywife, official, prestige, theporndb,
+    mgstage, missav, mmtv, mywife, official, prestige,
     theporndb_movies, xcity,
 )
 

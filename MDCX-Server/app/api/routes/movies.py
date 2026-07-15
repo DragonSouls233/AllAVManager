@@ -15,8 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import logging
+
 from app.db.database import get_session
 from app.db.models import Movie, Actor, MovieActor, MovieTag, Tag, Studio, Series, FavoriteItem, FavoriteGroup
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -2584,10 +2588,12 @@ async def reload_movie_from_nfo(
             setattr(movie, f, update_body[f] or None)
     if "duration" in update_body:
         try: movie.duration = int(update_body["duration"])
-        except Exception: pass
+        except Exception:
+            logger.warning("无法解析 duration 字段: %s", update_body["duration"])
     if "rating" in update_body and update_body["rating"] is not None:
         try: movie.rating = max(0.0, min(10.0, float(update_body["rating"])))
-        except Exception: pass
+        except Exception:
+            logger.warning("无法解析 rating 字段: %s", update_body["rating"])
 
     # 3) studio/series by name
     for name_field, rel in (("studio", "studio_id"), ("series", "series_id")):

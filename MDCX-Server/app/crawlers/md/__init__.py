@@ -45,7 +45,6 @@ from app.crawlers.md import (
     njav,
     official,
     prestige,
-    theporndb,
     theporndb_movies,
     xcity,
 )
@@ -88,7 +87,6 @@ __all__ = [
     "njav",
     "official",
     "prestige",
-    "theporndb",
     "theporndb_movies",
     "xcity",
 ]

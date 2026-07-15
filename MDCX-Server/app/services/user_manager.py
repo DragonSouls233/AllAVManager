@@ -309,9 +309,21 @@ async def ensure_default_admin(session: AsyncSession) -> Optional[dict]:
         return None
     return await create_user(
         username="admin",
-        password="admin",
+        password=_load_default_admin_password(),
         display_name="默认管理员",
         role="admin",
         nsfw_allowed=True,
         session=session,
     )
+
+
+def _load_default_admin_password() -> str:
+    """与 auth.py 同步：首次启动时从 data/.auth_password 读取随机密码"""
+    from pathlib import Path
+    from app.config.manager import PROJECT_ROOT
+    pwd_file = PROJECT_ROOT / "data" / ".auth_password"
+    if pwd_file.exists():
+        saved = pwd_file.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    return "admin"
