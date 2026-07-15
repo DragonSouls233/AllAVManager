@@ -197,12 +197,13 @@ class BaseCrawler(ABC):
     async def health_check(self) -> bool:
         """
         健康检查
-        
+
         Returns:
             是否健康
         """
+        test_code = getattr(self, "health_check_code", None) or "TEST-001"
         try:
-            result = await self.scrape("TEST-001")
+            result = await self.scrape(test_code)
             return True  # 能返回结果或 None 都算健康
         except Exception:
             return False

@@ -7,7 +7,9 @@
 - GET /download/list           任务列表
 - POST /download/cancel/{id}   取消任务
 - GET /download/engines        查询可用引擎
-- GET /download/info           获取 URL 信息（不下��）
+- GET /download/info           获取 URL 信息（不下载）
+- POST /download/unified       统一下载（支持模块 + 路径模板）
+- GET /download/templates      获取下载路径模板
 """
 
 import time
@@ -20,6 +22,11 @@ from app.services.download.temp_download_manager import get_download_manager
 from app.services.download.downloader_factory import get_downloader_factory
 from app.services.download.download_cache import get_download_cache
 from app.services.download.download_models import DownloadTask
+from app.services.unified_manager import (
+    get_unified_download_manager,
+    DOWNLOAD_PATH_TEMPLATES,
+    resolve_download_path,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,9 +41,22 @@ class DownloadRequest(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    """���描目录请求"""
+    """扫描目录请求"""
     path: str
     module: Optional[str] = "western"
+
+
+class UnifiedDownloadRequest(BaseModel):
+    """统一下载请求（支持模块 + 路径模板）"""
+    url: str
+    module: str = ""                          # 模块类型：jav/uncensored/fc2/chinese/pornhub
+    download_type: str = "auto"               # auto/bt_magnet/direct
+    output_path: Optional[str] = None         # 自定义输出路径（优先于模板）
+    actor: Optional[str] = ""                 # 演员名（路径模板填充）
+    code: Optional[str] = ""                  # 番号（路径模板填充）
+    title: Optional[str] = ""                 # 视频标题（路径模板填充）
+    upload_date: Optional[str] = ""           # 上传日期（路径模板填充）
+    ext: Optional[str] = "mp4"                # 文件扩展名
 
 
 @router.post("/start")
@@ -105,6 +125,42 @@ async def cancel_download(task_id: str):
         raise HTTPException(status_code=404, detail="任务不存在")
     task.status = "cancelled"
     return {"task_id": task_id, "status": "cancelled"}
+
+
+@router.post("/unified")
+async def unified_download(req: UnifiedDownloadRequest):
+    """统一下载（BT + 直链，支持模块路径模板）"""
+    manager = get_unified_download_manager()
+    metadata = {
+        "actor": req.actor or "",
+        "code": req.code or "",
+        "title": req.title or "",
+        "upload_date": req.upload_date or "",
+        "ext": req.ext or "mp4",
+    }
+    task_id = await manager.add_task(
+        url=req.url,
+        module=req.module,
+        download_type=req.download_type,
+        output_path=req.output_path,
+        metadata=metadata,
+    )
+    return {"task_id": task_id, "status": "queued", "module": req.module}
+
+
+@router.get("/templates")
+async def get_download_templates():
+    """获取下载路径模板"""
+    return {
+        "templates": DOWNLOAD_PATH_TEMPLATES,
+        "variables": [
+            {"name": "{actor}", "description": "演员名（国产模块从 folder_actor 获取）"},
+            {"name": "{code}", "description": "番号（JAV/FC2 专用）"},
+            {"name": "{title}", "description": "视频标题"},
+            {"name": "{upload_date}", "description": "上传日期"},
+            {"name": "{ext}", "description": "视频扩展名"},
+        ],
+    }
 
 
 @router.get("/engines")

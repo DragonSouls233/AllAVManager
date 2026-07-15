@@ -37,6 +37,27 @@ modules:
     concurrent_limit: 5
     retry_count: 3
 
+# ===== 下载管理配置 =====
+downloader:
+  output_dir: ./downloads
+  max_concurrent: 3
+  max_retries: 3
+  retry_delay: 2
+  default_format: best
+  merge_output: true
+  merge_format: mp4
+  proxy: ""
+  path_templates:
+    jav: "downloads/jav/{actor}/{code}-{title}.{ext}"
+    uncensored: "downloads/uncensored/{actor}/{code}-{title}.{ext}"
+    fc2: "downloads/fc2/{code}-{title}.{ext}"
+    chinese: "downloads/chinese/{actor}/下载视频/{title}.{ext}"
+    pornhub: "downloads/pornhub/{actor}/{upload_date}-{title}.{ext}"
+  post_process:
+    scrape_after_download: true
+    nfo_after_download: true
+    move_to_media_dir: true
+
 server:
   host: 0.0.0.0
   port: 8420

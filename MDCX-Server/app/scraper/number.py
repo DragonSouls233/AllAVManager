@@ -487,6 +487,17 @@ def _apply_suffix(result: NumberResult, bracket_chinese: bool = False) -> Number
     return result
 
 
+def _classify_suffix(suffix: str, bracket_chinese: bool) -> tuple:
+    """解析后缀中的中字/无码标记"""
+    if suffix in ("CHS", "CHT", "CH"):
+        return True, None
+    is_chinese = True if "C" in suffix else None
+    is_mosaic = False if "U" in suffix else None
+    if is_chinese is None and bracket_chinese:
+        is_chinese = True
+    return is_chinese, is_mosaic
+
+
 def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> Optional[NumberResult]:
     """在原始文件名上尝试匹配带后缀的番号
 
@@ -506,19 +517,9 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
         if match := jav_suffix_pattern.search(name):
             base = match.group(1).upper()
             suffix = match.group(2).upper()
-            number = base
-            # CHS/CHT/CH → 仅中字
-            if suffix in ("CHS", "CHT", "CH"):
-                is_chinese = True
-                is_mosaic = None
-            else:
-                is_chinese = True if "C" in suffix else None
-                is_mosaic = False if "U" in suffix else None
-            # 方括号中字补充
-            if is_chinese is None and bracket_chinese:
-                is_chinese = True
+            is_chinese, is_mosaic = _classify_suffix(suffix, bracket_chinese)
             return NumberResult(
-                number=number, original=filename, number_type=NumberType.JAV,
+                number=base, original=filename, number_type=NumberType.JAV,
                 confidence=0.90, is_chinese=is_chinese, is_mosaic=is_mosaic,
             )
 
@@ -534,14 +535,7 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
             digits = match.group(2)
             suffix = match.group(3).upper()
             number = f"{prefix}-{digits}"
-            if suffix in ("CHS", "CHT", "CH"):
-                is_chinese = True
-                is_mosaic = None
-            else:
-                is_chinese = True if "C" in suffix else None
-                is_mosaic = False if "U" in suffix else None
-            if is_chinese is None and bracket_chinese:
-                is_chinese = True
+            is_chinese, is_mosaic = _classify_suffix(suffix, bracket_chinese)
             return NumberResult(
                 number=number, original=filename, number_type=NumberType.JAV,
                 confidence=0.85, is_chinese=is_chinese, is_mosaic=is_mosaic,

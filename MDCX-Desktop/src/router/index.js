@@ -228,6 +228,12 @@ const routes = [
         component: () => import('@/views/Downloaders.vue')
       },
       {
+        path: 'cover-wall',
+        name: 'CoverWall',
+        component: () => import('@/views/CoverWall.vue'),
+        meta: { title: '封面墙' }
+      },
+      {
         path: 'themes',
         name: 'Themes',
         component: () => import('@/views/Themes.vue')

@@ -667,7 +667,6 @@ class ResultMerger:
                 return value
 
         # 移除多余空白
-        import re
         tag = re.sub(r'\s+', '', tag)
 
         return tag

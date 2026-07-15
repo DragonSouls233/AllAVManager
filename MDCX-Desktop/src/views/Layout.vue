@@ -85,6 +85,10 @@
             <el-icon><VideoCamera /></el-icon>
             <template #title>番号库</template>
           </el-menu-item>
+          <el-menu-item index="/cover-wall">
+            <el-icon><Grid /></el-icon>
+            <template #title>封面墙</template>
+          </el-menu-item>
           <el-menu-item index="/actors">
             <el-icon><User /></el-icon>
             <template #title>演员</template>
