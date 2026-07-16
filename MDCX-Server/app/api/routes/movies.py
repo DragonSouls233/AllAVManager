@@ -2757,10 +2757,28 @@ def _detail_referer(source: str | None, code: str | None) -> str | None:
     return None
 
 
-async def _persist_scraped_media(result, code: str):
-    """下载刮削封面+预览图到服务端 output_dir/<番号>/，并生成 NFO（规则3）。
+# 刮削来源 → 模块子目录 映射
+_SOURCE_MODULE_MAP = {
+    "javbus": "jav", "jdb": "jav", "j321": "jav", "jbus": "jav",
+    "base": "jav", "xcity": "jav", "iqqtv": "jav", "mgstage": "jav",
+    "sox": "jav", "fanza": "jav", "jday": "jav", "air": "jav",
+    "freejavbt": "jav", "javdb": "jav", "jmenu": "jav",
+    "fc2ppvdb": "fc2", "fc2": "fc2", "fc2search": "fc2",
+    "chinese": "chinese", "pornhub": "pornhub",
+    "western": "western", "uncensored": "uncensored",
+}
 
-    返回 (封面本地路径, 预览图本地路径列表)。下载失败返回 (None, [])，
+def _source_to_module(source: str) -> str:
+    """将刮削来源(source)映射到模块子目录名称"""
+    if not source:
+        return "jav"  # 默认放到 JAV
+    return _SOURCE_MODULE_MAP.get(source, source)
+
+
+async def _persist_scraped_media(result, code: str):
+    """下载刮削封面+预览图到服务端 output_dir/<模块>/<番号>/，并生成 NFO（规则3）。
+
+    返回 (封面本地路径, 预览图本地路径列表, 影片目录)。下载失败返回 (None, [], None)，
     由调用方回退到远程 URL，不影响元数据落地。
     """
     import logging
@@ -2773,10 +2791,12 @@ async def _persist_scraped_media(result, code: str):
         output_dir = Path(get_config().scraper.output_dir).resolve()
     except Exception as e:
         logger.warning(f"解析刮削输出目录失败: {e}")
-        return None, []
+        return None, [], None
 
     safe_code = re.sub(r'[<>:"/\\|?*]', '', code or "movie")
-    movie_dir = output_dir / safe_code
+    source = getattr(result, "source", None) or ""
+    module_name = _source_to_module(source)
+    movie_dir = output_dir / module_name / safe_code
     movie_dir.mkdir(parents=True, exist_ok=True)
 
     # 防盗链 Referer：javbus 等站点的封面 CDN(/pics/cover/*) 必须带「详情页 Referer」
