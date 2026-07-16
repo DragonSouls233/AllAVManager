@@ -56,9 +56,9 @@ class Database:
                 cursor.execute("PRAGMA busy_timeout=60000")
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.execute("PRAGMA synchronous=NORMAL")
-                cursor.execute("PRAGMA cache_size=-128000")
+                cursor.execute("PRAGMA cache_size=-512000")   # 512MB（32GB内存）
                 cursor.execute("PRAGMA temp_store=MEMORY")
-                cursor.execute("PRAGMA mmap_size=1073741824")
+                cursor.execute("PRAGMA mmap_size=2147483648")  # mmap 2GB
                 cursor.execute("PRAGMA page_size=16384")
                 cursor.close()
 
@@ -81,11 +81,11 @@ class Database:
                 await conn.execute(text("PRAGMA busy_timeout=60000"))
                 await conn.execute(text("PRAGMA foreign_keys=ON"))
                 await conn.execute(text("PRAGMA synchronous=NORMAL"))
-                await conn.execute(text("PRAGMA cache_size=-128000"))
+                await conn.execute(text("PRAGMA cache_size=-512000"))
                 await conn.execute(text("PRAGMA temp_store=MEMORY"))
-                await conn.execute(text("PRAGMA mmap_size=1073741824"))
+                await conn.execute(text("PRAGMA mmap_size=2147483648"))
                 await conn.execute(text("PRAGMA page_size=16384"))
-                logger.info("SQLite 优化: WAL + mmap(1GB) + 128MB缓存 + 16KB页")
+                logger.info("SQLite 优化: WAL + mmap(2GB) + 512MB缓存 + 16KB页 (32GB内存配置)")
 
         # 创建表
         async with self.engine.begin() as conn:

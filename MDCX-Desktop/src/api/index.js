@@ -344,6 +344,11 @@ export const findDuplicates = (threshold = 5) => api.get('/fingerprint/duplicate
 export const fingerprintStatus = () => api.get('/fingerprint/status')
 
 // ============================================
+// Proxy 内置代理（Western 模块用）
+// ============================================
+export const getProxyStatus = () => api.get('/proxy/xray/status')
+
+// ============================================
 // mpv Player 播放器
 // ============================================
 export const playWithMpv = (movieId, options = {}) => api.post(`/mpv/play/${movieId}`, options)

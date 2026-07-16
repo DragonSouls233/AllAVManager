@@ -87,6 +87,79 @@ def toggle_console():
 
 
 # =============================================================================
+# 启动前端口清理（Windows）
+# =============================================================================
+_CLEAN_PORTS = [8420, 18920, 18921]
+
+
+def _kill_process_on_port(port: int) -> bool:
+    """杀掉占用指定端口的进程"""
+    if platform.system() != "Windows":
+        return False
+    try:
+        result = subprocess.run(
+            f'netstat -ano | findstr ":{port} "',
+            shell=True, capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.strip().split("\n"):
+            parts = line.strip().split()
+            if len(parts) >= 5 and "LISTENING" in line:
+                pid = parts[-1]
+                try:
+                    proc = subprocess.run(
+                        f"taskkill /F /PID {pid}",
+                        shell=True, capture_output=True, text=True, timeout=5
+                    )
+                    if proc.returncode == 0:
+                        return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
+
+
+def _cleanup_before_start(server_port: int):
+    """启动前清理：杀掉残留进程"""
+    ports_to_check = list(set([server_port] + _CLEAN_PORTS))
+
+    # 杀掉占用关键端口的进程
+    killed_any = False
+    for port in ports_to_check:
+        if _kill_process_on_port(port):
+            _warn(f"已清理端口 {port} 上的残留进程")
+            killed_any = True
+
+    # 杀掉残留的 xray 子进程
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                'tasklist /NH /FI "IMAGENAME eq xray.exe" 2>nul',
+                shell=True, capture_output=True, text=True, timeout=5
+            )
+            if "xray.exe" in result.stdout:
+                subprocess.run("taskkill /F /IM xray.exe", shell=True,
+                               capture_output=True, timeout=5)
+                _warn("已清理残留 xray 代理进程")
+                killed_any = True
+        except Exception:
+            pass
+
+    # 清理 PID 和锁文件
+    for lock_file in ["data/proxy/xray_config.json", "data/proxy/nodes.json"]:
+        lock_path = Path(lock_file)
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+            except Exception:
+                pass
+
+    if killed_any:
+        time.sleep(1)  # 等端口彻底释放
+        _ok("端口和进程清理完成")
+
+
+# =============================================================================
 # 横幅与日志
 # =============================================================================
 BANNER = f"""{Style.CYAN}{Style.BOLD}
@@ -141,6 +214,7 @@ def _parse_args():
     p.add_argument("--workers", type=int, default=None, help="Worker 进程数")
     p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     p.add_argument("--no-tray", action="store_true", help="纯控制台模式（无系统托盘）")
+    p.add_argument("--no-cleanup", action="store_true", help="跳过启动前端口清理")
     p.add_argument("--debug", action="store_true", help="Debug 模式（自动重载）")
     return p.parse_args()
 
@@ -244,16 +318,25 @@ def main():
 
     args = _parse_args()
 
-    # 清屏显示横幅
-    os.system("cls" if platform.system() == "Windows" else "clear")
-    print(BANNER)
-    print(f"  {Style.DIM}{'─' * 54}{Style.RESET}")
-
-    # 加载配置
+    # 加载配置（提前加载，用于清理）
     cfg = _load_config()
     host = args.host or (cfg.server.host if cfg else "0.0.0.0")
     port = args.port or (cfg.server.port if cfg else 8420)
     workers = args.workers or (cfg.server.workers if cfg else 1)
+
+    # ===== 启动前端口清理 =====
+    if not args.no_cleanup:
+        # 先显示标题用于清理日志
+        os.system("cls" if platform.system() == "Windows" else "clear")
+        print(BANNER)
+        print(f"  {Style.DIM}{Style.BOLD}启动前端口清理...{Style.RESET}")
+        _cleanup_before_start(port)
+        print()
+    else:
+        os.system("cls" if platform.system() == "Windows" else "clear")
+        print(BANNER)
+
+    print(f"  {Style.DIM}{'─' * 54}{Style.RESET}")
 
     # ===== 显示信息 =====
     _p("服务地址", f"http://127.0.0.1:{port}", Style.CYAN)

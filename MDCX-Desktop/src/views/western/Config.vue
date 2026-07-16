@@ -44,7 +44,7 @@
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveScraper" :loading="saving">保存刮削器配置</el-button>
-          </el-button>
+          </el-form-item>
         </el-form>
       </el-tab-pane>
 
@@ -183,7 +183,7 @@ async function checkProxy() {
   checking.value = true
   try {
     const res = await getProxyStatus()
-    proxyOnline.value = res?.online || res?.status === 'running' || false
+    proxyOnline.value = res?.data?.running === true
   } catch (e) {
     proxyOnline.value = false
   } finally {

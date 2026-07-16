@@ -70,20 +70,20 @@ downloader:
 server:
   host: 0.0.0.0
   port: 8420
-  workers: 1
+  workers: 4                  # 4核CPU，每个核心一个进程
   debug: false
 
 database:
   url: sqlite+aiosqlite:///data/database/scraper.db
-  pool_size: 5
+  pool_size: 20               # 32GB内存，连接池扩容到20
   echo: false
 
 scraper:
   media_dirs: []
   output_dir: ./output
-  concurrent_limit: 5
+  concurrent_limit: 15        # 4核+32GB，15个并发刮削任务
   retry_count: 3
-  timeout: 30
+  timeout: 60                 # 超时延长到60秒，减少重试
   language: zh
 
 proxy:

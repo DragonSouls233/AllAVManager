@@ -1,0 +1,1 @@
+import{eG as n}from"./index-DITp-jiN.js";async function u(){return n.get("/modules")}async function o(t){return n.get(`/modules/${t}/stats`)}async function a(t){return n.post(`/modules/${t}/scan`)}async function l(t){return n.put("/modules/config",t)}async function c(t,s){return n.patch(`/modules/${t}/toggle`,null,{params:{enabled:s}})}export{o as a,u as g,a as s,c as t,l as u};
