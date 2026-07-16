@@ -154,22 +154,6 @@
             <el-icon><Upload /></el-icon>
             <template #title>批量导入</template>
           </el-menu-item>
-          <el-menu-item index="/webdav-import">
-            <el-icon><Download /></el-icon>
-            <template #title>WebDAV 导入</template>
-          </el-menu-item>
-          <el-menu-item index="/cloud-drive2">
-            <el-icon><Cloudy /></el-icon>
-            <template #title>CloudDrive2 网盘</template>
-          </el-menu-item>
-          <el-menu-item index="/pan-115">
-            <el-icon><Cloudy /></el-icon>
-            <template #title>115 网盘</template>
-          </el-menu-item>
-          <el-menu-item index="/unrecognized-files">
-            <el-icon><WarningFilled /></el-icon>
-            <template #title>未识别文件处理</template>
-          </el-menu-item>
           <el-menu-item index="/face-crop">
             <el-icon><Avatar /></el-icon>
             <template #title>人脸裁剪</template>
@@ -181,18 +165,6 @@
           <el-menu-item index="/fingerprint">
             <el-icon><CopyDocument /></el-icon>
             <template #title>指纹去重</template>
-          </el-menu-item>
-          <el-menu-item index="/file-organize">
-            <el-icon><FolderOpened /></el-icon>
-            <template #title>文件整理</template>
-          </el-menu-item>
-          <el-menu-item index="/auto-organize">
-            <el-icon><SetUp /></el-icon>
-            <template #title>自动整理</template>
-          </el-menu-item>
-          <el-menu-item index="/refresh-folders">
-            <el-icon><RefreshRight /></el-icon>
-            <template #title>文件夹刷新</template>
           </el-menu-item>
           <el-menu-item index="/view-status">
             <el-icon><CircleCheck /></el-icon>

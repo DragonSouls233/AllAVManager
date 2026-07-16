@@ -92,11 +92,6 @@ const routes = [
         component: () => import('@/views/LogStream.vue')
       },
       {
-        path: 'webdav-import',
-        name: 'WebDAVImport',
-        component: () => import('@/views/WebDAVImport.vue')
-      },
-      {
         path: 'network-diag',
         name: 'NetworkDiag',
         component: () => import('@/views/NetworkDiag.vue')
@@ -177,11 +172,6 @@ const routes = [
         component: () => import('@/views/ViewStatus.vue')
       },
       {
-        path: 'file-organize',
-        name: 'FileOrganize',
-        component: () => import('@/views/FileOrganize.vue')
-      },
-      {
         path: 'cookiecloud',
         name: 'CookieCloud',
         component: () => import('@/views/CookieCloud.vue')
@@ -196,21 +186,6 @@ const routes = [
         path: 'gfriends',
         name: 'Gfriends',
         component: () => import('@/views/Gfriends.vue')
-      },
-      {
-        path: 'unrecognized-files',
-        name: 'UnrecognizedFiles',
-        component: () => import('@/views/UnrecognizedFiles.vue')
-      },
-      {
-        path: 'cloud-drive2',
-        name: 'CloudDrive2',
-        component: () => import('@/views/CloudDrive2.vue')
-      },
-      {
-        path: 'pan-115',
-        name: 'Pan115',
-        component: () => import('@/views/Pan115.vue')
       },
       {
         path: 'metatube-plugin',
@@ -289,11 +264,6 @@ const routes = [
         component: () => import('@/views/Recommendations.vue')
       },
       {
-        path: 'auto-organize',
-        name: 'AutoOrganize',
-        component: () => import('@/views/AutoOrganize.vue')
-      },
-      {
         path: 'nfo-scrape',
         name: 'NfoScrape',
         component: () => import('@/views/NfoScrape.vue')
@@ -322,11 +292,6 @@ const routes = [
         path: 'source-merge',
         name: 'SourceMerge',
         component: () => import('@/views/SourceMerge.vue')
-      },
-      {
-        path: 'refresh-folders',
-        name: 'RefreshFolders',
-        component: () => import('@/views/RefreshFolders.vue')
       },
       {
         path: 'chinese',

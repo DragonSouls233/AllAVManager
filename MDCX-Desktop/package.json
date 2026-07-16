@@ -8,9 +8,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && electron-builder",
+    "build": "vite build && electron-builder --win portable",
     "build:win": "vite build && electron-builder --win portable",
-    "build:green": "vite build && electron-builder --win portable --config.directories.output=release-green",
     "build:mac": "vite build && electron-builder --mac",
     "preview": "vite preview",
     "qa:media": "node scripts/qa-media-paths.mjs && node scripts/qa-api-media.mjs",
@@ -56,7 +55,6 @@
       "private": false
     },
     "win": {
-      "rcedit": null,
       "target": [
         {
           "target": "portable",
@@ -64,10 +62,8 @@
             "x64"
           ]
         }
-      ]
-    },
-    "portable": {
-      "artifactName": "MDCX-Desktop-${version}-portable.exe"
+      ],
+      "artifactName": "MDCX-Desktop-${version}-portable.${ext}"
     },
     "mac": {
       "target": [

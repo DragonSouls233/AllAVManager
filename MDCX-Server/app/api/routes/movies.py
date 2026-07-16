@@ -824,6 +824,28 @@ async def get_movie_thumb_file(
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".webm"}
 
 
+def _search_video_in_media_dirs(media_dirs: list[str], code_lower: str) -> Optional[Path]:
+    """在 media_dirs 中递归搜索匹配番号的视频文件"""
+    import logging
+    logger = logging.getLogger(__name__)
+    for d in media_dirs:
+        base = Path(d)
+        if not base.exists():
+            continue
+        try:
+            for f in base.rglob("*"):
+                if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS:
+                    fname = f.stem.lower()
+                    # 文件名包含番号则匹配（如 ABP-001.mp4 匹配 abp-001）
+                    if code_lower in fname:
+                        logger.info("在 media_dirs 中找到视频文件: %s", f)
+                        return f
+        except Exception as e:
+            logger.warning("搜索媒体目录 %s 时出错: %s", d, e)
+            continue
+    return None
+
+
 @router.get("/{movie_id}/play")
 async def play_video(
     movie_id: int,
@@ -833,16 +855,36 @@ async def play_video(
     获取视频播放地址
     
     返回视频流URL，支持 HTML5 video 直接播放
+    
+    file_path 不存在时自动从 media_dirs 搜索视频文件，并回填到数据库。
     """
     movie = await session.get(Movie, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
 
-    if not movie.file_path:
-        raise HTTPException(status_code=404, detail="影片没有关联文件")
+    file_path = None
+    if movie.file_path:
+        fp = Path(movie.file_path)
+        if fp.exists():
+            file_path = fp
 
-    file_path = Path(movie.file_path)
-    if not file_path.exists():
+    # 如果原有 file_path 不存在，尝试从 media_dirs 搜索
+    if file_path is None:
+        from app.config.manager import get_config
+        cfg = get_config()
+        media_dirs = getattr(cfg.scraper, "media_dirs", [])
+        code_lower = (movie.code or "").lower()
+        resolved_path = _search_video_in_media_dirs(media_dirs, code_lower)
+        if resolved_path:
+            file_path = resolved_path
+            # 回填到数据库
+            movie.file_path = str(file_path)
+            try:
+                movie.file_size = file_path.stat().st_size
+            except Exception:
+                pass
+
+    if file_path is None:
         raise HTTPException(status_code=404, detail="视频文件不存在")
 
     ext = file_path.suffix.lower()
