@@ -93,7 +93,7 @@ class ScrapeContext:
             if crawler_cfg.javbus_cookie:
                 ctx.cookies_pool["javbus.com"] = crawler_cfg.javbus_cookie
             if getattr(crawler_cfg, "fc2ppvdb_cookie", None):
-                ctx.cookies_pool["fc2ppvdb.com"] = crawler_cfg.fc2ppvdb_cookie
+                ctx.cookies_pool["fc2cmadb.com"] = crawler_cfg.fc2ppvdb_cookie
         except Exception as e:
             logger.debug(f"ScrapeContext 读取 cookies 配置失败: {e}")
 

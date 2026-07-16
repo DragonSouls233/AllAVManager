@@ -234,7 +234,7 @@ class NaughtyAmericaCrawler(BaseCrawler):
             logger.warning(f"NA webpage 状态码: {resp.status_code}")
             return None
 
-        html_text = await resp.text()
+        html_text = resp.text if hasattr(resp, "text") else str(resp)
         soup = BeautifulSoup(html_text, "html.parser")
 
         # 标题

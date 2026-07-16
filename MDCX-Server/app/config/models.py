@@ -80,7 +80,7 @@ class CookieCloudConfig(BaseModel):
         default_factory=lambda: {
             "javdb.com": "javdb_cookie",
             "javbus.com": "javbus_cookie",
-            "fc2ppvdb.com": "fc2ppvdb_cookie",
+            "fc2cmadb.com": "fc2ppvdb_cookie",
         },
         title="域名到 Cookie 字段的映射"
     )

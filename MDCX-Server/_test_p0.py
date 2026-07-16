@@ -36,17 +36,18 @@ async def test():
         r = await c.get(f"{BASE}/modules")
         d = r.json()
         check("P0-2-1 GET /modules status", r.status_code == 200)
-        check("P0-2-2 GET /modules has 5 modules", len(d) == 5, f"got {len(d)}")
+        check("P0-2-2 GET /modules has 6 modules", len(d) == 6, f"got {len(d)}")
         check("P0-2-3 GET /modules has chinese", any(m["name"] == "chinese" for m in d))
         check("P0-2-4 GET /modules has fc2", any(m["name"] == "fc2" for m in d))
         check("P0-2-5 GET /modules has uncensored", any(m["name"] == "uncensored" for m in d))
         check("P0-2-6 GET /modules has pornhub", any(m["name"] == "pornhub" for m in d))
+        check("P0-2-7 GET /modules has western", any(m["name"] == "western" for m in d))
 
         # P0-2: Modules config
         r = await c.get(f"{BASE}/modules/config")
         d = r.json()
-        check("P0-2-7 GET /modules/config status", r.status_code == 200)
-        check("P0-2-8 config has chinese", "chinese" in d)
+        check("P0-2-8 GET /modules/config status", r.status_code == 200)
+        check("P0-2-9 config has chinese", "chinese" in d)
 
         # P0-3: Scan module (chinese - no media dirs)
         r = await c.post(f"{BASE}/modules/chinese/scan")
@@ -102,19 +103,19 @@ async def test():
         check("P0-6-1 unified search status", r.status_code == 200)
         check("P0-6-2 unified search has items", "items" in d)
 
-        # P0-2: Module stats
+        # P0-3: Module stats
         r = await c.get(f"{BASE}/modules/chinese/stats")
-        check("P0-2-9 GET /modules/chinese/stats status", r.status_code == 200)
+        check("P0-2-10 GET /modules/chinese/stats status", r.status_code == 200)
 
         # P0-3: Module toggle
         r = await c.patch(f"{BASE}/modules/chinese/toggle", params={"enabled": False})
-        check("P0-3-3 toggle chinese disabled", r.status_code == 200)
+        check("P0-3-1 toggle chinese disabled", r.status_code == 200)
         r = await c.patch(f"{BASE}/modules/chinese/toggle", params={"enabled": True})
-        check("P0-3-4 toggle chinese enabled", r.status_code == 200)
+        check("P0-3-2 toggle chinese enabled", r.status_code == 200)
 
         # P0-3: Config update
         r = await c.put(f"{BASE}/modules/config", json={"chinese": {"enabled": True}})
-        check("P0-3-5 update config", r.status_code == 200, str(r.json()))
+        check("P0-3-3 update config", r.status_code == 200, str(r.json()))
 
         # Dashboard stats
         r = await c.get(f"{BASE}/stats/dashboard")

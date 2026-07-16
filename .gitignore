@@ -62,3 +62,6 @@ bin/
 .references/
 docs/reference/
 docs/plans/
+
+# === 测试文件 ===
+MDCX-Server/tests/

@@ -72,7 +72,7 @@ SITE_URLS = {
     "javdb": "https://javdb.com",
     "javbus": "https://www.javbus.com",
     "dmm": "https://www.dmm.co.jp",
-    "fc2ppvdb": "https://fc2ppvdb.com",
+    "fc2ppvdb": "https://fc2cmadb.com",
     "missav": "https://missav.ws",
     "avsox": "https://avsox.click",
     "mgstage": "https://www.mgstage.com",

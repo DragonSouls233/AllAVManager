@@ -38,7 +38,7 @@ SCRAPE_PROXY_DOMAINS = [
     "dmm.com",
     "r18.com",
     "fc2.com",
-    "fc2ppvdb.com",
+    "fc2cmadb.com",
     "iqqtv.cloud",
     "iqqtv.co",
     "airav.wiki",

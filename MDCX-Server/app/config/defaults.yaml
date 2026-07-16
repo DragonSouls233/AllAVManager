@@ -6,16 +6,20 @@ app_name: 龙魂视频管理系统
 modules:
   jav:
     enabled: true
-    media_dirs: []
+    media_dirs:
+      - G:\TEST\有码
   uncensored:
-    enabled: false
-    media_dirs: []
+    enabled: true
+    media_dirs:
+      - G:\TEST\无码
   fc2:
-    enabled: false
-    media_dirs: []
+    enabled: true
+    media_dirs:
+      - G:\TEST\FC2
   chinese:
-    enabled: false
-    media_dirs: []
+    enabled: true
+    media_dirs:
+      - G:\TEST\国产
     actor_from_folder: true
     folder_depth: 1
     folder_pattern: []
@@ -31,8 +35,13 @@ modules:
     auto_create_actor: true
     studio_names_as_folder: false
   pornhub:
-    enabled: false
-    media_dirs: []
+    enabled: true
+    media_dirs:
+      - G:\TEST\pornhub
+  western:
+    enabled: true
+    media_dirs:
+      - G:\TEST\欧美
   scanner:
     concurrent_limit: 5
     retry_count: 3

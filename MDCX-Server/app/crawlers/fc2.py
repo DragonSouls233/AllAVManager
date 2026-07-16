@@ -62,7 +62,7 @@ class FC2Crawler(BaseCrawler):
                     return None
                 
                 # 解析详情页
-                result = self._parse_detail_page(html, code, number_id, client)
+                result = await self._parse_detail_page(html, code, number_id, client)
                 
                 if result:
                     self.mark_success()

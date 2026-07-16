@@ -228,7 +228,7 @@ class AdultTimeCrawler(BaseCrawler):
                 resp = await client.get(
                     homepage, headers={"User-Agent": USER_AGENT, "Referer": homepage}
                 )
-                html_text = await resp.text()
+                html_text = resp.text if hasattr(resp, "text") else str(resp)
                 m = re.search(r"window\.env\s*=\s*(.+);", html_text)
                 if m:
                     try:

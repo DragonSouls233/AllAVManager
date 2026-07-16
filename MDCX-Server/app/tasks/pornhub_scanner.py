@@ -13,12 +13,23 @@ logger = get_logger(__name__)
 
 
 def extract_pornhub_code(filename: str) -> str | None:
-    """从文件名提取 PORNHub viewkey"""
+    """从文件名提取 PORNHub viewkey
+
+    支持格式:
+      - phabcdef123456  (带 ph 前缀)
+      - abcdef123456    (纯 viewkey，13 位 hex)
+    """
     stem = Path(filename).stem
+    # 优先匹配带 ph 前缀的
     pattern = r'(ph[a-f0-9]{10,20})'
     match = re.search(pattern, stem, re.IGNORECASE)
     if match:
         return match.group(1).lower()
+    # 回退匹配纯 13 位 hex (viewkey)
+    pattern2 = r'\b([a-f0-9]{13})\b'
+    match2 = re.search(pattern2, stem, re.IGNORECASE)
+    if match2:
+        return match2.group(1).lower()
     return None
 
 

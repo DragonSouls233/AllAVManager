@@ -200,7 +200,7 @@ class MadouCrawler(BaseCrawler):
                     return await self._request(url, retry_count + 1)
                 return None
 
-            text = await resp.text("utf-8", errors="replace") if hasattr(resp, "text") else str(resp)
+            text = resp.text if hasattr(resp, "text") else str(resp)
             logger.debug(f"响应长度: {len(text)}")
             return text
 

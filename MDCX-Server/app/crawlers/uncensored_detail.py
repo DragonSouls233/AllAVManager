@@ -102,9 +102,19 @@ class CaribbeancomCrawler(BaseCrawler):
     def _parse_detail(self, html: etree._Element, code: str, movie_id: str) -> Optional[ScrapeResult]:
         """解析详情页"""
         try:
-            # 标题
-            title_elem = html.xpath('//h1[@class="tag01"]//text()')
-            title = "".join(title_elem).strip() if title_elem else ""
+            # 标题: 先从 h1 获取，取最长的非空文本
+            title_elem = html.xpath('//h1/text()')
+            title = ""
+            if title_elem:
+                # 取第一个 h1 的文本，清理空白
+                title = title_elem[0].strip()
+                # 去掉尾部可能包含的演员名（以 - 或 — 分隔）
+                for sep in [" - ", " — ", " – "]:
+                    parts = title.split(sep, 1)
+                    if len(parts) > 1 and len(parts[0]) > len(parts[1]):
+                        title = parts[0].strip()
+                        break
+                title = title.strip()
 
             if not title:
                 return None
@@ -248,9 +258,18 @@ class HeyzoCrawler(BaseCrawler):
     def _parse_detail(self, html: etree._Element, code: str, movie_id: str) -> Optional[ScrapeResult]:
         """解析详情页"""
         try:
-            # 标题
-            title_elem = html.xpath('//h1[@class="tag01"]//text()')
-            title = "".join(title_elem).strip() if title_elem else ""
+            # 标题: 先从 h1 获取
+            title_elem = html.xpath('//h1/text()')
+            title = ""
+            if title_elem:
+                title = title_elem[0].strip()
+                # 去掉尾部可能的演员名（以 - 分隔）
+                for sep in [" - ", " — ", " – "]:
+                    parts = title.split(sep, 1)
+                    if len(parts) > 1 and len(parts[0]) > len(parts[1]):
+                        title = parts[0].strip()
+                        break
+                title = title.strip()
 
             if not title:
                 return None

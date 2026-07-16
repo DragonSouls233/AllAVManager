@@ -36,11 +36,11 @@ COOKIE_SITES = {
     },
     "fc2ppvdb": {
         "name": "FC2PPVDB",
-        "domain": "fc2ppvdb.com",
+        "domain": "fc2cmadb.com",
         "config_key": "crawler.fc2ppvdb_cookie",
-        "login_url": "https://fc2ppvdb.com/login",
+        "login_url": "https://fc2cmadb.com/login",
         "success_indicator": "logout",
-        "validate_url": "https://fc2ppvdb.com",
+        "validate_url": "https://fc2cmadb.com",
         "validate_type": "login_redirect",
     },
     "pan115": {

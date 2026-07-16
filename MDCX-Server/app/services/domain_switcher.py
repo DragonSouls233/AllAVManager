@@ -202,6 +202,13 @@ def make_madouqu_switcher() -> DomainSwitcher:
             "https://madouqu.cc",
             "https://madouqu.net",
             "https://madouqu.org",
+            "https://madouqu.com",
+            "https://madouqu1.net",
+            "https://madouqu2.net",
+            "https://madouqu3.net",
+            "https://madouqu.com",
+            "https://madouqu2.net",
+            "https://madouqu3.net",
         ],
     )
 

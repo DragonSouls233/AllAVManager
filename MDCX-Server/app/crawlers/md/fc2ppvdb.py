@@ -109,13 +109,13 @@ async def main(
             proxies = None
         async with AsyncSession(cookies=cookies, proxies=proxies) as session:
             # 访问详情页面，提交 cookie
-            url_article = f"https://fc2ppvdb.com/articles/{number}"
+            url_article = f"https://fc2cmadb.com/articles/{number}"
             response_article = await session.get(url_article)
             if response_article.status_code != 200:
                 raise Exception(f"详情页请求失败: {response_article.status_code}")
 
             # 访问 XHR 接口获取 JSON 数据
-            xhr_url = f"https://fc2ppvdb.com/articles/article-info?videoid={number}"
+            xhr_url = f"https://fc2cmadb.com/articles/article-info?videoid={number}"
             response_xhr = await session.get(xhr_url)
             if response_xhr.status_code != 200:
                 raise Exception(f"XHR 请求失败: {response_xhr.status_code}")
@@ -202,7 +202,7 @@ class FC2PPVDBCrawler(LegacyCrawlerAdapter):
 
     name = "fc2ppvdb"
     display_name = "FC2PPVDB"
-    base_url = "https://fc2ppvdb.com"
+    base_url = "https://fc2cmadb.com"
 
     priority = CrawlerPriority.NORMAL
     supported_types = ['fc2']

@@ -1,5 +1,5 @@
 """
-FC2PPVDB 爬虫 - 从 fc2ppvdb.com 刮削 FC2 视频信息
+FC2PPVDB 爬虫 - 从 fc2cmadb.com 刮削 FC2 视频信息
 """
 
 import json
@@ -15,8 +15,8 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
-from app.config.manager import get_config
 from app.utils.http_client import AsyncHttpClient
+from app.utils.cookie_manager import get_cookie_headers
 
 
 def _cookie_str_to_dict(cookie_str: str) -> dict:
@@ -31,16 +31,16 @@ def _cookie_str_to_dict(cookie_str: str) -> dict:
 
 @register_crawler
 class FC2PPVDBCrawler(BaseCrawler):
-    """FC2PPVDB 爬虫 - 从 fc2ppvdb.com 获取 FC2 视频信息"""
+    """FC2PPVDB 爬虫 - 从 fc2cmadb.com 获取 FC2 视频信息"""
 
     name = "fc2ppvdb"
     display_name = "FC2PPVDB"
-    base_url = "https://fc2ppvdb.com"
+    base_url = "https://fc2cmadb.com"
 
     priority = CrawlerPriority.HIGH
     supported_types = ["fc2"]
     supported_prefixes = ["FC2", "FC2-"]
-    description = "FC2 PPV 数据库站点 (fc2ppvdb.com)"
+    description = "FC2 PPV 数据库站点 (fc2cmadb.com)"
     language = "ja"
     requires_proxy = False
 
@@ -58,10 +58,11 @@ class FC2PPVDBCrawler(BaseCrawler):
         if not number_id:
             return None
 
-        # 从配置读取 cookie
-        config = get_config()
-        cookie_str = config.crawler.fc2ppvdb_cookie or ""
-        cookies = _cookie_str_to_dict(cookie_str) if cookie_str else None
+        # 从 cookie_manager 统一读取
+        headers = get_cookie_headers("fc2ppvdb")
+        cookies = None
+        if headers and "cookie" in headers:
+            cookies = _cookie_str_to_dict(headers["cookie"])
 
         async with AsyncHttpClient() as client:
             try:

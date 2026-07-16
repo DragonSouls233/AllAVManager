@@ -24,6 +24,7 @@ class NumberType(str, Enum):
     AMATEUR = "amateur"       # 素人: 259luxu-1456
     WESTERN = "western"       # 欧美: EvilAngel.20.01.01
     MYWIFE = "mywife"         # Mywife No.1111
+    PORNHUB = "pornhub"       # Pornhub viewkey: 6a488932e1d19
     UNKNOWN = "unknown"
 
 
@@ -37,6 +38,10 @@ class NumberResult:
     confidence: float = 1.0        # 置信度
     is_chinese: Optional[bool] = None   # 是否中文字幕（从 -C 后缀推断）
     is_mosaic: Optional[bool] = None    # 是否有码（从 -U 后缀推断，False=无码）
+    formatted: str = ""            # 标准刮削格式：爬虫可直接使用的格式
+                                   # JAV: ABC-123, FC2: FC2-4786921,
+                                   # HEYZO: 0407, 麻豆: MD0263,
+                                   # Pornhub: viewkey, 欧美: site.yy.mm.dd
 
 
 # ============================================
@@ -70,9 +75,9 @@ UNCENSORED_PREFIX_PATTERN = re.compile(
 # Mywife: Mywife No.1111
 MYWIFE_PATTERN = re.compile(r"MYWIFE[-_ ]?NO\.?\s*(\d+)", re.IGNORECASE)
 
-# 欧美站点: EvilAngel.20.01.01
+# 欧美站点: EvilAngel.20.01.01 或 bb.16.07.13
 WESTERN_PATTERN = re.compile(
-    r"([A-Z][A-Za-z]+)\.(\d{2})\.(\d{2})\.(\d{2})",
+    r"([A-Za-z][A-Za-z]+)\.(\d{2})\.(\d{2})\.(\d{2})",
     re.IGNORECASE
 )
 
@@ -484,6 +489,8 @@ def _apply_suffix(result: NumberResult, bracket_chinese: bool = False) -> Number
     else:
         result.is_chinese = is_chinese
     result.is_mosaic = is_mosaic
+    # 计算标准刮削格式
+    result.formatted = compute_formatted(result)
     return result
 
 
@@ -518,10 +525,12 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
             base = match.group(1).upper()
             suffix = match.group(2).upper()
             is_chinese, is_mosaic = _classify_suffix(suffix, bracket_chinese)
-            return NumberResult(
+            result = NumberResult(
                 number=base, original=filename, number_type=NumberType.JAV,
                 confidence=0.90, is_chinese=is_chinese, is_mosaic=is_mosaic,
             )
+            result.formatted = compute_formatted(result)
+            return result
 
     # v3.0: 无横线也优先匹配三字符
     for suffix_pat in [r"(CHS|CHT|CH)", r"(UC|CU)", r"(U|C)"]:
@@ -536,10 +545,12 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
             suffix = match.group(3).upper()
             number = f"{prefix}-{digits}"
             is_chinese, is_mosaic = _classify_suffix(suffix, bracket_chinese)
-            return NumberResult(
+            result = NumberResult(
                 number=number, original=filename, number_type=NumberType.JAV,
                 confidence=0.85, is_chinese=is_chinese, is_mosaic=is_mosaic,
             )
+            result.formatted = compute_formatted(result)
+            return result
 
     return None
 
@@ -577,6 +588,19 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
     raw_result = _try_match_raw(filename)
     if raw_result:
         return _apply_suffix(raw_result, bracket_chinese)
+
+    # 5. 欧美: EvilAngel.20.01.01（优先于 clean_filename，以免日期被清理）
+    # 注意：此检查在 clean_filename 之前，因为 clean_filename 会移除数字前缀如 16.05.27
+    if match := WESTERN_PATTERN.search(filename.lower().rstrip(".")):
+        site, y, m, d = match.groups()
+        number = f"{site}.{y}.{m}.{d}"
+        return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.WESTERN, confidence=0.90), bracket_chinese)
+
+    # 5b. Pornhub 视频 ID（viewkey）：6a488932e1d19（13 位十六进制数）或 ph6a488932e1d19
+    # 匹配纯 13 位十六进制字符串（排除文件名中其他数字干扰）
+    if re.search(r"\b(?:ph)?([a-f0-9]{13})\b", filename, re.IGNORECASE):
+        number = re.search(r"\b(?:ph)?([a-f0-9]{13})\b", filename, re.IGNORECASE).group(1)
+        return _apply_suffix(NumberResult(number=number.upper(), original=original, number_type=NumberType.PORNHUB, confidence=0.90), bracket_chinese)
 
     cleaned = clean_filename(filename, escape_strings)
 
@@ -651,6 +675,7 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
         result = NumberResult(number=number, original=original, number_type=NumberType.AMATEUR, prefix="MMR", confidence=0.90)
         if bracket_chinese:
             result.is_chinese = True
+        result.formatted = compute_formatted(result)
         return result
 
     # MD-0165-1:带分集的 MD 番号(排除 MDVR)
@@ -687,6 +712,7 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
         result = NumberResult(number=number, original=original, number_type=NumberType.JAV, confidence=0.90)
         if bracket_chinese:
             result.is_chinese = True
+        result.formatted = compute_formatted(result)
         return result
 
     # 前导零修正:ssni00644 → ssni-644
@@ -805,6 +831,49 @@ def normalize_number(number: str) -> str:
     return number
 
 
+def compute_formatted(result: NumberResult) -> str:
+    """根据番号类型计算标准刮削格式
+
+    各模块爬虫期望的格式不同，此处做统一转换：
+
+    - JAV: ABC-123 → ABC-123（不���）
+    - FC2: FC2-4786921 → FC2-4786921（不变）
+    - HEYZO: HEYZO-0407 → 0407（仅数字，HeyzoCrawler 需要）
+    - 其他无码: 111111-111 → 111111-111（不变）
+    - 麻豆: MD-0263 → MD0263（去掉连字符用于站内搜索）
+    - Pornhub: viewkey 不变
+    - 欧美: site.yy.mm.dd → 不变（小写，爬虫 GraphQL 查询用）
+    - 素人: 259luxu-1456 → 不变
+    """
+    if result.number_type == NumberType.UNCENSORED and result.prefix == "HEYZO":
+        # HEYZO: 仅数字
+        digits = re.sub(r'[^\d]', '', result.number)
+        return digits[-4:].zfill(4) if digits else result.number
+
+    if result.number_type == NumberType.JAV or result.number_type == NumberType.FC2:
+        # JAV/FC2: 直接使用 number
+        # 但 MD/OM 前缀的番号是国产麻豆格式，需要去掉连字符用于站内搜索
+        if result.prefix and re.match(r'^MD|OM', result.prefix, re.I):
+            return result.number.replace("-", "")
+        if re.match(r'^MD[A-Z-]*\d{4,}', result.number.upper()):
+            return result.number.replace("-", "")
+        return result.number
+
+    if result.number_type == NumberType.PORNHUB:
+        # Pornhub: viewkey 不变
+        return result.number
+
+    if result.number_type == NumberType.WESTERN:
+        # 欧美: 小写，保持 site.yy.mm.dd
+        return result.number.lower()
+
+    if result.number_type == NumberType.UNKNOWN:
+        return result.number
+
+    # 默认: 去掉连字符（麻豆等国产模块的搜索格式）
+    return result.number.replace("-", "")
+
+
 def get_number_type(number: str) -> NumberType:
     """
     获取番号类型
@@ -821,6 +890,10 @@ def get_number_type(number: str) -> NumberType:
     # FC2
     if upper.startswith("FC2"):
         return NumberType.FC2
+
+    # 纯 13 位十六进制 → Pornhub viewkey
+    if re.match(r"^[A-F0-9]{13}$", upper):
+        return NumberType.PORNHUB
 
     # HEYZO
     if upper.startswith("HEYZO"):

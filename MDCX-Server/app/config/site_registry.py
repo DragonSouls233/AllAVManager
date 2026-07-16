@@ -1137,7 +1137,7 @@ JAV_SITES = {
     },
     "fc2ppvdb": {
         "name": "FC2 PPV DB",
-        "primary": "https://fc2ppvdb.com",
+        "primary": "https://fc2cmadb.com",
         "fallbacks": [],
         "type": "database",
         "supports_scrape": True,
