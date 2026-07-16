@@ -3,10 +3,15 @@ FastAPI 应用入口
 """
 
 import asyncio
+import mimetypes
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# 确保 Windows 下 JS/CSS 文件使用正确的 MIME 类型（否则浏览器拒绝 ES Module）
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
