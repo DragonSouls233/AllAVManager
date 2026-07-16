@@ -15,7 +15,7 @@
     <div class="movies-grid" v-loading="store.loading">
       <div v-for="m in store.movies" :key="m.id" class="movie-card" @click="goDetail(m.id)">
         <div class="cover">
-          <img :src="m.cover_url || defaultCover" :alt="m.title" @error="onCoverError">
+          <img :src="getCoverSrc(m)" :alt="m.title" @error="onCoverError">
           <div class="cover-badge">{{ m.studio || '国产' }}</div>
         </div>
         <div class="info">
@@ -57,6 +57,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChineseStore } from '@/stores/chinese'
 import defaultCover from '@/assets/default-cover.png'
+import { getCoverSrc } from '@/utils/media'
 
 const router = useRouter()
 const store = useChineseStore()

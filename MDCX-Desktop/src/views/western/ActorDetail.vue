@@ -6,7 +6,7 @@
 
     <div v-if="actor" class="detail-content">
       <div class="avatar-section">
-        <img :src="actor.avatar_url || defaultAvatar" alt="">
+        <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
         <h2>{{ actor.name }}</h2>
         <el-tag v-if="actor.source" type="info" size="small">{{ actor.source }}</el-tag>
         <div class="stats">
@@ -45,6 +45,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWesternStore } from '@/stores/western'
 import defaultAvatar from '@/assets/default-avatar.png'
+import { getAvatarSrc } from '@/utils/media'
 
 const route = useRoute()
 const router = useRouter()
@@ -61,6 +62,10 @@ const hasInfo = computed(() => {
 
 function goBack() {
   router.push('/western/actors')
+}
+
+function handleAvatarError(e) {
+  e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
 onMounted(async () => {

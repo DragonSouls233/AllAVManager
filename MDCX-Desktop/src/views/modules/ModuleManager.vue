@@ -117,7 +117,7 @@ async function toggleModule(name, enabled) {
 }
 
 function viewMovies(name) {
-  const routes = { jav: '/movies', chinese: '/chinese', fc2: '/fc2', uncensored: '/uncensored', pornhub: '/pornhub' }
+  const routes = { jav: '/movies', chinese: '/chinese', fc2: '/fc2', uncensored: '/uncensored', pornhub: '/pornhub', western: '/western' }
   router.push(routes[name] || '/movies')
 }
 

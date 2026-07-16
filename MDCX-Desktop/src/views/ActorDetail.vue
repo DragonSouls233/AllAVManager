@@ -8,7 +8,7 @@
     <el-card v-if="actor" class="profile-card">
       <div class="profile">
         <div class="profile-avatar" @click="triggerAvatarUpload" title="点击更换头像">
-          <img :src="getActorAvatarUrl(actor)" :alt="actor.name" @error="handleAvatarError">
+          <img :src="getActorAvatar(actor)" :alt="actor.name" @error="handleAvatarError">
           <div class="avatar-overlay">
             <el-icon><Camera /></el-icon>
             <span>更换</span>
@@ -116,7 +116,7 @@
         <div class="movies-grid" v-loading="moviesLoading">
           <div v-for="movie in movies" :key="movie.id" class="movie-card" @click="goDetail(movie.id)">
             <div class="movie-cover">
-              <img :src="getMovieCoverUrl(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
+              <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
               <div class="movie-play">
                 <el-icon size="36"><VideoPlay /></el-icon>
               </div>
@@ -188,7 +188,7 @@
                 @click="goDetail(movie.id)"
               >
                 <div class="mini-cover">
-                  <img :src="getMovieCoverUrl(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
+                  <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
                 </div>
                 <div class="mini-info">
                   <div class="mini-code">{{ movie.code }}</div>
@@ -213,7 +213,7 @@
                 @click="goDetail(movie.id)"
               >
                 <div class="mini-cover">
-                  <img :src="getMovieCoverUrl(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
+                  <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
                 </div>
                 <div class="mini-info">
                   <div class="mini-code">{{ movie.code }}</div>
@@ -274,7 +274,7 @@ import {
   listSubscriptions, subscribeActor, unsubscribeActor, checkActorNewMovies,
   uploadActorAvatar, deleteActorAvatar
 } from '@/api'
-import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl } from '@/utils/media'
+import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl, getFileProxyUrl } from '@/utils/media'
 
 const route = useRoute()
 const router = useRouter()
@@ -312,22 +312,43 @@ const subscribing = ref(false)
 const checking = ref(false)
 const newMovieCount = ref(0)
 
+// 演员头像：有 avatar_url 直接加载/代理，无则走后端 API
+function getActorAvatar(actor) {
+  if (actor?.avatar_url) {
+    if (/^https?:\/\//i.test(actor.avatar_url)) return actor.avatar_url
+    return getFileProxyUrl(actor.avatar_url)
+  }
+  return getActorAvatarUrl(actor)
+}
+
+// 影片封面：有 cover_url 直接加载/代理，无则走后端 API
+function getMovieCover(actor) {
+  if (actor?.cover_url) {
+    if (/^https?:\/\//i.test(actor.cover_url)) return actor.cover_url
+    return getFileProxyUrl(actor.cover_url)
+  }
+  return getMovieCoverUrl(actor)
+}
+
 const handleAvatarError = (event) => {
   event.target.src = defaultAvatar(event.target.alt)
 }
 
 const handleCoverError = (event, movie) => {
   const img = event.target
-  // 三级回退:主封面(cover/file) → poster/file → thumb/file → 占位图
+  // 四级回退:cover_url代理 → API cover → poster → thumb → 占位图
   const stage = parseInt(img.dataset.cs || '0', 10)
   if (stage === 0) {
     img.dataset.cs = '1'
-    img.src = getMoviePosterUrl(movie)
+    img.src = getMovieCoverUrl(movie)
   } else if (stage === 1) {
     img.dataset.cs = '2'
+    img.src = getMoviePosterUrl(movie)
+  } else if (stage === 2) {
+    img.dataset.cs = '3'
     img.src = getMovieThumbUrl(movie)
   } else {
-    img.dataset.cs = '3'
+    img.dataset.cs = '4'
     img.src = defaultCover(movie?.code)
   }
 }

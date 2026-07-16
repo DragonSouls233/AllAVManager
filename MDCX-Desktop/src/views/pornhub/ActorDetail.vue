@@ -6,7 +6,7 @@
 
     <div v-if="actor" class="detail-content">
       <div class="avatar-section">
-        <img :src="actor.avatar_url || defaultAvatar" alt="">
+        <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
         <h2>{{ actor.name }}</h2>
         <div class="stats">
           <span>{{ actor.movie_count }} 部作品</span>
@@ -17,7 +17,7 @@
         <h3>作品列表</h3>
         <div class="movies-grid" v-if="movies.length">
           <div v-for="m in movies" :key="m.id" class="movie-card" @click="goMovieDetail(m.id)">
-            <img :src="m.cover_url || defaultCover" alt="">
+            <img :src="getCoverSrc(m)" alt="">
             <div class="movie-title">{{ m.title || m.code }}</div>
           </div>
         </div>
@@ -33,6 +33,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import defaultAvatar from '@/assets/default-avatar.png'
 import defaultCover from '@/assets/default-cover.png'
+import { getAvatarSrc, getCoverSrc } from '@/utils/media'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,6 +44,10 @@ const loading = ref(true)
 
 function goBack() { router.push('/pornhub/actors') }
 function goMovieDetail(id) { router.push(`/pornhub/movies/${id}`) }
+
+function handleAvatarError(e) {
+  e.target.src = defaultAvatar(e.target.alt || '?')
+}
 
 onMounted(async () => {
   try {

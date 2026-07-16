@@ -47,7 +47,7 @@
         @click="goActorDetail(actor.id)"
       >
         <div class="actor-avatar">
-          <img :src="getActorAvatarUrl(actor)" :alt="actor.name" @error="handleAvatarError">
+          <img :src="getActorAvatar(actor)" :alt="actor.name" @error="handleAvatarError">
         </div>
         <div class="actor-info">
           <div class="actor-name">{{ actor.name }}</div>
@@ -148,7 +148,7 @@ import { ElMessage } from 'element-plus'
 import { Search, MagicStick, View, VideoPlay } from '@element-plus/icons-vue'
 import { getActors, previewAvatarScrape } from '@/api'
 import { useAvatarScrapeStore } from '@/stores/avatarScrape'
-import { defaultAvatar, getActorAvatarUrl } from '@/utils/media'
+import { defaultAvatar, getActorAvatarUrl, getFileProxyUrl } from '@/utils/media'
 
 const router = useRouter()
 const avatarStore = useAvatarScrapeStore()
@@ -161,6 +161,15 @@ const total = ref(0)
 // 作品数分类：默认显示多作品(>=阈值)演员，素人/单作品单独一页，阈值可配
 const movieCountFilter = ref('multi')
 const minMoviesForFilter = ref(2)
+
+// 演员头像获取：有 avatar_url 直接加载/代理，无则走后端 API
+function getActorAvatar(actor) {
+  if (actor?.avatar_url) {
+    if (/^https?:\/\//i.test(actor.avatar_url)) return actor.avatar_url
+    return getFileProxyUrl(actor.avatar_url)
+  }
+  return getActorAvatarUrl(actor)
+}
 
 const handleAvatarError = (event) => {
   event.target.src = defaultAvatar(event.target.alt)

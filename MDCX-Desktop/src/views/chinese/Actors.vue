@@ -26,7 +26,7 @@
         @click="goActorDetail(actor.id)"
       >
         <div class="actor-avatar">
-          <img :src="actor.avatar_url || defaultAvatar" alt="">
+          <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
         </div>
         <div class="actor-info">
           <div class="actor-name">{{ actor.name }}</div>
@@ -44,6 +44,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChineseStore } from '@/stores/chinese'
 import defaultAvatar from '@/assets/default-avatar.png'
+import { getAvatarSrc } from '@/utils/media'
 
 const router = useRouter()
 const store = useChineseStore()
@@ -71,6 +72,10 @@ async function syncFolderActors() {
 
 function goActorDetail(id) {
   router.push(`/chinese/actors/${id}`)
+}
+
+function handleAvatarError(e) {
+  e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
 onMounted(loadActors)

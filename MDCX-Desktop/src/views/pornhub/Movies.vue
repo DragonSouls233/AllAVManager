@@ -15,7 +15,7 @@
     <div class="movies-grid" v-loading="store.loading">
       <div v-for="m in store.movies" :key="m.id" class="movie-card" @click="goDetail(m.id)">
         <div class="cover">
-          <img :src="m.cover_url || defaultCover" :alt="m.title" @error="onCoverError">
+          <img :src="getCoverSrc(m)" :alt="m.title" @error="onCoverError">
           <div class="cover-badge">{{ m.uploader || 'PH' }}</div>
         </div>
         <div class="info">
@@ -50,6 +50,7 @@ import { useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
+import { getCoverSrc } from '@/utils/media'
 
 const router = useRouter()
 const store = usePornhubStore()

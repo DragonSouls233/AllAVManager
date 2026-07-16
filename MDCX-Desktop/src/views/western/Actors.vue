@@ -11,7 +11,7 @@
     <div class="actors-grid" v-loading="loading">
       <div v-for="actor in filteredActors" :key="actor.id" class="actor-card" @click="goActorDetail(actor.id)">
         <div class="actor-avatar">
-          <img :src="actor.avatar_url || defaultAvatar" alt="">
+          <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
         </div>
         <div class="actor-info">
           <div class="actor-name">{{ actor.name }}</div>
@@ -35,6 +35,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWesternStore } from '@/stores/western'
 import defaultAvatar from '@/assets/default-avatar.png'
+import { getAvatarSrc } from '@/utils/media'
 
 const router = useRouter()
 const store = useWesternStore()
@@ -59,6 +60,10 @@ async function loadActors() {
 
 function goActorDetail(id) {
   router.push(`/western/actors/${id}`)
+}
+
+function handleAvatarError(e) {
+  e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
 onMounted(loadActors)

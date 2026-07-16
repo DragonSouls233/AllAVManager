@@ -10,7 +10,7 @@
     <div class="actors-grid" v-loading="loading">
       <div v-for="actor in actors" :key="actor.id" class="actor-card" @click="goActorDetail(actor.id)">
         <div class="actor-avatar">
-          <img :src="actor.avatar_url || defaultAvatar" alt="">
+          <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
         </div>
         <div class="actor-info">
           <div class="actor-name">{{ actor.name }}</div>
@@ -28,6 +28,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUncensoredStore } from '@/stores/uncensored'
 import defaultAvatar from '@/assets/default-avatar.png'
+import { getAvatarSrc } from '@/utils/media'
 
 const router = useRouter()
 const store = useUncensoredStore()
@@ -46,6 +47,10 @@ async function loadActors() {
 
 function goActorDetail(id) {
   router.push(`/uncensored/actors/${id}`)
+}
+
+function handleAvatarError(e) {
+  e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
 onMounted(loadActors)

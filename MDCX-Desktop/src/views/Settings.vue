@@ -78,16 +78,25 @@
                 <el-form-item label="重试次数">
                   <el-input-number v-model="backendConfig.scraper.retry_count" :min="0" :max="10" />
                 </el-form-item>
-                <el-form-item label="媒体目录">
-                  <el-input
-                    v-model="mediaDirsText"
-                    type="textarea"
-                    :rows="3"
-                    :disabled="true"
-                    placeholder="在服务端本机通过 config.yaml 或 bind_media 工具绑定"
-                  />
-                  <div class="form-tip">
-                    <el-text type="info" size="small">媒体目录为服务端绑定项，仅可在服务器本机通过 data/config/config.yaml 或 tools/bind_media.py 设置，此处仅展示。</el-text>
+                <el-form-item label="各模块媒体目录">
+                  <div style="width:100%">
+                    <div v-for="mod in moduleDirs" :key="mod.name" style="margin-bottom:12px;padding:12px;border:1px solid #ebeef5;border-radius:6px;">
+                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <el-text size="small" tag="b">{{ mod.label }}</el-text>
+                        <el-tag v-if="mod.dir" size="small" type="info" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ mod.dir }}</el-tag>
+                        <el-tag v-else size="small" type="warning">未配置</el-tag>
+                      </div>
+                      <div style="display:flex;gap:8px;">
+                        <el-input
+                          :model-value="mod.dir"
+                          @input="(v) => onModuleDirInput(mod.name, v)"
+                          placeholder="输入模块媒体目录路径"
+                          size="small"
+                          clearable
+                        />
+                        <el-button size="small" type="primary" @click="saveModuleDir(mod.name)" :loading="savingModuleDir === mod.name">保存</el-button>
+                      </div>
+                    </div>
                   </div>
                 </el-form-item>
               </el-form>
@@ -238,6 +247,7 @@ import {
   setServerUrl, checkServerConnection, getVersion
 } from '@/api'
 import { getServerBaseUrl } from '@/utils/media'
+import { getModules, updateModulesConfig } from '@/api/modules'
 
 const activeTab = ref('server')
 const activeCollapse = ref(['proxy', 'scraper'])
@@ -269,12 +279,46 @@ const cookieChecking = ref({ javdb: false, javbus: false })
 const cookieLoginLoading = ref({ javdb: false, javbus: false })
 const cookieLoginStatus = ref({ javdb: '', javbus: '' })
 
-const mediaDirsText = computed({
-  get: () => (backendConfig.value.scraper.media_dirs || []).join('\n'),
-  set: (val) => {
-    backendConfig.value.scraper.media_dirs = val.split('\n').map(s => s.trim()).filter(Boolean)
+// 各模块媒体目录配置
+const moduleDirs = ref([])
+const savingModuleDir = ref('')
+const moduleLabelsMap = { jav: 'JAV 有码', chinese: '国产', uncensored: 'JAV 无码', fc2: 'FC2', pornhub: 'PORNHub', western: '欧美' }
+
+async function loadModuleDirs() {
+  try {
+    const mods = await getModules()
+    moduleDirs.value = (mods || []).map(m => ({
+      name: m.name,
+      label: moduleLabelsMap[m.name] || m.name,
+      dir: (m.media_dirs || [])[0] || ''
+    }))
+  } catch {
+    // 静默失败
   }
-})
+}
+
+const editingModuleDir = ref({})
+
+function onModuleDirInput(name, val) {
+  editingModuleDir.value[name] = val
+}
+
+async function saveModuleDir(name) {
+  savingModuleDir.value = name
+  try {
+    const dir = editingModuleDir.value[name] || ''
+    const dirs = dir ? [dir] : []
+    await updateModulesConfig({ [name]: { media_dirs: dirs } })
+    ElMessage.success(`${moduleLabelsMap[name] || name} 目录已保存`)
+    // 刷新
+    const mod = moduleDirs.value.find(m => m.name === name)
+    if (mod) mod.dir = dir
+  } catch (e) {
+    ElMessage.error('保存失败: ' + (e?.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    savingModuleDir.value = ''
+  }
+}
 
 // 当前登录用户角色（用于限制媒体目录等仅管理员可改）
 const loadCurrentUser = async () => {
@@ -418,7 +462,7 @@ const cookieLoginAction = async (site) => {
     // 轮询状态
     const timer = setInterval(async () => {
       try {
-        const status = await getCookieLoginStatus(site)
+        const status = await getCookieLoginPollStatus(site)
         if (status.completed || status.success) {
           clearInterval(timer)
           cookieLoginLoading.value[site] = false
@@ -509,6 +553,7 @@ const applyTemplate = (type) => {
 onMounted(() => {
   checkConnection()
   loadConfig()
+  loadModuleDirs()
   loadAuthConfig()
   loadCurrentUser()
   getVersion().then(data => {

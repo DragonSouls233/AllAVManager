@@ -219,16 +219,24 @@ const currentImage = computed(() => {
   return getFileProxyUrl(url)
 })
 
-// 封面三级回退:主图(currentImage) → poster/file → thumb/file → 占位图
-// 关键:即使列表接口未返回 cover_url,只要 movie.id 存在,后端 /cover/file 会智能兜底
-// (扫描影片目录找封面),所以始终先请求接口,不要直接显示占位。
-const coverStage = ref(0) // 0=主图 1=poster 2=thumb 3=占位
+// 封面四级回退:cover_url(直接/代理) → 主图API → poster → thumb → 占位图
+// Stage 0 先试 cover_url 字段——若是本地路径则通过文件代理加载,
+// 为空/失败则进入 Stage 1 由后端 /cover/file 智能兜底。
+const coverStage = ref(0) // 0=cover_url 直接/代理 1=主图API 2=poster 3=thumb 4=占位
 
 const displayCover = computed(() => {
-  if (coverStage.value >= 3) return defaultCover(props.movie?.code || 'MDCX')
-  if (coverStage.value === 1) return getMoviePosterUrl(props.movie)
-  if (coverStage.value === 2) return getMovieThumbUrl(props.movie)
-  return currentImage.value
+  const stage = coverStage.value
+  if (stage >= 4) return defaultCover(props.movie?.code || 'MDCX')
+  if (stage === 2) return getMoviePosterUrl(props.movie)
+  if (stage === 3) return getMovieThumbUrl(props.movie)
+  if (stage === 1) return currentImage.value
+  // Stage 0: 优先尝试 cover_url,本地路径则文件代理
+  const m = props.movie
+  if (m?.cover_url) {
+    if (/^https?:\/\//i.test(m.cover_url)) return m.cover_url
+    return getFileProxyUrl(m.cover_url)
+  }
+  return currentImage.value // 无 cover_url,直接走 API
 })
 
 // 主图切换(含 hover 轮换)时重置回退阶段
@@ -242,7 +250,7 @@ const onCoverError = () => {
     imgIndex.value = 0
     return
   }
-  if (coverStage.value < 3) {
+  if (coverStage.value < 4) {
     coverStage.value += 1
   }
 }

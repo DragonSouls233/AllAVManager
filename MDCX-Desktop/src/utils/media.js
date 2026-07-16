@@ -45,6 +45,40 @@ export const getFileProxyUrl = (path) => {
 }
 
 /**
+ * 获取模块影片封面 URL
+ * 处理三种情况：
+ *  1. cover_url 是 HTTP URL → 直接使用
+ *  2. cover_url 是本地路径 → 通过文件代理
+ *  3. cover_url 为空 → 返回占位图
+ */
+export const getCoverSrc = (movie) => {
+  if (movie?.cover_url) {
+    if (/^https?:\/\//i.test(movie.cover_url)) {
+      return movie.cover_url
+    }
+    return getFileProxyUrl(movie.cover_url)
+  }
+  return defaultCover(movie?.code || movie?.title)
+}
+
+/**
+ * 获取模块演员头像 URL
+ * 处理三种情况：
+ *  1. avatar_url 是 HTTP URL → 直接使用
+ *  2. avatar_url 是本地路径 → 通过文件代理
+ *  3. avatar_url 为空 → 返回占位图
+ */
+export const getAvatarSrc = (actor) => {
+  if (actor?.avatar_url) {
+    if (/^https?:\/\//i.test(actor.avatar_url)) {
+      return actor.avatar_url
+    }
+    return getFileProxyUrl(actor.avatar_url)
+  }
+  return defaultAvatar(actor?.name)
+}
+
+/**
  * 获取字幕文件 URL(用于 <track> 标签加载 VTT/SRT)
  * @param {number|string} movieId - 影片 ID
  * @param {string} [subPath] - 字幕文件子路径(可选)
