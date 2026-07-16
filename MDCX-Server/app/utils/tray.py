@@ -1,193 +1,139 @@
 """
-系统托盘模块 - 支持 Windows 系统托盘运行
+系统托盘模块 - 桌面系统托盘 + 控制台窗口管理
 """
 
 import os
 import sys
 import threading
 import webbrowser
-from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
-from app.config.manager import get_config
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 全局托盘实例
 _tray_instance: Optional[pystray.Icon] = None
-_server_process = None
+_on_quit: Optional[Callable] = None
+_on_restart: Optional[Callable] = None
+_on_toggle_console: Optional[Callable] = None
 
 
-def create_default_icon() -> Image.Image:
-    """创建默认托盘图标"""
-    width = 64
-    height = 64
-    image = Image.new("RGB", (width, height), color=(66, 133, 244))
-    draw = ImageDraw.Draw(image)
-
-    # 绘制一个简单的播放按钮图标
-    center_x, center_y = width // 2, height // 2
-    triangle_points = [
-        (center_x - 15, center_y - 20),
-        (center_x - 15, center_y + 20),
-        (center_x + 20, center_y),
-    ]
-    draw.polygon(triangle_points, fill=(255, 255, 255))
-
-    return image
+def _create_icon() -> Image.Image:
+    """创建托盘图标（MDCX 风格）"""
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # 深色背景圆形
+    draw.ellipse([2, 2, size - 2, size - 2], fill=(30, 41, 59, 255))
+    # 字母 "M" 图形
+    draw.polygon([
+        (12, 22), (20, 22), (32, 38), (44, 22), (52, 22),
+        (52, 42), (46, 42), (46, 30), (32, 48), (18, 30),
+        (18, 42), (12, 42)
+    ], fill=(96, 165, 250, 255))
+    return img
 
 
-def create_menu(backend_url: str, frontend_url: str) -> pystray.Menu:
-    """创建托盘菜单"""
-    return pystray.Menu(
-        pystray.MenuItem(
-            "打开前台",
-            lambda _: open_url(frontend_url),
-        ),
-        pystray.MenuItem(
-            "打开后台 API",
-            lambda _: open_url(backend_url),
-        ),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(
-            "启动/重启服务",
-            lambda _: restart_services(),
-        ),
-        pystray.MenuItem(
-            "停止服务",
-            lambda _: stop_services(),
-        ),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(
-            "退出",
-            lambda _: quit_app(),
-        ),
-    )
+def _toggle_console():
+    """显示/隐藏控制台窗口"""
+    global _on_toggle_console
+    if _on_toggle_console:
+        _on_toggle_console()
 
 
-def open_url(url: str):
-    """打开浏览器"""
+def _open_browser(url: str):
+    """在浏览器中打开"""
     try:
         webbrowser.open(url)
-        logger.info(f"已打开: {url}")
+        logger.info(f"已打开浏览器: {url}")
     except Exception as e:
         logger.error(f"打开浏览器失败: {e}")
 
 
-def restart_services():
-    """重启服务"""
-    global _server_process
-    stop_services()
-    # 重新启动服务需要在外部处理
-    logger.info("服务重启请求已发送")
+def _do_restart():
+    """执行重启"""
+    global _on_restart
+    if _on_restart:
+        _on_restart()
 
 
-def stop_services():
-    """停止服务"""
-    global _server_process
-    if _server_process:
-        try:
-            _server_process.terminate()
-            _server_process = None
-            logger.info("服务已停止")
-        except Exception as e:
-            logger.error(f"停止服务失败: {e}")
-
-
-def quit_app():
-    """退出应用"""
-    global _tray_instance
-    stop_services()
+def _do_quit():
+    """退出"""
+    global _on_quit, _tray_instance
+    if _on_quit:
+        _on_quit()
     if _tray_instance:
         _tray_instance.stop()
-    sys.exit(0)
+    os._exit(0)
 
 
-def run_in_tray(backend_url: str = "http://localhost:8420", frontend_url: str = "http://localhost:8420"):
+def run_tray(
+    port: int = 8420,
+    host: str = "0.0.0.0",
+    on_quit: Callable = None,
+    on_restart: Callable = None,
+    on_toggle_console: Callable = None,
+):
     """
-    在系统托盘中运行应用
+    启动系统托盘
 
     Args:
-        backend_url: 后端 API 地址
-        frontend_url: 前端地址（Docker模式下与后端相同）
+        port: 服务端口
+        host: 监听地址
+        on_quit: 退出回调
+        on_restart: 重启回调
+        on_toggle_console: 切换控制台可见性回调
     """
-    global _tray_instance
+    global _tray_instance, _on_quit, _on_restart, _on_toggle_console
+    _on_quit = on_quit
+    _on_restart = on_restart
+    _on_toggle_console = on_toggle_console
 
-    # 如果是 Docker 模式，前端和后端使用相同地址
-    icon = create_default_icon()
-    menu = create_menu(backend_url, frontend_url)
+    local_url = f"http://127.0.0.1:{port}"
+    api_url = f"http://127.0.0.1:{port}/api/v1"
+
+    icon = _create_icon()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("📂 打开管理界面", lambda _: _open_browser(local_url)),
+        pystray.MenuItem("📋 API 文档", lambda _: _open_browser(f"{api_url}/docs")),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("🪟 显示/隐藏控制台", lambda _: _toggle_console()),
+        pystray.MenuItem("🔄 重启服务", lambda _: _do_restart()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("❌ 退出", lambda _: _do_quit()),
+    )
 
     _tray_instance = pystray.Icon(
-        "MDCX",
+        "mdcx-server",
         icon,
-        "MDCX 媒体库管理系统",
+        "MDCX 服务端\n龙魂视频管理系统",
         menu,
     )
 
-    logger.info("系统托盘已启动")
+    logger.info("系统托盘已启动（右下角图标）")
     _tray_instance.run()
 
 
-def start_tray_background(backend_port: int = 8420, is_docker: bool = False):
+def start_tray(
+    port: int = 8420,
+    host: str = "0.0.0.0",
+    on_quit: Callable = None,
+    on_restart: Callable = None,
+    on_toggle_console: Callable = None,
+) -> threading.Thread:
     """
-    在后台启动托盘
+    在后台线程启动系统托盘
 
-    Args:
-        backend_port: 后端端口
-        is_docker: 是否在 Docker 环境中运行
+    Returns: 托盘线程
     """
-    if is_docker:
-        # Docker 模式下，前端通过后端静态文件服务
-        frontend_url = f"http://localhost:{backend_port}"
-    else:
-        # 非 Docker 模式，前端运行在 3000 端口
-        frontend_url = "http://localhost:3000"
-
-    backend_url = f"http://localhost:{backend_port}"
-
-    # 在新线程中运行托盘
-    tray_thread = threading.Thread(
-        target=run_in_tray,
-        args=(backend_url, frontend_url),
+    thread = threading.Thread(
+        target=run_tray,
+        args=(port, host, on_quit, on_restart, on_toggle_console),
         daemon=True,
     )
-    tray_thread.start()
-
-    return tray_thread
-
-
-class TrayRunner:
-    """托盘运行器 - 用于管理托盘生命周期"""
-
-    def __init__(self, backend_port: int = 8420, is_docker: bool = False):
-        self.backend_port = backend_port
-        self.is_docker = is_docker
-        self.tray_thread: Optional[threading.Thread] = None
-
-    def start(self):
-        """启动托盘"""
-        if self.is_docker:
-            frontend_url = f"http://localhost:{self.backend_port}"
-        else:
-            frontend_url = "http://localhost:3000"
-
-        backend_url = f"http://localhost:{self.backend_port}"
-
-        self.tray_thread = threading.Thread(
-            target=run_in_tray,
-            args=(backend_url, frontend_url),
-            daemon=True,
-        )
-        self.tray_thread.start()
-        logger.info("系统托盘已启动")
-
-    def stop(self):
-        """停止托盘"""
-        global _tray_instance
-        if _tray_instance:
-            _tray_instance.stop()
-            logger.info("系统托盘已停止")
+    thread.start()
+    return thread

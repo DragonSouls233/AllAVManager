@@ -117,7 +117,7 @@ class ScraperEngine:
                 else:
                     callback(self._progress)
             except Exception as e:
-                logger.error(f"Progress callback error: {e}")
+                logger.error(f"进度回调错误: {e}")
     
     async def scrape_number(
         self,
@@ -143,7 +143,7 @@ class ScraperEngine:
             crawlers = [c for c in crawlers if c.name in sources]
 
         if not crawlers:
-            logger.warning(f"No crawler found for number: {number}")
+            logger.warning(f"未找到适用于番号 {number} 的爬虫")
             return None
 
         # 创建单次刮削共享上下文（复用 HTTP session / cookies / proxy / 指纹）
@@ -158,7 +158,7 @@ class ScraperEngine:
             try:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
             except Exception as e:
-                logger.error(f"Scrape error for {number}: {e}")
+                logger.error(f"刮削 {number} 失败: {e}")
                 return None
 
         # 过滤有效结果
@@ -172,7 +172,7 @@ class ScraperEngine:
             from app.scraper.merger import merge_results
             merged = merge_results(valid_results)
             if merged:
-                logger.info(f"Merged {len(valid_results)} results for {number}")
+                logger.info(f"已合并 {len(valid_results)} 个爬虫结果为番号 {number}")
                 return merged
 
         return valid_results[0]
@@ -207,11 +207,11 @@ class ScraperEngine:
                 return result
 
             except asyncio.TimeoutError:
-                logger.warning(f"Crawler {crawler.name} timeout for {number}")
+                logger.warning(f"爬虫 {crawler.name} 刮削 {number} 超时")
                 return None
 
             except Exception as e:
-                logger.error(f"Crawler {crawler.name} error for {number}: {e}")
+                logger.error(f"爬虫 {crawler.name} 刮削 {number} 出错: {e}")
                 return None
     
     async def scrape_file(
@@ -236,10 +236,10 @@ class ScraperEngine:
         number_result = extract_number(filename)
         
         if not number_result.number:
-            logger.warning(f"Cannot extract number from: {filename}")
+            logger.warning(f"无法从文件名中提取番号: {filename}")
             return None
         
-        logger.info(f"Extracted number: {number_result.number} (type={number_result.number_type})")
+        logger.info(f"已提取番号: {number_result.number} (类型={number_result.number_type})")
         
         # 刮削番号
         result = await self.scrape_number(number_result.number, sources)

@@ -115,6 +115,19 @@ webhook:
   wechat_url: null
   enabled: false
 
+# ===== 自动备份配置 =====
+backup:
+  enabled: true           # 默认开启（可关闭）
+  interval: daily         # 备份频率：daily / weekly / hourly
+  schedule_time: "03:00"  # 执行时间（HH:MM）
+  schedule_day: 0         # 每周模式执行日（0=周日）
+  max_backups: 7          # 最大保留备份数
+  backup_database: true   # 备份数据库
+  backup_config: true     # 备份配置文件
+  backup_logs: false      # 备份日志文件
+  compress: true          # 压缩备份为 .tar.gz
+  backup_dir: ""          # 自定义备份目录（留空= data/backups）
+
 log:
   level: INFO
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

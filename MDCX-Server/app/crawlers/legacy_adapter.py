@@ -46,7 +46,7 @@ class LegacyCrawlerAdapter(BaseCrawler):
             ScrapeResult 刮削结果
         """
         if not self._main_func:
-            logger.error(f"Crawler {self.name} has no _main_func defined")
+            logger.error(f"爬虫 {self.name} 未定义 _main_func 方法")
             return None
 
         try:
@@ -60,7 +60,7 @@ class LegacyCrawlerAdapter(BaseCrawler):
             return self._parse_result(raw_result, code)
 
         except Exception as e:
-            logger.error(f"{self.name} scrape error for {code}: {e}")
+            logger.error(f"爬虫 {self.name} 刮削 {code} 出错: {e}")
             return None
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
@@ -157,7 +157,7 @@ class LegacyCrawlerAdapter(BaseCrawler):
             )
 
         except Exception as e:
-            logger.error(f"Parse result error for {self.name}: {e}")
+            logger.error(f"解析爬虫 {self.name} 结果出错: {e}")
             return None
 
     def _parse_actors(self, data: dict) -> list[ActorInfo]:

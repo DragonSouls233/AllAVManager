@@ -76,7 +76,7 @@ class NumberMatcher:
         if best_number:
             best_number = best_number.strip().upper().replace('_', '-')
 
-        logger.debug(f"Matched number: {best_number} (confidence={best_confidence:.2f}, source={source})")
+        logger.debug(f"匹配番号: {best_number} (置信度={best_confidence:.2f}, 来源={source})")
 
         return best_number, best_confidence
     
