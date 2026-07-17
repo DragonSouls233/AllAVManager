@@ -34,31 +34,75 @@ logger = get_logger(__name__)
 # 正确逻辑：优先 sys.frozen（PyInstaller 标志），否则用 __file__ 的 3 层 .parent。
 # 同时检测 app/ 在哪个位置（_MEIPASS 或 cwd），找到真正的 MDCX-Server 根。
 import sys
+
 if getattr(sys, "frozen", False):
-    # PyInstaller 打包: exe 所在目录 = 部署根
     _exe_dir = Path(sys.executable).resolve().parent
     _internal = _exe_dir / "_internal"
-    # app/ 在 _internal 下或直接在 exe 旁
     if (_internal / "app" / "__init__.py").exists():
-        PROJECT_ROOT = _internal
+        _project_root = _internal
     elif (_exe_dir / "app" / "__init__.py").exists():
-        PROJECT_ROOT = _exe_dir
+        _project_root = _exe_dir
     else:
-        # 兜底：源码模式 fallback
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+        _project_root = Path(__file__).resolve().parent.parent.parent
 else:
-    # 源码运行: __file__ = MDCX-Server/app/config/manager.py, 3 层 .parent = MDCX-Server/
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _project_root = Path(__file__).resolve().parent.parent.parent
+
+PROJECT_ROOT = _project_root
 
 
 def _resolve_data_dir() -> Path:
+    """解析数据目录路径。
+
+    优先级：
+      1. 环境变量 MDCX_DATA_DIR / SCRAPER_DATA_DIR（绝对或相对项目根）
+      2. 项目根下的 data/ 目录
+      3. 如果项目根下的 data/ 不存在，遍历所有有效盘符查找 \\MDCX-Server\\data
+         （兼容开发机和服务器盘符不一致的场景）
+
+    返回确认存在的绝对路径，若找不到则抛出 FileNotFoundError。
+    """
+    # 1) 环境变量优先
     env = os.getenv("MDCX_DATA_DIR") or os.getenv("SCRAPER_DATA_DIR")
     if env:
         p = Path(env)
         if not p.is_absolute():
             p = PROJECT_ROOT / p
-        return p
-    return PROJECT_ROOT / "data"
+        if p.exists():
+            return p.resolve()
+        logger.warning("环境变量指定的数据目录不存在: %s，回退到自动检测", p)
+
+    # 2) 项目根下的 data/
+    default_data = (PROJECT_ROOT / "data").resolve()
+    if default_data.exists():
+        return default_data
+
+    # 3) 遍历盘符查找
+    import string
+
+    logger.info(r"项目根下 %s/data 不存在，开始遍历盘符查找 \MDCX-Server\data ...", PROJECT_ROOT)
+    scanned = []
+    for letter in string.ascii_uppercase:
+        drive = f"{letter}:\\"
+        candidate = Path(drive) / "MDCX-Server" / "data"
+        scanned.append(drive)
+        if candidate.exists():
+            logger.info("盘符遍历命中: %s", candidate)
+            # 同步更新全局 PROJECT_ROOT 至对应盘符
+            # 注意：在此处通过 globals() 修改模块级 PROJECT_ROOT
+            _new_root = Path(drive) / "MDCX-Server"
+            globals()["PROJECT_ROOT"] = _new_root.resolve()
+            return candidate.resolve()
+
+    # 4) 全部未命中 → 抛出清晰异常
+    scanned_str = ", ".join(scanned)
+    err_msg = (
+        "未在任何盘符下找到数据目录 \\MDCX-Server\\data！\n"
+        f"已扫描盘符: {scanned_str}\n"
+        f"项目根: {PROJECT_ROOT}\n"
+        "请确认服务端已正确安装，或通过环境变量 MDCX_DATA_DIR 指定数据目录路径。"
+    )
+    logger.error(err_msg)
+    raise FileNotFoundError(err_msg)
 
 
 DATA_DIR = _resolve_data_dir()

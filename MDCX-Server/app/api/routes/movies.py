@@ -19,6 +19,8 @@ import logging
 
 from app.db.database import get_session
 from app.db.models import Movie, Actor, MovieActor, MovieTag, Tag, Studio, Series, FavoriteItem, FavoriteGroup
+from app.utils.media_helpers import collect_media_dirs, search_video_in_media_dirs
+from app.utils.media_helpers import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -520,28 +522,19 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
     if output_dir:
         od = Path(output_dir)
         if od.exists() and od.is_dir():
-            for img_name in ('poster.jpg', 'cover.jpg', 'fanart.jpg', 'thumb.jpg'):
-                img_path = od / img_name
-                if img_path.exists() and img_path.is_file():
-                    # 回填 DB 字段，下次直接命中第 1 步
-                    try:
-                        if img_name in ('poster.jpg', 'cover.jpg'):
-                            movie.cover_url = str(img_path)
-                        elif img_name == 'thumb.jpg':
-                            movie.thumb_url = str(img_path)
-                        elif img_name == 'fanart.jpg':
-                            movie.poster_url = str(img_path)
-                        await session.commit()
-                    except Exception:
-                        pass
-                    return str(img_path)
-            # 也试试 <番号>-poster.jpg 等命名
-            code = getattr(movie, 'code', '')
-            if code:
-                for suffix in ('-poster.jpg', '-fanart.jpg', '-thumb.jpg', '-cover.jpg'):
-                    img_path = od / f"{code}{suffix}"
-                    if img_path.exists() and img_path.is_file():
-                        return str(img_path)
+            found = await _search_cover_in_output_dir(movie, od, session)
+            if found:
+                return found
+        # output_dir 不存在（如旧数据 C:\output\xxx），回退到 config 的输出目录
+        elif not od.exists():
+            fallback = await _search_cover_in_config_output_dir(movie, session)
+            if fallback:
+                return fallback
+    else:
+        # output_dir 为空，直接尝试 config 输出目录
+        fallback = await _search_cover_in_config_output_dir(movie, session)
+        if fallback:
+            return fallback
 
     # 3) 前端传来的 t 参数（候选封面绝对路径）
     if t_param:
@@ -550,29 +543,18 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
             await _backfill_cover(movie, str(tp), session)
             return str(tp)
 
-    # 3b) 兜底：扫描各模块 media_dirs 下 <code> 目录中的标准图片
+    # 3b) 兜底：扫描各模块 media_dirs 下 <code> 目录中的标准图片（限深度，避免全盘扫描）
     code = getattr(movie, 'code', None)
     if code:
         try:
             from app.config.manager import get_config
+            from app.utils.media_helpers import collect_media_dirs, scan_media_dirs_for_cover
             cfg = get_config()
-            media_dirs = _collect_media_dirs(cfg)
-            for d in media_dirs:
-                d_path = Path(d)
-                if not d_path.exists() or not d_path.is_dir():
-                    continue
-                code_dir = d_path / code
-                if code_dir.exists() and code_dir.is_dir():
-                    for img_name in ('poster.jpg', 'cover.jpg', 'fanart.jpg', 'thumb.jpg'):
-                        img_path = code_dir / img_name
-                        if img_path.exists() and img_path.is_file():
-                            await _backfill_cover(movie, str(img_path), session)
-                            return str(img_path)
-                    # 扫描目录内任意第一张图片
-                    for fp in sorted(code_dir.iterdir()):
-                        if fp.is_file() and fp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
-                            await _backfill_cover(movie, str(fp), session)
-                            return str(fp)
+            media_dirs = collect_media_dirs(cfg)
+            cover_path = scan_media_dirs_for_cover(media_dirs, code, max_depth=3)
+            if cover_path:
+                await _backfill_cover(movie, cover_path, session)
+                return cover_path
         except Exception:
             pass
 
@@ -591,6 +573,87 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
                 if fp.is_file() and fp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
                     await _backfill_cover(movie, str(fp), session)
                     return str(fp)
+    return None
+
+
+# ===== 封面路径辅助函数 =====
+
+_SOURCE_MODULE_MAP = {
+    "javbus": "jav", "jdb": "jav", "j321": "jav", "jbus": "jav",
+    "base": "jav", "xcity": "jav", "iqqtv": "jav", "mgstage": "jav",
+    "sox": "jav", "fanza": "jav", "jday": "jav", "air": "jav",
+    "freejavbt": "jav", "javdb": "jav", "jmenu": "jav",
+    "fc2ppvdb": "fc2", "fc2": "fc2", "fc2search": "fc2",
+    "chinese": "chinese", "pornhub": "pornhub",
+    "western": "western", "uncensored": "uncensored",
+}
+
+
+def _source_to_module(source: str) -> str:
+    """将刮削来源(source)映射到模块子目录名称"""
+    if not source:
+        return "jav"  # 默认放到 JAV
+    return _SOURCE_MODULE_MAP.get(source, source)
+
+
+async def _search_cover_in_output_dir(movie, od: Path, session) -> Optional[str]:
+    """在 output_dir 中搜索标准封面图片"""
+    for img_name in ('poster.jpg', 'cover.jpg', 'fanart.jpg', 'thumb.jpg'):
+        img_path = od / img_name
+        if img_path.exists() and img_path.is_file():
+            # 回填 DB 字段，下次直接命中第 1 步
+            try:
+                if img_name in ('poster.jpg', 'cover.jpg'):
+                    movie.cover_url = str(img_path)
+                elif img_name == 'thumb.jpg':
+                    movie.thumb_url = str(img_path)
+                elif img_name == 'fanart.jpg':
+                    movie.poster_url = str(img_path)
+                await session.commit()
+            except Exception:
+                pass
+            return str(img_path)
+    # 也试试 <番号>-poster.jpg 等命名
+    code = getattr(movie, 'code', '')
+    if code:
+        for suffix in ('-poster.jpg', '-fanart.jpg', '-thumb.jpg', '-cover.jpg'):
+            img_path = od / f"{code}{suffix}"
+            if img_path.exists() and img_path.is_file():
+                return str(img_path)
+    return None
+
+
+async def _search_cover_in_config_output_dir(movie, session) -> Optional[str]:
+    """
+    当 movie.output_dir 不存在或为空时，使用 config.scraper.output_dir
+    构造可能的封面路径：output_dir / <module> / <code> / cover.jpg
+    """
+    try:
+        from app.config.manager import get_config
+        cfg = get_config()
+        base_dir = Path(cfg.scraper.output_dir)
+        if not base_dir.exists() or not base_dir.is_dir():
+            return None
+        # 用 source 映射到模块子目录
+        source = getattr(movie, 'source', None) or ''
+        module_name = _source_to_module(source)
+        code = getattr(movie, 'code', None)
+        if not code:
+            return None
+        # 尝试 output_dir / <module> / <code> /
+        expected_dir = base_dir / module_name / code
+        if expected_dir.exists() and expected_dir.is_dir():
+            result = await _search_cover_in_output_dir(movie, expected_dir, session)
+            if result:
+                return result
+        # 也尝试不加 module 子目录（兼容旧结构）
+        expected_dir_direct = base_dir / code
+        if expected_dir_direct.exists() and expected_dir_direct.is_dir():
+            result = await _search_cover_in_output_dir(movie, expected_dir_direct, session)
+            if result:
+                return result
+    except Exception:
+        pass
     return None
 
 
@@ -847,58 +910,6 @@ async def get_movie_thumb_file(
 
 
 # ===== 视频播放 =====
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".webm"}
-
-
-def _collect_media_dirs(cfg) -> list[str]:
-    """
-    收集所有可用的媒体目录：
-    1. scraper.media_dirs（旧配置）
-    2. 所有已启用模块的 media_dirs（新配置）
-    """
-    dirs = []
-    # 旧配置：scraper.media_dirs
-    scraper_dirs = getattr(cfg.scraper, "media_dirs", None) or []
-    dirs.extend(scraper_dirs)
-    # 新配置：modules.*.media_dirs
-    modules = getattr(cfg, "modules", None)
-    if modules:
-        for mod_name in ["jav", "uncensored", "fc2", "chinese", "pornhub", "western"]:
-            mod = getattr(modules, mod_name, None)
-            if mod and getattr(mod, "enabled", False):
-                mod_dirs = getattr(mod, "media_dirs", None) or []
-                dirs.extend(mod_dirs)
-    # 去重并保留顺序
-    seen = set()
-    unique = []
-    for d in dirs:
-        normalized = d.rstrip("\\/")
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            unique.append(d)
-    return unique
-
-
-def _search_video_in_media_dirs(media_dirs: list[str], code_lower: str) -> Optional[Path]:
-    """在 media_dirs 中递归搜索匹配番号的视频文件"""
-    import logging
-    logger = logging.getLogger(__name__)
-    for d in media_dirs:
-        base = Path(d)
-        if not base.exists():
-            continue
-        try:
-            for f in base.rglob("*"):
-                if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS:
-                    fname = f.stem.lower()
-                    # 文件名包含番号则匹配（如 ABP-001.mp4 匹配 abp-001）
-                    if code_lower in fname:
-                        logger.info("在 media_dirs 中找到视频文件: %s", f)
-                        return f
-        except Exception as e:
-            logger.warning("搜索媒体目录 %s 时出错: %s", d, e)
-            continue
-    return None
 
 
 @router.get("/{movie_id}/play")
@@ -927,11 +938,11 @@ async def play_video(
     if file_path is None:
         from app.config.manager import get_config
         cfg = get_config()
-        media_dirs = _collect_media_dirs(cfg)
+        media_dirs = collect_media_dirs(cfg)
         code_lower = (movie.code or "").lower()
-        resolved_path = _search_video_in_media_dirs(media_dirs, code_lower)
+        resolved_path = search_video_in_media_dirs(media_dirs, code_lower)
         if resolved_path:
-            file_path = resolved_path
+            file_path = Path(resolved_path)
             # 回填到数据库
             movie.file_path = str(file_path)
             try:
@@ -943,7 +954,7 @@ async def play_video(
         raise HTTPException(status_code=404, detail="视频文件不存在")
 
     ext = file_path.suffix.lower()
-    if ext not in VIDEO_EXTENSIONS:
+    if ext not in _VIDEO_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不支持播放 {ext} 格式")
 
     media_type = "video/mp4"
@@ -1278,7 +1289,7 @@ async def auto_link_files(
 
     # 从配置获取媒体目录（合并 scraper + 各模块已启用的目录）
     manager = get_config_manager()
-    media_dirs = _collect_media_dirs(manager.config)
+    media_dirs = collect_media_dirs(manager.config)
 
     if not media_dirs:
         raise HTTPException(status_code=400, detail="未配置媒体目录，请在设置页面配置各模块的媒体目录")
@@ -2852,24 +2863,6 @@ def _detail_referer(source: str | None, code: str | None) -> str | None:
     if base and code:
         return f"{base}/{code}"
     return None
-
-
-# 刮削来源 → 模块子目录 映射
-_SOURCE_MODULE_MAP = {
-    "javbus": "jav", "jdb": "jav", "j321": "jav", "jbus": "jav",
-    "base": "jav", "xcity": "jav", "iqqtv": "jav", "mgstage": "jav",
-    "sox": "jav", "fanza": "jav", "jday": "jav", "air": "jav",
-    "freejavbt": "jav", "javdb": "jav", "jmenu": "jav",
-    "fc2ppvdb": "fc2", "fc2": "fc2", "fc2search": "fc2",
-    "chinese": "chinese", "pornhub": "pornhub",
-    "western": "western", "uncensored": "uncensored",
-}
-
-def _source_to_module(source: str) -> str:
-    """将刮削来源(source)映射到模块子目录名称"""
-    if not source:
-        return "jav"  # 默认放到 JAV
-    return _SOURCE_MODULE_MAP.get(source, source)
 
 
 async def _persist_scraped_media(result, code: str):

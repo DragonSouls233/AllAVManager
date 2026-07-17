@@ -962,6 +962,21 @@ async def get_actor_avatar_file(
     except Exception:
         pass  # 本地库未配置或异常,继续
 
+    # 4) 最后兜底：搜索各模块 media_dirs 下的头像文件
+    # 搜索模式：media_dir/actors/{name}.jpg, media_dir/actor_avatars/{name}.jpg 等
+    if actor.name:
+        try:
+            from app.config.manager import get_config
+            from app.utils.media_helpers import collect_media_dirs, scan_media_dirs_for_avatar
+            cfg = get_config()
+            media_dirs = collect_media_dirs(cfg)
+            avatar_path = scan_media_dirs_for_avatar(media_dirs, actor.name, actor.name_jp)
+            if avatar_path:
+                media_type = _get_image_media_type(Path(avatar_path))
+                return FileResponse(avatar_path, media_type=media_type)
+        except Exception:
+            pass
+
     raise HTTPException(status_code=404, detail="头像不存在")
 
 
