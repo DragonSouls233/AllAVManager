@@ -186,7 +186,13 @@ const loadActors = async () => {
       min_movies: minMoviesForFilter.value
     }
     const res = await getActors(params)
-    actors.value = res.items || []
+    // 解码 HTML 实体（修复数据中含 < > & 等特殊字符导致渲染异常）
+    const items = (res.items || []).map(a => ({
+      ...a,
+      name: new DOMParser().parseFromString(a.name || '', 'text/html').body.textContent || a.name,
+      name_jp: a.name_jp ? new DOMParser().parseFromString(a.name_jp, 'text/html').body.textContent || a.name_jp : a.name_jp
+    }))
+    actors.value = items
     total.value = res.total || 0
   } catch (e) {
     console.error(e)

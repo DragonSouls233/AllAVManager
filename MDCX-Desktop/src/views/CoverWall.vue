@@ -109,7 +109,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getServerBaseUrl, getMovieCoverUrl } from '@/utils/media'
+import { getMovieCoverUrl } from '@/utils/media'
+import { getMovies } from '@/api'
 
 const router = useRouter()
 
@@ -164,16 +165,15 @@ async function loadData() {
   loading.value = true
   page.value = 1
   try {
-    const params = new URLSearchParams({
+    const params = {
       page: page.value,
       page_size: pageSize,
       sort_by: sortBy.value,
-    })
-    if (keyword.value) params.set('keyword', keyword.value)
-    if (moduleFilter.value) params.set('module', moduleFilter.value)
+    }
+    if (keyword.value) params.keyword = keyword.value
+    if (moduleFilter.value) params.module = moduleFilter.value
 
-    const res = await fetch(`${getServerBaseUrl()}/api/movies?${params}`)
-    const data = await res.json()
+    const data = await getMovies(params)
     items.value = data.items || []
     totalCount.value = data.total || 0
   } catch (e) {
@@ -188,16 +188,15 @@ async function loadMore() {
   loading.value = true
   page.value++
   try {
-    const params = new URLSearchParams({
+    const params = {
       page: page.value,
       page_size: pageSize,
       sort_by: sortBy.value,
-    })
-    if (keyword.value) params.set('keyword', keyword.value)
-    if (moduleFilter.value) params.set('module', moduleFilter.value)
+    }
+    if (keyword.value) params.keyword = keyword.value
+    if (moduleFilter.value) params.module = moduleFilter.value
 
-    const res = await fetch(`${getServerBaseUrl()}/api/movies?${params}`)
-    const data = await res.json()
+    const data = await getMovies(params)
     items.value.push(...(data.items || []))
     totalCount.value = data.total || 0
   } catch (e) {

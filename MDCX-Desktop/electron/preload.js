@@ -84,6 +84,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('task-control', handler)
   },
 
+  // ===== 文件夹选择器 =====
+  selectFolder: () => ipcRenderer.invoke('select-folder'),
+
   // ===== 后端自动探测 =====
   detectBackend: () => ipcRenderer.invoke('backend-detect'),
 })

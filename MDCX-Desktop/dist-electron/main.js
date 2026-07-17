@@ -1,11 +1,11 @@
-import { app as a, nativeTheme as y, BrowserWindow as U, ipcMain as c, shell as N, globalShortcut as m, Menu as L, nativeImage as z, Tray as V, Notification as D } from "electron";
-import { fileURLToPath as q } from "url";
-import { dirname as B, join as g } from "path";
-import { mkdirSync as J, appendFileSync as Q, existsSync as M, readFileSync as j, writeFileSync as Y } from "fs";
-import { createRequire as H } from "module";
-const x = H(import.meta.url), X = q(import.meta.url), v = B(X);
+import { app as a, nativeTheme as y, BrowserWindow as U, ipcMain as c, shell as N, globalShortcut as m, Menu as L, nativeImage as D, Tray as V, Notification as z, dialog as q } from "electron";
+import { fileURLToPath as B } from "url";
+import { dirname as J, join as g } from "path";
+import { mkdirSync as Q, appendFileSync as j, existsSync as M, readFileSync as Y, writeFileSync as H } from "fs";
+import { createRequire as X } from "module";
+const x = X(import.meta.url), K = B(import.meta.url), v = J(K);
 let t = null, f = null, A = !1;
-const K = process.env.NODE_ENV === "development";
+const G = process.env.NODE_ENV === "development";
 a.disableHardwareAcceleration();
 a.commandLine.appendSwitch("no-sandbox");
 a.commandLine.appendSwitch("disable-gpu");
@@ -14,17 +14,17 @@ a.commandLine.appendSwitch("disable-gpu-compositing");
 a.commandLine.appendSwitch("disable-gpu-rasterization");
 a.commandLine.appendSwitch("in-process-gpu");
 a.commandLine.appendSwitch("disable-features", "VizDisplayCompositor");
-function s(o) {
+function s(n) {
   try {
     const e = g(a.getPath("userData"), "logs");
-    J(e, { recursive: !0 }), Q(g(e, "desktop.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${o}
+    Q(e, { recursive: !0 }), j(g(e, "desktop.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${n}
 `, "utf8");
   } catch (e) {
     console.error(e);
   }
 }
-function C(o, e) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${o}</title><style>body{margin:0;background:#111827;color:#e5e7eb;font-family:Arial,"Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;height:100vh}.box{max-width:760px;padding:32px;background:#1f2937;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.35)}h1{margin:0 0 16px;color:#60a5fa}pre{white-space:pre-wrap;color:#fca5a5;background:#111827;padding:16px;border-radius:8px}</style></head><body><div class="box"><h1>${o}</h1><p>MDCX Desktop start failed.</p><pre>${e}</pre></div></body></html>`;
+function C(n, e) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${n}</title><style>body{margin:0;background:#111827;color:#e5e7eb;font-family:Arial,"Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;height:100vh}.box{max-width:760px;padding:32px;background:#1f2937;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.35)}h1{margin:0 0 16px;color:#60a5fa}pre{white-space:pre-wrap;color:#fca5a5;background:#111827;padding:16px;border-radius:8px}</style></head><body><div class="box"><h1>${n}</h1><p>MDCX Desktop start failed.</p><pre>${e}</pre></div></body></html>`;
 }
 const k = () => g(a.getPath("userData"), "desktop-prefs.json"), b = {
   // 系统托盘
@@ -48,18 +48,18 @@ const k = () => g(a.getPath("userData"), "desktop-prefs.json"), b = {
   theme: "system"
   // light / dark / system
 };
-function G() {
+function Z() {
   try {
     if (!M(k())) return { ...b };
-    const o = JSON.parse(j(k(), "utf8"));
-    return { ...b, ...o };
-  } catch (o) {
-    return s(`loadPrefs failed: ${o.message}`), { ...b };
+    const n = JSON.parse(Y(k(), "utf8"));
+    return { ...b, ...n };
+  } catch (n) {
+    return s(`loadPrefs failed: ${n.message}`), { ...b };
   }
 }
-function Z(o) {
+function W(n) {
   try {
-    Y(k(), JSON.stringify(o, null, 2), "utf8");
+    H(k(), JSON.stringify(n, null, 2), "utf8");
   } catch (e) {
     s(`savePrefs failed: ${e.message}`);
   }
@@ -83,34 +83,34 @@ function w() {
     show: !l.start_minimized,
     backgroundColor: "#111827"
   });
-  const o = () => {
+  const n = () => {
     if (!t) return;
     const e = t.isMaximized() ? "maximized" : "normal";
     t.webContents.send("window-state-changed", e);
   };
-  if (t.on("maximize", o), t.on("unmaximize", o), t.on("close", (e) => {
+  if (t.on("maximize", n), t.on("unmaximize", n), t.on("close", (e) => {
     s(`window close event, isQuiting=${A}, closeToTray=${l.close_to_tray}`), !A && l.close_to_tray && f && (e.preventDefault(), t.hide());
   }), t.on("closed", () => {
     s("window closed"), t = null;
-  }), t.webContents.on("did-fail-load", (e, n, r, d) => {
-    const i = `errorCode=${n}
+  }), t.webContents.on("did-fail-load", (e, o, r, d) => {
+    const i = `errorCode=${o}
 errorDescription=${r}
 url=${d}`;
     s(`did-fail-load ${i}`), t.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(C("页面加载失败", i))}`);
-  }), t.webContents.on("render-process-gone", (e, n) => {
-    s(`render-process-gone ${JSON.stringify(n)}`);
-  }), t.webContents.on("console-message", (e, n, r, d, i) => {
-    s(`console level=${n} ${r} ${i}:${d}`);
-  }), K)
+  }), t.webContents.on("render-process-gone", (e, o) => {
+    s(`render-process-gone ${JSON.stringify(o)}`);
+  }), t.webContents.on("console-message", (e, o, r, d, i) => {
+    s(`console level=${o} ${r} ${i}:${d}`);
+  }), G)
     s("load dev url http://localhost:5173"), t.loadURL("http://localhost:5173").catch((e) => {
       s(`load dev failed ${e.stack || e.message}`), t.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(C("开发模式加载失败", e.stack || e.message))}`);
     }), t.webContents.openDevTools();
   else {
     const e = g(v, "../dist/index.html");
-    s(`load file ${e}`), t.loadFile(e).catch((n) => {
-      s(`load file failed ${n.stack || n.message}`), t.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(C("文件加载失败", `${e}
+    s(`load file ${e}`), t.loadFile(e).catch((o) => {
+      s(`load file failed ${o.stack || o.message}`), t.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(C("文件加载失败", `${e}
 
-${n.stack || n.message}`))}`);
+${o.stack || o.message}`))}`);
     });
   }
 }
@@ -120,17 +120,17 @@ function R() {
     return;
   }
   if (f) return;
-  let o;
+  let n;
   const e = g(v, "../resources/icon.png");
-  if (M(e) && (o = z.createFromPath(e), o.isEmpty() && (s(`tray icon empty at ${e}, fallback to default`), o = null)), !o) {
+  if (M(e) && (n = D.createFromPath(e), n.isEmpty() && (s(`tray icon empty at ${e}, fallback to default`), n = null)), !n) {
     const r = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAOklEQVR4nO3OQQ0AIBADwYJ/yzcCJBkSY4h+fn3/PwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP7q2gkAAWcG5mEAAAAASUVORK5CYII=",
       "base64"
     );
-    o = z.createFromBuffer(r);
+    n = D.createFromBuffer(r);
   }
-  f = new V(o), f.setToolTip("龙魂视频管理系统");
-  const n = L.buildFromTemplate([
+  f = new V(n), f.setToolTip("龙魂视频管理系统");
+  const o = L.buildFromTemplate([
     { label: "显示主窗口", click: () => p() },
     {
       label: "迷你模式",
@@ -154,7 +154,7 @@ function R() {
     { type: "separator" },
     { label: "退出", click: () => I() }
   ]);
-  f.setContextMenu(n), f.on("click", () => p()), f.on("double-click", () => {
+  f.setContextMenu(o), f.on("click", () => p()), f.on("double-click", () => {
     if (!t) {
       w();
       return;
@@ -172,31 +172,31 @@ function p() {
 function I() {
   A = !0, f && (f.destroy(), f = null), a.quit();
 }
-function S(o, e, n = {}) {
-  if (!D.isSupported())
-    return s(`notification not supported, skip: ${o} - ${e}`), null;
-  const r = new D({
-    title: o || "MDCX",
+function S(n, e, o = {}) {
+  if (!z.isSupported())
+    return s(`notification not supported, skip: ${n} - ${e}`), null;
+  const r = new z({
+    title: n || "MDCX",
     body: e || "",
-    silent: !!n.silent,
-    urgency: n.urgency || "normal"
+    silent: !!o.silent,
+    urgency: o.urgency || "normal"
   });
   return r.on("click", () => {
     t && (t.isMinimized() && t.restore(), t.isVisible() || t.show(), t.focus());
   }), r.show(), r;
 }
-function W(o) {
+function ee(n) {
   try {
     return a.setLoginItemSettings({
-      openAtLogin: !!o,
+      openAtLogin: !!n,
       // Windows 上通过 args 标识自启项，便于后续区分启动来源
       args: ["--hidden"]
-    }), s(`setAutoLaunch(${o}) ok`), !0;
+    }), s(`setAutoLaunch(${n}) ok`), !0;
   } catch (e) {
     return s(`setAutoLaunch failed: ${e.message}`), !1;
   }
 }
-function ee() {
+function te() {
   try {
     return !!a.getLoginItemSettings().openAtLogin;
   } catch {
@@ -206,12 +206,12 @@ function ee() {
 const h = /* @__PURE__ */ new Map();
 function E() {
   T();
-  const { shortcut_show_hide: o, shortcut_play_pause: e, shortcut_screenshot: n } = l;
-  if (o)
+  const { shortcut_show_hide: n, shortcut_play_pause: e, shortcut_screenshot: o } = l;
+  if (n)
     try {
-      m.register(o, () => {
-        t ? t.isVisible() && !t.isMinimized() ? t.hide() : p() : w(), t && t.webContents.send("global-shortcut-triggered", o);
-      }) ? h.set(o, "show_hide") : s(`failed to register shortcut: ${o}`);
+      m.register(n, () => {
+        t ? t.isVisible() && !t.isMinimized() ? t.hide() : p() : w(), t && t.webContents.send("global-shortcut-triggered", n);
+      }) ? h.set(n, "show_hide") : s(`failed to register shortcut: ${n}`);
     } catch (r) {
       s(`register shortcut_show_hide failed: ${r.message}`);
     }
@@ -223,11 +223,11 @@ function E() {
     } catch (r) {
       s(`register shortcut_play_pause failed: ${r.message}`);
     }
-  if (n)
+  if (o)
     try {
-      m.register(n, () => {
-        t && t.webContents.send("global-shortcut-triggered", n);
-      }) && h.set(n, "screenshot");
+      m.register(o, () => {
+        t && t.webContents.send("global-shortcut-triggered", o);
+      }) && h.set(o, "screenshot");
     } catch (r) {
       s(`register shortcut_screenshot failed: ${r.message}`);
     }
@@ -247,11 +247,11 @@ function E() {
   }
 }
 function T() {
-  for (const o of h.keys())
+  for (const n of h.keys())
     try {
-      m.unregister(o);
+      m.unregister(n);
     } catch (e) {
-      s(`unregister ${o} failed: ${e.message}`);
+      s(`unregister ${n} failed: ${e.message}`);
     }
   h.clear();
 }
@@ -261,33 +261,33 @@ try {
 } catch {
   s("electron-updater not installed, auto-update disabled");
 }
-function te() {
+function ne() {
   if (!u || !l.auto_update) return;
   u.autoDownload = !1, u.autoInstallOnAppQuit = !0;
-  const o = (e, n = {}) => {
-    t && t.webContents.send("updater-event", { type: e, ...n });
+  const n = (e, o = {}) => {
+    t && t.webContents.send("updater-event", { type: e, ...o });
   };
-  u.on("checking-for-update", () => o("checking")), u.on("update-available", (e) => o("available", { version: e.version, releaseNotes: e.releaseNotes })), u.on("update-not-available", () => o("not-available")), u.on("download-progress", (e) => o("progress", { percent: e.percent, transferred: e.transferred, total: e.total })), u.on("update-downloaded", (e) => o("downloaded", { version: e.version })), u.on("error", (e) => o("error", { message: (e == null ? void 0 : e.message) || String(e) })), setTimeout(() => {
+  u.on("checking-for-update", () => n("checking")), u.on("update-available", (e) => n("available", { version: e.version, releaseNotes: e.releaseNotes })), u.on("update-not-available", () => n("not-available")), u.on("download-progress", (e) => n("progress", { percent: e.percent, transferred: e.transferred, total: e.total })), u.on("update-downloaded", (e) => n("downloaded", { version: e.version })), u.on("error", (e) => n("error", { message: (e == null ? void 0 : e.message) || String(e) })), setTimeout(() => {
     u.checkForUpdates().catch((e) => s(`autoUpdater.checkForUpdates failed: ${e.message}`));
   }, 3e4);
 }
 const oe = a.requestSingleInstanceLock();
-oe ? a.on("second-instance", (o, e) => {
+oe ? a.on("second-instance", (n, e) => {
   var r;
   s("second-instance triggered, showing main window"), p();
-  const n = ((r = e == null ? void 0 : e.slice(-1)) == null ? void 0 : r[0]) || "";
-  typeof n == "string" && n.startsWith("mdcx://") && F(n);
+  const o = ((r = e == null ? void 0 : e.slice(-1)) == null ? void 0 : r[0]) || "";
+  typeof o == "string" && o.startsWith("mdcx://") && F(o);
 }) : (s("another instance is running, quitting"), a.quit());
-function F(o) {
-  if (!(!o || !o.startsWith("mdcx://"))) {
-    s(`handleOpenUrl: ${o}`);
+function F(n) {
+  if (!(!n || !n.startsWith("mdcx://"))) {
+    s(`handleOpenUrl: ${n}`);
     try {
-      const n = new URL(o).pathname.split("/").filter(Boolean);
-      if (n.length < 2) {
-        s(`invalid mdcx url: ${o}`);
+      const o = new URL(n).pathname.split("/").filter(Boolean);
+      if (o.length < 2) {
+        s(`invalid mdcx url: ${n}`);
         return;
       }
-      const [r, d] = n;
+      const [r, d] = o;
       let i = null;
       if (r === "movie") i = "/movies";
       else if (r === "actor") i = `/actors/${d}`;
@@ -296,26 +296,26 @@ function F(o) {
         s(`unknown mdcx url type: ${r}`);
         return;
       }
-      p(), t && (t.webContents.send("open-url", { type: r, id: d, route: i, raw: o }), i && t.webContents.send("navigate-route", i));
+      p(), t && (t.webContents.send("open-url", { type: r, id: d, route: i, raw: n }), i && t.webContents.send("navigate-route", i));
     } catch (e) {
       s(`handleOpenUrl failed: ${e.message}`);
     }
   }
 }
-a.on("open-url", (o, e) => {
-  o.preventDefault(), F(e);
+a.on("open-url", (n, e) => {
+  n.preventDefault(), F(e);
 });
 a.whenReady().then(() => {
-  s("app ready"), l = G(), l.theme === "dark" ? y.themeSource = "dark" : l.theme === "light" ? y.themeSource = "light" : y.themeSource = "system";
+  s("app ready"), l = Z(), l.theme === "dark" ? y.themeSource = "dark" : l.theme === "light" ? y.themeSource = "light" : y.themeSource = "system";
   try {
-    const o = a.setAsDefaultProtocolClient("mdcx");
-    s(`setAsDefaultProtocolClient('mdcx') -> ${o}`);
-  } catch (o) {
-    s(`setAsDefaultProtocolClient failed: ${o.message}`);
+    const n = a.setAsDefaultProtocolClient("mdcx");
+    s(`setAsDefaultProtocolClient('mdcx') -> ${n}`);
+  } catch (n) {
+    s(`setAsDefaultProtocolClient failed: ${n.message}`);
   }
-  w(), R(), E(), te();
-}).catch((o) => {
-  s(`app ready failed ${o.stack || o.message}`);
+  w(), R(), E(), ne();
+}).catch((n) => {
+  s(`app ready failed ${n.stack || n.message}`);
 });
 a.on("window-all-closed", () => {
   s("window-all-closed"), process.platform !== "darwin" && (l.minimize_to_tray && f || I());
@@ -335,7 +335,7 @@ a.on("will-quit", () => {
     f = null;
   }
 });
-c.on("open-external", (o, e) => {
+c.on("open-external", (n, e) => {
   N.openExternal(e);
 });
 c.on("window-minimize", () => t == null ? void 0 : t.minimize());
@@ -348,18 +348,18 @@ c.on("tray-toggle", () => {
   t != null && t.isVisible() ? t.hide() : p();
 });
 c.on("tray-show", () => p());
-c.handle("global-shortcut-register", (o, e) => {
+c.handle("global-shortcut-register", (n, e) => {
   try {
     if (h.has(e)) return !0;
-    const n = m.register(e, () => {
+    const o = m.register(e, () => {
       t == null || t.webContents.send("global-shortcut-triggered", e);
     });
-    return n && h.set(e, "dynamic"), n;
-  } catch (n) {
-    return s(`dynamic register ${e} failed: ${n.message}`), !1;
+    return o && h.set(e, "dynamic"), o;
+  } catch (o) {
+    return s(`dynamic register ${e} failed: ${o.message}`), !1;
   }
 });
-c.handle("global-shortcut-unregister", (o, e) => {
+c.handle("global-shortcut-unregister", (n, e) => {
   try {
     return h.has(e) && h.get(e) === "dynamic" && (m.unregister(e), h.delete(e)), !0;
   } catch {
@@ -367,11 +367,11 @@ c.handle("global-shortcut-unregister", (o, e) => {
   }
 });
 c.handle("updater-check", async () => {
-  var o;
+  var n;
   if (!u) return { ok: !1, error: "electron-updater not installed" };
   try {
     const e = await u.checkForUpdates();
-    return { ok: !0, version: ((o = e == null ? void 0 : e.updateInfo) == null ? void 0 : o.version) || null };
+    return { ok: !0, version: ((n = e == null ? void 0 : e.updateInfo) == null ? void 0 : n.version) || null };
   } catch (e) {
     return { ok: !1, error: e.message };
   }
@@ -380,17 +380,17 @@ c.handle("updater-download", async () => {
   if (!u) return { ok: !1, error: "electron-updater not installed" };
   try {
     return await u.downloadUpdate(), { ok: !0 };
-  } catch (o) {
-    return { ok: !1, error: o.message };
+  } catch (n) {
+    return { ok: !1, error: n.message };
   }
 });
 c.on("updater-install", () => {
   u && (A = !0, u.quitAndInstall());
 });
 c.handle("prefs-get", () => l);
-c.handle("prefs-set", (o, e) => {
-  const n = { ...l };
-  return l = { ...l, ...e }, Z(l), n.enable_tray !== l.enable_tray && R(), (n.shortcut_show_hide !== l.shortcut_show_hide || n.shortcut_play_pause !== l.shortcut_play_pause || n.shortcut_screenshot !== l.shortcut_screenshot) && E(), n.theme !== l.theme && (l.theme === "dark" ? y.themeSource = "dark" : l.theme === "light" ? y.themeSource = "light" : y.themeSource = "system"), { ok: !0, prefs: l };
+c.handle("prefs-set", (n, e) => {
+  const o = { ...l };
+  return l = { ...l, ...e }, W(l), o.enable_tray !== l.enable_tray && R(), (o.shortcut_show_hide !== l.shortcut_show_hide || o.shortcut_play_pause !== l.shortcut_play_pause || o.shortcut_screenshot !== l.shortcut_screenshot) && E(), o.theme !== l.theme && (l.theme === "dark" ? y.themeSource = "dark" : l.theme === "light" ? y.themeSource = "light" : y.themeSource = "system"), { ok: !0, prefs: l };
 });
 c.handle("app-info", () => ({
   version: a.getVersion(),
@@ -404,63 +404,71 @@ c.handle("app-info", () => ({
   logsPath: g(a.getPath("userData"), "logs"),
   prefsPath: k()
 }));
-c.handle("show-notification", (o, e, n, r) => {
+c.handle("show-notification", (n, e, o, r) => {
   try {
-    return { ok: !!S(e, n, r || {}) };
+    return { ok: !!S(e, o, r || {}) };
   } catch (d) {
     return s(`show-notification IPC failed: ${d.message}`), { ok: !1, error: d.message };
   }
 });
-c.handle("set-auto-launch", (o, e) => ({ ok: W(e), enabled: !!e }));
-c.handle("get-auto-launch", () => ({ enabled: ee() }));
-const ne = 8420;
-function se(o, e, n = 2e3) {
+c.handle("set-auto-launch", (n, e) => ({ ok: ee(e), enabled: !!e }));
+c.handle("get-auto-launch", () => ({ enabled: te() }));
+const se = 8420;
+function re(n, e, o = 2e3) {
   return new Promise((r) => {
-    const d = x("http"), i = `http://${o}:${e}/api/v1/health/version`, $ = d.get(i, { timeout: n }, (O) => {
+    const d = x("http"), i = `http://${n}:${e}/api/v1/health/version`, $ = d.get(i, { timeout: o }, (O) => {
       let P = "";
       O.on("data", (_) => {
         P += _;
       }), O.on("end", () => {
         try {
           const _ = JSON.parse(P);
-          r({ ok: !0, url: `http://${o}:${e}`, version: _.version || "" });
+          r({ ok: !0, url: `http://${n}:${e}`, version: _.version || "" });
         } catch {
-          r({ ok: !0, url: `http://${o}:${e}`, version: "" });
+          r({ ok: !0, url: `http://${n}:${e}`, version: "" });
         }
       });
     });
-    $.on("error", () => r({ ok: !1, url: `http://${o}:${e}` })), $.on("timeout", () => {
-      $.destroy(), r({ ok: !1, url: `http://${o}:${e}` });
+    $.on("error", () => r({ ok: !1, url: `http://${n}:${e}` })), $.on("timeout", () => {
+      $.destroy(), r({ ok: !1, url: `http://${n}:${e}` });
     });
   });
 }
-function re() {
-  const o = [];
-  o.push("127.0.0.1"), o.push("localhost");
+function ae() {
+  const n = [];
+  n.push("127.0.0.1"), n.push("localhost");
   try {
-    const n = x("os").networkInterfaces();
-    for (const r of Object.keys(n))
-      for (const d of n[r])
+    const o = x("os").networkInterfaces();
+    for (const r of Object.keys(o))
+      for (const d of o[r])
         if (d.family === "IPv4" && !d.internal) {
-          o.push(d.address);
+          n.push(d.address);
           const i = d.address.split(".");
-          i.length === 4 && (o.push(`${i[0]}.${i[1]}.${i[2]}.1`), o.push(`${i[0]}.${i[1]}.${i[2]}.100`), o.push(`${i[0]}.${i[1]}.${i[2]}.200`));
+          i.length === 4 && (n.push(`${i[0]}.${i[1]}.${i[2]}.1`), n.push(`${i[0]}.${i[1]}.${i[2]}.100`), n.push(`${i[0]}.${i[1]}.${i[2]}.200`));
         }
   } catch (e) {
     s(`get network interfaces failed: ${e.message}`);
   }
-  return [...new Set(o)];
+  return [...new Set(n)];
 }
-async function ae() {
-  const o = re();
-  s(`backend detection candidates: ${JSON.stringify(o)}`);
-  for (const e of o)
+async function ie() {
+  const n = ae();
+  s(`backend detection candidates: ${JSON.stringify(n)}`);
+  for (const e of n)
     try {
-      const n = await se(e, ne);
-      if (n.ok)
-        return s(`backend detected at ${n.url}`), n;
+      const o = await re(e, se);
+      if (o.ok)
+        return s(`backend detected at ${o.url}`), o;
     } catch {
     }
   return s("backend detection: none found"), { ok: !1, url: "", version: "" };
 }
-c.handle("backend-detect", async () => await ae());
+c.handle("select-folder", async () => {
+  if (!t) return { canceled: !0, path: null };
+  const n = await q.showOpenDialog(t, {
+    properties: ["openDirectory"],
+    title: "选择媒体目录"
+  });
+  return n.canceled || n.filePaths.length === 0 ? { canceled: !0, path: null } : { canceled: !1, path: n.filePaths[0] };
+});
+c.handle("backend-detect", async () => await ie());

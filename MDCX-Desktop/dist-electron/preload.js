@@ -61,6 +61,8 @@ a.exposeInMainWorld("electronAPI", {
     const t = (r, o) => n(o);
     return e.on("task-control", t), () => e.removeListener("task-control", t);
   },
+  // ===== 文件夹选择器 =====
+  selectFolder: () => e.invoke("select-folder"),
   // ===== 后端自动探测 =====
   detectBackend: () => e.invoke("backend-detect")
 });

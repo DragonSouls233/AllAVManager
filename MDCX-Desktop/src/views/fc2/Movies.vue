@@ -46,13 +46,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useFc2Store } from '@/stores/fc2'
 import { ElMessage } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
 import { getCoverSrc } from '@/utils/media'
 
+const route = useRoute()
 const router = useRouter()
 const store = useFc2Store()
 const keyword = ref('')
@@ -95,6 +96,12 @@ function onCoverError(e) {
 }
 
 onMounted(loadMovies)
+// 当路由切换到 FC2 页面时重新加载数据（解决嵌套路由组件不复用问题）
+watch(() => route.path, (newPath) => {
+  if (newPath === '/fc2' || newPath === '/fc2/movies') {
+    loadMovies()
+  }
+})
 </script>
 
 <style scoped>

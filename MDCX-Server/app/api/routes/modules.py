@@ -2,12 +2,17 @@
 模块管理 API 路由
 """
 
+import asyncio
+import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config.manager import get_config, get_config_manager
 from app.db.module_db import ModuleDatabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/modules", tags=["模块管理"])
 
@@ -127,6 +132,8 @@ async def update_modules_config(updates: dict[str, Any]):
     支持部分更新，例如：
     {"chinese": {"enabled": true, "media_dirs": ["/path/to/videos"]}}
     {"fc2": {"enabled": false}}
+
+    保存配置后会自动触发对应模块的扫描，无需重启服务端。
     """
     manager = get_config_manager()
 
@@ -144,7 +151,50 @@ async def update_modules_config(updates: dict[str, Any]):
     errors = manager.mutate_config(_mutator)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
+
+    # 自动触发已配置目录的模块扫描，用户无需再手动触发或重启
+    _module_scan_tasks = []
+    config = manager.config
+    for mod_name in updates:
+        if mod_name not in SCANNER_MAP:
+            continue
+        mod_cfg = getattr(config.modules, mod_name, None)
+        if not mod_cfg:
+            continue
+        if not getattr(mod_cfg, "enabled", False):
+            continue
+        dirs = getattr(mod_cfg, "media_dirs", None) or []
+        valid_dirs = [d for d in dirs if Path(d).exists()]
+        if not valid_dirs:
+            continue
+        _module_scan_tasks.append(
+            asyncio.create_task(_delayed_module_scan(mod_name, valid_dirs))
+        )
+
+    if _module_scan_tasks:
+        logger.info(
+            f"模块配置更新，已对 {len(_module_scan_tasks)} 个模块发起自动扫描: "
+            + ", ".join(t.get_name() or str(id(t)) for t in _module_scan_tasks)
+        )
+
     return {"status": "ok", "config": manager.config.modules.model_dump()}
+
+
+async def _delayed_module_scan(module_name: str, media_dirs: list[str]) -> None:
+    """延迟执行模块扫描（给配置写入一点时间缓冲）"""
+    await asyncio.sleep(1)
+    try:
+        module_path, class_name = SCANNER_MAP[module_name]
+        import importlib
+        mod = importlib.import_module(module_path)
+        scanner_cls = getattr(mod, class_name)
+        scanner = scanner_cls(media_dirs)
+        result = await scanner.scan()
+        added = result.get("movies_added", 0)
+        total = result.get("total", 0)
+        logger.info(f"模块 [{module_name}] 自动扫描完成: 共发现 {total} 个文件，新增 {added} 条记录")
+    except Exception as e:
+        logger.warning(f"模块 [{module_name}] 自动扫描失败: {e}")
 
 
 @router.patch("/{module_name}/toggle")

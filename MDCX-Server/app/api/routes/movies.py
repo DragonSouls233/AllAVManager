@@ -550,7 +550,33 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
             await _backfill_cover(movie, str(tp), session)
             return str(tp)
 
-    # 3) 兜底：扫描影片所在目录
+    # 3b) 兜底：扫描各模块 media_dirs 下 <code> 目录中的标准图片
+    code = getattr(movie, 'code', None)
+    if code:
+        try:
+            from app.config.manager import get_config
+            cfg = get_config()
+            media_dirs = _collect_media_dirs(cfg)
+            for d in media_dirs:
+                d_path = Path(d)
+                if not d_path.exists() or not d_path.is_dir():
+                    continue
+                code_dir = d_path / code
+                if code_dir.exists() and code_dir.is_dir():
+                    for img_name in ('poster.jpg', 'cover.jpg', 'fanart.jpg', 'thumb.jpg'):
+                        img_path = code_dir / img_name
+                        if img_path.exists() and img_path.is_file():
+                            await _backfill_cover(movie, str(img_path), session)
+                            return str(img_path)
+                    # 扫描目录内任意第一张图片
+                    for fp in sorted(code_dir.iterdir()):
+                        if fp.is_file() and fp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
+                            await _backfill_cover(movie, str(fp), session)
+                            return str(fp)
+        except Exception:
+            pass
+
+    # 4) 兜底：扫描影片所在目录
     if movie.file_path:
         d = Path(movie.file_path).parent
         if d.exists():
@@ -824,6 +850,35 @@ async def get_movie_thumb_file(
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".webm"}
 
 
+def _collect_media_dirs(cfg) -> list[str]:
+    """
+    收集所有可用的媒体目录：
+    1. scraper.media_dirs（旧配置）
+    2. 所有已启用模块的 media_dirs（新配置）
+    """
+    dirs = []
+    # 旧配置：scraper.media_dirs
+    scraper_dirs = getattr(cfg.scraper, "media_dirs", None) or []
+    dirs.extend(scraper_dirs)
+    # 新配置：modules.*.media_dirs
+    modules = getattr(cfg, "modules", None)
+    if modules:
+        for mod_name in ["jav", "uncensored", "fc2", "chinese", "pornhub", "western"]:
+            mod = getattr(modules, mod_name, None)
+            if mod and getattr(mod, "enabled", False):
+                mod_dirs = getattr(mod, "media_dirs", None) or []
+                dirs.extend(mod_dirs)
+    # 去重并保留顺序
+    seen = set()
+    unique = []
+    for d in dirs:
+        normalized = d.rstrip("\\/")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(d)
+    return unique
+
+
 def _search_video_in_media_dirs(media_dirs: list[str], code_lower: str) -> Optional[Path]:
     """在 media_dirs 中递归搜索匹配番号的视频文件"""
     import logging
@@ -872,7 +927,7 @@ async def play_video(
     if file_path is None:
         from app.config.manager import get_config
         cfg = get_config()
-        media_dirs = getattr(cfg.scraper, "media_dirs", [])
+        media_dirs = _collect_media_dirs(cfg)
         code_lower = (movie.code or "").lower()
         resolved_path = _search_video_in_media_dirs(media_dirs, code_lower)
         if resolved_path:
@@ -1221,12 +1276,12 @@ async def auto_link_files(
 
     VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.wmv', '.rmvb', '.flv', '.ts', '.m2ts', '.mpg', '.mpeg'}
 
-    # 从配置获取媒体目录
+    # 从配置获取媒体目录（合并 scraper + 各模块已启用的目录）
     manager = get_config_manager()
-    media_dirs = manager.config.scraper.media_dirs
+    media_dirs = _collect_media_dirs(manager.config)
 
     if not media_dirs:
-        raise HTTPException(status_code=400, detail="未配置媒体目录，请在配置中设置 scraper.media_dirs")
+        raise HTTPException(status_code=400, detail="未配置媒体目录，请在设置页面配置各模块的媒体目录")
 
     stats = {"scanned": 0, "matched": 0, "linked": 0, "skipped": 0, "errors": []}
     linked_details = []

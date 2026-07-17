@@ -81,20 +81,45 @@
                 <el-form-item label="各模块媒体目录">
                   <div style="width:100%">
                     <div v-for="mod in moduleDirs" :key="mod.name" style="margin-bottom:12px;padding:12px;border:1px solid #ebeef5;border-radius:6px;">
-                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
                         <el-text size="small" tag="b">{{ mod.label }}</el-text>
-                        <el-tag v-if="mod.dir" size="small" type="info" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ mod.dir }}</el-tag>
+                        <el-tag v-if="mod.dirs && mod.dirs.length" size="small" type="info">{{ mod.dirs.length }} 个目录</el-tag>
                         <el-tag v-else size="small" type="warning">未配置</el-tag>
                       </div>
-                      <div style="display:flex;gap:8px;">
+
+                      <!-- 目录列表 -->
+                      <div v-for="(d, idx) in mod.dirs" :key="idx" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
                         <el-input
-                          :model-value="mod.dir"
-                          @input="(v) => onModuleDirInput(mod.name, v)"
-                          placeholder="输入模块媒体目录路径"
+                          :model-value="d"
+                          readonly
                           size="small"
-                          clearable
-                        />
-                        <el-button size="small" type="primary" @click="saveModuleDir(mod.name)" :loading="savingModuleDir === mod.name">保存</el-button>
+                          placeholder="目录路径"
+                        >
+                          <template #prepend>
+                            <el-tag size="small" :type="idx === 0 ? 'primary' : 'info'" style="border:none;">{{ idx + 1 }}</el-tag>
+                          </template>
+                          <template #append>
+                            <el-button @click="browseFolder(mod.name, idx)" size="small" style="border:none;">
+                              <el-icon><FolderOpened /></el-icon>
+                            </el-button>
+                          </template>
+                        </el-input>
+                        <el-button size="small" type="danger" plain @click="removeModuleDir(mod.name, idx)" :disabled="mod.dirs.length <= 1">
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+
+                      <!-- 操作按钮 -->
+                      <div style="display:flex;gap:8px;margin-top:8px;">
+                        <el-button size="small" @click="browseFolder(mod.name, -1)">
+                          <el-icon><Plus /></el-icon> 添加目录
+                        </el-button>
+                        <el-button size="small" type="primary" @click="saveModuleDir(mod.name)" :loading="savingModuleDir === mod.name">
+                          <el-icon><Check /></el-icon> 保存
+                        </el-button>
+                        <el-text v-if="mod.dirs && mod.dirs.length > 0" size="small" type="info" style="margin-left:8px;">
+                          播放时将按目录顺序搜索视频文件
+                        </el-text>
                       </div>
                     </div>
                   </div>
@@ -233,13 +258,19 @@
         </el-card>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 目录浏览器对话框 -->
+    <DirectoryBrowser
+      v-model:visible="directoryBrowserVisible"
+      @select="onDirectorySelected"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Monitor, Setting, Refresh, Connection, User, Key } from '@element-plus/icons-vue'
+import { Monitor, Setting, Refresh, Connection, User, Key, FolderOpened, Plus, Check, Delete } from '@element-plus/icons-vue'
 import {
   getConfig, updateConfig, resetConfig, testProxy,
   checkJavdbCookie, checkJavbusCookie, startCookieLogin, getCookieLoginPollStatus,
@@ -248,6 +279,7 @@ import {
 } from '@/api'
 import { getServerBaseUrl } from '@/utils/media'
 import { getModules, updateModulesConfig } from '@/api/modules'
+import DirectoryBrowser from '@/components/DirectoryBrowser.vue'
 
 const activeTab = ref('server')
 const activeCollapse = ref(['proxy', 'scraper'])
@@ -279,7 +311,7 @@ const cookieChecking = ref({ javdb: false, javbus: false })
 const cookieLoginLoading = ref({ javdb: false, javbus: false })
 const cookieLoginStatus = ref({ javdb: '', javbus: '' })
 
-// 各模块媒体目录配置
+// 各模块媒体目录配置（支持多目录）
 const moduleDirs = ref([])
 const savingModuleDir = ref('')
 const moduleLabelsMap = { jav: 'JAV 有码', chinese: '国产', uncensored: 'JAV 无码', fc2: 'FC2', pornhub: 'PORNHub', western: '欧美' }
@@ -290,34 +322,73 @@ async function loadModuleDirs() {
     moduleDirs.value = (mods || []).map(m => ({
       name: m.name,
       label: moduleLabelsMap[m.name] || m.name,
-      dir: (m.media_dirs || [])[0] || ''
+      dirs: (m.media_dirs || []).filter(Boolean)
     }))
   } catch {
     // 静默失败
   }
 }
 
-const editingModuleDir = ref({})
-
-function onModuleDirInput(name, val) {
-  editingModuleDir.value[name] = val
-}
-
 async function saveModuleDir(name) {
   savingModuleDir.value = name
   try {
-    const dir = editingModuleDir.value[name] || ''
-    const dirs = dir ? [dir] : []
-    await updateModulesConfig({ [name]: { media_dirs: dirs } })
-    ElMessage.success(`${moduleLabelsMap[name] || name} 目录已保存`)
-    // 刷新
     const mod = moduleDirs.value.find(m => m.name === name)
-    if (mod) mod.dir = dir
+    if (!mod) return
+    await updateModulesConfig({ [name]: { media_dirs: mod.dirs } })
+    ElMessage.success(`${moduleLabelsMap[name] || name} 目录已保存`)
   } catch (e) {
     ElMessage.error('保存失败: ' + (e?.response?.data?.detail || e.message || '未知错误'))
   } finally {
     savingModuleDir.value = ''
   }
+}
+
+// 目录浏览器对话框
+const directoryBrowserVisible = ref(false)
+const browsingModule = ref('')
+const browsingIndex = ref(-1)  // -1 表示添加新目录, >=0 表示替换指定索引
+
+async function browseFolder(name, index) {
+  browsingModule.value = name
+  browsingIndex.value = index ?? -1
+  // Electron 环境：调用原生文件夹选择器
+  if (window.electronAPI?.selectFolder) {
+    try {
+      const result = await window.electronAPI.selectFolder()
+      if (!result.canceled && result.path) {
+        applyFolderSelection(name, index ?? -1, result.path)
+      }
+    } catch (e) {
+      ElMessage.error('选择文件夹失败: ' + e.message)
+    }
+  } else {
+    // 浏览器环境：弹出目录浏览器对话框
+    directoryBrowserVisible.value = true
+  }
+}
+
+function applyFolderSelection(name, index, dirPath) {
+  const mod = moduleDirs.value.find(m => m.name === name)
+  if (!mod) return
+  if (index === -1) {
+    // 添加新目录
+    if (!mod.dirs.includes(dirPath)) {
+      mod.dirs.push(dirPath)
+    }
+  } else {
+    // 替换已有目录
+    mod.dirs[index] = dirPath
+  }
+}
+
+function onDirectorySelected(dirPath) {
+  applyFolderSelection(browsingModule.value, browsingIndex.value, dirPath)
+}
+
+function removeModuleDir(name, index) {
+  const mod = moduleDirs.value.find(m => m.name === name)
+  if (!mod || mod.dirs.length <= 1) return
+  mod.dirs.splice(index, 1)
 }
 
 // 当前登录用户角色（用于限制媒体目录等仅管理员可改）

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, shell, Tray, nativeImage, globalShortcut, nativeTheme, Notification } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, shell, Tray, nativeImage, globalShortcut, nativeTheme, Notification, dialog } from 'electron'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
@@ -783,6 +783,19 @@ async function detectBackend() {
   writeLog('backend detection: none found')
   return { ok: false, url: '', version: '' }
 }
+
+// ===== 文件夹选择器（用于前端选择媒体目录）=====
+ipcMain.handle('select-folder', async () => {
+  if (!mainWindow) return { canceled: true, path: null }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: '选择媒体目录'
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true, path: null }
+  }
+  return { canceled: false, path: result.filePaths[0] }
+})
 
 ipcMain.handle('backend-detect', async () => {
   const result = await detectBackend()

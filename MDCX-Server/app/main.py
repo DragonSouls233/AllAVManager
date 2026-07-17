@@ -27,6 +27,19 @@ logger = get_logger(__name__)
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+
+async def _run_module_scan(module_name: str, scanner) -> None:
+    """后台运行模块扫描，异常不影响启动流程"""
+    try:
+        logger.info(f"开始自动扫描模块 [{module_name}] ...")
+        result = await scanner.scan()
+        added = result.get("movies_added", 0)
+        total = result.get("total", 0)
+        logger.info(f"模块 [{module_name}] 扫描完成: 共发现 {total} 个文件，新增 {added} 条记录")
+    except Exception as e:
+        logger.warning(f"模块 [{module_name}] 自动扫描失败: {e}")
+
+
 # 自动整理定时任务调度器（在 lifespan 中初始化，关闭时停止）
 _auto_organize_scheduler = None
 
@@ -132,13 +145,48 @@ async def lifespan(app: FastAPI):
     await init_database()
     logger.info("数据库初始化完成")
 
-    # 初始化模块数据库（chinese / fc2 / uncensored / pornhub）
+    # 初始化模块数据库（chinese / fc2 / uncensored / pornhub / western）
     try:
         from app.db.module_db import ModuleDatabase
         await ModuleDatabase.init_all()
         logger.info("模块数据库初始化完成（chinese/fc2/uncensored/pornhub/western）")
     except Exception as e:
         logger.warning(f"模块数据库初始化失败: {e}")
+
+    # 启动后自动扫描各模块媒体目录（将文件写入模块数据库）
+    try:
+        _startup_module_scan_tasks = []
+        modules_config = getattr(config, "modules", None)
+        if modules_config:
+            module_scanner_map = {
+                "chinese": ("app.tasks.chinese_scanner", "ChineseScanner"),
+                "fc2": ("app.tasks.fc2_scanner", "Fc2Scanner"),
+                "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
+                "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
+                "western": ("app.tasks.western_scanner", "WesternScanner"),
+            }
+            for mod_name, (mod_path, cls_name) in module_scanner_map.items():
+                mod_cfg = getattr(modules_config, mod_name, None)
+                if mod_cfg and getattr(mod_cfg, "enabled", False):
+                    dirs = getattr(mod_cfg, "media_dirs", None) or []
+                    valid_dirs = [d for d in dirs if Path(d).exists()]
+                    if valid_dirs:
+                        import importlib
+                        scanner_mod = importlib.import_module(mod_path)
+                        scanner_cls = getattr(scanner_mod, cls_name)
+                        scanner = scanner_cls(valid_dirs)
+                        _startup_module_scan_tasks.append(
+                            asyncio.create_task(
+                                _run_module_scan(mod_name, scanner)
+                            )
+                        )
+        if _startup_module_scan_tasks:
+            logger.info(
+                f"已对 {len(_startup_module_scan_tasks)} 个模块发起自动扫描: "
+                + ", ".join(t.get_name() or str(id(t)) for t in _startup_module_scan_tasks)
+            )
+    except Exception as e:
+        logger.warning(f"模块自动扫描启动失败: {e}")
 
     # 执行数据库迁移
     try:
