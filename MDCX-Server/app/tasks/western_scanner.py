@@ -23,42 +23,77 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # 欧美品牌前缀映射（参考 CommunityScrapers AyloAPI domains.py + vixenNetwork）
+# 注意：前缀按匹配优先级排序，长前缀/精确前缀在前，避免短前缀误匹配
 WESTERN_SITE_PREFIXES = {
-    # Aylo 品牌（Brazzers/BangBros/RealityKings/Mofos 等）
+    # ===== Vixen 网络（优先匹配，避免被其他品牌误匹配）=====
+    "blackedraw": "Blacked Raw",
+    "blacked": "Blacked",
+    "tushyraw": "TushyRaw",
+    "tushy": "Tushy",
+    "vixen": "Vixen",
+    "deeper": "Deeper",
+    "milfy": "Milfy",
+    "wifey": "Wifey",
+    "slayed": "Slayed",
+    # ===== Aylo 品牌 =====
     "brazzers": "Brazzers",
     "brzzrs": "Brazzers",
     "bangbros": "BangBros",
     "bbros": "BangBros",
+    "bb.": "BangBros",  # bb.date.scene 格式
     "realitykings": "Reality Kings",
     "rk": "Reality Kings",
     "mofos": "Mofos",
     "digitalplayground": "Digital Playground",
     "twistys": "Twistys",
     "babes": "Babes",
-    # Algolia 品牌
+    # ===== Naughty America（放在 PublicAgent 后面，避免 na 误匹配 publicagent）=====
+    "naughtyamerica": "Naughty America",
+    "tonightsgirlfriend": "Naughty America",
+    "myfriendshotmom": "Naughty America",
+    "mysistershotfriend": "Naughty America",
+    "thundercock": "Naughty America",
+    "mylf": "MYLF",
+    # ===== 其他独立品牌 =====
+    "publicagent": "PublicAgent",
+    "pba.": "PublicAgent",  # PublicAgent 的简写/旧格式
+    "hegre": "Hegre",
+    "hegreart": "Hegre",
+    # ===== Algolia 品牌 =====
     "evilangel": "Evil Angel",
     "adulttime": "Adult Time",
     "puretaboo": "Pure Taboo",
-    # Vixen 网络
-    "vixen": "Vixen",
-    "blacked": "Blacked",
-    "tushy": "Tushy",
-    "tushyraw": "TushyRaw",
-    "deeper": "Deeper",
-    # Naughty America
-    "naughtyamerica": "Naughty America",
-    "na": "Naughty America",
-    "mylf": "MYLF",
-    # TeamSkeet
+    # ===== TeamSkeet =====
     "teamskeet": "TeamSkeet",
-    # 其他
+    "brattysis": "BrattySis",
+    # ===== 其他 =====
     "playboy": "Playboy",
     "penthouse": "Penthouse",
     "wicked": "Wicked",
+    "sexart": "SexArt",
+    "stripshow": "StripShow",
+    "eroticax": "EroticaX",
+    "girlsway": "Girlsway",
+    "girlfriendsfilms": "GirlfriendsFilms",
+    "realityjunkies": "RealityJunkies",
+    "wankz": "Wankz",
+    "pornfidelity": "PornFidelity",
+    "teenmegaworld": "TeenMegaWorld",
 }
 
 # 品牌网络映射
 SITE_NETWORK_MAP = {
+    # Vixen 网络
+    "Vixen": "Vixen Network",
+    "Blacked": "Vixen Network",
+    "Blacked Raw": "Vixen Network",
+    "Tushy": "Vixen Network",
+    "TushyRaw": "Vixen Network",
+    "Deeper": "Vixen Network",
+    "Milfy": "Vixen Network",
+    "Wifey": "Vixen Network",
+    "Slayed": "Vixen Network",
+    # Aylo 网络
     "Brazzers": "Aylo",
     "BangBros": "Aylo",
     "Reality Kings": "Aylo",
@@ -66,27 +101,32 @@ SITE_NETWORK_MAP = {
     "Digital Playground": "Aylo",
     "Twistys": "Aylo",
     "Babes": "Aylo",
+    # NA 网络
+    "Naughty America": "Naughty America",
+    "MYLF": "Naughty America",
+    # Algolia 网络
     "Evil Angel": "Algolia",
     "Adult Time": "Algolia",
     "Pure Taboo": "Algolia",
-    "Vixen": "Vixen Network",
-    "Blacked": "Vixen Network",
-    "Tushy": "Vixen Network",
-    "TushyRaw": "Vixen Network",
-    "Deeper": "Vixen Network",
-    "Naughty America": "Naughty America",
-    "MYLF": "Naughty America",
+    # 独立品牌（无网络归属）
+    "Hegre": "Independent",
+    "PublicAgent": "Independent",
     "TeamSkeet": "TeamSkeet",
+    "BrattySis": "TeamSkeet",
+    "Playboy": "Playboy",
+    "Penthouse": "Penthouse",
 }
 
 
 def extract_site_from_filename(filename: str) -> tuple[str | None, str | None]:
-    """从文件名提取站点和品牌网络
+    """从文件名或文件夹名提取站点和品牌网络
 
     支持格式:
     - brazzers_12345.mp4
     - BangBros - Scene 1.mp4
     - vixen-2023-01-15.mp4
+    - [PublicAgent] video.mp4   （文件夹名）
+    - Hegre.xxx.mp4
     """
     name_lower = filename.lower()
 

@@ -73,13 +73,9 @@ def detect_local_library() -> Optional[Path]:
                 candidates.append(p)
     except Exception:
         pass
-    # 3) 已知默认位置（NAS 映射盘 / 本地副本）
-    candidates.append(Path(r"O:/MDCX/GitHub-ZIP/P1-High/gfriends-master/gfriends-master"))
-    candidates.append(Path(r"/o/MDCX/GitHub-ZIP/P1-High/gfriends-master/gfriends-master"))
-    candidates.append(Path(r"G:/MDCX/GitHub-ZIP/P1-High/gfriends-master/gfriends-master"))
-    candidates.append(Path(r"/g/MDCX/GitHub-ZIP/P1-High/gfriends-master/gfriends-master"))
+    # 3) 基于 data_dir 的默认路径（local_library_path 未设置时的兜底）
     try:
-        candidates.append(Path(get_config_manager().computed.data_dir) / "gfriends-library" / "Content")
+        candidates.append(get_config_manager().computed.data_dir / "gfriends")
     except Exception:
         pass
     for c in candidates:

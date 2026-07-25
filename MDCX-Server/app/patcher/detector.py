@@ -26,6 +26,23 @@ from app.db.models import Movie
 logger = logging.getLogger(__name__)
 
 
+def _source_to_module(source: str) -> str:
+    """将刮削来源映射到模块子目录名称"""
+    if not source:
+        return "jav"
+    _map = {
+        "javdb": "jav", "javbus": "jav", "dmm": "jav",
+        "javlibrary": "jav", "jav321": "jav", "arzon": "jav",
+        "mgstage": "jav", "faleno": "jav", "prestige": "jav",
+        "kawaii": "jav", "madou": "chinese", "guochan": "chinese",
+        "fc2": "fc2", "fc2club": "fc2", "fc2ppvdb": "fc2",
+        "pornhub": "pornhub", "western": "western",
+        "adulttime": "western", "theporndb": "western",
+        "aylo": "western",
+    }
+    return _map.get(source, source)
+
+
 class MissingType(str, Enum):
     """缺失类型"""
     FIELD = "field"       # 字段缺失
@@ -419,7 +436,10 @@ class MissingDetector:
         from app.config.manager import PROJECT_ROOT
         code = movie_data.get("code", str(movie_id))
         project_root = PROJECT_ROOT
-        server_data_dir = project_root / "data" / "movies" / code
+        # 根据 source 推断模块子目录（data/movies/{模块}/{code}/）
+        source = movie_data.get("source") or ""
+        module_name = _source_to_module(source)
+        server_data_dir = project_root / "data" / "movies" / module_name / code
 
         db_output_dir = movie_data.get("output_dir")
         if db_output_dir:

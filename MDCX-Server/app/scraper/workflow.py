@@ -61,6 +61,22 @@ class ScraperWorkflow:
         
         self.engine = get_scraper_engine()
         self.nfo_generator = NFOGenerator(str(self.output_dir))
+
+    def _source_to_module(self, source: str) -> str:
+        """将刮削来源映射到模块子目录名称"""
+        if not source:
+            return "jav"
+        _SOURCE_MODULE_MAP = {
+            "javdb": "jav", "javbus": "jav", "dmm": "jav",
+            "javlibrary": "jav", "jav321": "jav", "arzon": "jav",
+            "mgstage": "jav", "faleno": "jav", "prestige": "jav",
+            "kawaii": "jav", "madou": "chinese", "guochan": "chinese",
+            "fc2": "fc2", "fc2club": "fc2", "fc2ppvdb": "fc2",
+            "pornhub": "pornhub", "western": "western",
+            "adulttime": "western", "theporndb": "western",
+            "aylo": "western",
+        }
+        return _SOURCE_MODULE_MAP.get(source, source)
     
     async def process_file(
         self,
@@ -99,8 +115,9 @@ class ScraperWorkflow:
         
         logger.info(f"刮削来源: {result.source}")
         
-        # 3. 创建输出目录
-        movie_dir = self.output_dir / number
+        # 3. 按模块分目录创建输出目录（data/movies/{模块}/{番号}/）
+        module_name = self._source_to_module(result.source or "")
+        movie_dir = self.output_dir / module_name / number
         movie_dir.mkdir(parents=True, exist_ok=True)
         
         # 4. 下载图片

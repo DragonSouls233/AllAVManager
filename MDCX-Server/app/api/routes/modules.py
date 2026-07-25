@@ -4,11 +4,12 @@
 
 import asyncio
 import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import Response
 from app.config.manager import get_config, get_config_manager
 from app.db.module_db import ModuleDatabase
 
@@ -221,11 +222,11 @@ async def toggle_module(module_name: str, enabled: bool = True):
 # ===== 跨模块聚合查询 =====
 
 _MODEL_MAP = {
-    "chinese": ("app.db.chinese_models", "ChineseMovie"),
-    "uncensored": ("app.db.uncensored_models", "UncensoredMovie"),
-    "fc2": ("app.db.fc2_models", "Fc2Movie"),
-    "pornhub": ("app.db.pornhub_models", "PornhubMovie"),
-    "western": ("app.db.western_models", "WesternMovie"),
+    "chinese": ("app.db.chinese_models", "ChineseMovie", "ChineseActor"),
+    "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor"),
+    "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
+    "pornhub": ("app.db.pornhub_models", "PornhubMovie", "PornhubActor"),
+    "western": ("app.db.western_models", "WesternMovie", "WesternActor"),
 }
 
 
@@ -247,7 +248,7 @@ async def unified_list_movies(module_name: str = Query(None, description="按模
         session = await db.get_session()
         try:
             import importlib
-            model_path, model_class = _MODEL_MAP[mod_name]
+            model_path, model_class, _ = _MODEL_MAP[mod_name]
             mod = importlib.import_module(model_path)
             model = getattr(mod, model_class)
 
@@ -303,7 +304,7 @@ async def unified_search(keyword: str = Query(..., min_length=1), limit: int = 5
         session = await db.get_session()
         try:
             import importlib
-            model_path, model_class = _MODEL_MAP[mod_name]
+            model_path, model_class, _ = _MODEL_MAP[mod_name]
             mod = importlib.import_module(model_path)
             model = getattr(mod, model_class)
 
@@ -329,3 +330,486 @@ async def unified_search(keyword: str = Query(..., min_length=1), limit: int = 5
             await session.close()
 
     return {"total": len(results), "items": results}
+
+
+@router.get("/{module_name}/actors")
+async def get_module_actors(
+    module_name: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+):
+    """获取模块演员列表"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+
+    db = ModuleDatabase.get_instance(module_name)
+    session = await db.get_session()
+    try:
+        import importlib
+        model_path, _, actor_class = _MODEL_MAP[module_name]
+        
+        if not actor_class:
+            return {"total": 0, "items": []}
+        
+        mod = importlib.import_module(model_path)
+        actor_model = getattr(mod, actor_class)
+        
+        from sqlalchemy import select, func
+        stmt = select(actor_model).order_by(actor_model.movie_count.desc())
+        
+        result = await session.execute(stmt)
+        actors = result.scalars().all()
+        
+        total = len(actors)
+        skip = (page - 1) * page_size
+        items = actors[skip:skip + page_size]
+        
+        return {
+            "total": total,
+            "items": [
+                {
+                    "id": a.id,
+                    "name": a.name,
+                    "alias": a.alias,
+                    "avatar_url": a.avatar_url,
+                    "source": a.source,
+                    "movie_count": a.movie_count,
+                }
+                for a in items
+            ]
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/{module_name}/actors/{actor_id}/avatar/file")
+async def get_module_actor_avatar_file(module_name: str, actor_id: int):
+    """获取模块演员头像文件"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+
+    db = ModuleDatabase.get_instance(module_name)
+    session = await db.get_session()
+    try:
+        import importlib
+        model_path, _, actor_class = _MODEL_MAP[module_name]
+        
+        if not actor_class:
+            raise HTTPException(status_code=404, detail="模块不支持演员")
+        
+        mod = importlib.import_module(model_path)
+        actor_model = getattr(mod, actor_class)
+        
+        from sqlalchemy import select
+        stmt = select(actor_model).where(actor_model.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        
+        avatar_url = actor.avatar_url
+        if not avatar_url:
+            raise HTTPException(status_code=404, detail="演员无头像")
+        
+        # 如果是本地文件路径，读取并返回
+        if avatar_url.startswith(("http://", "https://")):
+            import httpx
+            resp = httpx.get(avatar_url, timeout=30)
+            return Response(
+                content=resp.content,
+                media_type=resp.headers.get("content-type", "image/jpeg"),
+                headers={"Content-Disposition": f'inline; filename="actor_{actor_id}.jpg"'}
+            )
+        else:
+            # 本地文件
+            from pathlib import Path
+            avatar_path = Path(avatar_url)
+            if avatar_path.exists():
+                return Response(
+                    content=avatar_path.read_bytes(),
+                    media_type="image/jpeg",
+                    headers={"Content-Disposition": f'inline; filename="actor_{actor_id}.jpg"'}
+                )
+            else:
+                raise HTTPException(status_code=404, detail="头像文件不存在")
+    finally:
+        await session.close()
+
+
+@router.post("/{module_name}/actors/avatar-scrape/start")
+async def start_module_actor_avatar_scrape(
+    background_tasks: BackgroundTasks,
+    module_name: str,
+    min_movies: int = Query(1, ge=1, description="最少作品数"),
+):
+    """启动模块演员头像刮削"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+    
+    from app.scraper.module_actor_avatar import run_module_avatar_scrape_job
+    
+    job_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
+    background_tasks.add_task(run_module_avatar_scrape_job, job_id, module_name, min_movies)
+    
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "message": f"模块 {module_name} 头像刮削已启动",
+    }
+
+
+@router.get("/{module_name}/actors/avatar-scrape/status/{job_id}")
+async def get_module_actor_avatar_scrape_status(module_name: str, job_id: str):
+    """获取模块演员头像刮削任务状态"""
+    from app.scraper.module_actor_avatar import get_module_avatar_job_status
+    
+    status = get_module_avatar_job_status(job_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    return status
+
+
+@router.get("/{module_name}/actors/avatar-scrape/preview")
+async def preview_module_actor_avatar_scrape(
+    module_name: str,
+    min_movies: int = Query(1, ge=1),
+):
+    """预览需要补充头像的演员列表"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+    
+    from app.scraper.module_actor_avatar import ModuleActorAvatarScraper
+    
+    scraper = ModuleActorAvatarScraper(module_name=module_name, min_movies=min_movies)
+    actors = await scraper._find_actors_without_avatar()
+    
+    return {
+        "count": len(actors),
+        "module": module_name,
+        "actors": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "movie_count": a.movie_count,
+            }
+            for a in actors[:20]
+        ]
+    }
+
+
+# ===== 模块演员同步与刮削 API =====
+
+
+@router.post("/{module_name}/actors/sync")
+async def sync_module_actors(module_name: str):
+    """从影片记录同步演员到 Actor 表"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+
+    from app.scraper.module_actor_sync import sync_actors_from_movies
+
+    try:
+        result = await sync_actors_from_movies(module_name)
+        return {"status": "ok", "module": module_name, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{module_name}/actors/{actor_id}/scrape-profile")
+async def scrape_module_actor_profile(module_name: str, actor_id: int):
+    """刮削单个演员的个人资料"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+
+    db = ModuleDatabase.get_instance(module_name)
+    session = await db.get_session()
+    try:
+        import importlib
+        model_path, _, actor_class = _MODEL_MAP[module_name]
+        mod = importlib.import_module(model_path)
+        actor_model = getattr(mod, actor_class)
+
+        from sqlalchemy import select
+        stmt = select(actor_model).where(actor_model.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        actor_name = actor.name
+    finally:
+        await session.close()
+
+    # 使用模块资料刮削器
+    from app.scraper.module_actor_profile import get_module_actor_profile_scraper
+    scraper = get_module_actor_profile_scraper(module_name)
+    profile = await scraper.get_profile(actor_name)
+
+    if not profile:
+        return {"status": "not_found", "message": f"未找到 {actor_name} 的个人资料"}
+
+    # 更新数据库
+    session2 = await db.get_session()
+    try:
+        import importlib
+        model_path, _, actor_class = _MODEL_MAP[module_name]
+        mod = importlib.import_module(model_path)
+        actor_model = getattr(mod, actor_class)
+
+        from sqlalchemy import select
+        stmt = select(actor_model).where(actor_model.id == actor_id)
+        result = await session2.execute(stmt)
+        db_actor = result.scalar_one_or_none()
+
+        if not db_actor:
+            return {"status": "error", "message": "演员记录已不存在"}
+
+        # 更新字段
+        if profile.alias and not db_actor.alias:
+            db_actor.alias = profile.alias
+        if profile.avatar_url and not getattr(db_actor, "avatar_url", None):
+            db_actor.avatar_url = profile.avatar_url
+
+        # Western 模块特有字段
+        if module_name == "western":
+            if profile.birth_date:
+                db_actor.birthdate = profile.birth_date
+            if profile.country:
+                db_actor.country = profile.country
+            if profile.ethnicity:
+                db_actor.ethnicity = profile.ethnicity
+            if profile.measurements:
+                db_actor.measurements = profile.measurements
+            if profile.height:
+                db_actor.height = str(profile.height)
+            if profile.weight:
+                db_actor.weight = profile.weight
+            if profile.gender:
+                db_actor.gender = profile.gender
+            if profile.twitter:
+                db_actor.twitter = profile.twitter
+            if profile.instagram:
+                db_actor.instagram = profile.instagram
+
+        # PORNHub 模块：补充国籍
+        if module_name == "pornhub" and profile.country and not getattr(db_actor, "nationality", None):
+            db_actor.nationality = profile.country
+
+        db_actor.source = profile.source
+        await session2.commit()
+
+        return {
+            "status": "ok",
+            "actor_id": actor_id,
+            "name": actor_name,
+            "profile": {
+                "name": profile.name,
+                "alias": profile.alias,
+                "avatar_url": profile.avatar_url,
+                "birth_date": profile.birth_date,
+                "height": profile.height,
+                "bust": profile.bust,
+                "waist": profile.waist,
+                "hip": profile.hip,
+                "cup": profile.cup,
+                "birthplace": profile.birthplace,
+                "country": profile.country,
+                "ethnicity": profile.ethnicity,
+                "measurements": profile.measurements,
+                "weight": profile.weight,
+                "gender": profile.gender,
+                "source": profile.source,
+            }
+        }
+    finally:
+        await session2.close()
+
+
+@router.post("/{module_name}/actors/scrape-profiles")
+async def batch_scrape_module_actor_profiles(
+    background_tasks: BackgroundTasks,
+    module_name: str,
+    min_movies: int = Query(1, ge=1, description="最少作品数"),
+    limit: int = Query(50, ge=1, le=200, description="最多刮削数"),
+):
+    """批量刮削模块演员个人资料（后台任务）"""
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+
+    job_id = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    from app.scraper.module_actor_profile import get_module_actor_profile_scraper
+    scraper = get_module_actor_profile_scraper(module_name)
+
+    db = ModuleDatabase.get_instance(module_name)
+    session = await db.get_session()
+    try:
+        import importlib
+        model_path, _, actor_class = _MODEL_MAP[module_name]
+        mod = importlib.import_module(model_path)
+        actor_model = getattr(mod, actor_class)
+
+        from sqlalchemy import select
+        stmt = select(actor_model).where(
+            actor_model.movie_count >= min_movies
+        ).order_by(actor_model.movie_count.desc()).limit(limit)
+
+        result = await session.execute(stmt)
+        actors_to_scrape = result.scalars().all()
+    finally:
+        await session.close()
+
+    if not actors_to_scrape:
+        return {"status": "ok", "message": "没有需要刮削的演员", "total": 0}
+
+    # 后台执行
+    async def _run_batch():
+        logger.info(f"[{module_name}] 批量演员资料刮削启动: {len(actors_to_scrape)} 人")
+        success = 0
+        failed = 0
+        for actor in actors_to_scrape:
+            try:
+                profile = await scraper.get_profile(actor.name)
+                if profile:
+                    # 更新数据库
+                    s = await db.get_session()
+                    try:
+                        mod2 = importlib.import_module(model_path)
+                        am = getattr(mod2, actor_class)
+                        st = select(am).where(am.id == actor.id)
+                        r = await s.execute(st)
+                        a = r.scalar_one_or_none()
+                        if a:
+                            if profile.alias and not a.alias:
+                                a.alias = profile.alias
+                            if profile.avatar_url and not getattr(a, "avatar_url", None):
+                                a.avatar_url = profile.avatar_url
+                            if module_name == "western":
+                                if profile.birth_date:
+                                    a.birthdate = profile.birth_date
+                                if profile.country:
+                                    a.country = profile.country
+                                if profile.measurements:
+                                    a.measurements = profile.measurements
+                                if profile.height:
+                                    a.height = str(profile.height)
+                            a.source = profile.source
+                            await s.commit()
+                            success += 1
+                    finally:
+                        await s.close()
+                else:
+                    failed += 1
+            except Exception as e:
+                logger.debug(f"[{module_name}] 刮削 {actor.name} 失败: {e}")
+                failed += 1
+            await asyncio.sleep(1.0)
+        logger.info(f"[{module_name}] 批量刮削完成: 成功 {success}, 失败 {failed}")
+
+    background_tasks.add_task(_run_batch)
+
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "total": len(actors_to_scrape),
+        "message": f"模块 {module_name} 演员资料批量刮削已启动，共 {len(actors_to_scrape)} 人",
+    }
+
+
+@router.post("/{module_name}/actors/batch-scrape")
+async def batch_scrape_module_actors(
+    background_tasks: BackgroundTasks,
+    module_name: str,
+):
+    """一键批量操作：同步演员 → 刮削资料 → 下载头像
+
+    整合 sync + profile scrape + avatar scrape 三个步骤
+    """
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=400, detail=f"不支持的模块: {module_name}")
+
+    job_id = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    async def _run_batch():
+        # Step 1: Sync actors from movies
+        logger.info(f"[{module_name}] 批量操作 Step 1/3: 同步演员")
+        from app.scraper.module_actor_sync import sync_actors_from_movies
+        try:
+            sync_result = await sync_actors_from_movies(module_name)
+            logger.info(f"[{module_name}] 同步完成: {sync_result}")
+        except Exception as e:
+            logger.error(f"[{module_name}] 同步失败: {e}")
+
+        # Step 2: Scrape profiles
+        logger.info(f"[{module_name}] 批量操作 Step 2/3: 刮削资料")
+        from app.scraper.module_actor_profile import get_module_actor_profile_scraper
+        scraper = get_module_actor_profile_scraper(module_name)
+
+        db = ModuleDatabase.get_instance(module_name)
+        session = await db.get_session()
+        try:
+            import importlib
+            model_path, _, actor_class = _MODEL_MAP[module_name]
+            mod = importlib.import_module(model_path)
+            actor_model = getattr(mod, actor_class)
+
+            from sqlalchemy import select
+            stmt = select(actor_model).where(actor_model.movie_count >= 1).order_by(actor_model.movie_count.desc()).limit(50)
+            result = await session.execute(stmt)
+            actors = result.scalars().all()
+        finally:
+            await session.close()
+
+        profile_success = 0
+        for actor in actors[:50]:
+            try:
+                profile = await scraper.get_profile(actor.name)
+                if profile:
+                    s = await db.get_session()
+                    try:
+                        mod2 = importlib.import_module(model_path)
+                        am = getattr(mod2, actor_class)
+                        st = select(am).where(am.id == actor.id)
+                        r = await s.execute(st)
+                        a = r.scalar_one_or_none()
+                        if a:
+                            if profile.avatar_url and not getattr(a, "avatar_url", None):
+                                a.avatar_url = profile.avatar_url
+                            if module_name == "western":
+                                if profile.birth_date:
+                                    a.birthdate = profile.birth_date
+                                if profile.country:
+                                    a.country = profile.country
+                                if profile.measurements:
+                                    a.measurements = profile.measurements
+                            a.source = profile.source
+                            await s.commit()
+                            profile_success += 1
+                    finally:
+                        await s.close()
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        # Step 3: Download avatars
+        logger.info(f"[{module_name}] 批量操作 Step 3/3: 下载头像")
+        from app.scraper.module_actor_avatar import ModuleActorAvatarScraper
+        avatar_scraper = ModuleActorAvatarScraper(module_name=module_name, min_movies=1)
+        try:
+            avatar_result = await avatar_scraper.scrape_all()
+            logger.info(f"[{module_name}] 头像下载完成: {avatar_result.get('success', 0)}")
+        except Exception as e:
+            logger.error(f"[{module_name}] 头像下载失败: {e}")
+
+        logger.info(f"[{module_name}] 批量刮削完成")
+
+    background_tasks.add_task(_run_batch)
+
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "message": f"模块 {module_name} 一键批量刮削已启动（同步演员→刮削资料→下载头像）",
+    }

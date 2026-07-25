@@ -376,6 +376,15 @@ def get_proxy_manager() -> ProxyManager:
     return _manager
 
 
+def _check_socks_port(host: str, port: int, timeout: float = 1.0) -> bool:
+    """快速检测 socks 端口是否可达，避免僵死代理导致爬虫全部超时。"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, socket.timeout):
+        return False
+
+
 def get_effective_proxy_url() -> str | None:
     """返回当前生效的代理 URL —— 全项目统一的代理端口唯一来源。
 
@@ -397,11 +406,24 @@ def get_effective_proxy_url() -> str | None:
     except Exception:
         logger.debug("get_current_socks5_url failed, fallback to config.proxy", exc_info=True)
 
-    # 2) 回退旧版 config.proxy
+    # 2) 回退旧版 config.proxy（带端口存活检测）
     try:
         from app.config.manager import get_config
         cfg = get_config().proxy
         if cfg.enabled and cfg.proxy_url:
+            addr = cfg.address or "127.0.0.1"
+            port_str = cfg.port or "0"
+            try:
+                port = int(port_str)
+            except (ValueError, TypeError):
+                port = 0
+            if port > 0 and not _check_socks_port(addr, port):
+                logger.warning(
+                    "代理端口 %s:%s 不可达，降级为直连。"
+                    "如需使用代理，请启动 xray 或检查 config.proxy 配置",
+                    addr, port,
+                )
+                return None
             return cfg.proxy_url
     except Exception:
         logger.debug("read config.proxy failed", exc_info=True)

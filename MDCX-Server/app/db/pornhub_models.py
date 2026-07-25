@@ -65,6 +65,7 @@ class PornhubActor(ModuleBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, unique=True)
     alias: Mapped[str | None] = mapped_column(Text)
+    nationality: Mapped[str | None] = mapped_column(String(50))
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     source: Mapped[str] = mapped_column(String(20), default="scraper")
     movie_count: Mapped[int] = mapped_column(Integer, default=0)

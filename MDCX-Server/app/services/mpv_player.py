@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.config.manager import get_config_manager
+from app.utils.bin_tools import get_tool_path
 from app.db.database import get_database
 from app.db.models import Movie
 from sqlalchemy import select
@@ -44,11 +45,12 @@ DEFAULT_HOTKEYS = [
 
 def _find_mpv() -> Optional[str]:
     """查找 mpv 可执行文件"""
-    mpv = shutil.which("mpv")
-    if mpv:
+    # 1) 使用集中式工具路径管理（bin/ 目录 → PATH 环境变量）
+    mpv = get_tool_path("mpv")
+    if mpv != "mpv":
         return mpv
 
-    # Windows 常见安装路径
+    # 2) Windows 常见安装路径
     if platform.system() == "Windows":
         for p in [
             r"C:\Program Files\mpv\mpv.exe",

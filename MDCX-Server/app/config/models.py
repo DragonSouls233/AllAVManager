@@ -911,6 +911,19 @@ class GfriendsConfig(BaseModel):
     download_timeout: int = Field(default=30, ge=5, le=300, title="下载超时（秒）")
 
 
+class EnvOverridesConfig(BaseModel):
+    """环境变量覆盖配置（运行时注入，通常由环境变量提供）
+
+    这些字段不从 config.yaml 读取，而是通过 _load_from_env 从环境变量注入，
+    用于控制数据目录、静态资源前缀等运行时行为。
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    data_dir: str = Field(default="", title="数据根目录（MDCX_DATA_DIR）")
+    static_url_prefix: str = Field(default="", title="静态资源访问前缀（STATIC_URL_PREFIX）")
+    test_root: str = Field(default="", title="测试文件目录（TEST_ROOT）")
+
+
 class Config(BaseModel):
     """主配置模型"""
     model_config = ConfigDict(extra="forbid")
@@ -920,6 +933,7 @@ class Config(BaseModel):
 
     # 嵌套配置
     modules: ModulesConfig = Field(default_factory=ModulesConfig, title="模块管理配置")
+    env_overrides: EnvOverridesConfig = Field(default_factory=EnvOverridesConfig, title="环境变量覆盖配置")
     server: ServerConfig = Field(default_factory=ServerConfig, title="服务器配置")
     database: DatabaseConfig = Field(default_factory=DatabaseConfig, title="数据库配置")
     scraper: ScraperConfig = Field(default_factory=ScraperConfig, title="刮削配置")
@@ -980,8 +994,16 @@ class ComputedConfig:
 
     @property
     def data_dir(self) -> Path:
-        """数据目录"""
-        return Path("data")
+        """数据目录 - 统一使用 manager.DATA_DIR(env > 项目根/data > 盘符遍历)。
+
+        修复历史 bug: 此前硬编码 Path("data") 为 CWD 相对路径, 导致 MDCX_DATA_DIR
+        仅重定向了 config.yaml, 而数据库(ComputedConfig.database_path)与头像
+        (actor_avatar._avatar_backing_path) 仍解析到 CWD/data, 与 DATA_DIR 不一致。
+        现在所有派生目录(config/database/logs/cache/backups/avatars)都基于同一真相源。
+        """
+        from app.config.manager import DATA_DIR
+
+        return DATA_DIR
 
     @property
     def config_dir(self) -> Path:

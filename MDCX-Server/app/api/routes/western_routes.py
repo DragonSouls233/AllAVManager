@@ -10,9 +10,14 @@
 - 演员数据: 支持 IAFD/ThePornDB 来源
 """
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from app.db.module_db import ModuleDatabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/western", tags=["欧美模块"])
 
@@ -126,3 +131,188 @@ async def scan_media():
     scanner = WesternScanner(media_dirs)
     result = await scanner.scan()
     return result
+
+
+# ========== 刮削 ==========
+
+
+@router.post("/movies/{movie_id}/scrape")
+async def scrape_western_movie(movie_id: int):
+    """刮削指定欧美影片的元数据
+
+    使用 Western 爬虫的 search 功能按关键词搜索，
+    获取元数据后写入模块 DB。
+    """
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternMovie, WesternActor
+        from sqlalchemy import select
+
+        movie = (await session.execute(select(WesternMovie).where(WesternMovie.id == movie_id))).scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 用标题作为关键词搜索
+        keyword = movie.title or ""
+        if not keyword:
+            return {"status": "error", "message": "影片无标题，无法搜索"}
+
+        # 提取更精确的搜索关键词：去掉频道名/品牌前缀，取核心标题
+        # 例: "Anna Ralphs - [Hegre.com] - [2023] - Cum Inside Me" → "Anna Ralphs Cum Inside Me"
+        # 例: "Blacked.19.10.12.Lana.Sharapova.4k-C" → "Blacked Lana Sharapova"
+        import re as _re
+        clean_title = _re.sub(r'\[.*?\]', '', keyword)  # 去掉 [xxx] 内容
+        clean_title = _re.sub(r'[-_]\s*[0-9]+[kK]', '', clean_title)  # 去掉 -4K, -1080p 等
+        clean_title = _re.sub(r'-C$', '', clean_title)  # 去掉尾部 -C（中文版标记）
+        clean_title = clean_title.replace('.', ' ').replace('_', ' ').replace('  ', ' ').strip()
+        if clean_title:
+            keyword = clean_title
+
+        # 尝试多个 Western 爬虫搜索（带超时控制，避免某个爬虫卡死）
+        from app.crawlers.western.theporndb import ThePornDBCrawler
+        from app.crawlers.western.aylo_api import AyloAPICrawler
+        from app.crawlers.western.vixen_network import VixenNetworkCrawler
+        from app.crawlers.western.naughtyamerica import NaughtyAmericaCrawler
+
+        scrapers = [
+            (ThePornDBCrawler(), 10),
+            (AyloAPICrawler(), 8),
+            (VixenNetworkCrawler(), 10),
+            (NaughtyAmericaCrawler(), 5),
+        ]
+
+        matched_result = None
+        for scraper, timeout in scrapers:
+            try:
+                results = await asyncio.wait_for(scraper.search(keyword), timeout=timeout)
+                if results:
+                    matched_result = results[0]
+                    break
+            except asyncio.TimeoutError:
+                logger.debug(f"Western 爬虫 {scraper.name} 超时 ({timeout}s)")
+                continue
+            except Exception:
+                continue
+
+        if not matched_result:
+            return {"status": "error", "message": f"未找到 {keyword} 的匹配数据"}
+
+        # 写入模块 DB
+        movie.title = matched_result.title
+        movie.original_title = matched_result.original_title or matched_result.title
+        if matched_result.cover_url:
+            movie.cover_url = matched_result.cover_url
+        if matched_result.poster_url:
+            movie.poster_url = matched_result.poster_url
+        if matched_result.duration:
+            movie.duration = matched_result.duration
+        if matched_result.rating:
+            movie.rating = matched_result.rating
+        if matched_result.plot:
+            movie.plot = matched_result.plot
+        if matched_result.release_date:
+            movie.release_date = str(matched_result.release_date)
+        if matched_result.genres:
+            movie.genre = ",".join(matched_result.genres)
+        if matched_result.tags:
+            movie.tag = ",".join(matched_result.tags)
+        if matched_result.studio:
+            movie.studio = matched_result.studio
+
+        # 演员
+        if matched_result.actors:
+            actor_names = [a.name for a in matched_result.actors]
+            movie.actors = ",".join(actor_names)
+            for ai in matched_result.actors:
+                ex = await session.execute(select(WesternActor).where(WesternActor.name == ai.name))
+                a = ex.scalar_one_or_none()
+                if not a:
+                    session.add(WesternActor(name=ai.name, source="scraper", movie_count=1))
+
+        movie.status = "scraped"
+        movie.source = matched_result.source
+        await session.commit()
+
+        return {
+            "status": "ok",
+            "message": f"刮削成功: {matched_result.title}",
+            "source": matched_result.source,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        await session.close()
+
+
+@router.post("/movies/scrape-all-pending")
+async def scrape_all_pending_western(background_tasks: BackgroundTasks):
+    """后台批量刮削所有 status=pending 的欧美影片"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternMovie
+        from sqlalchemy import select
+        pending = (await session.execute(
+            select(WesternMovie).where(WesternMovie.status == "pending").order_by(WesternMovie.id.desc())
+        )).scalars().all()
+    finally:
+        await session.close()
+
+    if not pending:
+        return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
+
+    async def _run():
+        from app.db.western_models import WesternMovie, WesternActor
+        from sqlalchemy import select
+        from app.crawlers.western.theporndb import ThePornDBCrawler
+
+        crawler = ThePornDBCrawler()
+        success = 0
+        failed = 0
+        for m in pending:
+            try:
+                results = await crawler.search(m.title or "")
+                if results:
+                    s = await db.get_session()
+                    try:
+                        mv = (await s.execute(select(WesternMovie).where(WesternMovie.id == m.id))).scalar_one_or_none()
+                        if mv:
+                            r = results[0]
+                            mv.title = r.title
+                            if r.cover_url:
+                                mv.cover_url = r.cover_url
+                            if r.duration:
+                                mv.duration = r.duration
+                            if r.rating:
+                                mv.rating = r.rating
+                            if r.actors:
+                                mv.actors = ",".join(a.name for a in r.actors)
+                                for ai in r.actors:
+                                    ex = await s.execute(select(WesternActor).where(WesternActor.name == ai.name))
+                                    a = ex.scalar_one_or_none()
+                                    if not a:
+                                        s.add(WesternActor(name=ai.name, source="scraper", movie_count=1))
+                            mv.status = "scraped"
+                            mv.source = r.source
+                            await s.commit()
+                            success += 1
+                    finally:
+                        await s.close()
+                else:
+                    failed += 1
+            except Exception as e:
+                logger.debug(f"刮削失败 {m.code}: {e}")
+                failed += 1
+        logger.info(f"Western 批量刮削完成: 成功 {success}, 失败 {failed}")
+
+    background_tasks.add_task(_run)
+
+    return {
+        "status": "started",
+        "total": len(pending),
+        "message": f"Western 批量刮削已启动，共 {len(pending)} 部待刮削影片",
+    }

@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from app.config.manager import get_config, get_config_manager, CONFIG_FILE
 from app.utils.logger import get_logger, setup_logging
+from app.utils.media_helpers import path_reachable, filter_reachable
 
 logger = get_logger(__name__)
 
@@ -99,7 +100,7 @@ async def _watch_config_and_rescan(poll_interval: int = 5) -> None:
             # 更新目录监听器
             try:
                 from app.services.watcher import get_directory_watcher
-                get_directory_watcher().start(new_dirs)
+                get_directory_watcher().start(filter_reachable([str(d) for d in new_dirs]))
             except Exception as e:
                 logger.warning(f"更新目录监听器失败: {e}")
 
@@ -169,7 +170,7 @@ async def lifespan(app: FastAPI):
                 mod_cfg = getattr(modules_config, mod_name, None)
                 if mod_cfg and getattr(mod_cfg, "enabled", False):
                     dirs = getattr(mod_cfg, "media_dirs", None) or []
-                    valid_dirs = [d for d in dirs if Path(d).exists()]
+                    valid_dirs = filter_reachable([str(d) for d in dirs])
                     if valid_dirs:
                         import importlib
                         scanner_mod = importlib.import_module(mod_path)
@@ -213,7 +214,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.watcher import get_directory_watcher
         watcher = get_directory_watcher()
-        watcher.start(media_dirs)
+        watcher.start(filter_reachable([str(d) for d in media_dirs]))
     except Exception as e:
         logger.warning(f"目录监听启动失败: {e}")
 
@@ -809,7 +810,9 @@ def create_app() -> FastAPI:
     logger.info("所有已注册的路由：")
     for route in app.routes:
         methods = getattr(route, "methods", None) or {"WS"}
-        logger.info(f"  - {route.name}: {route.path} ({methods})")
+        route_name = getattr(route, "name", None) or getattr(route, "path", "?")
+        route_path = getattr(route, "path", None) or getattr(route, "paths", "?")
+        logger.info(f"  - {route_name}: {route_path} ({methods})")
     logger.info("="*50)
     
     logger.info("✅ 应用创建完成！")

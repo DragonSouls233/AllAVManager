@@ -178,7 +178,7 @@ class ThePornDBCrawler(BaseCrawler):
         Args:
             code: 影片 slug 或标题
         """
-        from app.services.proxy_manager import get_proxy
+        from app.services.proxy_manager import get_effective_proxy_url
         from app.utils.http_client import AsyncHttpClient
 
         proxy = get_effective_proxy_url()
