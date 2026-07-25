@@ -4,10 +4,63 @@
 """
 
 import logging
+import os
+import threading
 from pathlib import Path
 from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+def path_reachable(p: str, timeout: float = 1.0) -> bool:
+    """带超时的路径可达性检查（Windows 未挂载网络盘/空光盘驱防护）。
+
+    媒体目录常配置服务器专属盘符（H: I: J: K: Y: Z: M: N: O: 等），
+    在开发机等未挂载这些盘的环境里，直接调用 os.path.exists / Path.exists
+    会阻塞数十秒，进而冻结 asyncio 事件循环、拖慢启动与封面请求。
+    这里用守护线程 + join(timeout) 限时探测，超时即视为不可达并跳过，
+    既避免卡死，又不影响真实已挂载的盘符（它们通常在 1 秒内返回）。
+    """
+    res: dict = {}
+
+    def _probe() -> None:
+        try:
+            res["v"] = os.path.exists(p)
+        except Exception:
+            res["v"] = False
+
+    th = threading.Thread(target=_probe, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        return False
+    return bool(res.get("v", False))
+
+
+def filter_reachable(paths: list[str], timeout: float = 1.0) -> list[str]:
+    """并行探测多个路径的可达性, 返回可达路径列表。
+
+    用于 media_dirs 等可能包含大量未挂载网络盘的列表: 串行逐个 path_reachable
+    探测会让启动卡顿(如 10 个死盘 × 1s = 10s 阻塞事件循环)。这里一次性并发探测,
+    整体只等 timeout 秒(首个最慢的盘), 不可达(含超时)的路径被过滤掉。
+    """
+    if not paths:
+        return []
+    results: dict[str, bool] = {}
+    threads: list[threading.Thread] = []
+    for p in paths:
+        def _probe(path: str = p) -> None:
+            try:
+                results[path] = os.path.exists(path)
+            except Exception:
+                results[path] = False
+
+        th = threading.Thread(target=_probe, daemon=True)
+        th.start()
+        threads.append(th)
+    for th in threads:
+        th.join(timeout)
+    return [p for p in paths if results.get(p, False)]
 
 # 视频文件扩展名集合（不含大写，比较前统一小写）
 VIDEO_EXTENSIONS: Set[str] = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".webm"}
@@ -81,7 +134,7 @@ def scan_media_dirs_for_cover(
 
     for d in media_dirs:
         d_path = Path(d)
-        if not d_path.exists() or not d_path.is_dir():
+        if not path_reachable(str(d_path)) or not d_path.is_dir():
             continue
 
         # 1) 直接匹配 d_path / code/
@@ -125,7 +178,7 @@ def scan_media_dirs_for_avatar(
 
     for d in media_dirs:
         base = Path(d)
-        if not base.exists():
+        if not path_reachable(str(base)):
             continue
         for sub_dir_name in AVATAR_SUB_DIRS:
             actor_dir = base / sub_dir_name
@@ -150,7 +203,7 @@ def search_video_in_media_dirs(media_dirs: list[str], code_lower: str) -> Option
     """
     for d in media_dirs:
         base = Path(d)
-        if not base.exists():
+        if not path_reachable(str(base)):
             continue
         try:
             for f in _walk_depth_limited(base, max_depth=4):

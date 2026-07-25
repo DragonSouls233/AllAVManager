@@ -185,6 +185,9 @@ class ConfigManager:
             logger.warning(f"配置验证失败，使用默认配置: {e}")
             self._config = Config()
 
+        # 3.5 归一化数据库 URL 到 DATA_DIR(修复 MDCX_DATA_DIR 未覆盖数据库)
+        self._normalize_database_url()
+
         # 4. 创建计算配置
         self._computed = ComputedConfig(self._config)
 
@@ -197,9 +200,40 @@ class ConfigManager:
 
         return errors
 
+    def _normalize_database_url(self) -> None:
+        """将相对的 sqlite 数据库 URL 归一化到 DATA_DIR。
+
+        历史问题: DatabaseConfig.url 默认 sqlite+aiosqlite:///data/database/scraper.db
+        是 CWD 相对路径, 与 DATA_DIR 无关。设置 MDCX_DATA_DIR 后数据库仍落到
+        CWD/data, 导致 dev 实例(288部死数据)而非 L:/data(8220部真数据)。
+
+        这里把相对 url 解析为 DATA_DIR 下的绝对路径:
+          data/database/scraper.db -> {DATA_DIR}/database/scraper.db
+        绝对路径或非 sqlite(如 postgresql)保持不变。仅在内存中修正, 不写回 config.yaml。
+        """
+        if self._config is None:
+            return
+        url = self._config.database.url
+        if not (isinstance(url, str) and url.startswith("sqlite") and "///" in url):
+            return
+        rel = url.split("///", 1)[1]
+        if Path(rel).is_absolute():
+            return
+        parts = rel.replace("\\", "/").split("/")
+        if parts and parts[0] == "data":
+            parts = parts[1:]
+        if parts:
+            db_path = (DATA_DIR / Path(*parts)).resolve()
+        else:
+            db_path = DATA_DIR / "database" / "scraper.db"
+        self._config.database.url = "sqlite+aiosqlite:///" + str(db_path).replace("\\", "/")
+
     def _load_from_env(self, config_data: dict[str, Any]) -> dict[str, Any]:
         """从环境变量加载配置"""
         env_mappings: dict[str, str] = {
+            "MDCX_DATA_DIR": "env_overrides.data_dir",
+            "STATIC_URL_PREFIX": "env_overrides.static_url_prefix",
+            "TEST_ROOT": "env_overrides.test_root",
             "SCRAPER_HOST": "server.host",
             "SCRAPER_PORT": "server.port",
             "SCRAPER_WORKERS": "server.workers",
@@ -371,11 +405,12 @@ class ConfigManager:
                 logger.warning(f"mutate_config 验证失败: {e}")
                 return [f"配置验证失败: {e}"]
 
-            # 4. 写回(已持锁,用 unlocked 版)
+            # 4. 写回(已持锁,用 unlocked 版) —— 保存原始(未归一化)配置, 保持 config.yaml 干净
             self._save_unlocked(config_data)
 
-            # 5. 更新内存中的 _config / _computed
+            # 5. 更新内存中的 _config / _computed, 并归一化数据库 URL 到 DATA_DIR
             self._config = validated
+            self._normalize_database_url()
             self._computed = ComputedConfig(validated)
             return []
 
@@ -383,6 +418,7 @@ class ConfigManager:
         """重置为默认配置(在锁内完成,无 TOCTOU)"""
         with _config_write_lock:
             self._config = Config()
+            self._normalize_database_url()
             self._computed = ComputedConfig(self._config)
             self._save_unlocked(self._config.model_dump(mode="json"))
             logger.info("配置已重置为默认值")

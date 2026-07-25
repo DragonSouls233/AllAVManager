@@ -68,3 +68,4 @@ MDCX-Server/tests/
 .chrome-test/
 test_scan.py
 test_*.py
+_verify_data/
