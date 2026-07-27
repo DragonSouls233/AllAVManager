@@ -1,6 +1,6 @@
 """
 PORNHub 扫描器
-目录结构: G:\TEST\pornhub\[Channel] ActorName\videofile.mp4
+目录结构: G:\\TEST\\pornhub\\[Channel] ActorName\\videofile.mp4
 从目录名提取演员，支持服务器上带国籍的目录名
 
 支持的目录名格式:
@@ -149,7 +149,7 @@ class PornhubScanner(BaseScanner):
 
         for media_dir in self.media_dirs:
             try:
-                dir_result = await self._scan_directory(media_dir)
+                dir_result = await self._scan_directory(Path(media_dir))
                 results["total"] += dir_result["total"]
                 results["scanned"] += dir_result["scanned"]
                 results["matched"] += dir_result["matched"]
@@ -264,9 +264,9 @@ class PornhubScanner(BaseScanner):
         """从文件路径中提取演员名和国籍
 
         目录结构:
-          G:\TEST\pornhub\[Channel] Anna Cherry7\videofile.mp4
-          G:\TEST\pornhub\Anna Cherry7 [US]\videofile.mp4
-          G:\TEST\pornhub\XXX\Anna Cherry7\videofile.mp4
+          G:\\TEST\\pornhub\\[Channel] Anna Cherry7\\videofile.mp4
+          G:\\TEST\\pornhub\\Anna Cherry7 [US]\\videofile.mp4
+          G:\\TEST\\pornhub\\XXX\\Anna Cherry7\\videofile.mp4
 
         优先使用离文件最近的目录名。
         """

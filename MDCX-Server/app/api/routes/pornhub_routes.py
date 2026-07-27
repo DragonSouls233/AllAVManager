@@ -636,6 +636,314 @@ async def generate_all_pornhub_covers(background_tasks: BackgroundTasks):
 # ========== 完整工作流 ==========
 
 
+@router.post("/movies/generate-cover-enhanced/{movie_id}")
+async def generate_pornhub_movie_cover_enhanced(movie_id: int, width: int = Query(480, ge=200, le=1920), quality: int = Query(85, ge=10, le=100)):
+    """增强版封面生成：20%-80% 区间多帧采样 + 最优帧选择
+
+    - 在视频时长的 20%-80% 区间均匀取 3 帧
+    - 通过清晰度、亮度、色彩综合评分选择最优帧
+    - 输出为 {原视频名}_cover.jpg
+    """
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubMovie
+        from sqlalchemy import select
+
+        stmt = select(PornhubMovie).where(PornhubMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        file_path = movie.file_path
+        if not file_path or not Path(file_path).exists():
+            return {"status": "error", "message": f"视频文件不存在: {file_path}"}
+
+        # 封面输出到视频同目录，命名: {原视频名}_cover.jpg
+        video_dir = Path(file_path).parent
+        cover_name = Path(file_path).stem
+
+        from app.utils.pornhub_cover_generator import generate_cover
+        result_data = await generate_cover(
+            video_path=file_path,
+            output_dir=str(video_dir),
+            cover_name=cover_name,
+            width=width,
+            quality=quality,
+            sample_points=3,
+            sample_range=(0.2, 0.8),
+            force=False,
+        )
+
+        if result_data["status"] == "ok":
+            # 更新数据库封面路径
+            movie.cover_url = result_data["cover_path"]
+            movie.poster_url = result_data["cover_path"]
+            movie.status = "scraped"
+            await session.commit()
+            logger.info("增强封面已更新 DB: %s -> %s", movie.code, result_data["cover_path"])
+
+        result_data["movie_code"] = movie.code
+        return result_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"增强封面生成失败 [{movie_id}]: {e}")
+        return {"status": "error", "message": str(e)}
+    finally:
+        await session.close()
+
+
+@router.post("/movies/generate-all-covers-enhanced")
+async def generate_all_pornhub_covers_enhanced(background_tasks: BackgroundTasks):
+    """后台批量增强封面生成（所有 pending 影片）"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubMovie
+        from sqlalchemy import select
+
+        stmt = select(PornhubMovie).where(PornhubMovie.status == "pending").order_by(PornhubMovie.id.desc())
+        result = await session.execute(stmt)
+        pending = result.scalars().all()
+    finally:
+        await session.close()
+
+    if not pending:
+        return {"status": "ok", "message": "没有待生成封面的影片", "total": 0}
+
+    async def _run():
+        from app.db.pornhub_models import PornhubMovie
+        from app.utils.pornhub_cover_generator import generate_cover
+
+        db_inner = get_pornhub_db()
+        s = await db_inner.get_session()
+        total = len(pending)
+        success = 0
+        failed = 0
+        try:
+            for i, mv in enumerate(pending):
+                if not mv.file_path or not Path(mv.file_path).exists():
+                    failed += 1
+                    continue
+
+                video_dir = Path(mv.file_path).parent
+                cover_name = Path(mv.file_path).stem
+
+                result_data = await generate_cover(
+                    video_path=mv.file_path,
+                    output_dir=str(video_dir),
+                    cover_name=cover_name,
+                    width=480,
+                    quality=85,
+                )
+
+                if result_data["status"] == "ok":
+                    mv.cover_url = result_data["cover_path"]
+                    mv.poster_url = result_data["cover_path"]
+                    mv.status = "scraped"
+                    success += 1
+                    logger.info("[%d/%d] 封面已生成: %s", i + 1, total, mv.code)
+                else:
+                    failed += 1
+                    logger.warning("[%d/%d] 封面生成失败: %s - %s", i + 1, total, mv.code, result_data.get("message"))
+
+                if (i + 1) % 5 == 0:
+                    await s.commit()
+
+            await s.commit()
+        finally:
+            await s.close()
+
+        logger.info("批量封面生成完成: 成功 %d, 失败 %d, 总计 %d", success, failed, total)
+
+    background_tasks.add_task(_run)
+
+    return {
+        "status": "started",
+        "message": f"已启动 {len(pending)} 部影片的批量封面生成",
+        "total": len(pending),
+    }
+
+
+@router.post("/actors/scrape-profile-enhanced/{actor_id}")
+async def scrape_actor_profile_enhanced(actor_id: int):
+    """增强版演员资料刮削（更多字段 + 头像下载到本地）"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select
+
+        stmt = select(PornhubActor).where(PornhubActor.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        from app.scraper.pornhub_actor_scraper import (
+            scrape_actor_profile,
+            download_actor_avatar,
+            check_profile_completeness,
+        )
+
+        profile = await scrape_actor_profile(actor.name, actor.nationality)
+
+        if not profile:
+            return {"status": "error", "message": f"未找到演员 {actor.name} 的任何资料"}
+
+        # 更新数据库
+        updates = {}
+        if profile.alias:
+            actor.alias = profile.alias
+            updates["alias"] = profile.alias
+        if profile.avatar_url:
+            actor.avatar_url = profile.avatar_url
+            updates["avatar_url"] = profile.avatar_url
+        if profile.country and not actor.nationality:
+            actor.nationality = profile.country
+            updates["nationality"] = profile.country
+
+        await session.commit()
+
+        # 下载头像到本地
+        local_avatar = None
+        if profile.avatar_url:
+            local_avatar = await download_actor_avatar(actor.name, profile.avatar_url)
+
+        completeness = check_profile_completeness(profile)
+
+        return {
+            "status": "ok",
+            "message": f"演员 {actor.name} 资料刮削成功",
+            "profile": {
+                "name": profile.name,
+                "alias": profile.alias,
+                "avatar_url": profile.avatar_url,
+                "avatar_local": local_avatar,
+                "birth_date": profile.birth_date,
+                "debut_year": profile.debut_year,
+                "height": profile.height,
+                "measurements": profile.measurements,
+                "birthplace": profile.birthplace,
+                "country": profile.country,
+                "ethnicity": profile.ethnicity,
+                "movie_count": profile.movie_count,
+                "video_count": profile.video_count,
+                "photo_count": profile.photo_count,
+                "rank": profile.rank,
+                "profile_url": profile.profile_url,
+            },
+            "completeness": completeness,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"演员增强资料刮削失败 [{actor_id}]: {e}")
+        return {"status": "error", "message": str(e)}
+    finally:
+        await session.close()
+
+
+@router.post("/actors/scrape-all-profiles-enhanced")
+async def scrape_all_actor_profiles_enhanced(background_tasks: BackgroundTasks):
+    """后台批量增强版演员资料刮削（完整资料 + 头像下载）"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select
+
+        stmt = select(PornhubActor).where(PornhubActor.source != "manual").order_by(PornhubActor.movie_count.desc())
+        result = await session.execute(stmt)
+        actors = result.scalars().all()
+    finally:
+        await session.close()
+
+    if not actors:
+        return {"status": "ok", "message": "没有演员需要刮削", "total": 0}
+
+    async def _run():
+        from app.db.pornhub_models import PornhubActor
+        from app.scraper.pornhub_actor_scraper import (
+            scrape_actor_profile,
+            download_actor_avatar,
+            check_profile_completeness,
+        )
+
+        db_inner = get_pornhub_db()
+        s = await db_inner.get_session()
+        total = len(actors)
+        success = 0
+        skipped = 0
+        failed = 0
+        error_log = []
+
+        try:
+            for i, actor_row in enumerate(actors):
+                # 去重校验：如果资料完整且已有头像本地文件，跳过
+                has_local = Path(AVATAR_DIR) / f"{re.sub(r'[\\/:*?\"<>|]', '_', actor_row.name)}.jpg"
+                if actor_row.avatar_url and actor_row.nationality and has_local.exists():
+                    skipped += 1
+                    continue
+
+                try:
+                    profile = await scrape_actor_profile(actor_row.name, actor_row.nationality)
+                    if profile:
+                        if profile.alias:
+                            actor_row.alias = profile.alias
+                        if profile.avatar_url:
+                            actor_row.avatar_url = profile.avatar_url
+                        if profile.country and not actor_row.nationality:
+                            actor_row.nationality = profile.country
+
+                        # 下载头像到本地
+                        if profile.avatar_url:
+                            await download_actor_avatar(actor_row.name, profile.avatar_url)
+
+                        completeness = check_profile_completeness(profile)
+                        logger.info(
+                            "[%d/%d] %s: 资料获取成功 (完整度 %d%%)",
+                            i + 1, total, actor_row.name, completeness["completeness"]
+                        )
+                        success += 1
+                    else:
+                        failed += 1
+                        error_log.append({
+                            "name": actor_row.name,
+                            "error": "刮削返回空",
+                        })
+                        logger.warning("[%d/%d] %s: 刮削失败", i + 1, total, actor_row.name)
+
+                    if (i + 1) % 5 == 0:
+                        await s.commit()
+                        await asyncio.sleep(0.3)
+
+                except Exception as e:
+                    failed += 1
+                    error_log.append({"name": actor_row.name, "error": str(e)})
+                    logger.error("[%d/%d] %s: 异常 - %s", i + 1, total, actor_row.name, e)
+
+            await s.commit()
+        finally:
+            await s.close()
+
+        logger.info("批量演员刮削完成: 成功 %d, 跳过 %d, 失败 %d, 总计 %d", success, skipped, failed, total)
+        if error_log:
+            logger.warning("刮削失败的演员: %s", error_log)
+
+    background_tasks.add_task(_run)
+
+    return {
+            "status": "started",
+            "message": f"已启动 {len(actors)} 个演员的批量资料刮削",
+            "total": len(actors),
+        }
+
+
 @router.post("/workflow/run-all")
 async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
     """完整工作流：扫描目录 → 刮削影片 → 下载演员头像 → 生成截图封面"""
@@ -660,8 +968,7 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
 
         # 2. 刮削演员资料（头像 + 国籍）
         db = get_pornhub_db()
-        from app.scraper.module_actor_profile import ModuleActorProfileScraper
-        profile_scraper = ModuleActorProfileScraper(module_name="pornhub")
+        from app.scraper.pornhub_actor_scraper import scrape_actor_profile, download_actor_avatar
 
         s = await db.get_session()
         try:
@@ -670,10 +977,12 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
                 if actor_row.avatar_url and actor_row.nationality:
                     continue
                 try:
-                    profile = await profile_scraper.get_profile(actor_row.name)
+                    profile = await scrape_actor_profile(actor_row.name, actor_row.nationality)
                     if profile:
                         if profile.avatar_url:
                             actor_row.avatar_url = profile.avatar_url
+                            # 下载头像到本地
+                            await download_actor_avatar(actor_row.name, profile.avatar_url)
                         if profile.country and not actor_row.nationality:
                             actor_row.nationality = profile.country
                     else:
@@ -688,41 +997,36 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
         finally:
             await s.close()
 
-        # 3. 生成视频截图封面
-        from app.utils.bin_tools import get_ffmpeg_path
-        from app.config.manager import DATA_DIR
-        import subprocess
+        # 3. 生成视频截图封面（增强版：多帧采样 + 最优帧选择）
+        from app.utils.pornhub_cover_generator import generate_cover
 
-        ffmpeg = get_ffmpeg_path()
-        if ffmpeg and Path(ffmpeg).exists():
-            s2 = await db.get_session()
-            try:
-                pending_movies = await s2.execute(
-                    select(PornhubMovie).where(PornhubMovie.status == "pending")
-                )
-                for mv in pending_movies.scalars().all():
-                    if not mv.file_path or not Path(mv.file_path).exists():
-                        continue
-                    try:
-                        output_dir = DATA_DIR / "movies" / "pornhub" / mv.code
-                        output_dir.mkdir(parents=True, exist_ok=True)
-                        cover_path = output_dir / "poster.jpg"
-
-                        r = subprocess.run(
-                            [ffmpeg, "-y", "-ss", "00:00:05", "-i", mv.file_path,
-                             "-vframes", "1", "-vf", "scale=480:-1", str(cover_path)],
-                            capture_output=True, text=True, timeout=60,
-                            encoding="utf-8", errors="replace",
-                        )
-                        if r.returncode == 0 and cover_path.exists():
-                            mv.cover_url = str(cover_path)
-                            mv.poster_url = str(cover_path)
-                            mv.status = "scraped"
-                            await s2.commit()
-                    except Exception as e:
-                        logger.debug(f"截图失败 {mv.code}: {e}")
-            finally:
-                await s2.close()
+        s2 = await db.get_session()
+        try:
+            pending_movies = await s2.execute(
+                select(PornhubMovie).where(PornhubMovie.status == "pending")
+            )
+            for mv in pending_movies.scalars().all():
+                if not mv.file_path or not Path(mv.file_path).exists():
+                    continue
+                try:
+                    video_dir = Path(mv.file_path).parent
+                    cover_name = Path(mv.file_path).stem
+                    result_data = await generate_cover(
+                        video_path=mv.file_path,
+                        output_dir=str(video_dir),
+                        cover_name=cover_name,
+                        width=480,
+                        quality=85,
+                    )
+                    if result_data["status"] == "ok":
+                        mv.cover_url = result_data["cover_path"]
+                        mv.poster_url = result_data["cover_path"]
+                        mv.status = "scraped"
+                        await s2.commit()
+                except Exception as e:
+                    logger.debug(f"截图失败 {mv.code}: {e}")
+        finally:
+            await s2.close()
 
         logger.info("PORNHub 工作流：全部完成")
 
