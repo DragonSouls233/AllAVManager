@@ -21,6 +21,7 @@ router = APIRouter(prefix="/modules", tags=["模块管理"])
 SCANNER_MAP = {
     "chinese": ("app.tasks.chinese_scanner", "ChineseScanner"),
     "fc2": ("app.tasks.fc2_scanner", "Fc2Scanner"),
+    "jav": ("app.tasks.jav_scanner", "JavScanner"),
     "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
     "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
     "western": ("app.tasks.western_scanner", "WesternScanner"),
@@ -112,9 +113,8 @@ async def get_module_stats(module_name: str):
 @router.post("/{module_name}/scan")
 async def scan_module(module_name: str):
     """触发模块扫描"""
-    if module_name == "chinese":
-        return await _run_scan("chinese")
-    elif module_name in ("fc2", "uncensored", "pornhub", "western"):
+    # 所有注册在 SCANNER_MAP 中的模块都走统一扫描流程
+    if module_name in SCANNER_MAP:
         return await _run_scan(module_name)
     return {"module": module_name, "message": "扫描功能待实现"}
 
