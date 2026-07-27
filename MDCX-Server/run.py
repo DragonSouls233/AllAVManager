@@ -130,20 +130,11 @@ def _cleanup_before_start(server_port: int):
             _warn(f"已清理端口 {port} 上的残留进程")
             killed_any = True
 
-    # 杀掉残留的 xray 子进程
-    if platform.system() == "Windows":
-        try:
-            result = subprocess.run(
-                'tasklist /NH /FI "IMAGENAME eq xray.exe" 2>nul',
-                shell=True, capture_output=True, text=True, timeout=5
-            )
-            if "xray.exe" in result.stdout:
-                subprocess.run("taskkill /F /IM xray.exe", shell=True,
-                               capture_output=True, timeout=5)
-                _warn("已清理残留 xray 代理进程")
-                killed_any = True
-        except Exception:
-            pass
+    # 杀掉占用本项目 Xray 端口（18920/18921）的进程，不杀其他程序的 xray
+    for xray_port in [18920, 18921]:
+        if _kill_process_on_port(xray_port):
+            _warn(f"已清理端口 {xray_port} 上的残留 xray 进程")
+            killed_any = True
 
     # 清理 PID 和锁文件
     for lock_file in ["data/proxy/xray_config.json", "data/proxy/nodes.json"]:
