@@ -911,6 +911,19 @@ class GfriendsConfig(BaseModel):
     download_timeout: int = Field(default=30, ge=5, le=300, title="下载超时（秒）")
 
 
+class ScanControlConfig(BaseModel):
+    """扫描控制配置
+
+    控制启动时的自动扫描行为，防止每次启动都重复扫描：
+    - scan_cooldown_hours: 首次启动扫描后的冷却时长（小时），冷却期内不再自动扫描
+    - scan_reset_days: 用户距离上次打开应用超过此天数后，重置冷却重新扫描
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    scan_cooldown_hours: int = Field(default=24, ge=1, le=720, title="扫描冷却时长（小时）")
+    scan_reset_days: int = Field(default=7, ge=1, le=365, title="重置冷却间隔天数")
+
+
 class EnvOverridesConfig(BaseModel):
     """环境变量覆盖配置（运行时注入，通常由环境变量提供）
 
@@ -973,6 +986,7 @@ class Config(BaseModel):
     recommendation: RecommendationConfig = Field(default_factory=RecommendationConfig, title="AI推荐配置")
     fanart: FanartConfig = Field(default_factory=FanartConfig, title="fanart.tv集成配置")
     gfriends: GfriendsConfig = Field(default_factory=GfriendsConfig, title="Gfriends 头像库配置")
+    scan_control: ScanControlConfig = Field(default_factory=ScanControlConfig, title="扫描控制配置")
 
     @field_validator("scraper", mode="before")
     @classmethod

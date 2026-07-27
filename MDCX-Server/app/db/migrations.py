@@ -431,6 +431,29 @@ MIGRATIONS: list[Migration] = [
             DROP TABLE IF EXISTS actor_compare_urls;
         """,
     ),
+    Migration(
+        version="017",
+        description="添加扫描记录表 scan_records",
+        upgrade_sql="""
+            CREATE TABLE IF NOT EXISTS scan_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_type VARCHAR(20) NOT NULL,
+                module_name VARCHAR(50),
+                status VARCHAR(20) NOT NULL DEFAULT 'running',
+                total_files INTEGER,
+                added_files INTEGER,
+                error_message TEXT,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_scan_records_scan_type ON scan_records(scan_type);
+            CREATE INDEX IF NOT EXISTS ix_scan_records_started_at ON scan_records(started_at);
+        """,
+        downgrade_sql="""
+            DROP TABLE IF EXISTS scan_records;
+        """,
+    ),
 ]
 
 

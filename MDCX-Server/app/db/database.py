@@ -30,11 +30,13 @@ class Database:
         self.database_url = database_url or config.database.url
         self.echo = config.database.echo
 
-        # 创建引擎 - SQLite aiosqlite 对并发写入敏感，使用更保守的连接池
+        # 创建引擎 - SQLite aiosqlite 对并发写入敏感
         self.engine = create_async_engine(
             self.database_url,
             echo=self.echo,
             pool_size=config.database.pool_size,
+            max_overflow=0,
+            pool_pre_ping=True,
             connect_args={"check_same_thread": False} if "sqlite" in self.database_url else {},
         )
 

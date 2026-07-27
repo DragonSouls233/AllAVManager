@@ -237,6 +237,15 @@ def _get_local_ips():
 # =============================================================================
 def _start_server(host, port, workers, debug):
     """启动服务器（使用 uvicorn.run 内嵌启动，中文日志）"""
+    # Python 3.14 在 Windows 上的 ProactorEventLoop 有断言 bug，强制用 SelectorEventLoop
+    if sys.platform == "win32":
+        import asyncio
+        try:
+            loop = asyncio.SelectorEventLoop()
+            asyncio.set_event_loop(loop)
+        except Exception:
+            pass
+
     import uvicorn
     from app.utils.log_config import LOGGING_CONFIG, UvicornLogFilter
 
@@ -256,6 +265,7 @@ def _start_server(host, port, workers, debug):
         workers=workers,
         reload=debug,
         log_config=LOGGING_CONFIG,
+        loop="asyncio",
     )
 
 

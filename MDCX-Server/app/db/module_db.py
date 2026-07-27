@@ -47,6 +47,8 @@ class ModuleDatabase:
             db_url,
             echo=False,
             pool_size=5,
+            max_overflow=0,
+            pool_pre_ping=True,
             connect_args={"check_same_thread": False},
         )
 
@@ -120,6 +122,15 @@ class ModuleDatabase:
             async with db.engine.begin() as conn:
                 await conn.execute(text("PRAGMA journal_mode=WAL"))
                 await conn.run_sync(ModuleBase.metadata.create_all)
+
+            # 兼容已有数据库：补全模型新增但表中缺失的字段
+            try:
+                async with db.engine.begin() as conn:
+                    await conn.execute(text("ALTER TABLE pornhub_actors ADD COLUMN nationality VARCHAR(50)"))
+                    logger.info(f"模块 [{name}] 已补全字段: pornhub_actors.nationality")
+            except Exception:
+                pass  # 列已存在则忽略
+
             instances[name] = db
         return instances
 

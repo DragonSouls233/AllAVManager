@@ -11,6 +11,7 @@ PORNHub 扫描器
   - Anna Cherry7 (US)
 """
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -178,7 +179,8 @@ class PornhubScanner(BaseScanner):
             from app.db.pornhub_models import PornhubMovie, PornhubActor
             from sqlalchemy import select
 
-            for root, dirs, files in os.walk(media_dir):
+            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            for root, dirs, files in walk_entries:
                 # 提取当前目录的演员名和国籍（跳过根目录）
                 actor_name, nationality = self._get_actor_from_path(root, media_dir)
 
@@ -271,7 +273,7 @@ class PornhubScanner(BaseScanner):
         优先使用离文件最近的目录名。
         """
         try:
-            rel_path = file_path.relative_to(media_dir)
+            rel_path = Path(file_path).relative_to(media_dir)
         except ValueError:
             return None, None
 

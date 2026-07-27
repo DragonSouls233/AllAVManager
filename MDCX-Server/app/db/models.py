@@ -558,3 +558,23 @@ class UserRecommendation(Base):
     reason: Mapped[str | None] = mapped_column(Text)  # 推荐理由
     dismissed: Mapped[bool] = mapped_column(Boolean, default=False)  # 是否被用户忽略
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class ScanRecord(Base):
+    """扫描记录表
+
+    记录每次扫描的执行时间、扫描结果、扫描类型，持久化保存。
+    用于追踪扫描历史、判断冷却期、手动触发扫描。
+    """
+    __tablename__ = "scan_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # startup / manual / scheduled
+    module_name: Mapped[str | None] = mapped_column(String(50))  # all=全部模块，或具体模块名
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")  # running / completed / failed / timeout
+    total_files: Mapped[int | None] = mapped_column(Integer)  # 发现的文件总数
+    added_files: Mapped[int | None] = mapped_column(Integer)  # 新增的记录数
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())

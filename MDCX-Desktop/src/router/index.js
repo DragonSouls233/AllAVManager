@@ -284,6 +284,12 @@ const routes = [
         component: () => import('@/views/Files.vue')
       },
       {
+        path: 'scan-control',
+        name: 'ScanControl',
+        component: () => import('@/views/ScanControl.vue'),
+        meta: { title: '扫描控制', icon: 'Search' }
+      },
+      {
         path: 'system-status',
         name: 'SystemStatus',
         component: () => import('@/views/SystemStatus.vue')

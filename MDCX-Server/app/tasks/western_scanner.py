@@ -12,6 +12,7 @@
 - 代理集成: 通过 MDCX 内置代理 (强制)
 """
 
+import asyncio
 import hashlib
 import os
 import re
@@ -182,7 +183,8 @@ class WesternScanner(BaseScanner):
             from app.db.western_models import WesternMovie
             from sqlalchemy import select
 
-            for root, dirs, files in os.walk(media_dir):
+            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            for root, dirs, files in walk_entries:
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
                     if ext not in self.video_extensions:

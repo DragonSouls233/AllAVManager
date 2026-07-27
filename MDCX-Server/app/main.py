@@ -1,6 +1,15 @@
 """
 FastAPI 应用入口
 """
+# Python 3.14 Windows ProactorEventLoop 兼容性修复：必须在任何异步操作前执行
+import sys as _sys
+if _sys.platform == "win32":
+    import asyncio as _asyncio
+    try:
+        _loop = _asyncio.SelectorEventLoop()
+        _asyncio.set_event_loop(_loop)
+    except (AttributeError, TypeError):
+        pass
 
 import asyncio
 import mimetypes
@@ -29,16 +38,26 @@ logger = get_logger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-async def _run_module_scan(module_name: str, scanner) -> None:
-    """后台运行模块扫描，异常不影响启动流程"""
+async def _run_module_scan(module_name: str, scanner) -> dict:
+    """运行模块扫描，返回扫描结果
+
+    Returns:
+        {"movies_added": int, "total": int}
+    """
+    SCAN_TIMEOUT = 600  # 10分钟超时，防止网络盘挂死
     try:
-        logger.info(f"开始自动扫描模块 [{module_name}] ...")
-        result = await scanner.scan()
+        logger.info(f"开始扫描模块 [{module_name}] ...")
+        result = await asyncio.wait_for(scanner.scan(), timeout=SCAN_TIMEOUT)
         added = result.get("movies_added", 0)
         total = result.get("total", 0)
         logger.info(f"模块 [{module_name}] 扫描完成: 共发现 {total} 个文件，新增 {added} 条记录")
+        return {"movies_added": added, "total": total}
+    except asyncio.TimeoutError:
+        logger.warning(f"模块 [{module_name}] 扫描超时 ({SCAN_TIMEOUT}s)，已跳过")
+        return {"movies_added": 0, "total": 0, "error": "timeout"}
     except Exception as e:
-        logger.warning(f"模块 [{module_name}] 自动扫描失败: {e}")
+        logger.warning(f"模块 [{module_name}] 扫描失败: {e}")
+        return {"movies_added": 0, "total": 0, "error": str(e)}
 
 
 # 自动整理定时任务调度器（在 lifespan 中初始化，关闭时停止）
@@ -154,11 +173,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"模块数据库初始化失败: {e}")
 
+    # ========== 扫描控制：判断是否执行自动扫描 ==========
+    from app.services.scan_control import ScanControlService
+    _scan_ctrl = ScanControlService.get_instance()
+    _should_scan = await _scan_ctrl.should_auto_scan()
+    _scan_record_id = None
+    if _should_scan:
+        _scan_record_id = await _scan_ctrl.create_scan_record(scan_type="startup")
+
     # 启动后自动扫描各模块媒体目录（将文件写入模块数据库）
+    # 受扫描控制限制：冷却期内跳过，超过重置天数重新扫描
     try:
         _startup_module_scan_tasks = []
         modules_config = getattr(config, "modules", None)
-        if modules_config:
+        if modules_config and _should_scan:
             module_scanner_map = {
                 "chinese": ("app.tasks.chinese_scanner", "ChineseScanner"),
                 "fc2": ("app.tasks.fc2_scanner", "Fc2Scanner"),
@@ -166,6 +194,24 @@ async def lifespan(app: FastAPI):
                 "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
                 "western": ("app.tasks.western_scanner", "WesternScanner"),
             }
+            # 后台收集扫描结果，用于更新记录
+            _scan_results = {}
+
+            async def _run_and_track(mod_name: str, scanner) -> None:
+                result = await _run_module_scan(mod_name, scanner)
+                _scan_results[mod_name] = result
+                # 每条子扫描完成时尝试更新总记录
+                if _scan_record_id:
+                    total_all = sum(r.get("total", 0) for r in _scan_results.values())
+                    added_all = sum(r.get("added_files", 0) or r.get("movies_added", 0) for r in _scan_results.values())
+                    errors = [r.get("error") for r in _scan_results.values() if r.get("error")]
+                    s = "failed" if errors else "running"
+                    await _scan_ctrl.complete_scan_record(
+                        _scan_record_id, status=s,
+                        total_files=total_all, added_files=added_all,
+                        error_message="; ".join(errors) if errors else None,
+                    )
+
             for mod_name, (mod_path, cls_name) in module_scanner_map.items():
                 mod_cfg = getattr(modules_config, mod_name, None)
                 if mod_cfg and getattr(mod_cfg, "enabled", False):
@@ -176,18 +222,22 @@ async def lifespan(app: FastAPI):
                         scanner_mod = importlib.import_module(mod_path)
                         scanner_cls = getattr(scanner_mod, cls_name)
                         scanner = scanner_cls(valid_dirs)
-                        _startup_module_scan_tasks.append(
-                            asyncio.create_task(
-                                _run_module_scan(mod_name, scanner)
-                            )
-                        )
+                        asyncio.create_task(_run_and_track(mod_name, scanner))
+                        _startup_module_scan_tasks.append(f"{mod_name}({len(valid_dirs)}个目录)")
+
         if _startup_module_scan_tasks:
             logger.info(
-                f"已对 {len(_startup_module_scan_tasks)} 个模块发起自动扫描: "
-                + ", ".join(t.get_name() or str(id(t)) for t in _startup_module_scan_tasks)
+                f"已计划 {len(_startup_module_scan_tasks)} 个模块的后台扫描: "
+                + ", ".join(_startup_module_scan_tasks)
             )
+        elif not _should_scan:
+            logger.info("扫描控制: 跳过本次启动自动扫描（冷却期内）")
     except Exception as e:
         logger.warning(f"模块自动扫描启动失败: {e}")
+        if _scan_record_id:
+            await _scan_ctrl.complete_scan_record(
+                _scan_record_id, status="failed", error_message=str(e)
+            )
 
     # 执行数据库迁移
     try:

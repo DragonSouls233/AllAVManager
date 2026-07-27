@@ -127,6 +127,27 @@
               </el-form>
             </el-collapse-item>
 
+            <el-collapse-item title="扫描控制" name="scan">
+              <el-form label-width="160px" :model="backendConfig.scan">
+                <el-form-item label="扫描冷却时长（小时）">
+                  <el-input-number v-model="backendConfig.scan.scan_cooldown_hours" :min="1" :max="720" />
+                  <div class="form-tip">
+                    <el-text type="info" size="small">
+                      手动或定时扫描后，需等待指定小时数才能再次执行扫描，避免频繁操作
+                    </el-text>
+                  </div>
+                </el-form-item>
+                <el-form-item label="重置冷却间隔天数">
+                  <el-input-number v-model="backendConfig.scan.scan_reset_days" :min="1" :max="365" />
+                  <div class="form-tip">
+                    <el-text type="info" size="small">
+                      冷却计时超过此天数后自动重置，确保定期扫描不会因冷却机制阻塞
+                    </el-text>
+                  </div>
+                </el-form-item>
+              </el-form>
+            </el-collapse-item>
+
             <el-collapse-item title="JavDB Cookie" name="javdb">
               <el-form label-width="160px">
                 <el-form-item label="Cookie 字符串">
@@ -296,7 +317,8 @@ const serverConfig = ref({
 
 const backendConfig = ref({
   proxy: { enabled: false, protocol: 'http', http: '', socks5: '' },
-  scraper: { concurrent_limit: 5, timeout: 60, retry_count: 3, media_dirs: [] }
+  scraper: { concurrent_limit: 5, timeout: 60, retry_count: 3, media_dirs: [] },
+  scan: { scan_cooldown_hours: 24, scan_reset_days: 7 }
 })
 
 // 后端 Cookie 归属 crawler.*_cookie，保留完整 crawler 配置以免保存时丢失其他字段
@@ -437,6 +459,10 @@ const loadConfig = async () => {
         timeout: res.scraper?.timeout ?? 60,
         retry_count: res.scraper?.retry_count ?? 3,
         media_dirs: res.scraper?.media_dirs ?? res.media_dirs ?? []
+      },
+      scan: {
+        scan_cooldown_hours: res.scan?.scan_cooldown_hours ?? 24,
+        scan_reset_days: res.scan?.scan_reset_days ?? 7
       }
     }
     // 保留完整 crawler 配置（含 fc2ppvdb_cookie 等），保存时再覆盖 javdb/javbus
@@ -461,6 +487,7 @@ const saveBackendConfig = async () => {
         socks5: backendConfig.value.proxy.socks5
       },
       scraper: backendConfig.value.scraper,
+      scan: backendConfig.value.scan,
       // Cookie 归属 crawler.*_cookie，保留其他 crawler 字段避免丢失
       crawler: {
         ...crawlerConfig.value,

@@ -241,6 +241,10 @@
             <el-icon><Setting /></el-icon>
             <template #title>系统设置</template>
           </el-menu-item>
+          <el-menu-item index="/scan-control">
+            <el-icon><Search /></el-icon>
+            <template #title>扫描控制</template>
+          </el-menu-item>
           <el-menu-item index="/network-diag">
             <el-icon><Connection /></el-icon>
             <template #title>网络诊断</template>
@@ -1202,6 +1206,7 @@ const pageTitle = computed(() => {
     '/logs': '系统日志',
     '/mpv-settings': 'mpv 播放器设置',
     '/settings': '系统设置',
+    '/scan-control': '扫描控制',
     '/poster-enhance': '海报增强',
     '/series-subscriptions': '系列订阅',
     '/movie-graph': '影片图谱',

@@ -3,6 +3,7 @@ FC2 扫描器
 番号格式：FC2-123456 / FC2PPV-123456 / 纯数字
 """
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -67,7 +68,8 @@ class Fc2Scanner(BaseScanner):
             from app.db.fc2_models import Fc2Movie
             from sqlalchemy import select
 
-            for root, dirs, files in os.walk(media_dir):
+            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            for root, dirs, files in walk_entries:
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
                     if ext not in self.video_extensions:

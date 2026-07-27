@@ -10,7 +10,7 @@ function getBaseURL() {
 
 const api = axios.create({
   baseURL: getBaseURL(),
-  timeout: 30000
+  timeout: 60000
 })
 
 export function setServerUrl(url) {
@@ -638,6 +638,13 @@ export const listCloudDrive2Dir = (path) => api.get('/cloud-drive2/list', { para
 export const getCloudDrive2FileInfo = (path) => api.get('/cloud-drive2/file-info', { params: { path } })
 export const scanCloudDrive2 = (params) => api.get('/cloud-drive2/scan', { params })
 export const getCloudDrive2StreamUrl = (path) => api.get('/cloud-drive2/stream-url', { params: { path } })
+
+// ============================================
+// 扫描控制
+// ============================================
+export const getScanStatus = () => api.get('/scan/status')
+export const triggerManualScan = () => api.post('/scan/trigger')
+export const getScanRecords = (params) => api.get('/scan/records', { params })
 
 // ============== 115 网盘离线下载 ==============
 // 注意:后端实际端点为 /offline-tasks(连字符),旧封装错误地用了 /offline/tasks

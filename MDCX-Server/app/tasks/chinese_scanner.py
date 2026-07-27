@@ -3,6 +3,7 @@
 含文件夹演员识别核心功能 + 扫描结果落库
 """
 
+import asyncio
 import hashlib
 import os
 from pathlib import Path
@@ -100,7 +101,8 @@ class ChineseScanner(BaseScanner):
             from app.db.chinese_models import ChineseMovie, ChineseActor
             from sqlalchemy import select
 
-            for root, dirs, files in os.walk(media_dir):
+            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            for root, dirs, files in walk_entries:
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
                     if ext not in self.video_extensions:

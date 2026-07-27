@@ -7,6 +7,7 @@ JAV 有码模块扫描器
 - 写入 jav.db
 """
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -97,7 +98,8 @@ class JavScanner(BaseScanner):
         db = ModuleDatabase.get_instance("jav")
         session = await db.get_session()
         try:
-            for root, dirs, files in os.walk(media_dir):
+            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            for root, dirs, files in walk_entries:
                 # 收集当前目录的演员信息
                 dir_path = Path(root)
 

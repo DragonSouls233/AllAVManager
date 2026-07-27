@@ -4,6 +4,7 @@ JAV 无码扫描器
 支持从目录名提取演员
 """
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -91,7 +92,8 @@ class UncensoredScanner(BaseScanner):
         db = ModuleDatabase.get_instance("uncensored")
         session = await db.get_session()
         try:
-            for root, dirs, files in os.walk(media_dir):
+            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            for root, dirs, files in walk_entries:
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
                     if ext not in self.video_extensions:
