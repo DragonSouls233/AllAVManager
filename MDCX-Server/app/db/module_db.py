@@ -108,6 +108,7 @@ class ModuleDatabase:
         需显式导入各模块的模型文件，确保 SQLAlchemy Metadata 有完整的表注册。
         """
         # 显式导入所有模块模型以确保表被创建
+        import app.db.jav_models  # noqa: F401
         import app.db.chinese_models  # noqa: F401
         import app.db.uncensored_models  # noqa: F401
         import app.db.fc2_models  # noqa: F401
@@ -115,7 +116,7 @@ class ModuleDatabase:
         import app.db.western_models  # noqa: F401
 
         instances = {}
-        for name in ["chinese", "uncensored", "fc2", "pornhub", "western"]:
+        for name in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western"]:
             db = cls.get_instance(name)
             await db.init()
             # 每个数据库引擎单独创建表

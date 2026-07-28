@@ -38,7 +38,7 @@
             <el-icon><Grid /></el-icon>
             <span>多模块</span>
           </template>
-          <el-menu-item index="/movies">
+          <el-menu-item index="/jav">
             <el-icon><VideoCamera /></el-icon>
             <template #title>JAV 有码</template>
           </el-menu-item>

@@ -165,11 +165,11 @@ async def lifespan(app: FastAPI):
     await init_database()
     logger.info("数据库初始化完成")
 
-    # 初始化模块数据库（chinese / fc2 / uncensored / pornhub / western）
+    # 初始化模块数据库（jav / chinese / fc2 / uncensored / pornhub / western）
     try:
         from app.db.module_db import ModuleDatabase
         await ModuleDatabase.init_all()
-        logger.info("模块数据库初始化完成（chinese/fc2/uncensored/pornhub/western）")
+        logger.info("模块数据库初始化完成（jav/chinese/fc2/uncensored/pornhub/western）")
     except Exception as e:
         logger.warning(f"模块数据库初始化失败: {e}")
 

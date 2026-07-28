@@ -375,6 +375,31 @@ const routes = [
         component: () => import('@/views/uncensored/ActorDetail.vue')
       },
       {
+        path: 'jav',
+        name: 'Jav',
+        component: () => import('@/views/jav/Movies.vue')
+      },
+      {
+        path: 'jav/movies',
+        name: 'JavMovies',
+        component: () => import('@/views/jav/Movies.vue')
+      },
+      {
+        path: 'jav/movies/:id',
+        name: 'JavMovieDetail',
+        component: () => import('@/views/jav/MovieDetail.vue')
+      },
+      {
+        path: 'jav/actors',
+        name: 'JavActors',
+        component: () => import('@/views/jav/Actors.vue')
+      },
+      {
+        path: 'jav/actors/:id',
+        name: 'JavActorDetail',
+        component: () => import('@/views/jav/ActorDetail.vue')
+      },
+      {
         path: 'pornhub',
         name: 'Pornhub',
         component: () => import('@/views/pornhub/Movies.vue')

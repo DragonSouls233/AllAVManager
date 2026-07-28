@@ -288,6 +288,7 @@ class ScanControlService:
             return
 
         module_scanner_map = {
+            "jav": ("app.tasks.jav_scanner", "JavScanner"),
             "chinese": ("app.tasks.chinese_scanner", "ChineseScanner"),
             "fc2": ("app.tasks.fc2_scanner", "Fc2Scanner"),
             "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),

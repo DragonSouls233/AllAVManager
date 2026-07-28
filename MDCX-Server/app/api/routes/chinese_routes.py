@@ -36,7 +36,7 @@ async def sync_folder_actors():
     from app.config.manager import get_config
     config = get_config()
     from app.tasks.chinese_scanner import ChineseScanner
-    scanner = ChineseScanner(config.chinese.media_dirs)
+    scanner = ChineseScanner(config.modules.chinese.media_dirs)
     result = await scanner.scan()
     return result
 

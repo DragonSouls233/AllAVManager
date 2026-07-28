@@ -73,7 +73,7 @@ async def list_modules():
 @router.get("/{module_name}/stats")
 async def get_module_stats(module_name: str):
     """获取模块统计信息"""
-    if module_name not in ["chinese", "uncensored", "fc2", "pornhub", "western"]:
+    if module_name not in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western"]:
         return {"name": module_name, "movie_count": 0, "actor_count": 0, "error": "未知模块"}
 
     db = ModuleDatabase.get_instance(module_name)
@@ -83,6 +83,7 @@ async def get_module_stats(module_name: str):
         import importlib
         # 根据模块名动态加载对应的 Movie 和 Actor 模型
         model_map = {
+            "jav": ("app.db.jav_models", "JavMovie", "JavActor"),
             "chinese": ("app.db.chinese_models", "ChineseMovie", "ChineseActor"),
             "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor"),
             "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
@@ -222,6 +223,7 @@ async def toggle_module(module_name: str, enabled: bool = True):
 # ===== 跨模块聚合查询 =====
 
 _MODEL_MAP = {
+    "jav": ("app.db.jav_models", "JavMovie", "JavActor"),
     "chinese": ("app.db.chinese_models", "ChineseMovie", "ChineseActor"),
     "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor"),
     "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
