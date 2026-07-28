@@ -459,14 +459,22 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to) => {
+router.beforeEach((to, from) => {
   const token = localStorage.getItem('token')
+  // 无 token 访问受保护页面 → 跳转登录
   if (!to.meta.public && !token) {
     return { name: 'Login' }
+  }
+  // 已在登录页且无 token → 阻止一切离开登录页的导航
+  if (from.name === 'Login' && !token && to.name !== 'Login') {
+    return false
   }
   if (to.name === 'Login' && token) {
     return { name: 'Home' }
   }
 })
+
+// 暴露 router 实例给全局，供 axios 401 拦截器使用
+window.__router = router
 
 export default router

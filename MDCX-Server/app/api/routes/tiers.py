@@ -71,12 +71,16 @@ class ChangeLogResponse(BaseModel):
 # ============== 内部工具 ==============
 
 async def _ensure_default_tiers(session: AsyncSession):
-    """首次访问时初始化默认 Tier 配置"""
-    result = await session.execute(select(func.count()).select_from(TierConfig))
-    if result.scalar() == 0:
-        for item in DEFAULT_TIERS:
+    """首次访问时初始化默认 Tier 配置
+
+    使用单条逐一检查 + ignore 的方式，避免并发请求的竞态问题。
+    """
+    for item in DEFAULT_TIERS:
+        stmt = select(TierConfig).where(TierConfig.tier == item["tier"])
+        result = await session.execute(stmt)
+        if not result.scalar_one_or_none():
             session.add(TierConfig(**item))
-        await session.commit()
+    await session.commit()
 
 
 async def _log_change(

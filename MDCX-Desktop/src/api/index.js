@@ -60,7 +60,15 @@ api.interceptors.response.use(
       localStorage.removeItem('token')
       if (!location.hash.includes('/login')) {
         ElMessage.error('登录已失效，请重新登录')
-        location.hash = '#/login'
+        // 使用 replace 导航到登录页（替换当前历史记录，防止后退导致循环）
+        if (window.__router) {
+          window.__router.replace('/login').catch(() => {
+            // Vue Router 导航失败时的兜底方案：整页刷新
+            window.location.href = window.location.origin + window.location.pathname + '#/login'
+          })
+        } else {
+          window.location.href = window.location.origin + window.location.pathname + '#/login'
+        }
       }
       return Promise.reject(error)
     }

@@ -432,7 +432,7 @@ MIGRATIONS: list[Migration] = [
         """,
     ),
     Migration(
-        version="017",
+        version="021",
         description="添加扫描记录表 scan_records",
         upgrade_sql="""
             CREATE TABLE IF NOT EXISTS scan_records (
