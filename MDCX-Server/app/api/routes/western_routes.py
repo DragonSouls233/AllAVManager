@@ -12,6 +12,7 @@
 
 import asyncio
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
@@ -27,17 +28,38 @@ def get_western_db() -> ModuleDatabase:
 
 
 @router.get("/movies")
-async def list_movies(skip: int = 0, limit: int = 20):
+async def list_movies(
+    skip: int = 0,
+    limit: int = 20,
+    keyword: Optional[str] = Query(None, description="搜索标题/演员"),
+):
     """列出欧美影片"""
     db = get_western_db()
     session = await db.get_session()
     try:
         from app.db.western_models import WesternMovie
-        from sqlalchemy import select, func
-        total = (await session.execute(select(func.count(WesternMovie.id)))).scalar() or 0
-        stmt = select(WesternMovie).order_by(WesternMovie.created_at.desc()).offset(skip).limit(limit)
+        from sqlalchemy import select, func, or_
+
+        filters = []
+        if keyword:
+            kw = f"%{keyword}%"
+            filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actors.like(kw), WesternMovie.site.like(kw)))
+
+        total_stmt = select(func.count(WesternMovie.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
+        total = (await session.execute(total_stmt)).scalar() or 0
+
+        stmt = select(WesternMovie)
+        if filters:
+            stmt = stmt.where(*filters)
+        stmt = stmt.order_by(WesternMovie.created_at.desc()).offset(skip).limit(limit)
         movies = (await session.execute(stmt)).scalars().all()
-        return {"total": total, "items": [
+
+        pending_stmt = select(func.count(WesternMovie.id)).where(WesternMovie.status == "pending")
+        pending_count = (await session.execute(pending_stmt)).scalar() or 0
+
+        return {"total": total, "pending_count": pending_count, "items": [
             {"id": m.id, "code": m.code, "title": m.title,
              "site": m.site, "network": m.network, "studio": m.studio,
              "cover_url": m.cover_url, "file_path": m.file_path,

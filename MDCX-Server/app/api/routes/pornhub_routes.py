@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from app.db.module_db import ModuleDatabase
+from app.services.pornhub_comparison import PornhubComparator, TitleNormalizer, LocalMediaScanner
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,55 @@ router = APIRouter(prefix="/pornhub", tags=["PORNHub模块"])
 
 def get_pornhub_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("pornhub")
+
+
+# ========== 对比查重 ==========
+
+
+@router.get("/compare/status")
+async def api_compare_status():
+    """获取对比查重服务状态"""
+    return {"ready": True, "service": "PornhubComparator"}
+
+
+@router.post("/compare")
+async def api_compare(data: dict):
+    """执行 PORNHub 本地 vs 在线对比查重
+
+    请求体：
+    {
+        "actress_url": "https://www.pornhub.com/model/xxx",
+        "local_directory": "可选，指定对比的本地目录",
+        "max_pages": 5,
+        "similarity_threshold": 0.85
+    }
+    """
+    comparator = PornhubComparator()
+    result = await comparator.compare(
+        actress_url=data.get("actress_url", ""),
+        local_directory=data.get("local_directory"),
+        similarity_threshold=data.get("similarity_threshold", 0.85),
+        max_pages=data.get("max_pages", 5),
+    )
+    return result
+
+
+@router.post("/compare/test-normalize")
+async def api_test_normalize(data: dict):
+    """测试标题归一化效果"""
+    normalizer = TitleNormalizer()
+    title = data.get("title", "")
+    normalized = normalizer.normalize(title)
+    return {"original": title, "normalized": normalized}
+
+
+@router.post("/compare/scan-local")
+async def api_scan_local(data: dict):
+    """扫描本地目录中的视频文件"""
+    directory = data.get("directory", "")
+    scanner = LocalMediaScanner()
+    videos = scanner.scan_directory(directory)
+    return {"directory": directory, "total": len(videos), "videos": videos[:50]}
 
 
 # ========== 演员 ==========

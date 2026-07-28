@@ -24,6 +24,90 @@ def get_jav_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("jav")
 
 
+# ========== 演员合并 ==========
+
+
+@router.post("/actors/merge")
+async def api_merge_actors(data: dict):
+    """合并演员（将 source_ids 合并到 canonical_id）"""
+    from app.services.actor_merge_service import merge_actors
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        result = await merge_actors(
+            session,
+            canonical_id=data.get("canonical_id", 0),
+            source_ids=data.get("source_ids", []),
+        )
+        return result
+    finally:
+        await session.close()
+
+
+@router.get("/actors/similar")
+async def api_search_similar_actors(name: str = Query(..., description="搜索相似演员")):
+    """搜索名字相似的演员（推荐合并候选）"""
+    from app.services.actor_merge_service import search_similar_actors
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        result = await search_similar_actors(session, name)
+        return {"items": result, "total": len(result)}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/merge-candidates")
+async def api_merge_candidates(actor_id: int):
+    """获取指定演员的合并候选列表"""
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        from app.db.jav_models import JavActor
+        from sqlalchemy import select
+        from app.services.actor_merge_service import search_similar_actors
+
+        actor = await session.get(JavActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        candidates = await search_similar_actors(session, actor.name)
+        return {"actor": {"id": actor.id, "name": actor.name, "alias": actor.alias, "movie_count": actor.movie_count},
+                "candidates": candidates, "total": len(candidates)}
+    finally:
+        await session.close()
+
+
+# ========== 番号提取测试 ==========
+
+
+@router.post("/code-extract-test")
+async def api_code_extract_test(data: dict):
+    """测试从文件名提取番号
+
+    参考 JavBoss v1.8.0 番号提取测试工具
+    """
+    filename = data.get("filename", "")
+    if not filename:
+        return {"error": "filename is required"}
+
+    from app.scraper.number import extract_number, extract_number_from_path
+    # 提取番号（先尝试直接文件名）
+    result = extract_number(filename)
+    codes = []
+    if result and result.number:
+        codes.append({
+            "code": result.number,
+            "type": "direct",
+            "is_chinese": result.is_chinese,
+            "is_uncensored": result.is_uncensored,
+        })
+    return {
+        "filename": filename,
+        "extracted_codes": codes,
+        "count": len(codes),
+    }
+
+
 # ========== 只读端点 ==========
 
 

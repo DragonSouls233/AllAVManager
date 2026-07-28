@@ -27,3 +27,23 @@ export async function scrapeAllPendingJav() {
 export async function importJavNfo(params = {}) {
   return api.post('/jav/movies/import-nfo', null, { params })
 }
+
+// ===== 演员合并 =====
+
+export async function mergeJavActors(data) {
+  return api.post('/jav/actors/merge', data)
+}
+
+export async function searchSimilarActors(name) {
+  return api.get('/jav/actors/similar', { params: { name } })
+}
+
+export async function getMergeCandidates(actorId) {
+  return api.get(`/jav/actors/${actorId}/merge-candidates`)
+}
+
+// ===== 番号提取测试 =====
+
+export async function testCodeExtract(filename) {
+  return api.post('/jav/code-extract-test', { filename })
+}

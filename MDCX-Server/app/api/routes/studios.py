@@ -8,6 +8,9 @@ API 端点：
 - PATCH /api/v1/studios/{id}  - 更新厂商
 - DELETE /api/v1/studios/{id} - 删除厂商
 - POST /api/v1/studios/sync-from-movies - 从现有电影的 maker/studio 字段同步厂商
+- POST /api/v1/studios/merge  - 合并片商（参考 JavBoss v1.9.0）
+- GET  /api/v1/studios/similar?name= - 搜索相似片商
+- PATCH /api/v1/studios/{id}/alias   - 更新片商别名
 """
 
 import logging
@@ -325,3 +328,59 @@ async def delete_studio(
     await session.commit()
 
     return {"status": "ok", "message": f"厂商 '{studio.name}' 已删除"}
+
+
+# ===== 片商合并（参考 JavBoss v1.9.0） =====
+
+
+@router.post("/merge")
+async def merge_studios_api(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """合并片商（将 source_ids 合并到 canonical_id）
+
+    参考 JavBoss v1.9.0 片商名称/别名管理特性。
+    合并后 source 的别名自动加入 canonical 的 alias 字段，
+    所有影片的 studio/maker 字段更新为 canonical 的名称。
+    """
+    from app.services.studio_merge_service import merge_studios as merge_fn
+    return await merge_fn(
+        session,
+        canonical_id=data.get("canonical_id", 0),
+        source_ids=data.get("source_ids", []),
+    )
+
+
+@router.get("/similar")
+async def search_similar_studios_api(
+    name: str = Query(..., description="搜索名称相似的片商"),
+    session: AsyncSession = Depends(get_session),
+):
+    """搜索名称相似的片商（推荐合并候选）"""
+    from app.services.studio_merge_service import search_similar_studios
+    result = await search_similar_studios(session, name)
+    return {"items": result, "total": len(result)}
+
+
+@router.patch("/{studio_id}/alias")
+async def update_studio_alias(
+    studio_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """更新片商别名
+
+    参考 JavBoss v1.9.0 片商名称/别名管理。
+    别名用于处理同一个片商的不同命名（如 MOODYZ / ムーディーズ）。
+    """
+    studio = await session.get(Studio, studio_id)
+    if not studio:
+        raise HTTPException(status_code=404, detail="厂商不存在")
+
+    if "alias" in body:
+        studio.alias = body["alias"]
+        await session.commit()
+        return {"status": "ok", "alias": studio.alias}
+
+    return {"status": "error", "message": "alias field required"}

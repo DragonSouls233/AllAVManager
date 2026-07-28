@@ -2,12 +2,34 @@
 国产模块 API 路由
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.module_db import ModuleDatabase
-from app.scraper.folder_actor import extract_actor_from_folder, DEFAULT_BLACKLIST
+from app.db import get_session
+from app.db.chinese_models import ChineseMovie, ChineseActor
+from app.services.chinese_rename_service import get_rules, update_rules, clean_title
+from app.utils.pagination import paginate
 
 router = APIRouter(prefix="/chinese", tags=["国产模块"])
+
+# ===== 命名规则管理 =====
+
+@router.get("/name-rules")
+async def api_get_name_rules():
+    return get_rules()
+
+@router.put("/name-rules")
+async def api_update_name_rules(data: dict):
+    return update_rules(data)
+
+@router.post("/name-rules/clean")
+async def api_clean_title(data: dict):
+    title = data.get("title", "")
+    result = clean_title(title)
+    return {"original": data.get("title", ""), "cleaned": result}
 
 
 def get_chinese_db() -> ModuleDatabase:

@@ -181,6 +181,7 @@ class Studio(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     name_jp: Mapped[str | None] = mapped_column(String(100))
+    alias: Mapped[str | None] = mapped_column(Text)
     movie_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 

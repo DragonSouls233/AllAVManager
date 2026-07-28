@@ -33,122 +33,221 @@
           <template #title>首页</template>
         </el-menu-item>
 
-        <el-sub-menu index="modules">
+        <!-- ===== JAV 有码 ===== -->
+        <el-sub-menu index="jav-module">
           <template #title>
-            <el-icon><Grid /></el-icon>
-            <span>多模块</span>
+            <el-icon><VideoCamera /></el-icon>
+            <span>🎬 JAV 有码</span>
           </template>
-          <el-menu-item index="/jav">
-            <el-icon><VideoCamera /></el-icon>
-            <template #title>JAV 有码</template>
+          <el-menu-item index="/jav/movies">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
           </el-menu-item>
-          <el-menu-item index="/uncensored" v-if="moduleEnabled.uncensored !== false">
-            <el-icon><View /></el-icon>
-            <template #title>JAV 无码</template>
+          <el-menu-item index="/jav/actors">
+            <el-icon><User /></el-icon>
+            <template #title>演员库</template>
           </el-menu-item>
-          <el-menu-item index="/fc2" v-if="moduleEnabled.fc2 !== false">
-            <el-icon><Film /></el-icon>
-            <template #title>FC2</template>
+          <el-menu-item index="/jav/studios">
+            <el-icon><OfficeBuilding /></el-icon>
+            <template #title>制片厂</template>
           </el-menu-item>
-          <el-menu-item index="/chinese">
-            <el-icon><DataAnalysis /></el-icon>
-            <template #title>国产</template>
-          </el-menu-item>
-          <el-menu-item index="/pornhub" v-if="moduleEnabled.pornhub !== false">
-            <el-icon><Promotion /></el-icon>
-            <template #title>PORNHub</template>
-          </el-menu-item>
-          <el-menu-item index="/western" v-if="moduleEnabled.western !== false">
-            <el-icon><VideoCamera /></el-icon>
-            <template #title>欧美</template>
-          </el-menu-item>
-          <el-menu-item index="/download" v-if="moduleEnabled.western !== false">
-            <el-icon><Download /></el-icon>
-            <template #title>下载管理</template>
-          </el-menu-item>
-          <el-menu-item index="/sites">
+          <el-menu-item index="/jav/studio-merge">
             <el-icon><Connection /></el-icon>
-            <template #title>站点注册表</template>
+            <template #title>片商合并</template>
           </el-menu-item>
-          <el-menu-item index="/modules">
-            <el-icon><Setting /></el-icon>
-            <template #title>模块管理</template>
+          <el-menu-item index="/jav/scrape">
+            <el-icon><Connection /></el-icon>
+            <template #title>刮削管理</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/compare">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>本地对比</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/compare-actors">
+            <el-icon><UserFilled /></el-icon>
+            <template #title>对比演员</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/patch">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>补丁刮削</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/play">
+            <el-icon><VideoPlay /></el-icon>
+            <template #title>播放工具</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/actor-merge">
+            <el-icon><User /></el-icon>
+            <template #title>演员合并</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/code-test">
+            <el-icon><Search /></el-icon>
+            <template #title>番号提取测试</template>
           </el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu index="content">
+        <!-- ===== JAV 无码 ===== -->
+        <el-sub-menu index="uncensored-module" v-if="moduleEnabled.uncensored !== false">
           <template #title>
-            <el-icon><Files /></el-icon>
-            <span>内容管理</span>
+            <el-icon><View /></el-icon>
+            <span>🔓 JAV 无码</span>
           </template>
-          <el-menu-item index="/movies">
-            <el-icon><VideoCamera /></el-icon>
-            <template #title>番号库</template>
+          <el-menu-item index="/uncensored/movies">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
           </el-menu-item>
-          <el-menu-item index="/cover-wall">
-            <el-icon><Grid /></el-icon>
-            <template #title>封面墙</template>
-          </el-menu-item>
-          <el-menu-item index="/actors">
+          <el-menu-item index="/uncensored/actors">
             <el-icon><User /></el-icon>
-            <template #title>演员</template>
+            <template #title>演员库</template>
           </el-menu-item>
-          <el-menu-item index="/favorites">
-            <el-icon><Star /></el-icon>
-            <template #title>收藏夹</template>
+          <el-menu-item index="/uncensored/scrape">
+            <el-icon><Connection /></el-icon>
+            <template #title>刮削管理</template>
           </el-menu-item>
-          <el-menu-item index="/tags">
-            <el-icon><PriceTag /></el-icon>
-            <template #title>标签管理</template>
+          <el-menu-item index="/uncensored/compare">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>本地对比</template>
           </el-menu-item>
-          <el-menu-item index="/studios">
-            <el-icon><OfficeBuilding /></el-icon>
-            <template #title>制片厂管理</template>
-          </el-menu-item>
-          <el-menu-item index="/tiers">
-            <el-icon><Trophy /></el-icon>
-            <template #title>分级治理</template>
+          <el-menu-item index="/uncensored/patch">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>补丁刮削</template>
           </el-menu-item>
         </el-sub-menu>
+
+        <!-- ===== FC2 ===== -->
+        <el-sub-menu index="fc2-module" v-if="moduleEnabled.fc2 !== false">
+          <template #title>
+            <el-icon><Film /></el-icon>
+            <span>📹 FC2</span>
+          </template>
+          <el-menu-item index="/fc2/movies">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
+          </el-menu-item>
+          <el-menu-item index="/fc2/actors">
+            <el-icon><User /></el-icon>
+            <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/fc2/scrape">
+            <el-icon><Connection /></el-icon>
+            <template #title>刮削管理</template>
+          </el-menu-item>
+          <el-menu-item index="/fc2/compare">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>本地对比</template>
+          </el-menu-item>
+          <el-menu-item index="/fc2/patch">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>补丁刮削</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <!-- ===== 国产 ===== -->
+        <el-sub-menu index="chinese-module">
+          <template #title>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>🇨🇳 国产</span>
+          </template>
+          <el-menu-item index="/chinese/movies">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
+          </el-menu-item>
+          <el-menu-item index="/chinese/actors">
+            <el-icon><User /></el-icon>
+            <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/chinese/name-rules">
+            <el-icon><EditPen /></el-icon>
+            <template #title>命名规范</template>
+          </el-menu-item>
+          <el-menu-item index="/chinese/scrape">
+            <el-icon><Connection /></el-icon>
+            <template #title>刮削管理</template>
+          </el-menu-item>
+          <el-menu-item index="/chinese/patch">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>补丁刮削</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <!-- ===== PORNHub ===== -->
+        <el-sub-menu index="pornhub-module" v-if="moduleEnabled.pornhub !== false">
+          <template #title>
+            <el-icon><Promotion /></el-icon>
+            <span>🌐 PORNHub</span>
+          </template>
+          <el-menu-item index="/pornhub/movies">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
+          </el-menu-item>
+          <el-menu-item index="/pornhub/actors">
+            <el-icon><User /></el-icon>
+            <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/pornhub/scrape">
+            <el-icon><Connection /></el-icon>
+            <template #title>刮削管理</template>
+          </el-menu-item>
+          <el-menu-item index="/pornhub/compare">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>本地对比</template>
+          </el-menu-item>
+          <el-menu-item index="/pornhub/patch">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>补丁刮削</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <!-- ===== 欧美 ===== -->
+        <el-sub-menu index="western-module" v-if="moduleEnabled.western !== false">
+          <template #title>
+            <el-icon><Globe /></el-icon>
+            <span>🌍 欧美</span>
+          </template>
+          <el-menu-item index="/western/movies">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
+          </el-menu-item>
+          <el-menu-item index="/western/actors">
+            <el-icon><User /></el-icon>
+            <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/western/scrape">
+            <el-icon><Connection /></el-icon>
+            <template #title>刮削管理</template>
+          </el-menu-item>
+          <el-menu-item index="/western/compare">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>本地对比</template>
+          </el-menu-item>
+          <el-menu-item index="/western/patch">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>补丁刮削</template>
+          </el-menu-item>
+          <el-menu-item index="/western/config">
+            <el-icon><Setting /></el-icon>
+            <template #title>品牌管理</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <!-- ===== 全局功能分隔线 ===== -->
+        <el-menu-item index="/cover-wall">
+          <el-icon><Grid /></el-icon>
+          <template #title>全局封面墙</template>
+        </el-menu-item>
+        <el-menu-item index="/favorites">
+          <el-icon><Star /></el-icon>
+          <template #title>全局收藏夹</template>
+        </el-menu-item>
+        <el-menu-item index="/tags">
+          <el-icon><PriceTag /></el-icon>
+          <template #title>标签管理</template>
+        </el-menu-item>
 
         <el-sub-menu index="tools">
           <template #title>
             <el-icon><Tools /></el-icon>
-            <span>系統工具</span>
+            <span>工具与服务</span>
           </template>
-          <!-- 刮削核心 -->
-          <el-menu-item index="/crawlers">
-            <el-icon><Connection /></el-icon>
-            <template #title>爬虫管理</template>
-          </el-menu-item>
-          <el-menu-item index="/site-priority">
-            <el-icon><Sort /></el-icon>
-            <template #title>站点优先级</template>
-          </el-menu-item>
-          <el-menu-item index="/naming-template">
-            <el-icon><EditPen /></el-icon>
-            <template #title>命名模板</template>
-          </el-menu-item>
-          <el-menu-item index="/compare">
-            <el-icon><DataAnalysis /></el-icon>
-            <template #title>本地对比</template>
-          </el-menu-item>
-          <el-menu-item index="/compare-actors">
-            <el-icon><UserFilled /></el-icon>
-            <template #title>对比演员库</template>
-          </el-menu-item>
-          <el-menu-item index="/patch">
-            <el-icon><MagicStick /></el-icon>
-            <template #title>补丁刮削</template>
-          </el-menu-item>
-          <el-menu-item index="/nfo-scrape">
-            <el-icon><Document /></el-icon>
-            <template #title>NFO 免改名刮削</template>
-          </el-menu-item>
-          <el-menu-item index="/source-merge">
-            <el-icon><Management /></el-icon>
-            <template #title>多来源数据精选</template>
-          </el-menu-item>
           <!-- 导入与文件 -->
           <el-menu-item index="/import">
             <el-icon><Upload /></el-icon>
@@ -170,37 +269,28 @@
             <el-icon><CircleCheck /></el-icon>
             <template #title>三态标记</template>
           </el-menu-item>
+          <el-menu-item index="/viewing-report">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>观影报告</template>
+          </el-menu-item>
+          <el-menu-item index="/movie-graph">
+            <el-icon><Share /></el-icon>
+            <template #title>影片图谱</template>
+          </el-menu-item>
+          <el-menu-item index="/recommendations">
+            <el-icon><Promotion /></el-icon>
+            <template #title>智能推荐</template>
+          </el-menu-item>
           <!-- 监测与通知 -->
           <el-menu-item index="/tasks">
             <el-icon><List /></el-icon>
             <template #title>任务管理</template>
           </el-menu-item>
-          <el-menu-item index="/viewing-report">
-            <el-icon><DataAnalysis /></el-icon>
-            <template #title>观影报告</template>
-          </el-menu-item>
           <el-menu-item index="/webhooks">
             <el-icon><Bell /></el-icon>
             <template #title>Webhook 通知</template>
           </el-menu-item>
-          <!-- Cookie 与账号 -->
-          <el-menu-item index="/cookiecloud">
-            <el-icon><Connection /></el-icon>
-            <template #title>CookieCloud 同步</template>
-          </el-menu-item>
-          <el-menu-item index="/cookie-manager">
-            <el-icon><Key /></el-icon>
-            <template #title>Cookie 管理器</template>
-          </el-menu-item>
-          <!-- 演员与订阅 -->
-          <el-menu-item index="/metatube-plugin">
-            <el-icon><Connection /></el-icon>
-            <template #title>Metatube 插件</template>
-          </el-menu-item>
-          <el-menu-item index="/gfriends">
-            <el-icon><Avatar /></el-icon>
-            <template #title>Gfriends 头像库</template>
-          </el-menu-item>
+          <!-- 订阅 -->
           <el-menu-item index="/subscriptions">
             <el-icon><StarFilled /></el-icon>
             <template #title>演员订阅</template>
@@ -209,14 +299,22 @@
             <el-icon><Collection /></el-icon>
             <template #title>系列订阅</template>
           </el-menu-item>
-          <!-- 扩展功能 -->
-          <el-menu-item index="/recommendations">
-            <el-icon><Promotion /></el-icon>
-            <template #title>智能推荐</template>
+          <!-- 站点与插件 -->
+          <el-menu-item index="/sites">
+            <el-icon><Connection /></el-icon>
+            <template #title>站点注册表</template>
           </el-menu-item>
-          <el-menu-item index="/movie-graph">
-            <el-icon><Share /></el-icon>
-            <template #title>影片图谱</template>
+          <el-menu-item index="/modules">
+            <el-icon><Setting /></el-icon>
+            <template #title>模块管理</template>
+          </el-menu-item>
+          <el-menu-item index="/metatube-plugin">
+            <el-icon><Connection /></el-icon>
+            <template #title>Metatube 插件</template>
+          </el-menu-item>
+          <el-menu-item index="/gfriends">
+            <el-icon><Avatar /></el-icon>
+            <template #title>Gfriends 头像库</template>
           </el-menu-item>
           <el-menu-item index="/plugins">
             <el-icon><Box /></el-icon>
@@ -1150,75 +1248,101 @@ const activeMenu = computed(() => route.path)
 const pageTitle = computed(() => {
   const titles = {
     '/': '首页概览',
-    '/movies': '番号库',
-    '/actors': '演员',
-    '/chinese': '国产影片',
-    '/chinese/movies': '国产影片',
-    '/chinese/actors': '国产演员',
-    '/fc2': 'FC2 影片',
-    '/fc2/movies': 'FC2 影片',
-    '/uncensored': '无码影片',
-    '/uncensored/movies': '无码影片',
-    '/pornhub': 'PORNHub 影片',
-    '/pornhub/movies': 'PORNHub 影片',
-    '/western': '欧美影片',
-    '/western/movies': '欧美影片',
-    '/download': '下载管理',
-    '/sites': '站点注册表',
-    '/modules': '模块管理',
-    '/crawlers': '爬虫管理',
-    '/compare': '本地与在线对比',
-    '/compare-actors': '对比演员库',
-    '/favorites': '收藏夹',
-    '/fingerprint': '视频指纹去重',
-    '/patch': '补丁刮削',
-    '/import': '批量导入',
+    '/cover-wall': '全局封面墙',
+    '/favorites': '全局收藏夹',
     '/tags': '标签管理',
-    '/tiers': '分级治理中心',
-    '/log-stream': '实时日志流',
-    '/webdav-import': 'WebDAV 导入',
-    '/cloud-drive2': 'CloudDrive2 网盘',
-    '/pan-115': '115 网盘离线下载',
-    '/metatube-plugin': 'Metatube 插件（Jellyfin 兼容）',
-    '/network-diag': '网络诊断中心',
-    '/proxy-xray': '内置 Xray 代理',
+    '/import': '批量导入',
     '/face-crop': 'AI 人脸裁剪',
-    '/site-priority': '站点优先级',
-    '/naming-template': '命名模板',
-    '/emby-config': 'Emby 协议兼容',
-    '/strm': 'STRM 文件生成',
-    '/tvbox': 'TVBox/MacCMS 开放接口',
-    '/downloaders': '下载器统一管理',
-    '/themes': '皮肤主题',
-    '/schema-settings': 'Schema 设置',
-    '/deploy': '部署档位（四档渐进式）',
-    '/backup': '自动备份管理',
-    '/desktop-settings': '桌面设置',
+    '/poster-enhance': '海报增强',
+    '/fingerprint': '视频指纹去重',
+    '/view-status': '三态视频标记',
     '/tasks': '任务中心',
-    '/plugins': '插件系统',
+    '/viewing-report': 'AI 观影报告',
     '/webhooks': 'Webhook 通知',
     '/subscriptions': '演员订阅',
-    '/viewing-report': 'AI 观影报告',
+    '/series-subscriptions': '系列订阅',
+    '/sites': '站点注册表',
+    '/modules': '模块管理',
+    '/metatube-plugin': 'Metatube 插件',
+    '/gfriends': 'Gfriends 头像库',
+    '/plugins': '插件系统',
     '/telegram-bot': 'Telegram Bot',
-    '/view-status': '三态视频标记',
-    '/file-organize': '文件整理',
     '/users': '用户管理',
-    '/logs': '系统日志',
-    '/mpv-settings': 'mpv 播放器设置',
+    '/recommendations': '智能推荐',
+    '/movie-graph': '影片图谱',
+    // JAV 有码
+    '/jav/movies': 'JAV 有码 - 影片库',
+    '/jav/actors': 'JAV 有码 - 演员库',
+    '/jav/studios': 'JAV 有码 - 制片厂',
+    '/jav/scrape': 'JAV 有码 - 刮削管理',
+    '/jav/compare': 'JAV 有码 - 本地对比',
+    '/jav/compare-actors': 'JAV 有码 - 对比演员',
+    '/jav/patch': 'JAV 有码 - 补丁刮削',
+    '/jav/play': 'JAV 有码 - 播放工具',
+    '/jav/actor-merge': 'JAV 有码 - 演员合并',
+    '/jav/studio-merge': 'JAV 有码 - 片商合并',
+    '/jav/code-test': 'JAV 有码 - 番号提取测试',
+    // JAV 无码
+    '/uncensored/movies': 'JAV 无码 - 影片库',
+    '/uncensored/actors': 'JAV 无码 - 演员库',
+    '/uncensored/scrape': 'JAV 无码 - 刮削管理',
+    '/uncensored/compare': 'JAV 无码 - 本地对比',
+    '/uncensored/patch': 'JAV 无码 - 补丁刮削',
+    // FC2
+    '/fc2/movies': 'FC2 - 影片库',
+    '/fc2/actors': 'FC2 - 演员库',
+    '/fc2/scrape': 'FC2 - 刮削管理',
+    '/fc2/compare': 'FC2 - 本地对比',
+    '/fc2/patch': 'FC2 - 补丁刮削',
+    // 国产
+    '/chinese/movies': '国产 - 影片库',
+    '/chinese/actors': '国产 - 演员库',
+    '/chinese/name-rules': '国产 - 命名规范',
+    '/chinese/scrape': '国产 - 刮削管理',
+    '/chinese/patch': '国产 - 补丁刮削',
+    // PORNHub
+    '/pornhub/movies': 'PORNHub - 影片库',
+    '/pornhub/actors': 'PORNHub - 演员库',
+    '/pornhub/scrape': 'PORNHub - 刮削管理',
+    '/pornhub/compare': 'PORNHub - 本地对比',
+    '/pornhub/patch': 'PORNHub - 补丁刮削',
+    // 欧美
+    '/western/movies': '欧美 - 影片库',
+    '/western/actors': '欧美 - 演员库',
+    '/western/scrape': '欧美 - 刮削管理',
+    '/western/compare': '欧美 - 本地对比',
+    '/western/patch': '欧美 - 补丁刮削',
+    '/western/config': '欧美 - 品牌管理',
+    // 系统设置
     '/settings': '系统设置',
     '/scan-control': '扫描控制',
-    '/poster-enhance': '海报增强',
-    '/series-subscriptions': '系列订阅',
-    '/movie-graph': '影片图谱',
-    '/recommendations': '智能推荐',
-    '/auto-organize': '自动整理',
-    '/nfo-scrape': 'NFO 免改名刮削',
+    '/network-diag': '网络诊断中心',
+    '/proxy-xray': '内置 Xray 代理',
+    '/themes': '皮肤主题',
+    '/tvbox': 'TVBox/MacCMS 开放接口',
+    '/emby-config': 'Emby 协议兼容',
+    '/strm': 'STRM 文件生成',
+    '/downloaders': '下载器统一管理',
     '/workflows': '工作流管理',
-    '/studios': '制片厂管理',
+    '/logs': '系统日志',
+    '/log-stream': '实时日志流',
     '/files': '文件管理',
     '/system-status': '系统状态',
+    '/mpv-settings': 'mpv 播放器设置',
+    '/desktop-settings': '桌面设置',
+    '/schema-settings': 'Schema 设置',
+    '/deploy': '部署档位',
+    '/backup': '自动备份管理',
+    '/cookiecloud': 'CookieCloud 同步',
+    '/cookie-manager': 'Cookie 管理器',
+    '/naming-template': '命名模板',
+    '/tiers': '分级治理中心',
+    '/nfo-scrape': 'NFO 免改名刮削',
     '/source-merge': '多来源数据精选',
-    '/refresh-folders': '文件夹刷新'
+    '/file-organize': '文件整理',
+    '/auto-organize': '自动整理',
+    '/refresh-folders': '文件夹刷新',
+    '/studios': '制片厂管理'
   }
   return titles[route.path] || 'MDCX'
 })

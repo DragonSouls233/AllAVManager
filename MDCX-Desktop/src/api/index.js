@@ -290,6 +290,9 @@ export const createStudio = (data) => api.post('/studios', data)
 export const syncStudiosFromMovies = () => api.post('/studios/sync-from-movies')
 export const updateStudio = (id, data) => api.patch(`/studios/${id}`, data)
 export const deleteStudio = (id) => api.delete(`/studios/${id}`)
+export const mergeStudios = (data) => api.post('/studios/merge', data)
+export const searchSimilarStudios = (name) => api.get('/studios/similar', { params: { name } })
+export const updateStudioAlias = (id, alias) => api.patch(`/studios/${id}/alias`, { alias })
 
 // ============================================
 // Series 系列管理

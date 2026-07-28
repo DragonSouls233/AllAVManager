@@ -325,6 +325,21 @@ const routes = [
         component: () => import('@/views/chinese/ActorDetail.vue')
       },
       {
+        path: 'chinese/name-rules',
+        name: 'ChineseNameRules',
+        component: () => import('@/views/chinese/NameRules.vue')
+      },
+      {
+        path: 'chinese/scrape',
+        name: 'ChineseScrape',
+        component: () => import('@/views/chinese/Scrape.vue')
+      },
+      {
+        path: 'chinese/patch',
+        name: 'ChinesePatch',
+        component: () => import('@/views/chinese/Patch.vue')
+      },
+      {
         path: 'fc2',
         name: 'Fc2',
         component: () => import('@/views/fc2/Movies.vue')
@@ -348,6 +363,21 @@ const routes = [
         path: 'fc2/actors/:id',
         name: 'Fc2ActorDetail',
         component: () => import('@/views/fc2/ActorDetail.vue')
+      },
+      {
+        path: 'fc2/scrape',
+        name: 'Fc2Scrape',
+        component: () => import('@/views/Crawlers.vue')
+      },
+      {
+        path: 'fc2/compare',
+        name: 'Fc2Compare',
+        component: () => import('@/views/Compare.vue')
+      },
+      {
+        path: 'fc2/patch',
+        name: 'Fc2Patch',
+        component: () => import('@/views/Patch.vue')
       },
       {
         path: 'uncensored',
@@ -375,6 +405,21 @@ const routes = [
         component: () => import('@/views/uncensored/ActorDetail.vue')
       },
       {
+        path: 'uncensored/scrape',
+        name: 'UncensoredScrape',
+        component: () => import('@/views/Crawlers.vue')
+      },
+      {
+        path: 'uncensored/compare',
+        name: 'UncensoredCompare',
+        component: () => import('@/views/Compare.vue')
+      },
+      {
+        path: 'uncensored/patch',
+        name: 'UncensoredPatch',
+        component: () => import('@/views/Patch.vue')
+      },
+      {
         path: 'jav',
         name: 'Jav',
         component: () => import('@/views/jav/Movies.vue')
@@ -398,6 +443,51 @@ const routes = [
         path: 'jav/actors/:id',
         name: 'JavActorDetail',
         component: () => import('@/views/jav/ActorDetail.vue')
+      },
+      {
+        path: 'jav/studios',
+        name: 'JavStudios',
+        component: () => import('@/views/Studios.vue')
+      },
+      {
+        path: 'jav/studio-merge',
+        name: 'JavStudioMerge',
+        component: () => import('@/views/StudioMerge.vue')
+      },
+      {
+        path: 'jav/scrape',
+        name: 'JavScrape',
+        component: () => import('@/views/Crawlers.vue')
+      },
+      {
+        path: 'jav/compare',
+        name: 'JavCompare',
+        component: () => import('@/views/Compare.vue')
+      },
+      {
+        path: 'jav/compare-actors',
+        name: 'JavCompareActors',
+        component: () => import('@/views/CompareActors.vue')
+      },
+      {
+        path: 'jav/patch',
+        name: 'JavPatch',
+        component: () => import('@/views/Patch.vue')
+      },
+      {
+        path: 'jav/play',
+        name: 'JavPlay',
+        component: () => import('@/views/MpvSettings.vue')
+      },
+      {
+        path: 'jav/actor-merge',
+        name: 'JavActorMerge',
+        component: () => import('@/views/jav/ActorMerge.vue')
+      },
+      {
+        path: 'jav/code-test',
+        name: 'JavCodeTest',
+        component: () => import('@/views/jav/CodeTest.vue')
       },
       {
         path: 'pornhub',
@@ -425,6 +515,21 @@ const routes = [
         component: () => import('@/views/pornhub/ActorDetail.vue')
       },
       {
+        path: 'pornhub/scrape',
+        name: 'PornhubScrape',
+        component: () => import('@/views/Crawlers.vue')
+      },
+      {
+        path: 'pornhub/compare',
+        name: 'PornhubCompare',
+        component: () => import('@/views/Compare.vue')
+      },
+      {
+        path: 'pornhub/patch',
+        name: 'PornhubPatch',
+        component: () => import('@/views/Patch.vue')
+      },
+      {
         path: 'western',
         name: 'Western',
         component: () => import('@/views/western/Movies.vue')
@@ -448,6 +553,21 @@ const routes = [
         path: 'western/actors/:id',
         name: 'WesternActorDetail',
         component: () => import('@/views/western/ActorDetail.vue')
+      },
+      {
+        path: 'western/scrape',
+        name: 'WesternScrape',
+        component: () => import('@/views/Crawlers.vue')
+      },
+      {
+        path: 'western/compare',
+        name: 'WesternCompare',
+        component: () => import('@/views/Compare.vue')
+      },
+      {
+        path: 'western/patch',
+        name: 'WesternPatch',
+        component: () => import('@/views/Patch.vue')
       },
       {
         path: 'western/config',

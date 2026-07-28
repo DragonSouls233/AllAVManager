@@ -20,6 +20,26 @@ export async function getChineseMovie(id) {
   return api.get(`/chinese/movies/${id}`)
 }
 
+/** 获取国产命名规则 */
+export async function getChineseNameRules() {
+  return api.get('/chinese/name-rules')
+}
+
+/** 更新国产命名规则 */
+export async function updateChineseNameRules(data) {
+  return api.put('/chinese/name-rules', data)
+}
+
+/** 测试去广告效果 */
+export async function testChineseNameClean(title) {
+  return api.post('/chinese/name-rules/clean', { title })
+}
+
+/** 批量去广告重命名 */
+export async function batchCleanChineseNames(ids) {
+  return api.post('/chinese/name-rules/batch-clean', { ids })
+}
+
 /** 获取模块列表 */
 export async function getModules() {
   return api.get('/modules')
