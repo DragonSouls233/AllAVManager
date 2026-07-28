@@ -1,1 +1,0 @@
-import{eG as t}from"./index-RkUmLmJN.js";async function n(){return t.get("/modules")}async function a(s){return t.get(`/modules/${s}/stats`)}async function o(s){return t.post(`/modules/${s}/scan`)}export{a,n as g,o as s};

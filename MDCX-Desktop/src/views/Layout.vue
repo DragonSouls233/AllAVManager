@@ -1226,6 +1226,9 @@ const pageTitle = computed(() => {
 const refresh = () => window.location.reload()
 
 const logout = () => {
+  // 清除保存的凭证，防止自动登录循环
+  localStorage.removeItem('mdcx_saved_user')
+  localStorage.removeItem('mdcx_saved_pwd_hash')
   authStore.logout()
   router.push('/login')
 }

@@ -182,9 +182,27 @@ async function tryAutoLogin() {
     // 1) 如果后端启用了可信 IP，直接进入（无需登录）
     // 2) 否则提示用户重新输入密码
     if (trustedEnabled.value) {
-      // 可信网络，直接跳转首页（后端中间件会自动放行）
+      // 先验证可信 IP 对当前客户端是否真正生效
+      // 使用原生 fetch 绕过 axios 拦截器，避免触发 401 重定向死循环
+      try {
+        const testResp = await window.fetch('/api/v1/auth/me', {
+          headers: { 'Authorization': 'Bearer trusted-ip-mode' }
+        })
+        if (!testResp.ok) {
+          // 可信 IP 对本客户端未生效（IP 不在白名单中），放弃自动登录
+          console.warn('tryAutoLogin: 可信 IP 对本客户端无效，显示登录表单')
+          autoLogging.value = false
+          return false
+        }
+      } catch (e) {
+        console.warn('tryAutoLogin: 验证可信 IP 失败', e)
+        autoLogging.value = false
+        return false
+      }
+
+      // 可信 IP 验证通过，跳转首页（后端中间件会放行）
       authStore.setToken('trusted-ip-mode')
-      router.push('/')
+      router.replace('/')
       return true
     }
     // 没有启用可信 IP，无法自动登录，提示用户
@@ -233,9 +251,22 @@ const handleLogin = async () => {
 }
 
 // 可信网络直接进入
-const directEnter = () => {
+const directEnter = async () => {
+  // 先验证可信 IP 是否真正生效
+  try {
+    const testResp = await window.fetch('/api/v1/auth/me', {
+      headers: { 'Authorization': 'Bearer trusted-ip-mode' }
+    })
+    if (!testResp.ok) {
+      ElMessage.warning('可信 IP 未生效，当前客户端不在白名单中，请使用密码登录')
+      return
+    }
+  } catch (e) {
+    ElMessage.error('验证可信 IP 失败: ' + e.message)
+    return
+  }
   authStore.setToken('trusted-ip-mode')
-  router.push('/')
+  router.replace('/')
 }
 
 // 服务器地址设置
