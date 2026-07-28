@@ -8,6 +8,9 @@
 - 10musume (一本道)
 - Caribbeancompr (加勒比 Premium)
 - Ragdoll
+- UncensoredAggregate (无码聚合，自动站点路由)
+- HeyzoEnhanced (HEYZO 专用)
+- OnePondoCrawler (1PONDO 专用)
 """
 
 # 导入爬虫以触发 @register_crawler 装饰器
@@ -19,6 +22,11 @@ from app.crawlers.uncensored_detail import (
     CaribbeancomprCrawler,
     RagdollCrawler,
 )
+from app.crawlers.uncensored_aggregate import (
+    UncensoredAggregateCrawler,
+    HeyzoEnhancedCrawler,
+    OnePondoCrawler,
+)
 
 __all__ = [
     "CaribbeancomCrawler",
@@ -27,4 +35,7 @@ __all__ = [
     "TenMusumeCrawler",
     "CaribbeancomprCrawler",
     "RagdollCrawler",
+    "UncensoredAggregateCrawler",
+    "HeyzoEnhancedCrawler",
+    "OnePondoCrawler",
 ]

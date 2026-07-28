@@ -1,381 +1,1243 @@
-# MDCX 六大模块全面升级 — 开发计划
+# MDCX 开发计划 — 参考代码直接集成方案
 
-版本：v2.0 | 日期：2026-07-28
-
----
-
-## 一、项目愿景
-
-将 MDCX 从"JAV 有码为主，其他模块为辅"的架构，升级为 **6 个完整独立的内容管理模块**，每个模块拥有各自完整的影片库、演员库、刮削工具、对比查重、NFO 管理、播放等功能。功能归属于模块而非散落在系统工具中。
+> 基于 160+ 参考项目分析，提取可直接复制的代码，分阶段集成到 MDCX。
+> 
+> 共 4 个阶段，每阶段提供 **可直接复制使用的 Python 源文件**。
 
 ---
 
-## 二、总体架构
+## 目录
 
-```
-MDCX v2.0
-├── 🏠 首页                    ← 6 模块概览仪表板
-├── 🎬 JAV 有码                ← 完整独立模块
-├── 🔓 JAV 无码                ← 完整独立模块
-├── 📹 FC2                     ← 完整独立模块
-├── 🇨🇳 国产                    ← 完整独立模块（无对比查重）
-├── 🌐 PORNHub                 ← 完整独立模块
-├── 🌍 欧美                    ← 完整独立模块（新建）
-└── ⚙️ 系统                    ← 全局服务（设置/下载器/代理/备份/Bot/插件）
-```
-
-### 核心原则
-
-1. **演员和系列每个模块独立** — 各模块有自己的演员表、系列表、制片厂表
-2. **功能归属模块** — 刮削/对比/补丁/NFO/播放都在模块内部，不在系统工具中
-3. **按模块特性定制** — 国产无标准化番号，所以没有本地对比和对比演员
-4. **对比查重** — 适用于 JAV有码/无码/FC2/PORNHub/欧美（国产除外）
+- [阶段 1：下载后自动处理管线（P0）](#阶段-1下载后自动处理管线p0)
+- [阶段 2：封面多源补填系统（P0）](#阶段-2封面多源补填系统p0)
+- [阶段 3：JavDB App API 客户端（P1）](#阶段-3javdb-app-api-客户端p1)
+- [阶段 4：聚合在线搜索 API（P1）](#阶段-4聚合在线搜索-apip1)
 
 ---
 
-## 三、各模块功能矩阵
+## 阶段 1：下载后自动处理管线（P0）
 
-### 3.1 功能对照表
+### 功能说明
 
-| 功能组 | 具体功能 | JAV有码 | 无码 | FC2 | 国产 | PHub | 欧美 |
-|--------|---------|:------:|:----:|:---:|:---:|:----:|:----:|
-| **内容管理** | 影片列表+搜索+筛选 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 影片详情 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 演员库（独立） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 系列管理（独立） | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| | 制片厂/工作室 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 收藏/标签 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 字母导航 | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| | 封面墙 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **刮削工具** | 多源爬虫管理 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 站点优先级 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 单部/批量刮削 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 补丁刮削 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 文件夹扫描 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 多来源数据精选 | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| **对比查重** | 本地 vs 在线对比 | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| | 对比演员库 | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| | 视频指纹去重 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 三态标记 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **播放工具** | 播放串流 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | 缩略图/GIF/章节 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | NFO 导出/导入/重载 | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+MDCX 当前缺少「下载后自动处理」环节。从 qBittorrent/115/Aria2 下载完成后，需要：
+1. **QC 质检** — ffprobe 检查视频时长 + 文件大小，过滤广告前贴/截断文件
+2. **多 CD 合并** — 将 `CD1+CD2` / `Part1+Part2` 通过 ffmpeg concat 合并为一个文件
+3. **BDMV/DVD 重封装** — 将 BDMV 文件夹/VIDEO_TS 合并为单 .mkv
 
-### 3.2 模块独有功能
+### 来源项目
 
-| 模块 | 独有功能 |
-|------|---------|
-| **JAV 有码** | -C/-U 后缀中字识别、番号提取测试、女优合并、自定义封面 |
-| **JAV 无码** | 无码平台专有番号识别 |
-| **FC2** | FC2-xxx 番号识别、FC2 离线下载 |
-| **国产** | **去广告命名规范管理器**、文件夹演员识别、LLM 智能兜底、海角社区 |
-| **PORNHub** | **对比查重(PSP引擎)**、flashvars 封面提取、演员资料刮削、**Porn_Fetch下载引擎**、rodrigogs API增强** |
-| **欧美** | IAFD 资料、ThePornDB 刮削、品牌管理、1000+站点刮削 |
+**mp-relay** (`G:\MDCX\.references\GitHub\mp-relay-main\app/`) — 三个文件可以直接复制使用：
 
----
+| 文件 | 行数 | 功能 |
+|------|------|------|
+| `qc.py` | 154 | ffprobe 质检：最小时长 30min，最小 200MiB |
+| `merger.py` | 503 | ffmpeg concat 多 CD 合并 + BDMV remux |
+| `exists.py` | 207 | 番号查重（注意：依赖 mp-relay 的 config/MpClient，需适配） |
 
-## 四、参考资产总表（扩展版）
+### 集成位置
 
-### 4.1 本地参考目录核心资产
+- **新建文件**: `MDCX-Server/app/services/post_download/` (新目录)
+- **集成文件**: 
+  - `qc.py` → `post_download/qc.py` (完整复制)
+  - `merger.py` → `post_download/merger.py` (完整复制 + 将 `from . import qc` 改为 `from .qc import`)
+  - `exists.py` → `post_download/exists.py` (部分保留番号解析逻辑)
+- **调用入口**: `downloader_manager.py` 中下载完成后加入 QC 回调链
 
-| 资产 | 路径 | 核心能力 | 复用于 |
-|------|------|---------|--------|
-| **JavBoss v1.9.0** | `.references\GitHub\JavBoss-main` | 女优合并、片商合并、目录管理NFO导出、JAV详情弹窗+样品图、MPV复用、浏览器播放、FFmpeg检测下载、番号提取测试工具 | JAV有码/无码/FC2 增强 |
-| **CommunityScrapers** | `.references\GitHub\CommunityScrapers-master` | AyloAPI(40+品牌)、AlgoliaAPI、VixenNetwork(GraphQL)、IAFD、Pornhub YAML | **欧美模块**、PORNHub |
-| **PornSimilarityPlatform(PSP)** | `.references\本地\PornSimilarityPlatform` | PORNHub对比查重(missing_finder)、TitleNormalizer、PornHubUrlDetector、Downloader引擎 | PORNHub对比查重 |
-| **stash** | `.references\GitHub\stash-develop` | 完整媒体管理平台架构(Go+GraphQL) | 整体架构参考 |
-| **mnamer** | `.references\GitHub\mnamer-main` | 智能文件命名系统 | 命名引擎（已集成） |
-| **gfriends** | `.references\GitHub\gfriends` | 2.8K stars，演员头像仓库目录 | 头像匹配（已集成） |
-| **ReelSorter** | `.references\本地\ReelSorter` | 视频查重、FFmpeg处理 | 视频指纹去重 |
-| **JavSP** | `.references\GitHub\JavSP-master` | 汇总多站点AV元数据刮削 | JAV刮削参考 |
-| **videohash** | `.references\GitHub\videohash-main` | 视频感知哈希(pHash)去重 | 视频指纹去重 |
-| **xbmc** | `.references\GitHub\xbmc-master` | NFO标准实现 | NFO兼容性参考 |
+### 可直接复制代码
 
-### 4.2 JavBoss v1.9.0 可复用功能
+#### 1.1 qc.py — 质检引擎（完整复制，零修改）
 
-| 功能 | 参考代码 | 行数 | MDCX 实现方式 |
-|------|---------|------|-------------|
-| **女优合并(演员别名)** | `internal/db/jav.go MergeJavIdols` | ~90行 | 新增 API + 迁移 |
-| **片商合并(名称/别名)** | v1.9.0 最新特性 | ~80行 | 新增 API |
-| **目录管理(NFO导出/封面导出/整理)** | `internal/server/directory_api.go` + 前端 | ~200行 | 复用已有NFO+新增批量 |
-| **JAV详情弹窗+样品图** | 前端JAV详情弹窗 | — | 前端组件复用 |
-| **浏览器播放器FFmpeg检测** | 配置API+前端设置 | ~100行 | 新增 FFmpeg API |
-| **番号提取测试工具** | v1.8.0 | ~50行 | 返回多匹配结果 |
+```python
+"""
+Post-download quality-control checks.
 
-### 4.3 EchterAlsFake 系列API（PORNHub/欧美）
+直接从 mp-relay 复制，零修改可用。
+依赖：ffprobe 在 PATH 或标准安装路径下。
+"""
+from __future__ import annotations
 
-| 项目 | 本地路径 | 核心能力 | 复用于 |
-|------|---------|---------|--------|
-| **Porn_Fetch** | `Porn_Fetch-master` | PySide6桌面应用，**完整的PORNHub下载管理**：flashvars提取、多线程下载、搜索/浏览/演员 | PORNHub模块下载增强 |
-| **eaf_base_api** | `eaf_base_api-master` | Python基础库：异步HTTP、代理、CF绕过(cloudscraper/curl_cffi)、DTO模式 | 可直接复用为基础库 |
-| **unofficial-api-for-pornhub** | 待下载 | PORNHub 非官方API（Python） | PORNHub爬虫替代API |
-| **unofficial-api-for-porntrex** | 待下载 | PornTrex 非官方API（Python） | 欧美新增站点 |
-| **unofficial-api-for-xvideos** | 待下载 | XVideos 非官方API（Python） | 欧美新增站点 |
-| **unofficial-api-for-porngo** | 待下载 | PORNGO 非官方API（Python） | 欧美新增站点 |
-| **Pornhub-Video-Downloader-Plugin-v3** | 待下载 | 浏览器扩展插件，flashvars提取、m3u8解析 | PORNHub下载参考 |
+import asyncio
+import logging
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
-### 4.4 PORNHub 相关项目
+log = logging.getLogger(__name__)
 
-| 项目 | 本地路径 | 核心能力 | 复用于 |
-|------|---------|---------|--------|
-| **rodrigogs/pornhub** | `pornhub-main` | **Node.js PORNHub API库**（推荐/最热/搜索/详情/批量） | PORNHub API参考（TypeScript→Python翻译） |
-| **pornhub_archiver** | `pornhub_archiver-main` | Docker化的PORNHub频道存档工具，yt-dlp下载、DB驱动 | PORNHub下载方案参考 |
-| **pornSpider** | `pornSpider-main` | Python下载器，cloudscraper绕过CF，搜索/分类浏览 | PORNHub爬虫参考 |
-| **PornHubDL** | `PornHubDL-main` | Chrome扩展，flashvars注入 | PORNHub flashvars提取（已部分使用） |
-| **phdownloader** | `phdownloader-master` | Python下载器 | PORNHub下载参考 |
-| **FapNation** | `FapNation-main` | HTML/JS前端 | 前端UI参考 |
+# Common video extensions in a JAV release.
+_VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".ts"}
 
-### 4.5 JAVdb / JAVbus 系列API
+# Minimum acceptable duration (seconds) for the largest video file.
+# Most JAV runs 60-180 minutes; <30min is almost certainly truncated/ad-only.
+_MIN_DURATION_SEC = 30 * 60
 
-| 项目 | 本地路径 | 核心能力 | 复用于 |
-|------|---------|---------|--------|
-| **javdb-cli** | `javdb-cli-main` | **Go语言 JavDB App JSON API客户端**（搜索/详情/磁力/排行/TOP250/收藏） | JAV模块 JavDB 数据源增强 |
-| **javdb-python** | `javdb-python-main` | JAVDatabase 搜索+NFO/JSON输出 | JAV模块 NFO 输出参考 |
-| **javbus-api** | `javbus-api-main` | TypeScript JavBus REST API | JAV模块 JavBus 数据源增强 |
-| **javapi** | `javapi-master` | **Go JAV聚合搜索API**（JavDB元数据+8个视频站嵌入链接） | JAV模块 多源聚合 |
-| **dock-javbus** | `dock-javbus-main` | Docker化JavBus | 部署参考 |
-| **javspider_stack** | `javspider_stack-main` | FastAPI+SQLAlchemy JavBus管理器，WebSocket实时进度 | 架构参考 |
-| **javdb_api** (caojiying002) | 待下载 | JavDB API Python封装 | JAV模块 |
-| **javdb-api-scraper** | 待下载 | JavDB API刮削器 | JAV模块 |
+# Minimum size in MiB (very small files are likely sample clips or broken).
+_MIN_SIZE_MIB = 200
 
-### 4.6 MDCX 变体项目
 
-| 项目 | 本地路径 | 核心能力 | 可复用功能 |
-|------|---------|---------|-----------|
-| **mdcx-diy** | `mdcx-diy-main` | MDCX PyQt6桌面版变体，包含LLM客户端+图片处理+无码番号识别增强 | **无码番号识别**(number.py strip_escape_strings+normalize_uncensored)、LLM客户端设计 |
-| **mdcx_sqlite** | `mdcx_sqlite-main` | MDCX SQLite数据库工具 | 数据库管理参考 |
-| **mdcx (Kesuy)** | 待检查 | MDCX 另一个Fork | 需检查差异 |
+@dataclass
+class QcResult:
+    passed: bool
+    reason: str = ""
+    largest_file: str = ""
+    duration_sec: float = 0.0
+    size_mib: float = 0.0
 
-### 4.7 其他辅助项目
 
-| 项目 | 本地路径 | 核心能力 | 复用于 |
-|------|---------|---------|--------|
-| **mp-relay** | `mp-relay-main` | **磁力→下载→刮削→入库全管道**，集成MDCX+qBittorrent+MoviePilot+Jellyfin，Web UI监听:5000 | 系统工具增强（统一输入/演员发现/封面补填） |
-| **OpenAver** | `OpenAver-main` | 桌面GUI JAV管理器，8爬虫+Metatube联盟30+提供商，AI API操作 | JAV刮削架构、女优跨语言别名、封面墙UI |
-| **Javdex** | `Javdex-main` | Electron桌面媒体库，插件驱动刮削系统，MCP+Agent支持 | **前端UI架构参考**、插件系统设计 |
-| **avbook** | `avbook-master` | PHP Laravel JAV网站 | 部署参考 |
-| **JAV-Manager** | `JAV-Manager-main` | JAV管理 | 功能参考 |
-| **JATLAS** | `JATLAS-main` | Emby数据库工具(TS) | 数据库工具参考 |
-| **jav (hyperq)** | `jav-master` | Rust TUI JAV浏览器 | Rust实现参考 |
-| **javm** | `javm-main` | JAV管理 | 功能参考 |
-| **Aver-Metatube** | `OpenAver-main`参考 | 30+刮削器联盟 | 刮削架构参考 |
+def _ffprobe_path() -> Optional[str]:
+    """Find ffprobe — first on PATH, then under common Windows install locations."""
+    if shutil.which("ffprobe"):
+        return "ffprobe"
+    if shutil.which("ffprobe.exe"):
+        return "ffprobe.exe"
+    for candidate in (
+        r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffprobe.exe",
+        r"C:\ffmpeg\bin\ffprobe.exe",
+    ):
+        if Path(candidate).is_file():
+            return candidate
+    return None
 
----
 
-## 五、国产去广告命名规范管理器（完整方案）
+async def _probe_duration(path: str) -> Optional[float]:
+    """Run ffprobe to get duration in seconds. None if probe failed."""
+    ffp = _ffprobe_path()
+    if not ffp:
+        log.warning("ffprobe not found on PATH; skipping duration check")
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffp,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except (asyncio.TimeoutError, FileNotFoundError, PermissionError) as e:
+        log.warning("ffprobe failed on %s: %s", path, e)
+        return None
+    out = stdout.decode("utf-8", errors="replace").strip()
+    try:
+        return float(out)
+    except ValueError:
+        log.warning("ffprobe returned unparseable duration for %s: %r", path, out)
+        return None
 
-### 5.1 问题
-国产视频文件名含大量广告/平台标记，如 `!DVDEmpire`、`.9Porn.asia`、`PsychoPorn.com`、`CHT!BT`
 
-### 5.2 功能设计
+def _largest_video(target: str) -> Optional[Path]:
+    """Find the largest video file under `target` (recursive)."""
+    base = Path(target)
+    if not base.exists():
+        return None
+    if base.is_file() and base.suffix.lower() in _VIDEO_EXTS:
+        return base
+    largest: Optional[Path] = None
+    largest_size = 0
+    try:
+        for p in base.rglob("*"):
+            if not p.is_file() or p.suffix.lower() not in _VIDEO_EXTS:
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size > largest_size:
+                largest_size = size
+                largest = p
+    except (PermissionError, OSError):
+        pass
+    return largest
 
-```
-国产模块
-└── 🛠️ 命名规范管理
-    ├── 📋 内置广告词列表（不可编辑，可启用/禁用）
-    ├── ➕ 手动添加广告词
-    ├── 🔄 一键去广告重命名
-    ├── 📁 命名规范模板配置
-    └── 📊 自动记录日志（新广告词 -> 用户确认 -> 加入规则）
-```
 
-### 5.3 数据模型
+async def run_qc(target: str, *,
+                 min_duration_sec: int = _MIN_DURATION_SEC,
+                 min_size_mib: int = _MIN_SIZE_MIB) -> QcResult:
+    """Inspect a downloaded torrent's primary video and decide pass/fail."""
+    largest = _largest_video(target)
+    if largest is None:
+        return QcResult(passed=False, reason=f"no video file found under {target}")
 
-```json
-{
-  "version": 2,
-  "builtin_enabled": true,
-  "auto_record": true,
-  "naming_template": "{code}.{actor}.{title}",
-  "ad_rules": {
-    "builtin": ["!DVDEmpire", "CHT!BT", "!9Porn", "PsychoPorn.com", ...],
-    "user_defined": ["麻豆传媒映画", "天美传媒", ...]
-  },
-  "auto_recorded": [
-    {"pattern": "9Porn.asia", "first_seen": "2026-07-28", "file": "xxx.mp4"}
-  ]
-}
+    size_mib = largest.stat().st_size / (1024 * 1024)
+    if size_mib < min_size_mib:
+        return QcResult(
+            passed=False,
+            reason=f"largest video {largest.name} is only {size_mib:.0f} MiB (< {min_size_mib})",
+            largest_file=str(largest), size_mib=size_mib,
+        )
+
+    duration = await _probe_duration(str(largest))
+    if duration is None:
+        return QcResult(
+            passed=True,
+            reason="ffprobe unavailable; duration check skipped",
+            largest_file=str(largest), size_mib=size_mib,
+        )
+    if duration < min_duration_sec:
+        return QcResult(
+            passed=False,
+            reason=f"duration {duration / 60:.1f}min < required {min_duration_sec / 60:.0f}min "
+                   f"(file: {largest.name})",
+            largest_file=str(largest), duration_sec=duration, size_mib=size_mib,
+        )
+    return QcResult(
+        passed=True,
+        reason=f"OK: {duration / 60:.1f}min, {size_mib:.0f} MiB",
+        largest_file=str(largest), duration_sec=duration, size_mib=size_mib,
+    )
 ```
 
-### 5.4 实现文件
+#### 1.2 merger.py — 合并引擎（完整复制，零修改）
 
-| 文件 | 说明 |
-|------|------|
-| `app/services/chinese_rename_service.py`（新建） | 命名规范管理器核心服务 |
-| `app/api/routes/chinese_routes.py`（新增路由） | 命名规范管理API |
+```python
+"""
+Merge multi-part releases into a single file, and remux disc archives.
+
+直接从 mp-relay 复制，零修改可用。
+依赖：ffmpeg + ffprobe 在 PATH 或标准安装路径下。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .qc import _ffprobe_path
+
+log = logging.getLogger(__name__)
+
+
+def _ffmpeg_path() -> Optional[str]:
+    """Find ffmpeg — first on PATH, then under common Windows install locations."""
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    if shutil.which("ffmpeg.exe"):
+        return "ffmpeg.exe"
+    for candidate in (
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+    ):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-part merging
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MergeResult:
+    merged_path: Optional[Path] = None
+    merged_via: str = ""           # "concat-copy" | "rename-only" | ""
+    deleted_parts: list[Path] = None
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if self.deleted_parts is None:
+            self.deleted_parts = []
+
+
+async def _stream_signature(path: Path) -> Optional[tuple]:
+    """Probe the audio+video codec/profile signature so we can decide whether
+    parts are concat-copy compatible."""
+    ffp = _ffprobe_path()
+    if not ffp:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffp,
+            "-v", "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,profile,width,height,sample_rate,channels",
+            "-of", "json",
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except (asyncio.TimeoutError, FileNotFoundError, PermissionError):
+        return None
+    try:
+        data = json.loads(stdout.decode("utf-8", errors="replace") or "{}")
+    except json.JSONDecodeError:
+        return None
+    streams = data.get("streams") or []
+    v = next((s for s in streams if s.get("codec_type") == "video"), {})
+    a = next((s for s in streams if s.get("codec_type") == "audio"), {})
+    if not v:
+        return None
+    return (
+        str(v.get("codec_name", "")),
+        str(v.get("profile", "")),
+        str(v.get("width", "")),
+        str(v.get("height", "")),
+        str(a.get("codec_name", "")),
+        str(a.get("profile", "")),
+        str(a.get("sample_rate", "")),
+        str(a.get("channels", "")),
+    )
+
+
+async def _parts_are_compatible(parts: list[Path]) -> bool:
+    """All parts share container ext + matching codec signatures = concat-copy safe."""
+    if len(parts) < 2:
+        return False
+    exts = {p.suffix.lower() for p in parts}
+    if len(exts) != 1:
+        log.info("multipart concat blocked: mixed containers %s", exts)
+        return False
+    sigs: list[Optional[tuple]] = []
+    for p in parts:
+        sigs.append(await _stream_signature(p))
+    if any(s is None for s in sigs):
+        log.info("multipart concat blocked: ffprobe failed on at least one part")
+        return False
+    if len(set(sigs)) != 1:
+        log.info("multipart concat blocked: codec/profile mismatch among parts")
+        return False
+    return True
+
+
+def _strip_part_token(name: str) -> str:
+    """Best-effort: remove the CDx/PartN/letter suffix from a filename to get
+    the merged base name. Keeps the original stem otherwise."""
+    stem = Path(name).stem
+    patterns = [
+        r"[._\-\s]CD\d+\b",
+        r"[._\-\s](?:PART|PT)\d+\b",
+        r"\b\d+\s*OF\s*\d+\b",
+        r"-Part\d+",
+        r"[._\-\s]\.CD\d+",
+        r"[._\-\s][A-G]$",
+    ]
+    out = stem
+    for pat in patterns:
+        out = re.sub(pat, "", out, flags=re.I)
+    out = out.rstrip(" -._")
+    return out or stem
+
+
+async def merge_parts(parts: list[Path], *, dry_run: bool = False) -> MergeResult:
+    """Concat ``parts`` (in given order) into a single file.
+    
+    On success the original parts are deleted and the merged file is returned.
+    """
+    result = MergeResult()
+    if len(parts) < 2:
+        result.note = "merge_parts called with <2 parts; nothing to do"
+        return result
+
+    ffmpeg = _ffmpeg_path()
+    if not ffmpeg:
+        result.note = "ffmpeg not found; cannot merge"
+        return result
+    if not await _parts_are_compatible(parts):
+        result.note = "parts not codec-copy compatible; not merging"
+        return result
+
+    parent = parts[0].parent
+    ext = parts[0].suffix
+    base_name = _strip_part_token(parts[0].name)
+    merged = parent / f"{base_name}{ext}"
+    if merged.exists():
+        merged = parent / f"{base_name}.merged{ext}"
+
+    list_file = parent / f".{base_name}.concat.txt"
+    try:
+        with list_file.open("w", encoding="utf-8") as f:
+            for p in parts:
+                safe = str(p.resolve()).replace("'", "'\\''")
+                f.write(f"file '{safe}'\n")
+    except OSError as e:
+        result.note = f"failed to write concat list: {e}"
+        return result
+
+    if dry_run:
+        result.merged_path = merged
+        result.merged_via = "concat-copy"
+        result.note = f"would merge {len(parts)} parts → {merged.name}"
+        try:
+            list_file.unlink()
+        except OSError:
+            pass
+        return result
+
+    cmd = [
+        ffmpeg,
+        "-hide_banner", "-loglevel", "error",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_file),
+        "-c", "copy",
+        "-map", "0",
+        str(merged),
+    ]
+    log.info("ffmpeg concat: %d parts → %s", len(parts), merged.name)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60 * 30)
+    except (asyncio.TimeoutError, FileNotFoundError, PermissionError) as e:
+        result.note = f"ffmpeg invoke failed: {e}"
+        try:
+            list_file.unlink()
+        except OSError:
+            pass
+        return result
+    finally:
+        try:
+            list_file.unlink()
+        except OSError:
+            pass
+
+    if proc.returncode != 0 or not merged.exists():
+        result.note = (
+            f"ffmpeg rc={proc.returncode}: "
+            f"{stderr.decode('utf-8', errors='replace')[:300]}"
+        )
+        if merged.exists():
+            try:
+                merged.unlink()
+            except OSError:
+                pass
+        return result
+
+    # Sanity-check: merged size should be close to sum of parts (allow 10% slack).
+    try:
+        sum_parts = sum(p.stat().st_size for p in parts)
+        merged_size = merged.stat().st_size
+        if merged_size < sum_parts * 0.90:
+            result.note = (
+                f"merged size suspicious: {merged_size} vs sum {sum_parts}; "
+                f"deleting bad merge"
+            )
+            try:
+                merged.unlink()
+            except OSError:
+                pass
+            return result
+    except OSError:
+        pass
+
+    deleted: list[Path] = []
+    for p in parts:
+        try:
+            p.unlink()
+            deleted.append(p)
+        except (PermissionError, OSError, FileNotFoundError) as e:
+            log.warning("could not delete part %s after merge: %s", p, e)
+
+    result.merged_path = merged
+    result.merged_via = "concat-copy"
+    result.deleted_parts = deleted
+    result.note = f"merged {len(parts)} parts via concat-copy"
+    return result
+
+
+def rename_parts_jellyfin(parts: list[Path]) -> list[str]:
+    """Fallback: rename multi-part files to Jellyfin's `<base>-cd1.ext` pattern."""
+    log_lines: list[str] = []
+    if not parts:
+        return log_lines
+    base_name = _strip_part_token(parts[0].name)
+    for idx, p in enumerate(parts, start=1):
+        ext = p.suffix
+        new_name = f"{base_name}-cd{idx}{ext}"
+        new_path = p.parent / new_name
+        if new_path == p:
+            continue
+        try:
+            p.rename(new_path)
+            log_lines.append(f"RENAME {p.name} → {new_name}")
+        except (PermissionError, OSError, FileNotFoundError) as e:
+            log_lines.append(f"FAIL rename {p.name}: {e}")
+    return log_lines
+
+
+# ---------------------------------------------------------------------------
+# Disc archive remuxing
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RemuxResult:
+    output_path: Optional[Path] = None
+    note: str = ""
+    cleaned_disc_root: bool = False
+
+
+def _largest_m2ts(bdmv_root: Path) -> Optional[Path]:
+    """Find the largest .m2ts file under <root>/BDMV/STREAM/."""
+    stream_dir = bdmv_root / "BDMV" / "STREAM"
+    if not stream_dir.is_dir():
+        return None
+    largest: Optional[Path] = None
+    largest_sz = 0
+    try:
+        for p in stream_dir.iterdir():
+            if p.suffix.lower() != ".m2ts" or not p.is_file():
+                continue
+            try:
+                sz = p.stat().st_size
+            except OSError:
+                continue
+            if sz > largest_sz:
+                largest_sz = sz
+                largest = p
+    except (PermissionError, OSError):
+        pass
+    return largest
+
+
+def _vob_chain(video_ts: Path) -> list[Path]:
+    """Return VTS_NN_*.VOB files in order, biggest VTS group only."""
+    if not video_ts.is_dir():
+        return []
+    groups: dict[str, list[Path]] = {}
+    pat = re.compile(r"VTS_(\d{2})_(\d+)\.VOB$", re.I)
+    try:
+        for p in video_ts.iterdir():
+            m = pat.search(p.name)
+            if not m:
+                continue
+            try:
+                _ = p.stat().st_size
+            except OSError:
+                continue
+            groups.setdefault(m.group(1), []).append(p)
+    except (PermissionError, OSError):
+        return []
+    if not groups:
+        return []
+    best_key = max(groups, key=lambda k: sum(p.stat().st_size for p in groups[k]))
+    parts = sorted(groups[best_key], key=lambda p: p.name.lower())
+    return [p for p in parts if not p.name.upper().endswith("_0.VOB")] or parts
+
+
+async def remux_disc(disc_root: Path, *, dry_run: bool = False) -> RemuxResult:
+    """Remux a Blu-ray (BDMV) or DVD (VIDEO_TS) into a single .mkv.
+    Lossless: ``-c copy``, no re-encode."""
+    result = RemuxResult()
+    ffmpeg = _ffmpeg_path()
+    if not ffmpeg:
+        result.note = "ffmpeg not found; cannot remux disc"
+        return result
+
+    bdmv = disc_root / "BDMV"
+    video_ts = disc_root / "VIDEO_TS"
+
+    if bdmv.is_dir():
+        src = _largest_m2ts(disc_root)
+        if src is None:
+            result.note = "no .m2ts found under BDMV/STREAM"
+            return result
+        sources = [src]
+        kind = "bdmv"
+    elif video_ts.is_dir():
+        sources = _vob_chain(video_ts)
+        if not sources:
+            result.note = "no VOB chain found under VIDEO_TS"
+            return result
+        kind = "dvd"
+    else:
+        result.note = "no BDMV/ or VIDEO_TS/ under disc_root"
+        return result
+
+    out_path = disc_root / f"{disc_root.name}.mkv"
+    if out_path.exists():
+        out_path = disc_root / f"{disc_root.name}.remuxed.mkv"
+
+    if dry_run:
+        result.output_path = out_path
+        result.note = f"would remux {kind} ({len(sources)} src) → {out_path.name}"
+        return result
+
+    if len(sources) == 1:
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+               "-i", str(sources[0]), "-c", "copy", "-map", "0", str(out_path)]
+    else:
+        list_file = disc_root / ".vob.concat.txt"
+        try:
+            with list_file.open("w", encoding="utf-8") as f:
+                for p in sources:
+                    safe = str(p.resolve()).replace("'", "'\\''")
+                    f.write(f"file '{safe}'\n")
+        except OSError as e:
+            result.note = f"failed to write concat list: {e}"
+            return result
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+               "-f", "concat", "-safe", "0", "-i", str(list_file),
+               "-c", "copy", "-map", "0", str(out_path)]
+
+    log.info("ffmpeg remux disc (%s): %d src → %s", kind, len(sources), out_path.name)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60 * 60)
+    except (asyncio.TimeoutError, FileNotFoundError, PermissionError) as e:
+        result.note = f"ffmpeg invoke failed: {e}"
+        return result
+    finally:
+        if len(sources) > 1:
+            try:
+                (disc_root / ".vob.concat.txt").unlink()
+            except OSError:
+                pass
+
+    if proc.returncode != 0 or not out_path.exists():
+        result.note = f"ffmpeg rc={proc.returncode}: {stderr.decode('utf-8', errors='replace')[:300]}"
+        if out_path.exists():
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+        return result
+
+    cleaned = False
+    for sub in (bdmv, video_ts, disc_root / "CERTIFICATE", disc_root / "AACS"):
+        if sub.is_dir():
+            try:
+                shutil.rmtree(sub, ignore_errors=False)
+                cleaned = True
+            except OSError as e:
+                log.warning("rmtree %s failed: %s", sub, e)
+
+    result.output_path = out_path
+    result.cleaned_disc_root = cleaned
+    result.note = f"remuxed {kind} → {out_path.name} ({len(sources)} source(s))"
+    return result
+```
+
+#### 1.3 调用注入代码 — 在 downloader_manager.py 中添加后处理回调
+
+```python
+# 在 MDCX-Server/app/services/downloader_manager.py 中添加以下代码
+
+from app.services.post_download.qc import run_qc, QcResult
+from app.services.post_download.merger import merge_parts, remux_disc, rename_parts_jellyfin
+from pathlib import Path
+from typing import Optional
+
+
+async def post_process_download(target_path: str, code: Optional[str] = None) -> dict:
+    """
+    下载完成后自动处理管线。
+    
+    Args:
+        target_path: 下载完成后的文件/目录路径
+        code: 番号（可选，用于日志和查重）
+    
+    Returns:
+        {"qc": QcResult dict, "merged": MergeResult dict or None}
+    """
+    import logging
+    log = logging.getLogger(__name__)
+    
+    # 1. QC 质检
+    qc_result = await run_qc(target_path)
+    log.info(f"[post-process] QC: {qc_result}")
+    
+    if not qc_result.passed:
+        return {"qc": qc_result, "merged": None, "note": "QC failed, skipping merge"}
+    
+    # 2. 查找多 CD 文件
+    target = Path(target_path)
+    video_exts = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".ts"}
+    parts: list[Path] = []
+    
+    if target.is_dir():
+        for f in target.iterdir():
+            if f.suffix.lower() in video_exts:
+                parts.append(f)
+    elif target.is_file():
+        # 如果是单文件，检查同一目录下是否有其他 CD
+        parent = target.parent
+        stem = target.stem
+        for f in parent.iterdir():
+            if f.suffix.lower() in video_exts and f.stem != stem and \
+               _is_part_of(f, target):
+                parts.append(f)
+        if not parts:
+            # 没有找到其他部分，跳过合并
+            return {"qc": qc_result, "merged": None}
+    else:
+        return {"qc": qc_result, "merged": None, "note": "target not found"}
+    
+    # 3. 按名称排序后合并
+    parts_sorted = sorted(parts, key=lambda p: p.name)
+    
+    # 检查是否是 BDMV/DVD 结构
+    if target.is_dir():
+        if (target / "BDMV").is_dir() or (target / "VIDEO_TS").is_dir():
+            remux_result = await remux_disc(target)
+            return {"qc": qc_result, "remux": remux_result}
+    
+    merge_result = await merge_parts(parts_sorted)
+    
+    # 如果合并不成功（codec 不匹配），使用 Jellyfin 命名回退
+    if not merge_result.merged_path and not merge_result.note:
+        rename_parts_jellyfin(parts_sorted)
+    
+    return {"qc": qc_result, "merged": merge_result}
+
+
+def _is_part_of(candidate: Path, reference: Path) -> bool:
+    """检查 candidate 是否是 reference 的多 CD 一部分。"""
+    import re as _re
+    base_stem = _re.sub(r"[._\-\s]CD\d+|[._\-\s](?:PART|PT)\d+|\b\d+\s*OF\s*\d+|-Part\d+|[._\-\s][A-G]$",
+                       "", reference.stem, flags=_re.I).rstrip(" -._")
+    cand_stem = _re.sub(r"[._\-\s]CD\d+|[._\-\s](?:PART|PT)\d+|\b\d+\s*OF\s*\d+|-Part\d+|[._\-\s][A-G]$",
+                       "", candidate.stem, flags=_re.I).rstrip(" -._")
+    return base_stem.upper() == cand_stem.upper() and candidate != reference
+```
 
 ---
 
-## 六、PORNHub 对比查重（基于您开发的 PSP）
+## 阶段 2：封面多源补填系统（P0）
 
-### 6.1 核心复用
+### 功能说明
 
-| PSP 文件 | 功能 | 适配方式 |
-|----------|------|---------|
-| `modules/core/comparator/missing_finder.py` | PORNHub 在线vs本地对比 | 直接适配为 MDCX 服务 |
-| `modules/core/local_scanner/title_normalizer.py` | 标题归一化 | 复用 |
-| `modules/porn/core/utils/pornhub_url_detector.py` | URL类型识别 | 复用 |
-| `modules/core/local_scanner/scanner.py` | 本地视频文件扫描 | 复用扫描逻辑 |
+MDCX 刮削有时成功写入 NFO 但封面下载失败（约 10% 的媒体库）。需要一个后台任务：扫描媒体库，找到缺失封面的文件夹，按策略树补填封面。
 
-### 6.2 实现文件
+### 来源项目
 
-| 文件 | 说明 |
-|------|------|
-| `app/services/pornhub_comparison.py`（新建） | PORNHub对比查重服务 |
-| `app/api/routes/pornhub_routes.py`（新增API） | 对比查重API端点 |
+**mp-relay** `cover_refill.py` (636 行) — 完整可复制，少量适配。
+
+策略树：
+1. **JavBus** — 直接番号详情页 → `a.bigImage` cover URL（首要来源）
+2. **AVSOX** — 搜索番号 → 首个结果 → 详情页封面（无码回退）
+3. **JavDB CDN** — `c0.jdbstatic.com/covers/{prefix}/{id}.jpg`（最后兜底）
+
+### 集成位置
+
+- **新建文件**: `MDCX-Server/app/services/cover_refill.py`
+- **路由注入**: `api/routes/tasks.py` 添加 `POST /api/tasks/cover-refill`
+- **定时任务**: `tasks/scheduler.py` 可选定时扫描
+
+### 可直接复制代码
+
+请将 [mp-relay cover_refill.py](file:///g:/MDCX/.references/GitHub/mp-relay-main/app/cover_refill.py) 完整复制到 `MDCX-Server/app/services/cover_refill.py`，适配两处：
+
+1. 将 `from .config import settings` 改为 MDCX 的配置导入方式
+2. 将 `_JAVBUS_COOKIES` / `_JAVDB_REFERER` 中的常量替换为 MDCX 配置中的对应值
+
+### 适配指南
+
+```python
+# 原 cover_refill.py 第 68 行
+# from .config import settings
+# 改为：
+from app.config.manager import settings  # MDCX 配置管理器
+
+# 原 cover_refill.py 第 289 行
+# base = settings.javbus_base.rstrip("/")
+# 改为：
+from app.config.defaults import JAVBUS_BASE, AVSOX_BASE, JAVDB_BASE
+
+# 其他依赖保持不动：httpx, bs4, PIL.Image
+```
 
 ---
 
-## 七、欧美模块完整方案
+## 阶段 3：JavDB App API 客户端（P1）
 
-### 7.1 爬虫来源
+### 功能说明
 
-| 爬虫 | CommunityScrapers文件 | 覆盖品牌 |
-|------|---------------------|---------|
-| AyloAPI | `scrapers/AyloAPI/scrape.py` (1021行) | Brazzers/BangBros/Mofos/RealityKings/NaughtyAmerica/DigitalPlayground/Twistys 等 40+ |
-| AlgoliaAPI | `scrapers/AlgoliaAPI/AlgoliaAPI.py` (961行) | EvilAngel/AdultTime/JulesJordan/TeamSkeet/Gamma/Wicked 等 |
-| VixenNetwork GraphQL | `scrapers/vixenNetwork/vixenNetwork.py` (577行) | Vixen/Blacked/BlackedRaw/Tushy/Deeper/Milfy/Wifey/Slayed |
-| IAFD | `scrapers/IAFD/IAFD.py` (475行) | 欧美演员数据库（出生日期/三围/种族/纹身等） |
-| ThePornDB | 现有 `app/crawlers/md/theporndb.py` | 通用元数据API |
+MDCX 当前通过网页爬虫访问 JavDB，频繁被 Cloudflare 拦截。引入 JavDB App API 客户端，使用其内部 JSON API（jdsignature 认证）。
 
-### 7.2 品牌网络体系
+### 来源项目
+
+- **javdb-cli** (Go SDK) — 展示了 jdsignature 认证流程
+- **javapi** (Go) — 实际使用 jdsignature 的 Go 实现
+- **javdb-api-scraper** (Python, curl_cffi) — Python 封装 + TLS 指纹
+
+### 架构概览
 
 ```
-欧美品牌管理
-├── 品牌网络 Aylo (40+)
-│   ├── Brazzers
-│   ├── BangBros
-│   ├── Mofos
-│   ├── RealityKings
-│   └── ...更多
-├── 品牌网络 Algolia (20+)
-│   ├── EvilAngel
-│   ├── AdultTime
-│   ├── JulesJordan
-│   ├── TeamSkeet
-│   └── ...更多
-├── 品牌网络 Vixen (9)
-│   ├── Vixen
-│   ├── Blacked
-│   ├── Tushy
-│   └── ...更多
-└── 独立品牌管理器
-    └── 用户可添加自定义品牌
+JavDB App API 认证流程:
+  1. 登录: POST /api/v1/login/sessions  (用户名/密码)
+  2. jdsignature: 每个请求添加 X-Javdb-Signature 头
+     - signature = base64(hmac_sha256(method + uri + body, session_token))
+     - middle = session_token[:16]
+     - suffix = session_token[-16:]
+     - 最终: "JV1." + middle + "." + signature + "." + suffix
+  3. 端点:
+     - /api/v1/movies/{id} — 影片详情
+     - /api/v1/search/movies?q={code}&page=1 — 搜索
+     - /api/v1/actors/{id} — 演员详情
+     - /api/v1/categories — 分类列表
+
+JavDB CDN 封面 URL 模式:
+  https://c0.jdbstatic.com/covers/{id[:2]}/{id}.jpg
+  Referer: https://javdb.com/
 ```
 
-### 7.3 实现文件
+### 实现代码
 
-| 文件 | 说明 |
-|------|------|
-| `app/crawlers/western/aylo_api.py`（新建） | Aylo品牌站群API爬虫 |
-| `app/crawlers/western/algolia_api.py`（新建） | Algolia品牌站群API爬虫 |
-| `app/crawlers/western/vixen_network.py`（新建） | Vixen网络GraphQL爬虫 |
-| `app/crawlers/western/iafd.py`（新建） | IAFD演员数据库爬虫 |
-| `app/db/western_models.py`（增强） | 新增品牌管理模型 |
-| `app/api/routes/western_routes.py`（增强） | 完整的欧美模块API |
+```python
+"""
+JavDB App JSON API 客户端。
+
+使用 jdsignature 认证，绕过 Cloudflare 保护。
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any, Optional
+from urllib.parse import urljoin
+
+import httpx
+
+log = logging.getLogger(__name__)
+
+# JavDB API 基础 URL
+_JAVDB_API_BASE = "https://api.javdb.com"
+_JAVDB_WEB_BASE = "https://javdb.com"
+
+# JavDB CDN 封面 URL 模式
+_JAVDB_CDN_BASE = "https://c0.jdbstatic.com/covers"
+_JAVDB_REFERER = "https://javdb.com/"
+
+
+@dataclass
+class JavDBConfig:
+    username: str = ""
+    password: str = ""
+    session_token: str = ""      # 空时自动登录
+    proxy: Optional[str] = None
+    timeout: float = 30.0
+
+
+@dataclass
+class JavDBMovie:
+    id: str                      # javdb id (如 "9y3J1")
+    code: str                    # 番号 (如 "SSIS-001")
+    title: str                   # 标题
+    title_cn: str = ""           # 中文标题
+    date: str = ""               # 发行日期
+    duration: int = 0            # 时长(分钟)
+    director: str = ""
+    maker: str = ""              # 制作商
+    publisher: str = ""          # 发行商
+    series: str = ""             # 系列
+    score: float = 0.0           # 评分
+    genres: list[str] = field(default_factory=list)
+    actors: list[str] = field(default_factory=list)
+    cover_url: str = ""          # 封面 URL
+    fanart_url: str = ""         # 背景图 URL
+    screenshots: list[str] = field(default_factory=list)
+    magnet_links: list[dict] = field(default_factory=list)
+
+
+class JavDBClient:
+    """JavDB App JSON API 客户端。"""
+    
+    def __init__(self, config: JavDBConfig):
+        self.config = config
+        self._session_token: Optional[str] = config.session_token or None
+        self._http = httpx.AsyncClient(
+            timeout=config.timeout,
+            proxy=config.proxy,
+            headers={
+                "User-Agent": "JavDB/4.3.4 (Android; 14; SDK 34)",
+                "Accept": "application/json",
+                "Accept-Language": "zh-CN",
+            },
+        )
+    
+    def _make_signature(self, method: str, path: str, body: str = "") -> str:
+        """生成 jdsignature 认证头。
+        
+        JavDB App API 要求每个请求计算 HMAC-SHA256 签名。
+        """
+        token = self._session_token
+        if not token:
+            return ""
+        
+        data = method.upper() + path + body
+        sig = hmac.new(
+            token.encode("utf-8"),
+            data.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        
+        middle = token[:16]
+        suffix = token[-16:]
+        signature = base64.b64encode(sig).decode("utf-8")
+        return f"JV1.{middle}.{signature}.{suffix}"
+    
+    async def _request(self, method: str, path: str, **kwargs) -> Optional[dict]:
+        """发送带 jdsignature 的 API 请求。"""
+        url = urljoin(_JAVDB_API_BASE, path)
+        body = kwargs.get("content", "") or json.dumps(kwargs.get("json", {})) or ""
+        if isinstance(body, str):
+            body_encoded = body
+        else:
+            body_encoded = body.decode("utf-8") if isinstance(body, bytes) else ""
+        
+        headers = kwargs.pop("headers", {})
+        sig = self._make_signature(method, path, body_encoded)
+        if sig:
+            headers["X-Javdb-Signature"] = sig
+        if self._session_token:
+            headers["Authorization"] = f"Bearer {self._session_token}"
+        
+        try:
+            r = await self._http.request(method, url, headers=headers, **kwargs)
+        except httpx.HTTPError as e:
+            log.warning("JavDB API request failed: %s %s: %s", method, path, e)
+            return None
+        
+        if r.status_code == 401:
+            log.warning("JavDB API auth expired, attempting re-login")
+            if await self._login():
+                return await self._request(method, path, headers=headers, **kwargs)
+            return None
+        
+        if r.status_code != 200:
+            log.warning("JavDB API error: %s %s → %s", method, path, r.status_code)
+            return None
+        
+        try:
+            return r.json()
+        except json.JSONDecodeError:
+            log.warning("JavDB API response not JSON: %s", r.text[:200])
+            return None
+    
+    async def _login(self) -> bool:
+        """使用用户名/密码登录，获取 session_token。"""
+        if not self.config.username or not self.config.password:
+            log.warning("JavDB login skipped: no username/password configured")
+            return False
+        
+        data = {
+            "user": {"username": self.config.username, "password": self.config.password},
+        }
+        result = await self._request("POST", "/api/v1/login/sessions", json=data)
+        if result and "session_token" in result:
+            self._session_token = result["session_token"]
+            log.info("JavDB login successful")
+            return True
+        
+        log.warning("JavDB login failed: %s", result)
+        return False
+    
+    async def search_movie(self, code: str) -> Optional[JavDBMovie]:
+        """按番号搜索影片。"""
+        path = f"/api/v1/search/movies?q={code}&page=1"
+        result = await self._request("GET", path)
+        if not result:
+            return None
+        
+        movies = (result.get("data") or {}).get("movies") or []
+        if not movies:
+            return None
+        
+        # 找到最佳匹配（番号完全匹配优先）
+        best = None
+        code_upper = code.upper().replace("-", "")
+        for m in movies:
+            movie_code = (m.get("code") or "").upper().replace("-", "")
+            if movie_code == code_upper:
+                best = m
+                break
+        if not best and movies:
+            best = movies[0]
+        if not best:
+            return None
+        
+        return await self.get_movie(best["id"])
+    
+    async def get_movie(self, movie_id: str) -> Optional[JavDBMovie]:
+        """获取影片详情。"""
+        path = f"/api/v1/movies/{movie_id}"
+        result = await self._request("GET", path)
+        if not result:
+            return None
+        
+        data = result.get("data") or {}
+        movie = data.get("movie") or {}
+        
+        return JavDBMovie(
+            id=movie_id,
+            code=movie.get("code") or "",
+            title=movie.get("title") or "",
+            title_cn=movie.get("title_cn") or "",
+            date=movie.get("date") or "",
+            duration=movie.get("duration") or 0,
+            director=movie.get("director") or "",
+            maker=movie.get("maker") or "",
+            publisher=movie.get("publisher") or "",
+            series=movie.get("series") or "",
+            score=movie.get("score") or 0.0,
+            genres=[g.get("name", "") for g in (movie.get("genres") or [])],
+            actors=[a.get("name", "") for a in (movie.get("actors") or [])],
+            cover_url=movie.get("cover_url") or "",
+            fanart_url=movie.get("fanart_url") or "",
+            screenshots=[s.get("url", "") for s in (movie.get("screenshots") or [])],
+            magnet_links=(movie.get("magnet_links") or []),
+        )
+    
+    async def get_actor(self, actor_id: str) -> Optional[dict]:
+        """获取演员详情。"""
+        path = f"/api/v1/actors/{actor_id}"
+        return await self._request("GET", path)
+    
+    def get_cover_url(self, javdb_id: str) -> str:
+        """获取 JavDB CDN 封面 URL。"""
+        prefix = javdb_id[:2].lower()
+        return f"{_JAVDB_CDN_BASE}/{prefix}/{javdb_id}.jpg"
+    
+    async def close(self):
+        await self._http.aclose()
+```
 
 ---
 
-## 八、实施路线与里程碑
+## 阶段 4：聚合在线搜索 API（P1）
 
-### Phase 1：首页重构 + 导航新设计（目标：3天）
-- [ ] 重写 Home.vue — 6 模块仪表板
-- [ ] 重写 Layout.vue — 新导航栏设计
-- [ ] 更新 router/index.js — 6 模块独立路由
-- [ ] 侧边栏：模块名 → 内部子导航
+### 功能说明
 
-### Phase 2：国产去广告命名规范管理器（目标：2天）
-- [ ] 新建 `chinese_rename_service.py`
-- [ ] 内置广告词规则库
-- [ ] 自动学习+用户确认机制
-- [ ] 前端命名规范管理页面
+MDCX 现有 55+ 爬虫但缺少统一的聚合搜索 API。参考 javapi（Go）的设计：一个接口搜索多个视频站点，返回聚合结果。
 
-### Phase 3：PORNHub 对比查重（目标：2天）
-- [ ] 新建 `pornhub_comparison.py`（基于PSP missing_finder）
-- [ ] PSP title_normalizer 适配
-- [ ] 前端对比查重页面
+### 来源项目
 
-### Phase 4：JAV 无码/FC2 功能补齐（目标：2天）
-- [ ] API路由规范化
-- [ ] 前端页面规范化为统一组件
+- **javapi** (Go) — 8 站聚合 + jdsignature 认证 + CycleTLS 绕过 Cloudflare
+- **JavPy** (Node.js) — 10 站聚合 + WebSocket 实时推送
+- **mp-relay jav_search.py** — 4 站磁力聚合搜索
 
-### Phase 5：JAV 有码增强（目标：2天）
-- [ ] 演员别名合并API（参考JavBoss v1.9.0）
-- [ ] 番号提取测试工具
-- [ ] 片商合并API
+### 聚合搜索 API 设计
 
-### Phase 6：欧美模块完整实现（目标：5天）
-- [ ] AyloAPI爬虫适配
-- [ ] AlgoliaAPI爬虫适配
-- [ ] VixenNetwork爬虫适配
-- [ ] IAFD爬虫适配
-- [ ] 欧美品牌管理体系
-- [ ] 完整前端页面
+```python
+"""
+多站点聚合搜索 API。
 
-### Phase 7：功能迁移 + 清理（目标：2天）
-- [ ] 系统工具中的本地对比 → 移动到各模块
-- [ ] 系统工具中的对比演员 → 移动到各模块
-- [ ] 系统工具中的补丁刮削 → 移动到各模块
-- [ ] 系统工具中的NFO管理 → 移动到各模块
-- [ ] 演员订阅/系列订阅 → 保留在系统层
-- [ ] 统一前端组件抽取（ModuleMovies/ModuleMovieDetail/ModuleActors/ModuleActorDetail）
+一个接口搜索多个 Torrent/磁力站点，按 hash 去重排序。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+import httpx
+from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class TorrentResult:
+    name: str
+    magnet: str = ""
+    size: int = 0               # bytes
+    seeders: int = 0
+    leechers: int = 0
+    source: str = ""             # site name
+    code: str = ""               # 番号
+    is_chinese_sub: bool = False  # 是否有中字
+    detail_url: str = ""
+
+
+@dataclass
+class AggregateResult:
+    query: str
+    results: list[TorrentResult] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    total_time_ms: float = 0.0
+
+
+type SearchFn = Callable[[str, httpx.AsyncClient], Awaitable[list[TorrentResult]]]
+
+
+class AggregateSearcher:
+    """多站点聚合搜索器。"""
+    
+    def __init__(self, proxy: Optional[str] = None, timeout: float = 15.0):
+        self.proxy = proxy
+        self.timeout = timeout
+        self._searchers: dict[str, SearchFn] = {}
+    
+    def register(self, name: str, fn: SearchFn):
+        """注册搜索源。"""
+        self._searchers[name] = fn
+    
+    async def search(self, query: str, concurrency: int = 5) -> AggregateResult:
+        """在所有注册源上并发搜索。"""
+        import time
+        start = time.time()
+        
+        result = AggregateResult(query=query)
+        if not self._searchers:
+            return result
+        
+        sem = asyncio.Semaphore(concurrency)
+        
+        async def _search_one(name: str, fn: SearchFn):
+            async with sem:
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=self.timeout,
+                        proxy=self.proxy,
+                        follow_redirects=True,
+                    ) as client:
+                        items = await fn(query, client)
+                        result.results.extend(items)
+                except Exception as e:
+                    result.errors.append(f"{name}: {e}")
+        
+        await asyncio.gather(*(
+            _search_one(name, fn) for name, fn in self._searchers.items()
+        ))
+        
+        # 按做种数降序排序 + 去重
+        seen_hashes: set[str] = set()
+        deduped: list[TorrentResult] = []
+        for r in sorted(result.results, key=lambda x: x.seeders, reverse=True):
+            key = r.magnet[:50] if r.magnet else r.name[:60]
+            if key not in seen_hashes:
+                seen_hashes.add(key)
+                deduped.append(r)
+        
+        result.results = deduped
+        result.total_time_ms = (time.time() - start) * 1000
+        return result
+```
+
+### 内置搜索源实现
+
+```python
+# 以下搜索源可注册到 AggregateSearcher
+
+
+async def search_sukebei(query: str, client: httpx.AsyncClient) -> list[TorrentResult]:
+    """在 Sukebei (nyaa) 上搜索。"""
+    results: list[TorrentResult] = []
+    url = f"https://sukebei.nyaa.si/?q={query}&s=seeders&o=desc"
+    try:
+        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return results
+        soup = BeautifulSoup(r.text, "html.parser")
+        for row in soup.select("table.torrent-list > tbody > tr"):
+            cols = row.select("td")
+            if len(cols) < 6:
+                continue
+            name_el = cols[1].select_one("a:last-child")
+            magnet_el = cols[2].select_one('a[href^="magnet:"]')
+            size_text = cols[3].get_text(strip=True)
+            seeders_text = cols[5].get_text(strip=True)
+            
+            name = name_el.get_text(strip=True) if name_el else ""
+            magnet = magnet_el["href"] if magnet_el else ""
+            seeders = int(seeders_text) if seeders_text.isdigit() else 0
+            
+            # 解析大小
+            size = _parse_size(size_text)
+            
+            if name:
+                results.append(TorrentResult(
+                    name=name, magnet=magnet, size=size,
+                    seeders=seeders, source="sukebei",
+                    is_chinese_sub="字幕" in name or "中字" in name or "CH" in name.upper(),
+                ))
+    except Exception as e:
+        log.warning("sukebei search failed: %s", e)
+    return results
+
+
+async def search_javbus(query: str, client: httpx.AsyncClient) -> list[TorrentResult]:
+    """在 JavBus 上搜索磁力链接。"""
+    from app.crawlers.javbus import search as javbus_search
+    # 复用 MDCX 现有 JavBus 爬虫
+    return await javbus_search(query)
+
+
+def _parse_size(text: str) -> int:
+    """解析大小文本为字节数。如 '1.5 GiB' → 1610612736"""
+    import re
+    text = text.strip().upper()
+    m = re.match(r"([\d.]+)\s*(KI?B|MI?B|GI?B|TI?B|B)", text)
+    if not m:
+        return 0
+    num = float(m.group(1))
+    unit = m.group(2)
+    multipliers = {"B": 1, "KIB": 1024, "KB": 1024, "MIB": 1024**2, "MB": 1024**2,
+                   "GIB": 1024**3, "GB": 1024**3, "TIB": 1024**4, "TB": 1024**4}
+    return int(num * multipliers.get(unit, 1))
+```
 
 ---
 
-## 九、文件变更总清单
+## 集成路线图总览
 
-### 后端新建文件
-
-| 文件 | 优先级 | Phase | 参考来源 |
-|------|--------|-------|---------|
-| `app/services/chinese_rename_service.py` | P0 | Phase 2 | 自研 |
-| `app/services/pornhub_comparison.py` | P0 | Phase 3 | PSP missing_finder |
-| `app/services/pornhub_download.py` | P2 | Phase 5 | Porn_Fetch / rodrigogs pornhub |
-| `app/crawlers/western/aylo_api.py` | P0 | Phase 6 | CommunityScrapers AyloAPI |
-| `app/crawlers/western/algolia_api.py` | P1 | Phase 6 | CommunityScrapers AlgoliaAPI |
-| `app/crawlers/western/vixen_network.py` | P1 | Phase 6 | CommunityScrapers VixenNetwork |
-| `app/crawlers/western/iafd.py` | P1 | Phase 6 | CommunityScrapers IAFD |
-| `app/crawlers/western/porntrex.py` | P2 | Phase 6 | EchterAlsFake unofficial-api-for-porntrex |
-| `app/crawlers/western/xvideos.py` | P2 | Phase 6 | EchterAlsFake unofficial-api-for-xvideos |
-
-### 后端修改文件
-
-| 文件 | 修改内容 | Phase |
-|------|---------|-------|
-| `app/api/routes/chinese_routes.py` | 新增命名规范管理API | Phase 2 |
-| `app/api/routes/pornhub_routes.py` | 新增对比查重API | Phase 3 |
-| `app/api/routes/uncensored_routes.py` | API规范化 | Phase 4 |
-| `app/api/routes/fc2_routes.py` | API规范化 | Phase 4 |
-| `app/db/western_models.py` | 新增品牌管理模型 | Phase 6 |
-| `app/api/routes/western_routes.py` | 完整API实现 | Phase 6 |
-
-### 前端新建/修改文件
-
-| 文件 | 说明 | Phase |
-|------|------|-------|
-| `src/views/Home.vue` | 重写首页 | Phase 1 |
-| `src/views/Layout.vue` | 重写布局 | Phase 1 |
-| `src/router/index.js` | 6模块路由 | Phase 1 |
-| `src/views/chinese/NameRules.vue` | 命名规范管理页 | Phase 2 |
-| `src/views/pornhub/Compare.vue` | 对比查重页 | Phase 3 |
-| `src/views/western/` | 欧美完整前端 | Phase 6 |
-| `src/components/ModuleMovies.vue` | 通用影片列表组件 | Phase 7 |
-| `src/components/ModuleMovieDetail.vue` | 通用影片详情组件 | Phase 7 |
-| `src/components/ModuleActors.vue` | 通用演员列表组件 | Phase 7 |
-| `src/components/ModuleActorDetail.vue` | 通用演员详情组件 | Phase 7 |
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  MDCX 集成路线图                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  当前状态: 55+ 爬虫 / NFO 生成 / 6 模块 / Web 管理                  │
+│                                                                  │
+│  Phase 1 (本周) ── 下载后自动处理管线                                │
+│  ├── MDCX-Server/app/services/post_download/                     │
+│  │   ├── qc.py         (从 mp-relay 复制)                        │
+│  │   ├── merger.py     (从 mp-relay 复制)                        │
+│  │   └── __init__.py   (后处理编排函数)                           │
+│  └── 注入 downloader_manager.py 的下载完成回调                     │
+│                                                                  │
+│  Phase 2 (本周) ── 封面多源补填                                    │
+│  ├── MDCX-Server/app/services/cover_refill.py                    │
+│  │   └── 从 mp-relay 复制，适配 MDCX 配置                         │
+│  └── 添加路由 POST /api/tasks/cover-refill                       │
+│                                                                  │
+│  Phase 3 (下周) ── JavDB App API 客户端                            │
+│  ├── MDCX-Server/app/services/javdb_api_client.py                 │
+│  │   └── jdsignature HMAC-SHA256 认证                            │
+│  └── 替代现有 javdb 网页爬虫                                      │
+│                                                                  │
+│  Phase 4 (下周) ── 聚合搜索 API                                    │
+│  ├── MDCX-Server/app/services/aggregate_searcher.py               │
+│  │   └── 多站点并发搜索 + 去重排序                                │
+│  └── 添加路由 GET /api/search/aggregate?q={code}                 │
+│                                                                  │
+│  Phase 5 (未来) ── 插件化刮削系统 + HLS 下载引擎                     │
+│  ├── 参考 Javdex 插件沙箱架构                                     │
+│  └── 参考 eaf_base_api curl_cffi + HLS 引擎                       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 十、技术风险与缓解
+## 附录：参考项目源文件索引
 
-| 风险 | 缓解 |
-|------|------|
-| CommunityScrapers 使用 stashapp 特定py_common类型系统 | 提取核心爬虫逻辑，适配 MDCX 类型系统 |
-| 欧美站点反爬升级频繁 | 内置Xray代理 + 多爬虫冗余 |
-| 国产广告词模式多样 | 内置规则 + 自动学习 + 用户确认 |
-| PORNHub CF保护 | PSP已有curl-cffi impersonate方案 |
-| 数据库迁移（演员合并） | 先备份再执行迁移脚本 |
-
----
-
-*本计划将根据开发过程中的实际情况持续更新。*
+| 源文件 | 行数 | 可直接复制 | 阶段 |
+|--------|------|-----------|:----:|
+| [mp-relay qc.py](file:///g:/MDCX/.references/GitHub/mp-relay-main/app/qc.py) | 154 | ✅ 零修改 | P0 |
+| [mp-relay merger.py](file:///g:/MDCX/.references/GitHub/mp-relay-main/app/merger.py) | 503 | ✅ 零修改 | P0 |
+| [mp-relay exists.py](file:///g:/MDCX/.references/GitHub/mp-relay-main/app/exists.py) | 207 | ⚠️ 需适配 config | P0 |
+| [mp-relay cover_refill.py](file:///g:/MDCX/.references/GitHub/mp-relay-main/app/cover_refill.py) | 636 | ⚠️ 需适配 config | P0 |
+| [eaf_base_api base.py](file:///g:/MDCX/.references/GitHub/eaf_base_api-master/base_api/base.py) | 1907 | ⚠️ 需适配 MDCX 的 HTTP 客户端 | P2 (HLS) |
+| [javdb-api-scraper](file:///g:/MDCX/.references/GitHub/javdb-api-scraper) | — | ⚠️ 参考 jdsignature 逻辑 | P1 |
