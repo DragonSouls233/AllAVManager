@@ -832,3 +832,237 @@ class RagdollCrawler(BaseCrawler):
         except Exception as e:
             logger.debug(f"Ragdoll 解析失败 {code}: {e}")
             return None
+
+
+# ==========================================
+# KIN8TENGOKU (金8天国) 爬虫
+# ==========================================
+
+@register_crawler
+class Kin8tengokuCrawler(BaseCrawler):
+    """KIN8TENGOKU (金8天国) 爬虫"""
+
+    name = "kin8tengoku"
+    display_name = "KIN8TENGOKU"
+    base_url = "https://www.kin8tengoku.com"
+
+    priority = CrawlerPriority.NORMAL
+    supported_types = ["jav_uncensored"]
+    supported_prefixes = ["KIN8TENGOKU", "KIN8"]
+    description = "KIN8TENGOKU 金8天国无码"
+    language = "ja"
+    requires_proxy = True
+
+    def _convert_code(self, code: str) -> Optional[str]:
+        code = code.upper().replace("KIN8TENGOKU-", "").replace("KIN8-", "").replace("KIN8", "")
+        return code.strip() if code else None
+
+    async def scrape(self, code: str) -> Optional[ScrapeResult]:
+        movie_id = self._convert_code(code)
+        if not movie_id:
+            return None
+        detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
+        async with AsyncHttpClient(timeout=30) as client:
+            try:
+                html_text = await client.get_text(detail_url)
+                if not html_text or "404" in html_text:
+                    return None
+                html = lxml_html.fromstring(html_text)
+                return self._parse_detail(html, code, movie_id)
+            except Exception as e:
+                logger.debug(f"kin8tengoku 刮削失败 {code}: {e}")
+                return None
+
+    async def search(self, keyword: str) -> list[ScrapeResult]:
+        return []
+
+    def _parse_detail(self, html, code: str, movie_id: str) -> Optional[ScrapeResult]:
+        try:
+            title = html.xpath('//h1/text()')[0].strip() if html.xpath('//h1/text()') else ""
+            if not title:
+                return None
+            cover = html.xpath('//img[contains(@src,"cap") or contains(@class,"movie_image")]/@src')
+            cover_url = cover[0] if cover else None
+            actors = [ActorInfo(name=a.strip()) for a in html.xpath('//a[contains(@href,"actor")]/text()') if a.strip()]
+            return ScrapeResult(
+                code=code, title=title, source=self.name, studio="KIN8TENGOKU",
+                cover_url=cover_url, actors=actors,
+                is_uncensored=True, is_mosaic=False,
+            )
+        except Exception as e:
+            logger.debug(f"kin8tengoku 解析失败 {code}: {e}")
+            return None
+
+
+# ==========================================
+# PACOPACOMAMA 爬虫
+# ==========================================
+
+@register_crawler
+class PacopacomamaCrawler(BaseCrawler):
+    """PACOPACOMAMA 爬虫"""
+
+    name = "pacopacomama"
+    display_name = "Pacopacomama"
+    base_url = "https://www.pacopacomama.com"
+
+    priority = CrawlerPriority.NORMAL
+    supported_types = ["jav_uncensored"]
+    supported_prefixes = ["PACOPACOMAMA", "PPM"]
+    description = "Pacopacomama 无码"
+    language = "ja"
+    requires_proxy = True
+
+    def _convert_code(self, code: str) -> Optional[str]:
+        code = code.upper().replace("PACOPACOMAMA-", "").replace("PPM-", "")
+        return code.strip() if code else None
+
+    async def scrape(self, code: str) -> Optional[ScrapeResult]:
+        movie_id = self._convert_code(code)
+        if not movie_id:
+            return None
+        detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
+        async with AsyncHttpClient(timeout=30) as client:
+            try:
+                html_text = await client.get_text(detail_url)
+                if not html_text or "404" in html_text:
+                    return None
+                html = lxml_html.fromstring(html_text)
+                return self._parse_detail(html, code, movie_id)
+            except Exception as e:
+                logger.debug(f"pacopacomama 刮削失败 {code}: {e}")
+                return None
+
+    async def search(self, keyword: str) -> list[ScrapeResult]:
+        return []
+
+    def _parse_detail(self, html, code: str, movie_id: str) -> Optional[ScrapeResult]:
+        try:
+            title = "".join(html.xpath('//h1//text()')).strip()
+            if not title:
+                return None
+            cover = html.xpath('//img[contains(@class,"movie_image")]/@src')
+            cover_url = cover[0] if cover else None
+            return ScrapeResult(
+                code=code, title=title, source=self.name, studio="PACOPACOMAMA",
+                cover_url=cover_url, is_uncensored=True, is_mosaic=False,
+            )
+        except Exception as e:
+            logger.debug(f"pacopacomama 解析失败 {code}: {e}")
+            return None
+
+
+# ==========================================
+# GACHI (ガチ) 爬虫
+# ==========================================
+
+@register_crawler
+class GachiCrawler(BaseCrawler):
+    """GACHI (ガチネット) 爬虫"""
+
+    name = "gachi"
+    display_name = "GACHI"
+    base_url = "https://www.gachinet.com"
+
+    priority = CrawlerPriority.NORMAL
+    supported_types = ["jav_uncensored"]
+    supported_prefixes = ["GACHI", "GACHINET"]
+    description = "GACHI ガチネット无码"
+    language = "ja"
+    requires_proxy = True
+
+    def _convert_code(self, code: str) -> Optional[str]:
+        return code.upper().replace("GACHI-", "").replace("GACHINET-", "").replace("GACHI", "").strip() or None
+
+    async def scrape(self, code: str) -> Optional[ScrapeResult]:
+        movie_id = self._convert_code(code)
+        if not movie_id:
+            return None
+        detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
+        async with AsyncHttpClient(timeout=30) as client:
+            try:
+                html_text = await client.get_text(detail_url)
+                if not html_text or "404" in html_text:
+                    return None
+                html = lxml_html.fromstring(html_text)
+                return self._parse_detail(html, code, movie_id)
+            except Exception as e:
+                logger.debug(f"gachi 刮削失败 {code}: {e}")
+                return None
+
+    async def search(self, keyword: str) -> list[ScrapeResult]:
+        return []
+
+    def _parse_detail(self, html, code: str, movie_id: str) -> Optional[ScrapeResult]:
+        try:
+            title = "".join(html.xpath('//h1//text()')).strip()
+            if not title:
+                return None
+            cover = html.xpath('//img[contains(@src,"cap") or contains(@class,"movie_image")]/@src')
+            cover_url = cover[0] if cover else None
+            actors = [ActorInfo(name=a.strip()) for a in html.xpath('//a[contains(@href,"actor")]/text()') if a.strip()]
+            return ScrapeResult(
+                code=code, title=title, source=self.name, studio="GACHI",
+                cover_url=cover_url, actors=actors,
+                is_uncensored=True, is_mosaic=False,
+            )
+        except Exception as e:
+            logger.debug(f"gachi 解析失败 {code}: {e}")
+            return None
+
+
+# ==========================================
+# T28 (T28-TOKYO) 爬虫
+# ==========================================
+
+@register_crawler
+class T28Crawler(BaseCrawler):
+    """T28 (T28-TOKYO) 爬虫"""
+
+    name = "t28"
+    display_name = "T28-TOKYO"
+    base_url = "https://www.t28-tokyo.com"
+
+    priority = CrawlerPriority.NORMAL
+    supported_types = ["jav_uncensored"]
+    supported_prefixes = ["T28"]
+    description = "T28-TOKYO 无码"
+    language = "ja"
+    requires_proxy = True
+
+    def _convert_code(self, code: str) -> Optional[str]:
+        return code.upper().replace("T28-", "").replace("T28", "").strip() or None
+
+    async def scrape(self, code: str) -> Optional[ScrapeResult]:
+        movie_id = self._convert_code(code)
+        if not movie_id:
+            return None
+        detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
+        async with AsyncHttpClient(timeout=30) as client:
+            try:
+                html_text = await client.get_text(detail_url)
+                if not html_text or "404" in html_text:
+                    return None
+                html = lxml_html.fromstring(html_text)
+                return self._parse_detail(html, code, movie_id)
+            except Exception as e:
+                logger.debug(f"t28 刮削失败 {code}: {e}")
+                return None
+
+    async def search(self, keyword: str) -> list[ScrapeResult]:
+        return []
+
+    def _parse_detail(self, html, code: str, movie_id: str) -> Optional[ScrapeResult]:
+        try:
+            title = "".join(html.xpath('//h1//text()')).strip()
+            if not title:
+                return None
+            cover = html.xpath('//img[contains(@src,"cap")]/@src')
+            cover_url = cover[0] if cover else None
+            return ScrapeResult(
+                code=code, title=title, source=self.name, studio="T28",
+                cover_url=cover_url, is_uncensored=True, is_mosaic=False,
+            )
+        except Exception as e:
+            logger.debug(f"t28 解析失败 {code}: {e}")
+            return None

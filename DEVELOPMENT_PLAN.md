@@ -1194,39 +1194,64 @@ def _parse_size(text: str) -> int:
 ## 集成路线图总览
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  MDCX 集成路线图                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  当前状态: 55+ 爬虫 / NFO 生成 / 6 模块 / Web 管理                  │
-│                                                                  │
-│  Phase 1 (本周) ── 下载后自动处理管线                                │
-│  ├── MDCX-Server/app/services/post_download/                     │
-│  │   ├── qc.py         (从 mp-relay 复制)                        │
-│  │   ├── merger.py     (从 mp-relay 复制)                        │
-│  │   └── __init__.py   (后处理编排函数)                           │
-│  └── 注入 downloader_manager.py 的下载完成回调                     │
-│                                                                  │
-│  Phase 2 (本周) ── 封面多源补填                                    │
-│  ├── MDCX-Server/app/services/cover_refill.py                    │
-│  │   └── 从 mp-relay 复制，适配 MDCX 配置                         │
-│  └── 添加路由 POST /api/tasks/cover-refill                       │
-│                                                                  │
-│  Phase 3 (下周) ── JavDB App API 客户端                            │
-│  ├── MDCX-Server/app/services/javdb_api_client.py                 │
-│  │   └── jdsignature HMAC-SHA256 认证                            │
-│  └── 替代现有 javdb 网页爬虫                                      │
-│                                                                  │
-│  Phase 4 (下周) ── 聚合搜索 API                                    │
-│  ├── MDCX-Server/app/services/aggregate_searcher.py               │
-│  │   └── 多站点并发搜索 + 去重排序                                │
-│  └── 添加路由 GET /api/search/aggregate?q={code}                 │
-│                                                                  │
-│  Phase 5 (未来) ── 插件化刮削系统 + HLS 下载引擎                     │
-│  ├── 参考 Javdex 插件沙箱架构                                     │
-│  └── 参考 eaf_base_api curl_cffi + HLS 引擎                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│  MDCX 集成路线图（v2.0）                                                │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  当前状态: 64 爬虫 / 575 路由 / 6 模块 / 91万行代码                        │
+│                                                                         │
+│  Phase 1 ✅ 下载后自动处理管线                                             │
+│  ├── post_download/qc.py  (mp-relay)                                   │
+│  ├── post_download/merger.py (mp-relay)                                │
+│  └── pipeline.py 编排 + WebSocket 进度推送                               │
+│                                                                         │
+│  Phase 2 ✅ 封面多源补填                                                  │
+│  └── cover_refill.py (JavBus → AVSOX → JavDB CDN)                     │
+│                                                                         │
+│  Phase 3 ✅ JavDB App API 客户端                                        │
+│  └── javdb_api_client.py (jdsignature HMAC-SHA256)                     │
+│                                                                         │
+│  Phase 4 ✅ 聚合搜索 API                                                │
+│  ├── aggregate_searcher.py (Sukebei 等)                                │
+│  └── streaming_aggregator.py (6 站 M3U8 聚合)                          │
+│                                                                         │
+│  Phase 5 ✅ 5 模块专用工具                                               │
+│  ├── video_hash.py / video_dedup.py (PORNHub 去重)                     │
+│  ├── western_utils.py (24 品牌 + 标题去重)                              │
+│  ├── uncensored_utils.py (43 前缀 + AVSOX 封面)                        │
+│  ├── fc2_leak_detector.py (FC2 泄漏检测)                               │
+│  └── chinese_utils.py (151 演员 + 去广告 + 番号归一)                    │
+│                                                                         │
+│  Phase 6 ✅ MCP 服务端 + 聚合 M3U8 播放源                                │
+│  ├── mcp_service.py (8 工具 + 2 资源, AI 直接操作)                      │
+│  └── streaming_aggregator.py (missav/jable/av01/javgg)                │
+│                                                                         │
+│  Phase 7 ✅ 前端增强 + PyWebView 桌面                                   │
+│  ├── EnhancedArtplayer.vue (弹幕/字幕/多音轨)                           │
+│  ├── OnlineSourcePanel.vue (一键搜索多站播放源)                         │
+│  └── pywebview_app.py (10MB 轻量桌面, 无需 Electron)                   │
+│                                                                         │
+│  Phase 8 ✅ P0 爬虫增强                                                 │
+│  ├── chinese/aggregate.py (ModelMediaAsia + HDouban + CNMDB)          │
+│  ├── uncensored_aggregate.py (20+ 前缀自动路由 + HEYZO/1PONDO)        │
+│  └── western_aggregate.py (IAFD + ThePornDB + Aylo)                   │
+│                                                                         │
+│  Phase 9 ✅ P1 代码增强                                                 │
+│  ├── pornhub_parser.py (4 降级解析: flashvars/next_data/media/HTML)    │
+│  ├── pornhub_cache.py (24h 持久化缓存)                                 │
+│  ├── western_enhanced.py (品牌列表 API + 聚合搜索)                     │
+│  └── downloader_registry.py (36 站点下载注册表)                        │
+│                                                                         │
+│  Phase 10 ✅ Stash 兼容 + WebSocket 实时                               │
+│  ├── stash_compat.py (StashScene/StashPerformer 兼容层)                │
+│  ├── event_bus.py (全局事件总线 + WebSocket 推送)                      │
+│  └── pipeline.py 已集成事件推送                                          │
+│                                                                         │
+│  Phase 11 (未来) ── 插件化刮削系统 + 去中心化                               │
+│  ├── 参考 Javdex 插件沙箱架构                                            │
+│  └── 参考 eaf_base_api curl_cffi + HLS 引擎                             │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

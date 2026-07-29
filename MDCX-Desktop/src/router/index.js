@@ -209,6 +209,18 @@ const routes = [
         meta: { title: '封面墙' }
       },
       {
+        path: 'actress-collection',
+        name: 'ActressCollection',
+        component: () => import('@/views/ActressCollection.vue'),
+        meta: { title: '女优收藏' }
+      },
+      {
+        path: 'read-only',
+        name: 'ReadOnly',
+        component: () => import('@/views/ReadOnlyManager.vue'),
+        meta: { title: '唯读来源' }
+      },
+      {
         path: 'themes',
         name: 'Themes',
         component: () => import('@/views/Themes.vue')

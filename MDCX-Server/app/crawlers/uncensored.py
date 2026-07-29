@@ -21,6 +21,10 @@ from app.crawlers.uncensored_detail import (
     TenMusumeCrawler,
     CaribbeancomprCrawler,
     RagdollCrawler,
+    Kin8tengokuCrawler,
+    PacopacomamaCrawler,
+    GachiCrawler,
+    T28Crawler,
 )
 from app.crawlers.uncensored_aggregate import (
     UncensoredAggregateCrawler,

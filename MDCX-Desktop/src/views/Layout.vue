@@ -295,6 +295,10 @@
             <el-icon><StarFilled /></el-icon>
             <template #title>演员订阅</template>
           </el-menu-item>
+          <el-menu-item index="/actress-collection">
+            <el-icon><Avatar /></el-icon>
+            <template #title>女优收藏</template>
+          </el-menu-item>
           <el-menu-item index="/series-subscriptions">
             <el-icon><Collection /></el-icon>
             <template #title>系列订阅</template>
@@ -366,6 +370,10 @@
           <el-menu-item index="/strm">
             <el-icon><Link /></el-icon>
             <template #title>STRM 生成</template>
+          </el-menu-item>
+          <el-menu-item index="/read-only">
+            <el-icon><FolderOpened /></el-icon>
+            <template #title>唯读来源</template>
           </el-menu-item>
           <el-menu-item index="/downloaders">
             <el-icon><Download /></el-icon>
@@ -1332,7 +1340,9 @@ const pageTitle = computed(() => {
     '/desktop-settings': '桌面设置',
     '/schema-settings': 'Schema 设置',
     '/deploy': '部署档位',
-    '/backup': '自动备份管理',
+    '/backup': '自动备份',
+    '/actress-collection': '女优收藏',
+    '/read-only': '唯读来源',
     '/cookiecloud': 'CookieCloud 同步',
     '/cookie-manager': 'Cookie 管理器',
     '/naming-template': '命名模板',

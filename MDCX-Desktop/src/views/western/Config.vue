@@ -48,7 +48,7 @@
         </el-form>
       </el-tab-pane>
 
-      <el-tab-pane label="品牌映射" name="brand">
+      <el-tab-pane label="品牌配置" name="brand">
         <el-form :model="config" label-width="160px" style="max-width: 720px">
           <el-form-item label="自定义品牌映射">
             <el-input
@@ -63,6 +63,22 @@
             <el-button type="primary" @click="saveBrandMap" :loading="saving">保存品牌映射</el-button>
           </el-form-item>
         </el-form>
+      </el-tab-pane>
+
+      <el-tab-pane label="品牌浏览" name="brands" lazy>
+        <h3 style="margin:0 0 12px">支持的全部欧美品牌</h3>
+        <div v-loading="loadingBrands" class="brand-grid">
+          <div v-for="b in brands" :key="b.name" class="brand-card">
+            <div class="brand-name">{{ b.name }}</div>
+            <div class="brand-domain">{{ b.domain }}</div>
+            <div v-if="b.tags" class="brand-tags">
+              <el-tag v-for="t in b.tags.slice(0,3)" :key="t" size="small">{{ t }}</el-tag>
+            </div>
+          </div>
+        </div>
+        <div v-if="brands.length" style="margin-top:8px;font-size:12px;color:var(--el-text-color-secondary)">
+          共 {{ brands.length }} 个品牌
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="代理设置" name="proxy">
@@ -83,6 +99,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getModulesConfig, updateModulesConfig } from '@/api/modules'
 import { getProxyStatus } from '@/api/index'
+import { getWesternBrands } from '@/api/mcp_stream'
 
 const router = useRouter()
 const activeTab = ref('basic')
@@ -98,6 +115,8 @@ const brandMapText = ref('')
 const saving = ref(false)
 const proxyOnline = ref(false)
 const checking = ref(false)
+const brands = ref([])
+const loadingBrands = ref(false)
 
 function goBack() {
   router.push('/western/movies')
@@ -191,10 +210,37 @@ async function checkProxy() {
   }
 }
 
-onMounted(loadConfig)
+async function loadBrands() {
+  loadingBrands.value = true
+  try {
+    const res = await getWesternBrands()
+    const items = []
+    if (res.aylo_brands) {
+      res.aylo_brands.forEach(b => items.push({ ...b, name: b.name }))
+    }
+    if (res.vixen_sites) {
+      res.vixen_sites.forEach(s => items.push({ name: s.name, domain: s.domain }))
+    }
+    brands.value = items
+  } catch (e) {
+    brands.value = []
+  } finally {
+    loadingBrands.value = false
+  }
+}
+
+onMounted(() => {
+  loadConfig()
+  loadBrands()
+})
 </script>
 
 <style scoped>
 .western-config { padding: 20px; }
 .form-tip { font-size: 12px; color: #999; margin-top: 4px; }
+.brand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.brand-card { padding: 10px; border: 1px solid var(--el-border-color-light); border-radius: 6px; background: var(--el-bg-color-overlay); }
+.brand-name { font-weight: 600; font-size: 13px; }
+.brand-domain { font-size: 11px; color: var(--el-text-color-secondary); word-break: break-all; }
+.brand-tags { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
 </style>

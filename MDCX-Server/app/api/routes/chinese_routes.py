@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.db.chinese_models import ChineseMovie, ChineseActor
 from app.services.chinese_rename_service import get_rules, update_rules, clean_title
-from app.utils.pagination import paginate
 
 router = APIRouter(prefix="/chinese", tags=["国产模块"])
 
@@ -32,8 +31,14 @@ async def api_clean_title(data: dict):
     return {"original": data.get("title", ""), "cleaned": result}
 
 
-def get_chinese_db() -> ModuleDatabase:
-    return ModuleDatabase.get_instance("chinese")
+def get_chinese_db() -> "ModuleDatabase":
+    from app.db.module_db import ModuleDatabase
+    try:
+        return ModuleDatabase.get_instance("chinese")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("get_chinese_db failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Database init error: {e}")
 
 
 @router.get("/actors")
@@ -67,7 +72,10 @@ async def sync_folder_actors():
 async def list_movies(skip: int = 0, limit: int = 20):
     """列出国产模块影片列表"""
     db = get_chinese_db()
-    session = await db.get_session()
+    try:
+        session = await db.get_session()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Session error: {e}")
     try:
         from app.db.chinese_models import ChineseMovie
         from sqlalchemy import select, func

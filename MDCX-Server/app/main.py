@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from app.config.manager import get_config, get_config_manager, CONFIG_FILE
 from app.utils.logger import get_logger, setup_logging
 from app.utils.media_helpers import path_reachable, filter_reachable
+from app.middleware.performance import apply_performance_middleware, get_request_cache
 
 logger = get_logger(__name__)
 
@@ -608,6 +609,9 @@ def create_app() -> FastAPI:
 
     # GZip 压缩中间件（压缩响应体，大幅减少传输大小）
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # 性能优化中间件（响应缓存 + 计时 + 缓存管理端点）
+    apply_performance_middleware(app)
 
     # Prometheus 指标采集中间件（自动统计 HTTP 请求计数/延迟）
     try:
