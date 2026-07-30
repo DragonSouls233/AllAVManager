@@ -80,7 +80,7 @@ async def get_dashboard_stats(
     module_stats = {}
     try:
         from app.db.module_db import ModuleDatabase
-        for mod_name in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western"]:
+        for mod_name in ["chinese", "uncensored", "fc2", "pornhub"]:
             try:
                 mod_db = ModuleDatabase.get_instance(mod_name)
                 mod_session = await mod_db.get_session()
