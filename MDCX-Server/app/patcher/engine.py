@@ -147,7 +147,7 @@ async def _detect_module_missing_for_engine(
                     movie_id=movie.id,
                     movie_code=getattr(movie, "code", "") or "",
                     missing_fields=missing_fields,
-                    output_dir=getattr(movie, "file_path", None),
+                    output_dir=getattr(movie, "output_dir", None) or getattr(movie, "file_path", None),
                 ))
 
         return missing_infos

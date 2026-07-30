@@ -721,7 +721,13 @@ class PatchEngine:
                 nfo_data.source = "patcher"
 
             nfo_path = f"{missing_info.output_dir}/movie.nfo"
-            self.nfo_generator.generate(nfo_data, movie_dir=missing_info.output_dir)
+            # 确保 movie_dir 是目录（file_path 传过来时可能是文件路径）
+            movie_dir = missing_info.output_dir
+            if movie_dir and not os.path.isdir(movie_dir):
+                parent = os.path.dirname(movie_dir)
+                if parent and os.path.isdir(parent):
+                    movie_dir = parent
+            self.nfo_generator.generate(nfo_data, movie_dir=movie_dir)
             return True
         
         except Exception as e:
@@ -744,6 +750,12 @@ class PatchEngine:
             async with db.session() as session:
                 # 先拿已有 Movie 记录
                 movie = await session.get(Movie, movie_id)
+                if not movie:
+                    # 模块数据库的 movie_id 可能与主数据库不一致，按番号回退查找
+                    code = (scraped_data or {}).get("code")
+                    if code:
+                        r = await session.execute(select(Movie).where(Movie.code == code))
+                        movie = r.scalar_one_or_none()
                 if not movie:
                     logger.warning(f"Movie {movie_id} 数据库更新未找到")
                     return False
