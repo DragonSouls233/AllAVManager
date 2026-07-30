@@ -114,9 +114,9 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Lightning } from '@element-plus/icons-vue'
-import axios from 'axios'
+import { api } from '@/api'
 
-const API = '/api/v1/proxy/xray'
+const API = '/proxy/xray'
 const loading = ref(false)
 const state = ref({
   running: false, pid: null, socks_port: 10809, http_port: 10808,
@@ -130,11 +130,11 @@ const nodeUrlInput = ref('')
 async function loadStatus () {
   loading.value = true
   try {
-    const r = await axios.get(`${API}/status`)
-    state.value = r.data.data
+    const r = await api.get(`${API}/status`)
+    state.value = r.data
     subscriptionInput.value = state.value.subscription_url || ''
-    const r2 = await axios.get(`${API}/nodes`)
-    nodes.value = r2.data.data
+    const r2 = await api.get(`${API}/nodes`)
+    nodes.value = r2.data
   } catch (e) {
     ElMessage.error('加载状态失败: ' + e.message)
   } finally {
@@ -142,45 +142,45 @@ async function loadStatus () {
   }
 }
 
-async function doStart () { loading.value = true; try { const r = await axios.post(`${API}/start`); state.value = r.data.data; ElMessage[r.data.status==='ok'?'success':'error'](r.data.message||'启动完成') } finally { loading.value = false; loadStatus() } }
-async function doStop () { loading.value = true; try { await axios.post(`${API}/stop`); ElMessage.success('已停止') } finally { loading.value = false; loadStatus() } }
-async function doRestart () { loading.value = true; try { await axios.post(`${API}/restart`); ElMessage.success('已重启') } finally { loading.value = false; loadStatus() } }
+async function doStart () { loading.value = true; try { const r = await api.post(`${API}/start`); state.value = r.data; ElMessage[r.status==='ok'?'success':'error'](r.message||'启动完成') } finally { loading.value = false; loadStatus() } }
+async function doStop () { loading.value = true; try { await api.post(`${API}/stop`); ElMessage.success('已停止') } finally { loading.value = false; loadStatus() } }
+async function doRestart () { loading.value = true; try { await api.post(`${API}/restart`); ElMessage.success('已重启') } finally { loading.value = false; loadStatus() } }
 
 async function addNode () {
   if (!nodeUrlInput.value.trim()) { ElMessage.warning('请粘贴节点 URL'); return }
   try {
-    await axios.post(`${API}/nodes`, { url: nodeUrlInput.value.trim() })
+    await api.post(`${API}/nodes`, { url: nodeUrlInput.value.trim() })
     ElMessage.success('添加成功'); nodeUrlInput.value = ''; loadStatus()
   } catch (e) { ElMessage.error('添加失败: ' + (e.response?.data?.detail || e.message)) }
 }
 
 async function deleteNode (nodeId) {
   await ElMessageBox.confirm('删除该节点？', '确认', { type: 'warning' })
-  await axios.delete(`${API}/nodes/${nodeId}`); ElMessage.success('已删除'); loadStatus()
+  await api.delete(`${API}/nodes/${nodeId}`); ElMessage.success('已删除'); loadStatus()
 }
 
 async function saveSubscription () {
-  await axios.post(`${API}/subscription`, { url: subscriptionInput.value || null })
+  await api.post(`${API}/subscription`, { url: subscriptionInput.value || null })
   ElMessage.success('订阅已保存')
 }
 
 async function refreshSub () {
   loading.value = true
   try {
-    const r = await axios.post(`${API}/subscription/refresh`)
-    ElMessage[r.data.status==='ok'?'success':'error'](r.data.message)
+    const r = await api.post(`${API}/subscription/refresh`)
+    ElMessage[r.status==='ok'?'success':'error'](r.message)
   } finally { loading.value = false; loadStatus() }
 }
 
 async function changeMode (mode) {
-  await axios.post(`${API}/mode`, { mode }); ElMessage.success('模式已切换'); loadStatus()
+  await api.post(`${API}/mode`, { mode }); ElMessage.success('模式已切换'); loadStatus()
 }
 
 async function speedTest () {
   loading.value = true
   try {
-    const r = await axios.post(`${API}/speedtest`)
-    ElMessage.success(`测速完成 ${r.data.data.alive}/${r.data.data.total} 存活`); loadStatus()
+    const r = await api.post(`${API}/speedtest`)
+    ElMessage.success(`测速完成 ${r.data.alive}/${r.data.total} 存活`); loadStatus()
   } finally { loading.value = false }
 }
 

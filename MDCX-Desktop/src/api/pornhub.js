@@ -16,6 +16,18 @@ export async function getPornhubMovie(id) {
   return api.get(`/pornhub/movies/${id}`)
 }
 
+export async function updatePornhubMovie(id, data) {
+  return api.patch(`/pornhub/movies/${id}`, data)
+}
+
+export async function scrapePornhubMovie(id, force = false) {
+  return api.post(`/pornhub/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
+}
+
+export async function reloadPornhubMovieNfo(id) {
+  return api.post(`/pornhub/movies/${id}/reload-nfo`)
+}
+
 // ===== 对比查重 =====
 
 export async function pornhubCompare(data) {

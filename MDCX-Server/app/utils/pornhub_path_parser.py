@@ -22,32 +22,35 @@ from typing import Optional
 
 # 常见国籍标记
 _NATIONALITY_PATTERNS: dict[str, str] = {
-    "US": "美国", "USA": "美国", "美国": "美国",
-    "UK": "英国", "GB": "英国", "英国": "英国",
-    "JP": "日本", "日本": "日本",
-    "KR": "韩国", "韩国": "韩国",
-    "TW": "台湾", "台湾": "台湾",
-    "CN": "中国", "中国": "中国",
-    "HK": "香港", "香港": "香港",
-    "FR": "法国", "法国": "法国",
-    "DE": "德国", "德国": "德国",
-    "IT": "意大利", "意大利": "意大利",
-    "ES": "西班牙", "西班牙": "西班牙",
-    "CA": "加拿大", "加拿大": "加拿大",
-    "AU": "澳大利亚", "澳大利亚": "澳大利亚",
-    "BR": "巴西", "巴西": "巴西",
-    "RU": "俄罗斯", "俄罗斯": "俄罗斯",
-    "NL": "荷兰", "荷兰": "荷兰",
-    "SE": "瑞典", "瑞典": "瑞典",
-    "CH": "瑞士", "瑞士": "瑞士",
-    "TH": "泰国", "泰国": "泰国",
-    "VN": "越南", "越南": "越南",
-    "PH": "菲律宾", "菲律宾": "菲律宾",
-    "IN": "印度", "印度": "印度",
-    "AR": "阿根廷", "阿根廷": "阿根廷",
-    "MX": "墨西哥", "墨西哥": "墨西哥",
-    "CO": "哥伦比亚", "哥伦比亚": "哥伦比亚",
-    "EU": "欧洲", "欧洲": "欧洲",
+    # 英文代码 → 中文
+    "US": "美国", "USA": "美国",
+    "UK": "英国", "GB": "英国",
+    "JP": "日本", "KR": "韩国",
+    "TW": "台湾", "CN": "中国",
+    "HK": "香港", "FR": "法国",
+    "DE": "德国", "IT": "意大利",
+    "ES": "西班牙", "CA": "加拿大",
+    "AU": "澳大利亚", "BR": "巴西",
+    "RU": "俄罗斯", "NL": "荷兰",
+    "SE": "瑞典", "CH": "瑞士",
+    "TH": "泰国", "VN": "越南",
+    "PH": "菲律宾", "IN": "印度",
+    "AR": "阿根廷", "MX": "墨西哥",
+    "CO": "哥伦比亚", "EE": "爱沙尼亚",
+    "EU": "欧洲",
+    # 中文名（支持上级目录直接用中文名）
+    "美国": "美国", "英国": "英国", "日本": "日本",
+    "韩国": "韩国", "台湾": "台湾", "中国": "中国",
+    "香港": "香港", "法国": "法国", "德国": "德国",
+    "意大利": "意大利", "西班牙": "西班牙",
+    "加拿大": "加拿大", "澳大利亚": "澳大利亚",
+    "巴西": "巴西", "俄罗斯": "俄罗斯",
+    "荷兰": "荷兰", "瑞典": "瑞典", "瑞士": "瑞士",
+    "泰国": "泰国", "越南": "越南",
+    "菲律宾": "菲律宾", "印度": "印度",
+    "阿根廷": "阿根廷", "墨西哥": "墨西哥",
+    "哥伦比亚": "哥伦比亚", "爱沙尼亚": "爱沙尼亚",
+    "欧洲": "欧洲",
 }
 
 
@@ -127,6 +130,12 @@ def parse_local_path(file_path: str, base_dir: str) -> dict:
         actor_name, nationality = extract_actor_and_nationality(folder_name)
         result["actor_name"] = actor_name
         result["nationality"] = nationality
+
+        # 如果文件夹名没提取到国籍，检查上级目录名
+        if not nationality and parent.parent != Path("."):
+            grandparent_name = parent.parent.name
+            if grandparent_name in _NATIONALITY_PATTERNS:
+                result["nationality"] = _NATIONALITY_PATTERNS[grandparent_name]
     except (ValueError, IndexError):
         pass
 
@@ -164,9 +173,16 @@ def parse_server_path(file_path: str, media_dirs: list[str]) -> dict:
         if not parts:
             break
 
-        # 取第一层目录（相对于 media_dir）作为演员目录
+        # 检查最顶层是否为国籍目录（如 M:\\爱沙尼亚\\[Channel] Diana Rider\\video.mp4）
         top_dir = parts[0]
-        actor_name, nationality = extract_actor_and_nationality(top_dir)
+        if len(parts) >= 2 and top_dir in _NATIONALITY_PATTERNS:
+            # 顶级是国籍目录，演员目录在下一层
+            nationality = _NATIONALITY_PATTERNS[top_dir]
+            actor_dir = parts[1]
+            actor_name, _ = extract_actor_and_nationality(actor_dir)
+        else:
+            # 普通的单层结构：取第一层目录作为演员目录
+            actor_name, nationality = extract_actor_and_nationality(top_dir)
         result["actor_name"] = actor_name
         result["nationality"] = nationality
         break

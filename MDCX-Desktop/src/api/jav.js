@@ -16,8 +16,16 @@ export async function getJavMovie(id) {
   return api.get(`/jav/movies/${id}`)
 }
 
-export async function scrapeJavMovie(id) {
-  return api.post(`/jav/movies/${id}/scrape`)
+export async function scrapeJavMovie(id, force = false) {
+  return api.post(`/jav/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
+}
+
+export async function updateJavMovie(id, data) {
+  return api.patch(`/jav/movies/${id}`, data)
+}
+
+export async function reloadJavMovieNfo(id) {
+  return api.post(`/jav/movies/${id}/reload-nfo`)
 }
 
 export async function scrapeAllPendingJav() {

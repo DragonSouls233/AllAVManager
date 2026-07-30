@@ -28,7 +28,7 @@ export function getServerUrl() {
 
 export async function checkServerConnection(url) {
   const base = url ? url.replace(/\/$/, '') : (localStorage.getItem(STORAGE_KEY) || window.location.origin)
-  const testUrl = `${base}/api/v1/health/version`
+  const testUrl = `${base}/api/v1/health`
   try {
     const res = await axios.get(testUrl, { timeout: 5000 })
     if (res.status === 200 && res.data) {

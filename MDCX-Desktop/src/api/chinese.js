@@ -20,6 +20,21 @@ export async function getChineseMovie(id) {
   return api.get(`/chinese/movies/${id}`)
 }
 
+/** 更新国产影片 */
+export async function updateChineseMovie(id, data) {
+  return api.patch(`/chinese/movies/${id}`, data)
+}
+
+/** 刮削国产影片 */
+export async function scrapeChineseMovie(id, force = false) {
+  return api.post(`/chinese/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
+}
+
+/** 从 NFO 重载国产影片 */
+export async function reloadChineseMovieNfo(id) {
+  return api.post(`/chinese/movies/${id}/reload-nfo`)
+}
+
 /** 获取国产命名规则 */
 export async function getChineseNameRules() {
   return api.get('/chinese/name-rules')

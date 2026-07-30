@@ -15,3 +15,15 @@ export async function getUncensoredMovies(params = {}) {
 export async function getUncensoredMovie(id) {
   return api.get(`/uncensored/movies/${id}`)
 }
+
+export async function updateUncensoredMovie(id, data) {
+  return api.patch(`/uncensored/movies/${id}`, data)
+}
+
+export async function scrapeUncensoredMovie(id, force = false) {
+  return api.post(`/uncensored/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
+}
+
+export async function reloadUncensoredMovieNfo(id) {
+  return api.post(`/uncensored/movies/${id}/reload-nfo`)
+}

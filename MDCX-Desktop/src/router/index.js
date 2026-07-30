@@ -324,7 +324,7 @@ const routes = [
       {
         path: 'chinese/movies/:id',
         name: 'ChineseMovieDetail',
-        component: () => import('@/views/chinese/MovieDetail.vue')
+        component: () => import('@/views/MovieDetail.vue')
       },
       {
         path: 'chinese/actors',
@@ -334,7 +334,7 @@ const routes = [
       {
         path: 'chinese/actors/:id',
         name: 'ChineseActorDetail',
-        component: () => import('@/views/chinese/ActorDetail.vue')
+        component: () => import('@/views/ActorDetail.vue')
       },
       {
         path: 'chinese/name-rules',
@@ -344,7 +344,7 @@ const routes = [
       {
         path: 'chinese/scrape',
         name: 'ChineseScrape',
-        component: () => import('@/views/chinese/Scrape.vue')
+        component: () => import('@/views/Crawlers.vue')
       },
       {
         path: 'chinese/patch',
@@ -364,7 +364,7 @@ const routes = [
       {
         path: 'fc2/movies/:id',
         name: 'Fc2MovieDetail',
-        component: () => import('@/views/fc2/MovieDetail.vue')
+        component: () => import('@/views/MovieDetail.vue')
       },
       {
         path: 'fc2/actors',
@@ -374,7 +374,7 @@ const routes = [
       {
         path: 'fc2/actors/:id',
         name: 'Fc2ActorDetail',
-        component: () => import('@/views/fc2/ActorDetail.vue')
+        component: () => import('@/views/ActorDetail.vue')
       },
       {
         path: 'fc2/scrape',
@@ -392,9 +392,9 @@ const routes = [
         component: () => import('@/views/Patch.vue')
       },
       {
-        path: 'uncensored',
-        name: 'Uncensored',
-        component: () => import('@/views/uncensored/Movies.vue')
+        path: 'uncensored/scrape',
+        name: 'UncensoredScrape',
+        component: () => import('@/views/Crawlers.vue')
       },
       {
         path: 'uncensored/movies',
@@ -404,7 +404,7 @@ const routes = [
       {
         path: 'uncensored/movies/:id',
         name: 'UncensoredMovieDetail',
-        component: () => import('@/views/uncensored/MovieDetail.vue')
+        component: () => import('@/views/MovieDetail.vue')
       },
       {
         path: 'uncensored/actors',
@@ -414,10 +414,10 @@ const routes = [
       {
         path: 'uncensored/actors/:id',
         name: 'UncensoredActorDetail',
-        component: () => import('@/views/uncensored/ActorDetail.vue')
+        component: () => import('@/views/ActorDetail.vue')
       },
       {
-        path: 'uncensored/scrape',
+        path: 'uncensored',
         name: 'UncensoredScrape',
         component: () => import('@/views/Crawlers.vue')
       },
@@ -444,7 +444,7 @@ const routes = [
       {
         path: 'jav/movies/:id',
         name: 'JavMovieDetail',
-        component: () => import('@/views/jav/MovieDetail.vue')
+        component: () => import('@/views/MovieDetail.vue')
       },
       {
         path: 'jav/actors',
@@ -454,7 +454,7 @@ const routes = [
       {
         path: 'jav/actors/:id',
         name: 'JavActorDetail',
-        component: () => import('@/views/jav/ActorDetail.vue')
+        component: () => import('@/views/ActorDetail.vue')
       },
       {
         path: 'jav/studios',
@@ -514,7 +514,7 @@ const routes = [
       {
         path: 'pornhub/movies/:id',
         name: 'PornhubMovieDetail',
-        component: () => import('@/views/pornhub/MovieDetail.vue')
+        component: () => import('@/views/MovieDetail.vue')
       },
       {
         path: 'pornhub/actors',
@@ -524,7 +524,7 @@ const routes = [
       {
         path: 'pornhub/actors/:id',
         name: 'PornhubActorDetail',
-        component: () => import('@/views/pornhub/ActorDetail.vue')
+        component: () => import('@/views/ActorDetail.vue')
       },
       {
         path: 'pornhub/scrape',
@@ -554,7 +554,7 @@ const routes = [
       {
         path: 'western/movies/:id',
         name: 'WesternMovieDetail',
-        component: () => import('@/views/western/MovieDetail.vue')
+        component: () => import('@/views/MovieDetail.vue')
       },
       {
         path: 'western/actors',
@@ -564,7 +564,7 @@ const routes = [
       {
         path: 'western/actors/:id',
         name: 'WesternActorDetail',
-        component: () => import('@/views/western/ActorDetail.vue')
+        component: () => import('@/views/ActorDetail.vue')
       },
       {
         path: 'western/scrape',

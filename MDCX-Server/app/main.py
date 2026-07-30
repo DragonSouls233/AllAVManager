@@ -24,7 +24,6 @@ mimetypes.add_type("text/css", ".css")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
@@ -606,9 +605,6 @@ def create_app() -> FastAPI:
     # 否则 OPTIONS 预检请求会被 AuthMiddleware 拦截返回 401，
     # 导致浏览器跨域（如网页版以 127.0.0.1 访问、SPA 调 localhost:8420）全部失败。
     # 详见文件末尾 app.add_middleware(AuthMiddleware) 之后的注册。
-
-    # GZip 压缩中间件（压缩响应体，大幅减少传输大小）
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     # 性能优化中间件（响应缓存 + 计时 + 缓存管理端点）
     apply_performance_middleware(app)

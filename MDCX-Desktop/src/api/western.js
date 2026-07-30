@@ -19,3 +19,15 @@ export async function getWesternActor(id) {
 export async function scanWesternMedia() {
   return api.post('/western/scan')
 }
+
+export async function updateWesternMovie(id, data) {
+  return api.patch(`/western/movies/${id}`, data)
+}
+
+export async function scrapeWesternMovie(id, force = false) {
+  return api.post(`/western/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
+}
+
+export async function reloadWesternMovieNfo(id) {
+  return api.post(`/western/movies/${id}/reload-nfo`)
+}

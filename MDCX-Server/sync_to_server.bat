@@ -1,41 +1,47 @@
 @echo off
 chcp 65001 >nul
+title MDCX 一键同步脚本
 echo ============================================
 echo  MDCX 服务端更新脚本
-echo  从共享路径 \\192.168.10.110\MDCX-Server 同步
+echo  从 \\192.168.10.110\MDCX-Server 同步到 E:\MDCX-Server
 echo ============================================
 echo.
 
-set SRC=G:\MDCX\MDCX-Server
+set SRC=\\192.168.10.110\MDCX-Server
 set DST=E:\MDCX-Server
 
-echo [1/3] 更新后端服务代码...
-copy /Y "%SRC%\app\api\routes\actresses.py" "%DST%\app\api\routes\actresses.py"
-copy /Y "%SRC%\app\api\routes\read_only.py" "%DST%\app\api\routes\read_only.py"
-copy /Y "%SRC%\app\api\routes\stash_api.py" "%DST%\app\api\routes\stash_api.py"
-copy /Y "%SRC%\app\api\routes\western_enhanced.py" "%DST%\app\api\routes\western_enhanced.py"
-copy /Y "%SRC%\app\api\routes\ws_events.py" "%DST%\app\api\routes\ws_events.py"
-copy /Y "%SRC%\app\api\__init__.py" "%DST%\app\api\__init__.py"
-copy /Y "%SRC%\app\main.py" "%DST%\app\main.py"
-copy /Y "%SRC%\app\middleware\performance.py" "%DST%\app\middleware\performance.py"
-xcopy /E /Y "%SRC%\app\services\*.py" "%DST%\app\services\"
-xcopy /E /Y "%SRC%\app\crawlers\*.py" "%DST%\app\crawlers\"
-echo 后端代码更新完成!
-echo.
+echo [1/3] 同步后端代码...
+echo   -> 全量同步 app 目录（增量更新，已有文件只覆盖更旧的）
 
-echo [2/3] 更新前端静态文件...
-xcopy /E /Y "%SRC%\static\*" "%DST%\static\"
-echo 前端文件更新完成!
-echo.
+rem 先确认共享可访问
+if not exist "%SRC%\app" (
+    echo [错误] 无法访问共享路径 %SRC%
+    pause
+    exit /b 1
+)
 
-echo [3/3] 修复配置中 JAV 模块...
-powershell -Command "(Get-Content '%DST%\data\config\config.yaml') -replace 'jav:\s*\n\s+enabled: false', 'jav:`n  enabled: true' | Set-Content '%DST%\data\config\config.yaml'"
-echo 配置修复完成!
-echo.
+xcopy "%SRC%\app" "%DST%\app" /E /Y /D /Q >nul 2>&1
+echo   -> app 同步完成
 
+echo.
+echo [2/3] 同步前端 dist（构建好的新页面）...
+xcopy "%SRC%\static" "%DST%\static" /E /Y /D /Q >nul 2>&1
+echo   -> static 同步完成
+
+echo.
+echo [3/3] 修复 JAV 模块配置...
+powershell -Command ^
+"$yaml = Get-Content '%DST%\data\config\config.yaml' -Raw; " ^
+"$yaml = $yaml -replace 'jav:\s*\n\s+enabled: false', 'jav:`n  enabled: true'; " ^
+"Set-Content '%DST%\data\config\config.yaml' -Value $yaml -Force"
+echo   -> 配置修复完成
+
+echo.
 echo ============================================
-echo  更新完成！请重启服务：
-echo  1. 按 Ctrl+C 停止当前服务
-echo  2. 重新运行：python run.py
+echo  同步完成！
+echo.
+echo  请重启服务：
+echo   按 Ctrl+C 停止当前服务
+echo   然后运行： python run.py
 echo ============================================
 pause

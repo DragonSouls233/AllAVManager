@@ -264,20 +264,49 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete } from '@element-plus/icons-vue'
-import {
-  getActor, getActorMovies, getActorTimeline,
-  getActorTags, addActorTag, deleteActorTag, getPopularActorTags,
-  listSubscriptions, subscribeActor, unsubscribeActor, checkActorNewMovies,
-  uploadActorAvatar, deleteActorAvatar
-} from '@/api'
 import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl, getFileProxyUrl } from '@/utils/media'
 
 const route = useRoute()
 const router = useRouter()
+
+// ---------- 模块检测 ----------
+const MODULE_MAP = {
+  'jav': 'jav', 'fc2': 'fc2', 'uncensored': 'uncensored',
+  'western': 'western', 'pornhub': 'pornhub', 'chinese': 'chinese'
+}
+const moduleType = computed(() => {
+  const seg = route.path.split('/')
+  return MODULE_MAP[seg[1]] || 'jav'
+})
+const actorId = computed(() => route.params.id)
+
+// ---------- 动态加载 API ----------
+import * as commonApi from '@/api'
+const apiRef = shallowRef(null)
+async function getApi () {
+  if (apiRef.value) return apiRef.value
+  const name = moduleType.value
+  const m = await import(`@/api/${name}.js`)
+  let getActor, getActorMovies, getActorTimeline, getActorTags, addActorTag, deleteActorTag
+  let checkActorNewMovies, uploadActorAvatar, deleteActorAvatar
+  // 适配各模块 API 函数名差异，未定义时fallback到通用API
+  const prefix = name.charAt(0).toUpperCase() + name.slice(1)
+  getActor = m[`get${prefix}Actor`] || m.getActor || commonApi.getActor
+  getActorMovies = m[`get${prefix}ActorMovies`] || m.getActorMovies || commonApi.getActorMovies
+  getActorTimeline = m[`get${prefix}ActorTimeline`] || commonApi.getActorTimeline
+  getActorTags = m[`get${prefix}ActorTags`] || commonApi.getActorTags
+  addActorTag = m[`add${prefix}ActorTag`] || commonApi.addActorTag
+  deleteActorTag = m[`delete${prefix}ActorTag`] || commonApi.deleteActorTag
+  checkActorNewMovies = m[`check${prefix}ActorNewMovies`] || commonApi.checkActorNewMovies
+  uploadActorAvatar = m[`upload${prefix}ActorAvatar`] || commonApi.uploadActorAvatar
+  deleteActorAvatar = m[`delete${prefix}ActorAvatar`] || commonApi.deleteActorAvatar
+  apiRef.value = { getActor, getActorMovies, getActorTimeline, getActorTags, addActorTag, deleteActorTag, checkActorNewMovies, uploadActorAvatar, deleteActorAvatar }
+  return apiRef.value
+}
 const loading = ref(false)
 const moviesLoading = ref(false)
 const actor = ref(null)
@@ -376,8 +405,9 @@ const selectYear = (year) => {
 const loadActor = async () => {
   loading.value = true
   try {
-    const res = await getActor(route.params.id)
-    actor.value = res.actor
+    const api = await getApi()
+    const res = await api.getActor(actorId.value)
+    actor.value = res.actor || res
     movieTotal.value = res.movie_count || 0
   } catch (e) {
     console.error(e)
@@ -389,7 +419,8 @@ const loadActor = async () => {
 const loadMovies = async () => {
   moviesLoading.value = true
   try {
-    const res = await getActorMovies(route.params.id, {
+    const api = await getApi()
+    const res = await api.getActorMovies(actorId.value, {
       page: page.value,
       page_size: pageSize.value
     })
@@ -406,7 +437,8 @@ const loadMovies = async () => {
 const loadTimeline = async () => {
   timelineLoading.value = true
   try {
-    const res = await getActorTimeline(route.params.id)
+    const api = await getApi()
+    const res = await api.getActorTimeline(actorId.value)
     timeline.value = res
     // 默认选中作品最多的年份
     if (res.years && res.years.length) {
@@ -423,7 +455,8 @@ const loadTimeline = async () => {
 // 标签管理（v3.4 新增）
 const loadTags = async () => {
   try {
-    const res = await getActorTags(route.params.id)
+    const api = await getApi()
+    const res = await api.getActorTags(actorId.value)
     actorTags.value = res || []
   } catch (e) {
     console.error(e)
@@ -432,10 +465,9 @@ const loadTags = async () => {
 
 const loadPopularTags = async () => {
   try {
-    const res = await getPopularActorTags({ limit: 20 })
-    popularTags.value = res.items || []
+    const res = await (commonApi.getPopularActorTags?.({ limit: 20 }) || Promise.resolve({ items: [] }))
+    popularTags.value = res?.items || []
   } catch (e) {
-    // 静默
   }
 }
 
@@ -455,7 +487,8 @@ const addTag = async () => {
   }
   tagAdding.value = true
   try {
-    const tag = await addActorTag(route.params.id, {
+    const api = await getApi()
+    const tag = await api.addActorTag(actorId.value, {
       name: newTagName.value.trim(),
       color: newTagColor.value || null,
     })
@@ -474,7 +507,8 @@ const addTag = async () => {
 const removeTag = async (tag) => {
   try {
     await ElMessageBox.confirm(`删除标签"${tag.name}"?`, '确认', { type: 'warning' })
-    await deleteActorTag(route.params.id, tag.id)
+    const api = await getApi()
+    await api.deleteActorTag(actorId.value, tag.id)
     actorTags.value = actorTags.value.filter(t => t.id !== tag.id)
     ElMessage.success('标签已删除')
   } catch (e) {
@@ -485,27 +519,26 @@ const removeTag = async (tag) => {
 // 检查订阅状态
 const checkSubscribed = async () => {
   try {
-    const res = await listSubscriptions()
-    const actorId = parseInt(route.params.id)
-    const found = (res.items || []).find(s => s.actor_id === actorId)
+    const res = await (commonApi.listSubscriptions?.() || Promise.resolve({ items: [] }))
+    const aid = Number(actorId.value)
+    const found = (res.items || []).find(s => s.actor_id === aid)
     subscribed.value = !!found
     if (found) newMovieCount.value = found.new_movie_count || 0
   } catch (e) {
-    // 静默
   }
 }
 
 const toggleSubscribe = async () => {
   subscribing.value = true
   try {
-    const actorId = parseInt(route.params.id)
+    const aid = Number(actorId.value)
     if (subscribed.value) {
-      await unsubscribeActor(actorId)
+      await commonApi.unsubscribeActor?.(aid)
       subscribed.value = false
       newMovieCount.value = 0
       ElMessage.success('已取消订阅')
     } else {
-      await subscribeActor({ actor_id: actorId, notify_new_movie: true })
+      await (commonApi.subscribeActor?.({ actor_id: aid, notify_new_movie: true }) || Promise.resolve())
       subscribed.value = true
       ElMessage.success('已订阅，有新片时将通知')
     }
@@ -519,7 +552,8 @@ const toggleSubscribe = async () => {
 const checkNewMovies = async () => {
   checking.value = true
   try {
-    const res = await checkActorNewMovies(route.params.id)
+    const api = await getApi()
+    const res = await api.checkActorNewMovies(actorId.value)
     newMovieCount.value = res.new_count || 0
     if (res.new_count > 0) {
       ElMessage.success(`检测到 ${res.new_count} 部新片`)
@@ -534,7 +568,7 @@ const checkNewMovies = async () => {
 }
 
 const goDetail = (id) => {
-  router.push(`/movie/${id}`)
+  router.push(`/${moduleType.value}/movies/${id}`)
 }
 
 // v4.1 C6: 双击复制演员名
@@ -585,7 +619,8 @@ const onAvatarFileChange = async (event) => {
   }
   avatarUploading.value = true
   try {
-    await uploadActorAvatar(route.params.id, file)
+    const api = await getApi()
+    await api.uploadActorAvatar(actorId.value, file)
     ElMessage.success('头像已更新')
     // 刷新头像缓存
     if (actor.value) {
@@ -609,7 +644,8 @@ const deleteAvatar = async () => {
   }
   avatarDeleting.value = true
   try {
-    await deleteActorAvatar(route.params.id)
+    const api = await getApi()
+    await api.deleteActorAvatar(actorId.value)
     ElMessage.success('头像已删除')
     if (actor.value) {
       actor.value.avatar_url = null
