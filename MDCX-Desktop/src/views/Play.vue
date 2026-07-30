@@ -608,6 +608,7 @@ import {
 } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import { getServerBaseUrl, getSubtitleFileUrl } from '@/utils/media'
+import { getJavPlayInfo, getJavPlayUrl } from '@/api/jav'
 
 const route = useRoute()
 const router = useRouter()
@@ -619,6 +620,7 @@ const movie = ref(null)
 const loading = ref(false)
 const currentProtocol = ref('http')
 const activeTab = ref('chapters')
+const isJavModule = computed(() => route.query.module === 'jav')
 
 // 评分
 const hoverRating = ref(0)
@@ -741,6 +743,7 @@ const savingTmdbId = ref(false)
 
 const loadFanarts = async () => {
   if (!movie.value?.id) return
+  if (isJavModule.value) return  // JAV 模块暂不支持 fanart
   fanartLoading.value = true
   try {
     const data = await getMovieFanarts(movie.value.id)
@@ -1147,33 +1150,40 @@ const loadMovie = async () => {
   loading.value = true
   try {
     const id = route.params.id
-    movie.value = await getMovie(id)
-    ratingInput.value = Number(movie.value.rating) || 0
 
-    // 一次性获取播放器配置
-    try {
-      const cfg = await getPlayerConfig(id)
-      chapters.value = cfg.chapters || []
-      gifs.value = cfg.gifs || []
-      subtitles.value = cfg.subtitles || { embedded: [], external: [] }
-      spriteMeta.value = cfg.thumbnail_sprite || null
-      // v3.5: 音轨列表
-      audioTracks.value = cfg.audio_tracks || []
-    } catch (e) {
-      console.warn('getPlayerConfig failed', e)
-    }
+    if (isJavModule.value) {
+      // JAV 模块：从 JavMovie 表加载
+      movie.value = await getJavPlayInfo(id)
+      ratingInput.value = Number(movie.value.rating) || 0
+    } else {
+      // 通用 Movie 表
+      movie.value = await getMovie(id)
+      ratingInput.value = Number(movie.value.rating) || 0
 
-    // v3.5: 加载 HLS 自适应画质列表
-    try {
-      const qRes = await getHlsQualities(id)
-      hlsQualities.value = qRes.items || []
-    } catch (e) {
-      console.warn('getHlsQualities failed', e)
-    }
+      // 一次性获取播放器配置
+      try {
+        const cfg = await getPlayerConfig(id)
+        chapters.value = cfg.chapters || []
+        gifs.value = cfg.gifs || []
+        subtitles.value = cfg.subtitles || { embedded: [], external: [] }
+        spriteMeta.value = cfg.thumbnail_sprite || null
+        audioTracks.value = cfg.audio_tracks || []
+      } catch (e) {
+        console.warn('getPlayerConfig failed', e)
+      }
 
-    // v4.1 C1: 初始化 TMDB ID 输入框，并尝试加载已下载的 Fanart
-    if (movie.value.tmdb_id) {
-      tmdbIdInput.value = movie.value.tmdb_id
+      // v3.5: 加载 HLS 自适应画质列表
+      try {
+        const qRes = await getHlsQualities(id)
+        hlsQualities.value = qRes.items || []
+      } catch (e) {
+        console.warn('getHlsQualities failed', e)
+      }
+
+      // v4.1 C1: 初始化 TMDB ID 输入框
+      if (movie.value.tmdb_id) {
+        tmdbIdInput.value = movie.value.tmdb_id
+      }
     }
 
     if (movie.value.file_path) {
@@ -1194,9 +1204,11 @@ const loadVideo = async () => {
   }
 
   try {
-    // v3.5: 自适应码率模式使用 master.m3u8
     let videoUrl
-    if (adaptiveMode.value) {
+    if (isJavModule.value) {
+      const res = await getJavPlayUrl(route.params.id, currentProtocol.value)
+      videoUrl = res.play_url
+    } else if (adaptiveMode.value) {
       const base = getServerBaseUrl()
       videoUrl = `${base}/api/v1/movies/${route.params.id}/hls/master.m3u8`
     } else {
@@ -1217,7 +1229,9 @@ const changeProtocol = async (protocol) => {
 
 const openExternal = async (protocol) => {
   try {
-    const res = await getMoviePlayUrl(route.params.id, protocol)
+    const res = isJavModule.value
+      ? await getJavPlayUrl(route.params.id, protocol)
+      : await getMoviePlayUrl(route.params.id, protocol)
     window.open(res.play_url, '_blank')
   } catch (e) {
     ElMessage.error('获取播放地址失败')
@@ -1225,6 +1239,10 @@ const openExternal = async (protocol) => {
 }
 
 const playWithMpv = async () => {
+  if (isJavModule.value) {
+    ElMessage.info('JAV 模块暂不支持 mpv 播放，请使用浏览器播放')
+    return
+  }
   try {
     const res = await mpvPlay(route.params.id)
     const data = res.items ? res : (res.data || res)
@@ -1247,6 +1265,10 @@ const onRatingInput = (val) => {
 }
 const saveRating = async () => {
   if (!movie.value || tempRating.value === null) return
+  if (isJavModule.value) {
+    ElMessage.info('JAV 模块暂不支持评分')
+    return
+  }
   savingRating.value = true
   try {
     await updateMovie(movie.value.id, { rating: tempRating.value })

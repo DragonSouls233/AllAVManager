@@ -1,5 +1,9 @@
 <template>
   <div class="patch">
+    <!-- 模块标识 -->
+    <el-alert v-if="currentModule" :title="'补丁刮削 - ' + moduleLabel" type="info" show-icon :closable="false" class="module-banner" />
+    <el-alert v-else title="补丁刮削" description="未指定模块，检测中心数据库（scraper.db）" type="info" show-icon :closable="false" class="module-banner" />
+
     <!-- 步骤条 -->
     <el-card shadow="never" class="step-card">
       <el-steps :active="currentStep" finish-status="success" align-center>
@@ -238,9 +242,28 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, MagicStick, ArrowRight, Document } from '@element-plus/icons-vue'
 import { detectMissing, runPatch, getPatchStatus, getPatchReport, getPatchHistory, getConfig } from '@/api'
+
+const route = useRoute()
+
+// 支持 prop 传入（chinese/Patch.vue 包装器）或从路由路径自动检测
+const props = defineProps({ module: { type: String, default: null } })
+const currentModule = computed(() => {
+  if (props.module) return props.module
+  // 从路由路径自动检测：/jav/patch → jav
+  const seg = route.path.split('/')
+  const MODULE_NAMES = ['jav', 'fc2', 'uncensored', 'chinese', 'western', 'pornhub']
+  return MODULE_NAMES.includes(seg[1]) ? seg[1] : null
+})
+
+const MODULE_LABELS = {
+  jav: 'JAV 有码/无码/FC2', fc2: 'FC2', uncensored: '无码',
+  chinese: '国产', western: '欧美', pornhub: 'Pornhub'
+}
+const moduleLabel = computed(() => MODULE_LABELS[currentModule.value] || currentModule.value || '中心数据库')
 
 const currentStep = ref(0)
 const detecting = ref(false)
@@ -365,6 +388,7 @@ const runDetect = async () => {
       fields: detectForm.value.fields,
     }
     if (detectDirs.value.length) params.directories = detectDirs.value
+    if (currentModule.value) params.module = currentModule.value
     const res = await detectMissing(params)
     detectResult.value = res
     ElMessage.success(`检测完成：共 ${res.total ?? 0} 个影片存在缺失`)

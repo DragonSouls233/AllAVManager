@@ -50,6 +50,16 @@ export async function getMergeCandidates(actorId) {
   return api.get(`/jav/actors/${actorId}/merge-candidates`)
 }
 
+// ===== 播放 =====
+
+export async function getJavPlayInfo(movieId) {
+  return api.get(`/jav/movies/${movieId}/play`)
+}
+
+export async function getJavPlayUrl(movieId, protocol = 'http') {
+  return api.get(`/jav/movies/${movieId}/play/external`, { params: { protocol } })
+}
+
 // ===== 番号提取测试 =====
 
 export async function testCodeExtract(filename) {
