@@ -404,6 +404,7 @@ const runPatchAction = async () => {
     const payload = {
       mode: runForm.value.mode,
       patch_type: runForm.value.patch_type,
+      module: currentModule.value || undefined,
       sources: runForm.value.sources,
       skip_complete: runForm.value.only_missing,
       skip_recent_days: runForm.value.skip_recent ? runForm.value.skip_recent_days : 0,

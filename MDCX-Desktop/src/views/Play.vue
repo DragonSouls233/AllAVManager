@@ -586,7 +586,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -608,7 +608,7 @@ import {
 } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import { getServerBaseUrl, getSubtitleFileUrl } from '@/utils/media'
-import { getJavPlayInfo, getJavPlayUrl } from '@/api/jav'
+import { getModulePlayInfo, getModulePlayUrl } from '@/utils/play'
 
 const route = useRoute()
 const router = useRouter()
@@ -620,7 +620,8 @@ const movie = ref(null)
 const loading = ref(false)
 const currentProtocol = ref('http')
 const activeTab = ref('chapters')
-const isJavModule = computed(() => route.query.module === 'jav')
+const currentModule = computed(() => route.query.module || '')
+const isJavModule = computed(() => currentModule.value === 'jav')
 
 // 评分
 const hoverRating = ref(0)
@@ -743,7 +744,7 @@ const savingTmdbId = ref(false)
 
 const loadFanarts = async () => {
   if (!movie.value?.id) return
-  if (isJavModule.value) return  // JAV 模块暂不支持 fanart
+  if (currentModule.value) return  // 模块影片暂不支持 fanart
   fanartLoading.value = true
   try {
     const data = await getMovieFanarts(movie.value.id)
@@ -1151,9 +1152,9 @@ const loadMovie = async () => {
   try {
     const id = route.params.id
 
-    if (isJavModule.value) {
-      // JAV 模块：从 JavMovie 表加载
-      movie.value = await getJavPlayInfo(id)
+    if (currentModule.value) {
+      // 模块数据库：从模块 API 加载
+      movie.value = await getModulePlayInfo(currentModule.value, id)
       ratingInput.value = Number(movie.value.rating) || 0
     } else {
       // 通用 Movie 表
@@ -1205,8 +1206,8 @@ const loadVideo = async () => {
 
   try {
     let videoUrl
-    if (isJavModule.value) {
-      const res = await getJavPlayUrl(route.params.id, currentProtocol.value)
+    if (currentModule.value) {
+      const res = await getModulePlayUrl(currentModule.value, route.params.id, currentProtocol.value)
       videoUrl = res.play_url
     } else if (adaptiveMode.value) {
       const base = getServerBaseUrl()
@@ -1229,8 +1230,8 @@ const changeProtocol = async (protocol) => {
 
 const openExternal = async (protocol) => {
   try {
-    const res = isJavModule.value
-      ? await getJavPlayUrl(route.params.id, protocol)
+    const res = currentModule.value
+      ? await getModulePlayUrl(currentModule.value, route.params.id, protocol)
       : await getMoviePlayUrl(route.params.id, protocol)
     window.open(res.play_url, '_blank')
   } catch (e) {
@@ -1239,8 +1240,8 @@ const openExternal = async (protocol) => {
 }
 
 const playWithMpv = async () => {
-  if (isJavModule.value) {
-    ElMessage.info('JAV 模块暂不支持 mpv 播放，请使用浏览器播放')
+  if (currentModule.value) {
+    ElMessage.info('模块影片暂不支持 mpv 播放，请使用浏览器播放')
     return
   }
   try {
@@ -1265,8 +1266,8 @@ const onRatingInput = (val) => {
 }
 const saveRating = async () => {
   if (!movie.value || tempRating.value === null) return
-  if (isJavModule.value) {
-    ElMessage.info('JAV 模块暂不支持评分')
+  if (currentModule.value) {
+    ElMessage.info('模块影片暂不支持评分')
     return
   }
   savingRating.value = true
@@ -1619,6 +1620,11 @@ onMounted(() => {
   window.addEventListener('mdcx-mpv-toggle', onMpvToggle)
   window.addEventListener('mdcx-mpv-screenshot', onMpvScreenshot)
 })
+
+// 监听路由变化（切换影片时重新加载）
+watch(() => [route.params.id, route.query.module], () => {
+  loadMovie()
+}, { deep: true })
 
 const onMpvToggle = () => {
   if (art) art.toggle()

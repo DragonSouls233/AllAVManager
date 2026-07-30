@@ -15,12 +15,144 @@ from typing import Optional
 from sqlalchemy import text as sa_text
 
 from app.db.database import get_db
-from app.patcher.detector import MissingDetector, MissingInfo
+from app.patcher.detector import MissingDetector, MissingInfo, MissingField, FieldType
 from app.patcher.skipper import Skipper, SkipResult
 from app.patcher.strategy import PatchEngine, PatchResult, PatchType, PatchStatus
 from app.patcher.reporter import PatchReporter, PatchReport
 
 logger = logging.getLogger(__name__)
+
+
+# ===== 模块数据库字段映射 =====
+
+# UI 字段名 → 模型属性名（None 表示模块无此字段）
+_FIELD_TO_MODEL_ATTR: dict[str, Optional[str]] = {
+    "title": "title",
+    "release_date": "release_date",
+    "actors": "actor",
+    "actor": "actor",
+    "cover": "cover_url",
+    "poster": "poster_url",
+    "fanart": None,
+    "plot": "plot",
+    "genre": "genre",
+    "genres": "genre",
+    "tags": "tags",
+    "tag": "tags",
+    "studio": "studio",
+    "maker": "maker",
+    "series": "series",
+    "director": "director",
+    "rating": "rating",
+    "duration": "duration",
+    "thumbnail": "thumbnail_url",
+    "thumb": "thumbnail_url",
+}
+
+# UI 字段名 → FieldType 枚举
+_FIELD_NAME_TO_FIELD_TYPE: dict[str, FieldType] = {
+    "title": FieldType.TITLE,
+    "release_date": FieldType.RELEASE_DATE,
+    "actors": FieldType.ACTORS,
+    "actor": FieldType.ACTORS,
+    "cover": FieldType.COVER_URL,
+    "poster": FieldType.POSTER_URL,
+    "plot": FieldType.PLOT,
+    "genre": FieldType.GENRE,
+    "genres": FieldType.GENRE,
+    "tags": FieldType.TAG,
+    "tag": FieldType.TAG,
+    "studio": FieldType.STUDIO,
+    "maker": FieldType.MAKER,
+    "series": FieldType.SERIES,
+    "director": FieldType.DIRECTOR,
+    "rating": FieldType.RATING,
+    "duration": FieldType.DURATION,
+    "thumbnail": FieldType.THUMB_URL,
+    "thumb": FieldType.THUMB_URL,
+}
+
+_MODULE_MODEL_MAP: dict[str, type] = {}
+
+
+def _get_module_model(module: str) -> type:
+    """懒加载获取模块模型类"""
+    global _MODULE_MODEL_MAP
+    if module not in _MODULE_MODEL_MAP:
+        _imports = {
+            "jav": "app.db.jav_models",
+            "fc2": "app.db.fc2_models",
+            "uncensored": "app.db.uncensored_models",
+            "chinese": "app.db.chinese_models",
+            "pornhub": "app.db.pornhub_models",
+            "western": "app.db.western_models",
+        }
+        _classes = {
+            "jav": "JavMovie",
+            "fc2": "Fc2Movie",
+            "uncensored": "UncensoredMovie",
+            "chinese": "ChineseMovie",
+            "pornhub": "PornhubMovie",
+            "western": "WesternMovie",
+        }
+        if module not in _imports:
+            raise ValueError(f"不支持的模块: {module}")
+        import importlib
+        mod = importlib.import_module(_imports[module])
+        _MODULE_MODEL_MAP[module] = getattr(mod, _classes[module])
+    return _MODULE_MODEL_MAP[module]
+
+
+async def _detect_module_missing_for_engine(
+    module: str,
+    directories: Optional[list[str]] = None,
+) -> list[MissingInfo]:
+    """检测模块数据库中的影片缺失字段，返回 MissingInfo dataclass 列表（供引擎使用）"""
+    from app.db.module_db import ModuleDatabase
+    from sqlalchemy import select, or_
+
+    db = ModuleDatabase.get_instance(module)
+    model = _get_module_model(module)
+    session = await db.get_session()
+    try:
+        stmt = select(model)
+        if directories:
+            filters = []
+            for d in directories:
+                if hasattr(model, "file_path"):
+                    filters.append(model.file_path.like(f"%{d}%"))
+            if filters:
+                stmt = stmt.where(or_(*filters))
+
+        result = await session.execute(stmt)
+        movies = result.scalars().all()
+
+        missing_infos = []
+        for movie in movies:
+            missing_fields = []
+            for f_name, attr in _FIELD_TO_MODEL_ATTR.items():
+                field_type = _FIELD_NAME_TO_FIELD_TYPE.get(f_name)
+                if attr is None or field_type is None:
+                    continue
+                val = getattr(movie, attr, None)
+                if val is None or (isinstance(val, str) and not val.strip()):
+                    missing_fields.append(MissingField(
+                        field_type=field_type,
+                        current_value="",
+                        importance="critical",
+                    ))
+
+            if missing_fields:
+                missing_infos.append(MissingInfo(
+                    movie_id=movie.id,
+                    movie_code=getattr(movie, "code", "") or "",
+                    missing_fields=missing_fields,
+                    output_dir=getattr(movie, "file_path", None),
+                ))
+
+        return missing_infos
+    finally:
+        await session.close()
 
 
 class PatchMode(str, Enum):
@@ -38,6 +170,9 @@ class PatchOptions:
     
     # 补刮类型
     patch_type: PatchType = PatchType.SMART
+
+    # 模块名（如 jav/fc2/uncensored/chinese/pornhub/western）
+    module: Optional[str] = None
     
     # 目录级补刮的目录列表
     directories: list[str] = field(default_factory=list)
@@ -285,6 +420,13 @@ class PatchWorkflow:
         options: PatchOptions,
     ) -> list[MissingInfo]:
         """检测缺失"""
+        # 模块数据库优先
+        if options.module:
+            return await _detect_module_missing_for_engine(
+                options.module,
+                directories=options.directories if options.mode == PatchMode.DIRECTORY else None,
+            )
+
         if options.mode == PatchMode.ALL:
             return await self.detector.detect_all()
         

@@ -27,3 +27,11 @@ export async function scrapeFc2Movie(id, force = false) {
 export async function reloadFc2MovieNfo(id) {
   return api.post(`/fc2/movies/${id}/reload-nfo`)
 }
+
+// ===== 播放 =====
+export async function getFc2PlayInfo(movieId) {
+  return api.get(`/fc2/movies/${movieId}/play`)
+}
+export async function getFc2PlayUrl(movieId, protocol = 'http') {
+  return api.get(`/fc2/movies/${movieId}/play/external`, { params: { protocol } })
+}

@@ -45,3 +45,11 @@ export async function pornhubTestNormalize(title) {
 export async function pornhubScanLocal(directory) {
   return api.post('/pornhub/compare/scan-local', { directory })
 }
+
+// ===== 播放 =====
+export async function getPornhubPlayInfo(movieId) {
+  return api.get(`/pornhub/movies/${movieId}/play`)
+}
+export async function getPornhubPlayUrl(movieId, protocol = 'http') {
+  return api.get(`/pornhub/movies/${movieId}/play/external`, { params: { protocol } })
+}

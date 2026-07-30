@@ -410,7 +410,14 @@ const load = async () => {
 }
 
 // ---------- 导航 ----------
-const play = () => router.push(`/play/${movieId.value}`)
+const play = () => {
+  const mod = moduleType.value
+  if (mod) {
+    router.push({ path: `/play/${movieId.value}`, query: { module: mod } })
+  } else {
+    router.push(`/play/${movieId.value}`)
+  }
+}
 const goActor = (id) => {
   if (!id) return
   const name = moduleType.value

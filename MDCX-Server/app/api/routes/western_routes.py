@@ -14,9 +14,12 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request as _Request
 
 from app.db.module_db import ModuleDatabase
+
+import os as _os
+from pathlib import Path as _Path
 
 logger = logging.getLogger(__name__)
 
@@ -338,3 +341,172 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
         "total": len(pending),
         "message": f"Western 批量刮削已启动，共 {len(pending)} 部待刮削影片",
     }
+
+
+# ========== 播放端点 ==========
+
+
+@router.get("/movies/{movie_id}/play")
+async def play_western_movie(movie_id: int):
+    """获取欧美影片播放信息"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternMovie
+        from sqlalchemy import select
+
+        stmt = select(WesternMovie).where(WesternMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        file_exists = False
+        if movie.file_path:
+            file_exists = _Path(movie.file_path).exists()
+
+        return {
+            "id": movie.id,
+            "code": movie.code,
+            "title": movie.title,
+            "file_path": movie.file_path,
+            "file_size": movie.file_size,
+            "file_exists": file_exists,
+            "cover_url": movie.cover_url,
+            "duration": movie.duration,
+            "status": movie.status,
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/movies/{movie_id}/play/file")
+async def play_western_video_file(movie_id: int, request: _Request):
+    """欧美影片视频流播放（支持 Range 请求）"""
+    from starlette.responses import StreamingResponse, Response
+
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternMovie
+        from sqlalchemy import select
+
+        stmt = select(WesternMovie).where(WesternMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+    finally:
+        await session.close()
+
+    if not movie or not movie.file_path:
+        raise HTTPException(status_code=404, detail="视频不存在")
+
+    file_path = _Path(movie.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+
+    ext = file_path.suffix.lower()
+    media_type = "video/mp4"
+    if ext == ".mkv":
+        media_type = "video/x-matroska"
+    elif ext == ".webm":
+        media_type = "video/webm"
+    elif ext == ".mov":
+        media_type = "video/quicktime"
+    elif ext == ".ts":
+        media_type = "video/mp2t"
+    elif ext == ".avi":
+        media_type = "video/x-msvideo"
+
+    file_size = file_path.stat().st_size
+
+    range_header = request.headers.get("range")
+    if range_header:
+        try:
+            range_str = range_header.replace("bytes=", "")
+            parts = range_str.split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else file_size - 1
+
+            if start >= file_size:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+
+            chunk_size = end - start + 1
+
+            async def _iter_chunk():
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk_size
+                    while remaining > 0:
+                        to_read = min(8192, remaining)
+                        data = f.read(to_read)
+                        if not data:
+                            break
+                        yield data
+                        remaining -= len(data)
+
+            return StreamingResponse(
+                _iter_chunk(),
+                status_code=206,
+                media_type=media_type,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(chunk_size),
+                    "Accept-Ranges": "bytes",
+                },
+            )
+        except (ValueError, IndexError):
+            pass
+
+    async def _iter_full():
+        with open(file_path, "rb") as f:
+            while True:
+                data = f.read(8192)
+                if not data:
+                    break
+                yield data
+
+    return StreamingResponse(
+        _iter_full(),
+        media_type=media_type,
+        headers={
+            "Content-Length": str(file_size),
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'inline; filename="{_os.path.basename(file_path)}"',
+        },
+    )
+
+
+@router.get("/movies/{movie_id}/play/external")
+async def get_western_external_play_url(movie_id: int, protocol: str = "http"):
+    """获取欧美影片外部播放地址"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternMovie
+        from sqlalchemy import select
+
+        stmt = select(WesternMovie).where(WesternMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie or not movie.file_path:
+            raise HTTPException(status_code=404, detail="影片没有关联文件")
+        if not _Path(movie.file_path).exists():
+            raise HTTPException(status_code=404, detail="视频文件不存在")
+
+        from app.config.manager import get_config
+        config = get_config()
+        host = getattr(config.server, "host", "0.0.0.0")
+        port = getattr(config.server, "port", 8420)
+
+        if host in ("0.0.0.0", "127.0.0.1", "localhost"):
+            base = f"http://localhost:{port}"
+        else:
+            base = f"http://{host}:{port}"
+
+        if protocol == "http":
+            play_url = f"{base}/api/v1/western/movies/{movie_id}/play/file"
+            return {"protocol": "http", "play_url": play_url, "player_command": play_url, "copy_text": play_url}
+        else:
+            return {"protocol": "direct", "play_url": movie.file_path, "player_command": movie.file_path, "copy_text": movie.file_path}
+    finally:
+        await session.close()

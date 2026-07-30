@@ -69,3 +69,11 @@ export async function getModuleStats(name) {
 export async function scanModule(name) {
   return api.post(`/modules/${name}/scan`)
 }
+
+// ===== 播放 =====
+export async function getChinesePlayInfo(movieId) {
+  return api.get(`/chinese/movies/${movieId}/play`)
+}
+export async function getChinesePlayUrl(movieId, protocol = 'http') {
+  return api.get(`/chinese/movies/${movieId}/play/external`, { params: { protocol } })
+}

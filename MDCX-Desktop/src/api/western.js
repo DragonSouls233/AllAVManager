@@ -31,3 +31,11 @@ export async function scrapeWesternMovie(id, force = false) {
 export async function reloadWesternMovieNfo(id) {
   return api.post(`/western/movies/${id}/reload-nfo`)
 }
+
+// ===== 播放 =====
+export async function getWesternPlayInfo(movieId) {
+  return api.get(`/western/movies/${movieId}/play`)
+}
+export async function getWesternPlayUrl(movieId, protocol = 'http') {
+  return api.get(`/western/movies/${movieId}/play/external`, { params: { protocol } })
+}
