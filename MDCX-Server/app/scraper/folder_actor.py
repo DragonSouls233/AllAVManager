@@ -33,7 +33,7 @@ def extract_actor_from_folder(
     2. 排除已知工作室名（除非 studio_names_as_folder=True）
     3. "xxx+xxx" / "xxx.xxx" 格式分割为多个演员
     4. 中文名（2-8字）保留
-    5. 英文名（首字母大写）保留
+    5. 英文名（首字母大写，至少2个字母）保留
     """
     if blacklist is None:
         blacklist = DEFAULT_BLACKLIST
@@ -48,6 +48,12 @@ def extract_actor_from_folder(
     if not studio_names_as_folder and name in STUDIO_NAMES:
         return []
 
+    # 单字符（非中文）或纯数字名不可能是演员
+    if len(name) == 1 and not ('\u4e00' <= name <= '\u9fff'):
+        return []
+    if name.isdigit():
+        return []
+
     cleaned = re.sub(r'^[A-Z]+-?\d+[._\s]?', '', name)
 
     parts = re.split(r'[.+_&,，、\s]+', cleaned)
@@ -60,7 +66,7 @@ def extract_actor_from_folder(
         if re.match(r'^[\u4e00-\u9fff]{2,8}$', part):
             if part not in result:
                 result.append(part)
-        elif re.match(r'^[A-Z][a-z]+$', part):
+        elif re.match(r'^[A-Z][a-z]{1,}$', part):  # 至少2个字母: Aa+
             if part not in result:
                 result.append(part)
         elif re.match(r'^[\u4e00-\u9fff]{2,}[A-Za-z]+', part):
