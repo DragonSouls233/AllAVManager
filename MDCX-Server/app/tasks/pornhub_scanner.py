@@ -146,6 +146,14 @@ def extract_actor_and_nationality(folder_name: str) -> tuple[str | None, str | N
     if name in _NATIONALITY_PATTERNS:
         return None, name
 
+    # 5. 过滤非演员的分类目录（如"素人"等分类标签，不是具体演员名）
+    _CATEGORY_BLACKLIST = {
+        "素人", "Amateur", "VIP", "Premium",
+        "Uncensored", "1080p", "4K", "HD", "精选", "合集",
+    }
+    if name in _CATEGORY_BLACKLIST:
+        return None, nationality
+
     return name, nationality
 
 

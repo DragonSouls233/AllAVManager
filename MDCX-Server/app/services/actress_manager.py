@@ -143,25 +143,37 @@ class ActressDatabase:
         }
 
     def sync_from_db(self):
-        """从各模块数据库同步女优信息。"""
+        """从各模块数据库同步女优信息。
+
+        数据库架构变更后，各模块使用独立数据库文件（jav.db/fc2.db/...），
+        需要分别连接各模块数据库执行查询。
+        """
         import asyncio
         try:
-            from app.db.database import get_db_session
+            from app.db.module_db import ModuleDatabase
             from sqlalchemy import text
 
             async def _sync():
-                async with get_db_session() as session:
-                    modules = [
-                        ("jav", "jav_movies"), ("fc2", "fc2_movies"),
-                        ("chinese", "chinese_movies"), ("pornhub", "pornhub_movies"),
-                        ("western", "western_movies"), ("uncensored", "uncensored_movies"),
-                    ]
-                    for module, table in modules:
-                        sql = text(f"SELECT actors, code, studio FROM {table}")
+                modules = [
+                    ("jav", "jav_movies", "actor"),
+                    ("fc2", "fc2_movies", "actor"),
+                    ("chinese", "chinese_movies", "folder_based_actors"),
+                    ("pornhub", "pornhub_movies", "actor"),
+                    ("western", "western_movies", "actors"),
+                    ("uncensored", "uncensored_movies", "actor"),
+                ]
+                for module, table, actor_col in modules:
+                    try:
+                        db = ModuleDatabase.get_instance(module)
+                        session = await db.get_session()
                         try:
+                            sql = text(f"SELECT {actor_col}, code, studio FROM {table}")
                             rows = (await session.execute(sql)).fetchall()
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("actress sync: 模块[%s]查询失败: %s", module, e)
                             continue
+                        finally:
+                            await session.close()
                         for row in rows:
                             actors_raw = row[0] or ""
                             code = row[1] or ""
@@ -182,7 +194,10 @@ class ActressDatabase:
                                         name=name, module=module,
                                         movie_count=1, studio=studio,
                                     )
-                    self._save()
+                    except Exception as e:
+                        logger.warning("actress sync: 模块[%s]异常: %s", module, e)
+                        continue
+                self._save()
             asyncio.run(_sync())
         except Exception as e:
             logger.warning("actress db sync failed: %s", e)

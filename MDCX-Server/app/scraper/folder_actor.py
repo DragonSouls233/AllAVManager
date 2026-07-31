@@ -54,6 +54,9 @@ def extract_actor_from_folder(
     if name.isdigit():
         return []
 
+    # 去除开头方括号内的元数据标记，如 [release][081225-001]密室陵辱 弘中れおな
+    name = re.sub(r'^(\[[^\]]*\])+\s*', '', name)
+
     cleaned = re.sub(r'^[A-Z]+-?\d+[._\s]?', '', name)
 
     parts = re.split(r'[.+_&,，、\s]+', cleaned)
