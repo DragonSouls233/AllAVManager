@@ -134,6 +134,15 @@ class JavScanner(BaseScanner):
                     # 提取工作室
                     studio = self._detect_studio(code, dir_path, media_dir)
 
+                    # 从同目录查找本地封面图片
+                    cover_url = None
+                    dir_path_obj = file_path.parent
+                    for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg"]:
+                        img_path = dir_path_obj / img_name
+                        if img_path.exists():
+                            cover_url = str(img_path)
+                            break
+
                     # 写入新影片记录
                     new_movie = JavMovie(
                         code=code,
@@ -142,6 +151,7 @@ class JavScanner(BaseScanner):
                         file_size=file_path.stat().st_size if file_path.exists() else 0,
                         actor=actor_str,
                         studio=studio,
+                        cover_url=cover_url,
                         is_chinese=is_chinese,
                         is_uncensored=is_uncensored,
                         is_mosaic=not is_uncensored,
