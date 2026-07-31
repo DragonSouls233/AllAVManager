@@ -103,6 +103,9 @@ def extract_actor_and_nationality(folder_name: str) -> tuple[str | None, str | N
       - Anna Cherry7 (US)                →  ("Anna Cherry7", "美国")
       - Anna+Sunny [US]                  →  ("Anna+Sunny", "美国")
       - Anna Cherry7 + Sunny Leone [UK]  →  ("Anna Cherry7 + Sunny Leone", "英国")
+      - 美国                              →  (None, "美国")    ← 纯国籍目录
+      - 俄罗斯                            →  (None, "俄罗斯")  ← 纯国籍目录
+      - 素人                              →  ("素人", None)    ← 特殊分类(保留原名)
 
     Returns:
         (actor_name, nationality) 元组
@@ -137,6 +140,11 @@ def extract_actor_and_nationality(folder_name: str) -> tuple[str | None, str | N
 
     if not name:
         return None, None
+
+    # 4. 如果清洗后的文件夹名直接匹配国籍字典中的中文国籍名，
+    #    说明这是一个纯国籍目录（如 M:\美国\），不应作为演员名
+    if name in _NATIONALITY_PATTERNS:
+        return None, name
 
     return name, nationality
 
