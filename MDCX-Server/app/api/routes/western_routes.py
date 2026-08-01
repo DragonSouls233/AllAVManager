@@ -34,8 +34,8 @@ def get_western_db() -> ModuleDatabase:
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
-    keyword: Optional[str] = Query(None, description="搜索标题/演员",
-    actor: Optional[str] = Query(None, description="按演员名过滤")),
+    keyword: Optional[str] = Query(None, description="搜索标题/演员"),
+    actor: Optional[str] = Query(None, description="按演员名过滤"),
 ):
     """列出欧美影片"""
     db = get_western_db()
@@ -69,6 +69,7 @@ async def list_movies(
             {"id": m.id, "code": m.code, "title": m.title,
              "site": m.site, "network": m.network, "studio": m.studio,
              "cover_url": m.cover_url, "file_path": m.file_path,
+             "module_type": "western",
              "status": m.status, "release_date": m.release_date}
             for m in movies
         ]}
@@ -96,6 +97,7 @@ async def get_movie(movie_id: int):
             "rating": movie.rating, "plot": movie.plot,
             "genre": movie.genre, "tag": movie.tag, "actors": movie.actors,
             "file_path": movie.file_path, "file_size": movie.file_size,
+            "module_type": "western",
             "play_count": movie.play_count, "view_status": movie.view_status,
             "status": movie.status, "source": movie.source,
             "source_url": movie.source_url,
@@ -117,7 +119,8 @@ async def list_actors():
         actors = (await session.execute(stmt)).scalars().all()
         return [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
                  "source": a.source, "avatar_url": a.avatar_url,
-                 "gender": a.gender, "country": a.country}
+                 "gender": a.gender, "country": a.country,
+                 "module_type": "western"}
                 for a in actors]
     finally:
         await session.close()
@@ -142,6 +145,7 @@ async def get_actor(actor_id: int):
             "measurements": actor.measurements, "height": actor.height,
             "weight": actor.weight, "twitter": actor.twitter,
             "instagram": actor.instagram, "movie_count": actor.movie_count,
+            "module_type": "western",
         }
     finally:
         await session.close()

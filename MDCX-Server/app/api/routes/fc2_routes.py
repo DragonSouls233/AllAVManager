@@ -32,7 +32,7 @@ async def list_actors():
         stmt = select(Fc2Actor).order_by(Fc2Actor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url} for a in actors]
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url, "module_type": "fc2"} for a in actors]
     finally:
         await session.close()
 
@@ -52,6 +52,7 @@ async def get_actor(actor_id: int):
             raise HTTPException(status_code=404, detail="演员不存在")
         return {"id": actor.id, "name": actor.name, "alias": actor.alias,
                 "avatar_url": actor.avatar_url, "source": actor.source,
+                "module_type": "fc2",
                 "movie_count": actor.movie_count,
                 "created_at": str(actor.created_at)}
     finally:
@@ -62,8 +63,8 @@ async def get_actor(actor_id: int):
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
-    keyword: Optional[str] = Query(None, description="搜索标题/番号",
-    actor: Optional[str] = Query(None, description="按演员名过滤")),
+    keyword: Optional[str] = Query(None, description="搜索标题/番号"),
+    actor: Optional[str] = Query(None, description="按演员名过滤"),
 ):
     """列出 FC2 模块影片列表"""
     db = get_fc2_db()
@@ -100,6 +101,7 @@ async def list_movies(
             {"id": m.id, "code": m.code, "title": m.title,
              "seller_id": m.seller_id, "is_mosaic": m.is_mosaic,
              "cover_url": m.cover_url, "actor": m.actor,
+             "module_type": "fc2",
              "file_path": m.file_path, "status": m.status}
             for m in movies
         ]}
@@ -126,6 +128,7 @@ async def get_movie(movie_id: int):
             "is_mosaic": movie.is_mosaic, "seller_id": movie.seller_id,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "actor": movie.actor, "studio": movie.studio,
+            "module_type": "fc2",
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "plot": movie.plot,
             "genre": movie.genre, "tag": movie.tag,
@@ -283,7 +286,9 @@ async def play_fc2_movie(movie_id: int):
         return {
             "id": movie.id, "code": movie.code, "title": movie.title,
             "file_path": movie.file_path, "file_size": movie.file_size,
+            "file_exists": _Path(movie.file_path).exists() if movie.file_path else False,
             "cover_url": movie.cover_url, "duration": movie.duration,
+            "status": movie.status,
         }
     finally:
         await session.close()

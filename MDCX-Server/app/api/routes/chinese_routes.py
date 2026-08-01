@@ -55,7 +55,29 @@ async def list_actors():
         stmt = select(ChineseActor).order_by(ChineseActor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url} for a in actors]
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url, "module_type": "chinese"} for a in actors]
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}")
+async def get_actor(actor_id: int):
+    """获取国产演员详情"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        from sqlalchemy import select
+        stmt = select(ChineseActor).where(ChineseActor.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        return {"id": actor.id, "name": actor.name, "alias": actor.alias,
+                "avatar_url": actor.avatar_url, "source": actor.source,
+                "module_type": "chinese",
+                "movie_count": actor.movie_count,
+                "created_at": str(actor.created_at)}
     finally:
         await session.close()
 
@@ -73,6 +95,7 @@ async def sync_folder_actors():
 
 @router.get("/movies")
 async def list_movies(skip: int = 0, limit: int = 20,
+    keyword: Optional[str] = Query(None, description="搜索标题"),
     actor: Optional[str] = Query(None, description="按演员名过滤")):
     """列出国产模块影片列表"""
     db = get_chinese_db()
@@ -82,12 +105,17 @@ async def list_movies(skip: int = 0, limit: int = 20,
         raise HTTPException(status_code=500, detail=f"Session error: {e}")
     try:
         from app.db.chinese_models import ChineseMovie
-        from sqlalchemy import select, func
+        from sqlalchemy import select, func, or_
         filters = []
         if actor:
             filters.append(ChineseMovie.folder_based_actors.like(f"%{actor}%"))
+        if keyword:
+            kw = f"%{keyword}%"
+            filters.append(or_(ChineseMovie.title.like(kw), ChineseMovie.code.like(kw)))
 
         total_stmt = select(func.count(ChineseMovie.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
         total_result = await session.execute(total_stmt)
         total = total_result.scalar()
         stmt = select(ChineseMovie)
@@ -101,6 +129,7 @@ async def list_movies(skip: int = 0, limit: int = 20,
              "folder_name": m.folder_name,
              "folder_based_actors": m.folder_based_actors,
              "studio": m.studio, "cover_url": m.cover_url,
+             "module_type": "chinese",
              "file_path": m.file_path, "status": m.status}
             for m in movies
         ]}
@@ -129,6 +158,7 @@ async def get_movie(movie_id: int):
             "poster_url": movie.poster_url, "release_date": movie.release_date,
             "duration": movie.duration, "rating": movie.rating,
             "plot": movie.plot, "genre": movie.genre, "tag": movie.tag,
+            "module_type": "chinese",
             "file_path": movie.file_path, "file_size": movie.file_size,
             "play_count": movie.play_count, "view_status": movie.view_status,
             "status": movie.status, "created_at": str(movie.created_at),

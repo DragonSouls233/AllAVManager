@@ -22,28 +22,48 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# 常见国籍标记
+# 常见国籍标记（扩展版）
 _NATIONALITY_PATTERNS: dict[str, str] = {
     # 英文代码 → 中文
     "US": "美国", "USA": "美国",
     "UK": "英国", "GB": "英国",
     "JP": "日本", "KR": "韩国",
     "TW": "台湾", "CN": "中国",
-    "HK": "香港", "FR": "法国",
-    "DE": "德国", "IT": "意大利",
-    "ES": "西班牙", "CA": "加拿大",
-    "AU": "澳大利亚", "BR": "巴西",
-    "RU": "俄罗斯", "NL": "荷兰",
-    "SE": "瑞典", "CH": "瑞士",
-    "TH": "泰国", "VN": "越南",
-    "PH": "菲律宾", "IN": "印度",
-    "AR": "阿根廷", "MX": "墨西哥",
-    "CO": "哥伦比亚", "EE": "爱沙尼亚",
-    "EU": "欧洲",
+    "HK": "香港", "MO": "澳门",
+    "FR": "法国", "DE": "德国",
+    "IT": "意大利", "ES": "西班牙",
+    "CA": "加拿大", "AU": "澳大利亚",
+    "BR": "巴西", "RU": "俄罗斯",
+    "NL": "荷兰", "SE": "瑞典",
+    "CH": "瑞士", "TH": "泰国",
+    "VN": "越南", "PH": "菲律宾",
+    "IN": "印度", "AR": "阿根廷",
+    "MX": "墨西哥", "CO": "哥伦比亚",
+    "EE": "爱沙尼亚", "EU": "欧洲",
+    "PT": "葡萄牙", "GR": "希腊",
+    "PL": "波兰", "CZ": "捷克",
+    "HU": "匈牙利", "RO": "罗马尼亚",
+    "UA": "乌克兰", "BY": "白俄罗斯",
+    "TR": "土耳其", "IL": "以色列",
+    "SA": "沙特", "AE": "阿联酋",
+    "EG": "埃及", "ZA": "南非",
+    "NG": "尼日利亚", "KE": "肯尼亚",
+    "ID": "印尼", "MY": "马来西亚",
+    "SG": "新加坡", "NZ": "新西兰",
+    "DK": "丹麦", "NO": "挪威",
+    "FI": "芬兰", "BE": "比利时",
+    "AT": "奥地利", "SK": "斯洛伐克",
+    "SI": "斯洛文尼亚", "HR": "克罗地亚",
+    "RS": "塞尔维亚", "BG": "保加利亚",
+    "LT": "立陶宛", "LV": "拉脱维亚",
+    "CL": "智利", "PE": "秘鲁",
+    "CU": "古巴", "DO": "多米尼加",
+    "PR": "波多黎各",
     # 中文名（支持上级目录直接用中文名）
     "美国": "美国", "英国": "英国", "日本": "日本",
     "韩国": "韩国", "台湾": "台湾", "中国": "中国",
-    "香港": "香港", "法国": "法国", "德国": "德国",
+    "香港": "香港", "澳门": "澳门",
+    "法国": "法国", "德国": "德国",
     "意大利": "意大利", "西班牙": "西班牙",
     "加拿大": "加拿大", "澳大利亚": "澳大利亚",
     "巴西": "巴西", "俄罗斯": "俄罗斯",
@@ -53,6 +73,19 @@ _NATIONALITY_PATTERNS: dict[str, str] = {
     "阿根廷": "阿根廷", "墨西哥": "墨西哥",
     "哥伦比亚": "哥伦比亚", "爱沙尼亚": "爱沙尼亚",
     "欧洲": "欧洲",
+    "葡萄牙": "葡萄牙", "希腊": "希腊",
+    "波兰": "波兰", "捷克": "捷克",
+    "匈牙利": "匈牙利", "罗马尼亚": "罗马尼亚",
+    "乌克兰": "乌克兰", "白俄罗斯": "白俄罗斯",
+    "土耳其": "土耳其", "以色列": "以色列",
+    "印尼": "印尼", "马来西亚": "马来西亚",
+    "新加坡": "新加坡", "新西兰": "新西兰",
+    "丹麦": "丹麦", "挪威": "挪威",
+    "芬兰": "芬兰", "比利时": "比利时",
+    "奥地利": "奥地利",
+    "智利": "智利", "秘鲁": "秘鲁",
+    "古巴": "古巴",
+    "南非": "南非", "尼日利亚": "尼日利亚",
 }
 
 
@@ -201,7 +234,9 @@ class PornhubScanner(BaseScanner):
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
             for root, dirs, files in walk_entries:
                 # 提取当前目录的演员名和国籍（跳过根目录）
-                actor_name, nationality = self._get_actor_from_path(root, media_dir)
+                # 传入 root 路径而非文件路径，_get_actor_from_path 内部使用 parent 提取目录
+                root_path = Path(root)
+                actor_name, nationality = self._get_actor_from_path(root_path / "dummy.mp4", media_dir)
 
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
@@ -252,6 +287,9 @@ class PornhubScanner(BaseScanner):
                     ))
                 elif actor_nationality and not existing_actor.nationality:
                     existing_actor.nationality = actor_nationality
+                    existing_actor.movie_count += 1
+                else:
+                    existing_actor.movie_count += 1
 
             await session.commit()
         finally:
@@ -289,31 +327,49 @@ class PornhubScanner(BaseScanner):
           G:\\TEST\\pornhub\\Anna Cherry7 [US]\\videofile.mp4
           G:\\TEST\\pornhub\\XXX\\Anna Cherry7\\videofile.mp4
           M:\\爱沙尼亚\\[Channel] Diana Rider\\videofile.mp4  ← 上级目录为国籍
+          M:\\美国\\videofile.mp4  ← 纯国籍目录，无演员
 
-        优先使用离文件最近的目录名。
+        优先使用离文件最近的目录名作为演员候选。
+        如果最内层目录是纯国籍名，则向上回溯一级寻找演员名。
         """
         try:
             rel_path = Path(file_path).relative_to(media_dir)
         except ValueError:
             return None, None
 
-        # 取文件所在目录的父目录名（跳过文件本身）
+        # 取文件所在目录（跳过文件本身）
         parent_dir = rel_path.parent
 
         if parent_dir == Path("."):
             return None, None
 
-        # 取最内层目录名
-        folder_name = parent_dir.name if parent_dir != Path(".") else None
-        if not folder_name:
+        # 从最内层目录开始检查
+        parts = list(parent_dir.parents) if parent_dir != Path(".") else []
+        # parts[0] = 祖父目录, parts[-1] = 最顶层
+        # 我们要检查：最内层目录 -> 其父目录 -> 再上一级
+        inner_name = parent_dir.name if parent_dir != Path(".") else None
+        if not inner_name:
             return None, None
 
-        actor_name, nationality = extract_actor_and_nationality(folder_name)
+        # 第1步：检查最内层目录
+        actor_name, nationality = extract_actor_and_nationality(inner_name)
 
-        # 如果从文件夹名没提取到国籍，检查上级目录名
-        # M:\\爱沙尼亚\\[Channel] Diana Rider\\video.mp4 → 父目录=[Channel] Diana Rider
-        # → actor_name=Diana Rider, nationality=None
-        # → 祖父目录=爱沙尼亚 → nationality=爱沙尼亚
+        # 如果最内层是纯国籍目录（如"美国"、"俄罗斯"），
+        # 说明这个目录本身只是国籍分类，不包含演员信息
+        if not actor_name and nationality:
+            # 向上检查是否有演员目录
+            if parent_dir.parent != Path("."):
+                upper_name = parent_dir.parent.name
+                upper_actor, upper_nationality = extract_actor_and_nationality(upper_name)
+                # 如果上级目录提取到了演员名，使用上级的
+                if upper_actor:
+                    return upper_actor, nationality
+            return None, nationality
+
+        # 第2步：检查上级目录名补充国籍
+        # M:\\爱沙尼亚\\[Channel] Diana Rider\\video.mp4
+        # → 内层: actor_name="Diana Rider", nationality=None
+        # → 祖父目录: "爱沙尼亚" → nationality="爱沙尼亚"
         if not nationality and parent_dir.parent != Path("."):
             grandparent_name = parent_dir.parent.name
             if grandparent_name in _NATIONALITY_PATTERNS:

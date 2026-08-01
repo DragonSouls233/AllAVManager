@@ -94,7 +94,7 @@ async def list_actors():
         result = await session.execute(stmt)
         actors = result.scalars().all()
         return [{"id": a.id, "name": a.name, "nationality": a.nationality,
-                 "avatar_url": a.avatar_url, "movie_count": a.movie_count, "source": a.source} for a in actors]
+                 "avatar_url": a.avatar_url, "movie_count": a.movie_count, "source": a.source, "module_type": "pornhub"} for a in actors]
     finally:
         await session.close()
 
@@ -115,6 +115,7 @@ async def get_actor(actor_id: int):
         return {"id": actor.id, "name": actor.name, "alias": actor.alias,
                 "nationality": actor.nationality,
                 "avatar_url": actor.avatar_url, "source": actor.source,
+                "module_type": "pornhub",
                 "movie_count": actor.movie_count,
                 "created_at": str(actor.created_at)}
     finally:
@@ -125,8 +126,8 @@ async def get_actor(actor_id: int):
 
 
 @router.get("/movies")
-async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Query(False, description="仅列出未刮削的影片",
-    actor: Optional[str] = Query(None, description="按演员名过滤"))):
+async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Query(False, description="仅列出未刮削的影片"),
+    actor: Optional[str] = Query(None, description="按演员名过滤")):
     """列出 PORNHub 模块影片列表"""
     db = get_pornhub_db()
     session = await db.get_session()
@@ -156,6 +157,7 @@ async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Que
              "source_views": m.source_views, "source_score": m.source_score,
              "uploader": m.uploader, "categories": m.categories,
              "cover_url": m.cover_url, "actor": m.actor,
+             "module_type": "pornhub",
              "file_path": m.file_path, "status": m.status}
             for m in movies
         ]}
@@ -184,6 +186,7 @@ async def get_movie(movie_id: int):
             "uploader": movie.uploader, "categories": movie.categories,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "actor": movie.actor, "studio": movie.studio,
+            "module_type": "pornhub",
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "plot": movie.plot,
             "tags": movie.tags, "source": movie.source, "source_url": movie.source_url,
