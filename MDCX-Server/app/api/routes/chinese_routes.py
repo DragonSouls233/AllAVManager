@@ -55,7 +55,7 @@ async def list_actors():
         stmt = select(ChineseActor).order_by(ChineseActor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source} for a in actors]
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url} for a in actors]
     finally:
         await session.close()
 
@@ -72,7 +72,8 @@ async def sync_folder_actors():
 
 
 @router.get("/movies")
-async def list_movies(skip: int = 0, limit: int = 20):
+async def list_movies(skip: int = 0, limit: int = 20,
+    actor: Optional[str] = Query(None, description="按演员名过滤")):
     """列出国产模块影片列表"""
     db = get_chinese_db()
     try:
@@ -82,10 +83,17 @@ async def list_movies(skip: int = 0, limit: int = 20):
     try:
         from app.db.chinese_models import ChineseMovie
         from sqlalchemy import select, func
+        filters = []
+        if actor:
+            filters.append(ChineseMovie.folder_based_actors.like(f"%{actor}%"))
+
         total_stmt = select(func.count(ChineseMovie.id))
         total_result = await session.execute(total_stmt)
         total = total_result.scalar()
-        stmt = select(ChineseMovie).order_by(ChineseMovie.created_at.desc()).offset(skip).limit(limit)
+        stmt = select(ChineseMovie)
+        if filters:
+            stmt = stmt.where(*filters)
+        stmt = stmt.order_by(ChineseMovie.created_at.desc()).offset(skip).limit(limit)
         result = await session.execute(stmt)
         movies = result.scalars().all()
         return {"total": total, "items": [

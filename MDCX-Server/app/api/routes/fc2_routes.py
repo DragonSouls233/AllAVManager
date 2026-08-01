@@ -32,7 +32,7 @@ async def list_actors():
         stmt = select(Fc2Actor).order_by(Fc2Actor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source} for a in actors]
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url} for a in actors]
     finally:
         await session.close()
 
@@ -62,7 +62,8 @@ async def get_actor(actor_id: int):
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
-    keyword: Optional[str] = Query(None, description="搜索标题/番号"),
+    keyword: Optional[str] = Query(None, description="搜索标题/番号",
+    actor: Optional[str] = Query(None, description="按演员名过滤")),
 ):
     """列出 FC2 模块影片列表"""
     db = get_fc2_db()
@@ -75,6 +76,8 @@ async def list_movies(
         if keyword:
             kw = f"%{keyword}%"
             filters.append(or_(Fc2Movie.title.like(kw), Fc2Movie.code.like(kw)))
+        if actor:
+            filters.append(Fc2Movie.actor.like(f"%{actor}%"))
 
         total_stmt = select(func.count(Fc2Movie.id))
         if filters:

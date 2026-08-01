@@ -125,7 +125,8 @@ async def get_actor(actor_id: int):
 
 
 @router.get("/movies")
-async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Query(False, description="仅列出未刮削的影片")):
+async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Query(False, description="仅列出未刮削的影片",
+    actor: Optional[str] = Query(None, description="按演员名过滤"))):
     """列出 PORNHub 模块影片列表"""
     db = get_pornhub_db()
     session = await db.get_session()
@@ -133,15 +134,21 @@ async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Que
         from app.db.pornhub_models import PornhubMovie
         from sqlalchemy import select, func
 
-        total_stmt = select(func.count(PornhubMovie.id))
+        filters = []
         if unscraped_only:
-            total_stmt = total_stmt.where(PornhubMovie.status == "pending")
+            filters.append(PornhubMovie.status == "pending")
+        if actor:
+            filters.append(PornhubMovie.actor.like(f"%{actor}%"))
+
+        total_stmt = select(func.count(PornhubMovie.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
         total_result = await session.execute(total_stmt)
         total = total_result.scalar()
 
         stmt = select(PornhubMovie).order_by(PornhubMovie.created_at.desc()).offset(skip).limit(limit)
-        if unscraped_only:
-            stmt = stmt.where(PornhubMovie.status == "pending")
+        if filters:
+            stmt = stmt.where(*filters)
         result = await session.execute(stmt)
         movies = result.scalars().all()
         return {"total": total, "items": [

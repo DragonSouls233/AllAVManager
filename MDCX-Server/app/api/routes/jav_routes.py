@@ -122,7 +122,7 @@ async def list_actors():
         stmt = select(JavActor).order_by(JavActor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source} for a in actors]
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url} for a in actors]
     finally:
         await session.close()
 
@@ -153,7 +153,8 @@ async def get_actor(actor_id: int):
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
-    keyword: Optional[str] = Query(None, description="搜索标题/番号"),
+    keyword: Optional[str] = Query(None, description="搜索标题/番号",
+    actor: Optional[str] = Query(None, description="按演员名过滤")),
     status_filter: Optional[str] = Query(None, alias="status", description="过滤状态 pending/scraped"),
 ):
     """列出有码模块影片列表"""
@@ -168,6 +169,8 @@ async def list_movies(
         if keyword:
             kw = f"%{keyword}%"
             filters.append(or_(JavMovie.title.like(kw), JavMovie.code.like(kw)))
+        if actor:
+            filters.append(JavMovie.actor.like(f"%{actor}%"))
         if status_filter:
             filters.append(JavMovie.status == status_filter)
 

@@ -34,7 +34,8 @@ def get_western_db() -> ModuleDatabase:
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
-    keyword: Optional[str] = Query(None, description="搜索标题/演员"),
+    keyword: Optional[str] = Query(None, description="搜索标题/演员",
+    actor: Optional[str] = Query(None, description="按演员名过滤")),
 ):
     """列出欧美影片"""
     db = get_western_db()
@@ -47,6 +48,8 @@ async def list_movies(
         if keyword:
             kw = f"%{keyword}%"
             filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actors.like(kw), WesternMovie.site.like(kw)))
+        if actor:
+            filters.append(WesternMovie.actors.like(f"%{actor}%"))
 
         total_stmt = select(func.count(WesternMovie.id))
         if filters:
