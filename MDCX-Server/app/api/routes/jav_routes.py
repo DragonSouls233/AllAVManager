@@ -855,6 +855,57 @@ async def get_jav_cover_file(movie_id: int):
                         headers={"Cache-Control": "public, max-age=86400"},
                     )
 
+        # 2.5) DB 中 cover_url/poster_url/thumb_url 是远程 URL 时，尝试下载到规范目录
+        if movie.code:
+            # 从 cover_url 提取域名作为 referer（防盗链绕过）
+            cover_url_str = movie.cover_url or movie.poster_url or movie.thumb_url or ""
+            ref_domain = ""
+            if cover_url_str.startswith(("http://", "https://")):
+                try:
+                    from urllib.parse import urlparse
+                    ref_domain = f"{urlparse(cover_url_str).scheme}://{urlparse(cover_url_str).netloc}/"
+                except Exception:
+                    pass
+            for attr in ("cover_url", "poster_url", "thumb_url"):
+                url = getattr(movie, attr, None)
+                if url and url.startswith(("http://", "https://")):
+                    # 确定目标文件名
+                    target = get_movie_cover_path("jav", movie.code)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        import httpx
+                        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                            resp = await asyncio.wait_for(
+                                client.get(url, headers={"Referer": ref_domain} if ref_domain else None),
+                                timeout=15.0,
+                            )
+                            if resp.status_code == 200 and len(resp.content) > 500:
+                                with open(target, "wb") as f:
+                                    f.write(resp.content)
+                                # 同时尝试下载 fanart 和 thumb
+                                if attr == "cover_url" and movie.poster_url and movie.poster_url.startswith(("http://", "https://")):
+                                    try:
+                                        fanart_target = get_movie_fanart_path("jav", movie.code)
+                                        fresp = await asyncio.wait_for(
+                                            client.get(movie.poster_url, headers={"Referer": ref_domain} if ref_domain else None),
+                                            timeout=10.0,
+                                        )
+                                        if fresp.status_code == 200 and len(fresp.content) > 500:
+                                            fanart_target.parent.mkdir(parents=True, exist_ok=True)
+                                            with open(fanart_target, "wb") as f:
+                                                f.write(fresp.content)
+                                    except Exception:
+                                        pass
+                                if fast_file_exists(str(target)):
+                                    return FileResponse(
+                                        str(target),
+                                        media_type=_image_media_type(str(target)),
+                                        headers={"Cache-Control": "public, max-age=86400"},
+                                    )
+                    except Exception:
+                        pass
+                    break  # 只尝试第一个有效的远程 URL
+
         # 3) 视频所在目录下的 poster.jpg/cover.jpg/fanart.jpg/thumb.jpg
         if movie.file_path:
             try:

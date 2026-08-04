@@ -41,6 +41,14 @@ def _source_to_module(source: str) -> str:
         "adulttime": "western", "theporndb": "western",
         "aylo": "western",
     }
+    # 已知 JAV 相关刮削源（未显式映射到其他模块的，都归为 jav）
+    _jav_sources = {
+        "folder", "freejavbt", "javdatabase", "xcity", "base",
+        "jbus", "jdb", "j321", "jmenu", "sox", "fanza", "jday", "air",
+        "nfo", "nfo_cache", "patcher",
+    }
+    if source in _jav_sources:
+        return "jav"
     return _map.get(source, source)
 
 
@@ -139,6 +147,8 @@ class MissingInfo:
     # 元信息
     detected_at: datetime = field(default_factory=datetime.now)
     output_dir: Optional[str] = None
+    # DB 中已有的远程封面URL（刮削失败时回退下载）
+    cover_url_fallback: Optional[str] = None
     
     def has_missing(self) -> bool:
         """是否有缺失"""
@@ -497,6 +507,11 @@ class MissingDetector:
         if output_dir:
             info.missing_images, info.nfo_exists, info.nfo_path = \
                 await self._detect_missing_images(movie_data, output_dir)
+
+            # 补丁刮削时用 DB 已有的远程封面URL（刮削失败时回退下载）
+            db_cover = movie_data.get("cover_url") or movie_data.get("poster_url")
+            if db_cover and db_cover.startswith(("http://", "https://")):
+                info.cover_url_fallback = db_cover
 
             # 3. 检测演员头像
             info.actor_images_missing = await self._detect_missing_actor_images(

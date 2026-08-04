@@ -84,7 +84,7 @@ async def preview_matches(use_local: bool = False, module: Optional[str] = None)
     for mod_name in modules_to_check:
         try:
             mod_db = ModuleDatabase.get_instance(mod_name)
-            async with mod_db.get_session() as sess:
+            async with await mod_db.get_session() as sess:
                 from sqlalchemy import text
 
                 # 构建演员表名

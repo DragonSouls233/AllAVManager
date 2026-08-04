@@ -689,6 +689,10 @@ class PatchEngine:
                     # 单图类型（poster/fanart/thumb/cover）：对应 <type>_url
                     url_key = f"{image_type.value}_url"
                     url = (scraped_data or {}).get(url_key)
+                    # 刮削失败时 scraped_data 无图片 URL，回退到数据库已有的 cover_url
+                    if not url and missing_info.cover_url_fallback:
+                        if image_type in (ImageType.POSTER, ImageType.COVER):
+                            url = missing_info.cover_url_fallback
                     if not url:
                         continue
 

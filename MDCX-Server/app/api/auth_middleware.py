@@ -122,6 +122,11 @@ class AuthMiddleware:
             if path.endswith("/cover/file"):
                 await self.app(scope, receive, send)
                 return
+        # 模块数据库视频流放行
+        if any(path.startswith(f"/api/v1/{mod}/") for mod in ("jav", "fc2", "chinese", "uncensored", "pornhub", "western")):
+            if path.endswith("/play/file"):
+                await self.app(scope, receive, send)
+                return
         # 模块数据库头像放行
         if path.startswith("/api/v1/modules/") and path.endswith("/avatar/file"):
             await self.app(scope, receive, send)

@@ -75,7 +75,10 @@ def detect_local_library() -> Optional[Path]:
         pass
     # 3) 基于 data_dir 的默认路径（local_library_path 未设置时的兜底）
     try:
-        candidates.append(get_config_manager().computed.data_dir / "gfriends")
+        data_dir = get_config_manager().computed.data_dir
+        candidates.append(data_dir / "gfriends")
+        # 再加一个常见路径：data_dir 同级目录下的 gfriends-master（如 E:\MDCX-Server 同级）
+        candidates.append(data_dir.parent / "gfriends-master")
     except Exception:
         pass
     for c in candidates:
@@ -365,7 +368,7 @@ class GfriendsImporter:
             for mod_name in all_modules:
                 try:
                     mod_db = ModuleDatabase.get_instance(mod_name)
-                    async with mod_db.get_session() as sess:
+                    async with await mod_db.get_session() as sess:
                         from sqlalchemy import text
                         actor_tbl, movie_tbl = MODULE_TABLE[mod_name]
 
@@ -498,7 +501,7 @@ class GfriendsImporter:
             from sqlalchemy import text
             try:
                 mod_db = ModuleDatabase.get_instance(module_name)
-                async with mod_db.get_session() as sess:
+                async with await mod_db.get_session() as sess:
                     actor_tbl = "pornhub_actors" if module_name == "pornhub" else f"{module_name}_actors"
                     await sess.execute(
                         text(f"UPDATE {actor_tbl} SET avatar_url = :url WHERE id = :id"),
