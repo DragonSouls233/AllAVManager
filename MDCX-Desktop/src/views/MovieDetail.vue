@@ -334,7 +334,14 @@ const actorList = computed(() => {
 })
 
 // ---------- 封面 ----------
-const hasDbCover = computed(() => !!(movie.value && movie.value.cover_url))
+const hasDbCover = computed(() => {
+  const m = movie.value
+  if (!m) return false
+  // 模块影片（有 module_type）：只要有 id，就直接走后端 /cover/file 端点
+  if (m.id && m.module_type) return true
+  // 主数据库影片：检查 cover_url 是否有值
+  return !!(m.cover_url && typeof m.cover_url === 'string')
+})
 const toDisplayUrl = (s) => {
   if (!s || typeof s !== 'string') return ''
   if (/^https?:\/\//i.test(s)) return s
@@ -396,11 +403,20 @@ const load = async () => {
     const res = await api.get(movieId.value)
     movie.value = res
     checkFav()
-    // 加载相关推荐（从通用 API）
+    // 加载相关推荐：模块影片走模块自身的 /related 端点，主库走通用 /related
     try {
-      const { getRelatedMovies } = await import('@/api')
-      const rel = await getRelatedMovies(movieId.value).catch(() => null)
-      if (rel) related.value = rel
+      const mod = moduleType.value
+      if (mod && MODULE_MAP[mod]) {
+        const modApi = await import(`@/api/${mod}.js`)
+        if (modApi.getRelatedMovies) {
+          const relData = await modApi.getRelatedMovies(movieId.value).catch(() => null)
+          if (relData) related.value = relData
+        }
+      } else {
+        const { getRelatedMovies } = await import('@/api')
+        const relData = await getRelatedMovies(movieId.value).catch(() => null)
+        if (relData) related.value = relData
+      }
     } catch {}
   } catch {
     movie.value = null

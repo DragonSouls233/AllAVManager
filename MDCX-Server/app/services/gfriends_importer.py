@@ -282,6 +282,7 @@ class GfriendsImporter:
         overwrite: bool = False,
         min_movies: int = 0,
         use_local: bool = False,
+        module: Optional[str] = None,
     ) -> dict:
         """执行批量导入
 
@@ -290,6 +291,7 @@ class GfriendsImporter:
             overwrite: 是否覆盖已有头像
             min_movies: 仅导入出演影片数 >= min_movies 的演员（0=全部）
             use_local: 强制使用本地资料库(覆盖配置中的 mode)
+            module: 目标模块名（jav/fc2/...，不传则导入所有模块）
 
         Returns:
             {"total": N, "matched": M, "downloaded": D, "skipped": S, "failed": F}
@@ -316,95 +318,150 @@ class GfriendsImporter:
 
         try:
             # 1. 加载索引
-            index = await self._load_index()
+            index = await self._load_index() if not use_local else None
 
-            # 2. 查询本地演员
-            db = get_database()
-            async with db.session() as session:
-                query = select(Actor)
-                if not overwrite:
-                    query = query.where(Actor.avatar_url.is_(None))
-                if min_movies > 0:
-                    # 子查询：出演影片数 >= min_movies
-                    from app.db.models import MovieActor
-                    from sqlalchemy import func
-                    subq = (
-                        select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("cnt"))
-                        .group_by(MovieActor.actor_id)
-                        .having(func.count(MovieActor.movie_id) >= min_movies)
-                        .subquery()
-                    )
-                    query = query.join(subq, Actor.id == subq.c.actor_id)
+            # 2. 查询演员（按 module 区分）
 
-                result = await session.execute(query.order_by(Actor.name))
-                actors = result.scalars().all()
+            # 模块数据库表名
+            MODULE_TABLE = {
+                "jav": ("jav_actors", "jav_movies"),
+                "fc2": ("fc2_actors", "fc2_movies"),
+                "uncensored": ("uncensored_actors", "uncensored_movies"),
+                "chinese": ("chinese_actors", "chinese_movies"),
+                "western": ("western_actors", "western_movies"),
+                "pornhub": ("pornhub_actors", "movies"),
+            }
 
-                progress = self._jobs[job_id]["progress"]
-                progress["total"] = len(actors)
-                logger.info(f"Gfriends 批量导入: 共 {len(actors)} 个演员待处理")
+            actors = []
+            actor_sources = {}  # actor_id -> module_name
 
-                # 3. 匹配 + 下载
-                avatars_dir = Path(get_config_manager().computed.data_dir) / "avatars"
-                avatars_dir.mkdir(parents=True, exist_ok=True)
+            if module:
+                # 单模块模式
+                all_modules = [module]
+            else:
+                # 全模块模式
+                all_modules = list(MODULE_TABLE.keys())
+                # 先读中心数据库
+                db = get_database()
+                async with db.session() as session:
+                    query = select(Actor)
+                    if not overwrite:
+                        query = query.where(Actor.avatar_url.is_(None))
+                    if min_movies > 0:
+                        from app.db.models import MovieActor
+                        from sqlalchemy import func
+                        subq = (
+                            select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("cnt"))
+                            .group_by(MovieActor.actor_id)
+                            .having(func.count(MovieActor.movie_id) >= min_movies)
+                            .subquery()
+                        )
+                        query = query.join(subq, Actor.id == subq.c.actor_id)
+                    result = await session.execute(query.order_by(Actor.name))
+                    actors = list(result.scalars().all())
 
-                proxy = None
+            # 再从模块数据库收集演员
+            from app.db.module_db import ModuleDatabase
+            for mod_name in all_modules:
                 try:
-                    from app.services.proxy_manager import get_effective_proxy_url
-                    proxy = get_effective_proxy_url()
-                except Exception:
-                    pass
+                    mod_db = ModuleDatabase.get_instance(mod_name)
+                    async with mod_db.get_session() as sess:
+                        from sqlalchemy import text
+                        actor_tbl, movie_tbl = MODULE_TABLE[mod_name]
 
-                timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
-                semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+                        # 检查演员表是否有 avatar_url 列
+                        cols = await sess.execute(text(f"PRAGMA table_info({actor_tbl})"))
+                        col_names = [r[1] for r in cols.fetchall()]
+                        has_avatar_col = "avatar_url" in col_names
 
-                online_matched = []   # (actor, url) 需要在线下载
-                local_matched = []    # actor 已复制到本地，待更新数据库
-                async with aiohttp.ClientSession(timeout=timeout) as http_session:
-                    for actor in actors:
-                        if use_local:
-                            # 本地资料库模式：直接复制本地头像文件，不访问 GitHub
-                            local_path = find_local_avatar(actor.name, actor.name_jp)
-                            if not local_path:
-                                progress["skipped"] += 1
-                                continue
-                            copy_local_avatar(actor.id, local_path, avatars_dir)
-                            progress["matched"] += 1
-                            local_matched.append(actor)
-                            continue
+                        sql = f"SELECT id, name, name_jp FROM {actor_tbl}"
+                        if has_avatar_col:
+                            sql += " WHERE avatar_url IS NULL OR avatar_url = ''"
 
-                        # 在线模式：先用 name 匹配，再用 name_jp 匹配
-                        avatar_url = self._find_avatar_url(actor.name, index)
-                        if not avatar_url and actor.name_jp:
-                            avatar_url = self._find_avatar_url(actor.name_jp, index)
+                        if min_movies > 0:
+                            sql += f" AND id IN (SELECT a.id FROM {actor_tbl} a WHERE " \
+                                    f"(SELECT COUNT(*) FROM {movie_tbl} m WHERE m.actor = a.name) >= {min_movies})"
 
-                        if not avatar_url:
+                        rows = await sess.execute(text(sql))
+                        for r in rows:
+                            actors.append(r)
+                            actor_sources[r.id] = mod_name
+                except Exception as e:
+                    logger.warning(f"模块 {mod_name} 查询演员失败: {e}")
+
+            progress = self._jobs[job_id]["progress"]
+            progress["total"] = len(actors)
+            logger.info(f"Gfriends 批量导入: 共 {len(actors)} 个演员待处理")
+
+            # 3. 匹配 + 下载
+            avatars_dir = Path(get_config_manager().computed.data_dir) / "avatars"
+            avatars_dir.mkdir(parents=True, exist_ok=True)
+
+            proxy = None
+            try:
+                from app.services.proxy_manager import get_effective_proxy_url
+                proxy = get_effective_proxy_url()
+            except Exception:
+                pass
+
+            timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+
+            online_matched = []   # (actor, url) 需要在线下载
+            local_matched = []    # actor 已复制到本地，待更新数据库
+            async with aiohttp.ClientSession(timeout=timeout) as http_session:
+                for actor in actors:
+                    # actor 可能是 ORM Actor 对象或数据库行
+                    actor_name = getattr(actor, "name", None)
+                    if not actor_name:
+                        continue
+                    actor_name_jp = getattr(actor, "name_jp", None) or ""
+
+                    if use_local:
+                        local_path = find_local_avatar(actor_name, actor_name_jp)
+                        if not local_path:
                             progress["skipped"] += 1
                             continue
-
+                        copy_local_avatar(getattr(actor, "id"), local_path, avatars_dir)
                         progress["matched"] += 1
-                        online_matched.append((actor, avatar_url))
+                        local_matched.append(actor)
+                        continue
 
-                    # 批量并发下载（仅在线模式）
-                    if online_matched:
-                        tasks = [
-                            self._download_one(http_session, actor, url, avatars_dir, semaphore)
-                            for actor, url in online_matched
-                        ]
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                    avatar_url = self._find_avatar_url(actor_name, index)
+                    if not avatar_url and actor_name_jp:
+                        avatar_url = self._find_avatar_url(actor_name_jp, index)
 
-                        for (actor, url), success in zip(online_matched, results):
-                            if success is True:
-                                actor.avatar_url = f"/api/v1/actors/{actor.id}/avatar/file"
-                                progress["downloaded"] += 1
-                            else:
-                                progress["failed"] += 1
+                    if not avatar_url:
+                        progress["skipped"] += 1
+                        continue
 
-                    # 本地模式已复制的文件：直接标记为已下载并更新数据库
-                    for actor in local_matched:
-                        actor.avatar_url = f"/api/v1/actors/{actor.id}/avatar/file"
-                        progress["downloaded"] += 1
+                    progress["matched"] += 1
+                    online_matched.append((actor, avatar_url))
 
-                    await session.commit()
+                if online_matched:
+                    tasks = [
+                        self._download_one(http_session, actor, url, avatars_dir, semaphore)
+                        for actor, url in online_matched
+                    ]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    for (actor, url), success in zip(online_matched, results):
+                        if success is True:
+                            self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
+                            progress["downloaded"] += 1
+                        else:
+                            progress["failed"] += 1
+
+                for actor in local_matched:
+                    self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
+                    progress["downloaded"] += 1
+
+                # 中心数据库提交（仅在非 module 模式时才有中心数据库的 actors）
+                if not module:
+                    try:
+                        await session.commit()
+                    except Exception:
+                        pass
 
                 self._jobs[job_id]["status"] = "completed"
                 self._jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
@@ -427,6 +484,45 @@ class GfriendsImporter:
     def list_jobs(self) -> list[dict]:
         """列出所有任务"""
         return [{"job_id": k, **v} for k, v in self._jobs.items()]
+
+    async def _set_actor_avatar(self, actor, module_name: Optional[str], avatars_dir):
+        """设置演员头像 URL（支持中心数据库和模块数据库）"""
+        actor_id = getattr(actor, "id", None)
+        if not actor_id:
+            return
+        avatar_url = f"/api/v1/actors/{actor_id}/avatar/file"
+
+        if module_name:
+            # 模块数据库 — 直接 update
+            from app.db.module_db import ModuleDatabase
+            from sqlalchemy import text
+            try:
+                mod_db = ModuleDatabase.get_instance(module_name)
+                async with mod_db.get_session() as sess:
+                    actor_tbl = "pornhub_actors" if module_name == "pornhub" else f"{module_name}_actors"
+                    await sess.execute(
+                        text(f"UPDATE {actor_tbl} SET avatar_url = :url WHERE id = :id"),
+                        {"url": avatar_url, "id": actor_id}
+                    )
+                    await sess.commit()
+            except Exception as e:
+                logger.warning(f"更新模块 {module_name} 演员头像失败: {e}")
+        else:
+            # 中心数据库
+            try:
+                setattr(actor, "avatar_url", avatar_url)
+            except Exception:
+                pass
+
+
+MODULE_TABLE_ACTOR = {
+    "jav": ("jav_actors", "jav_movies"),
+    "fc2": ("fc2_actors", "fc2_movies"),
+    "uncensored": ("uncensored_actors", "uncensored_movies"),
+    "chinese": ("chinese_actors", "chinese_movies"),
+    "western": ("western_actors", "western_movies"),
+    "pornhub": ("pornhub_actors", "movies"),
+}
 
 
 # 全局单例

@@ -37,6 +37,87 @@ async def list_actors():
         await session.close()
 
 
+# ========== 封面端点（纯本地查找，不连外网） ==========
+
+
+@router.get("/movies/{movie_id}/cover/file")
+async def get_fc2_cover_file(movie_id: int):
+    """获取 FC2 影片封面图片文件"""
+    from fastapi.responses import FileResponse, Response
+    from app.utils.media_helpers import (
+        fast_file_exists,
+        get_movie_cover_path,
+        get_movie_fanart_path,
+        get_movie_thumb_path,
+    )
+    from app.db.fc2_models import Fc2Movie
+
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        movie = await session.get(Fc2Movie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 1) 规范目录：{data_base}/movies/fc2/{code}/poster.jpg
+        if movie.code:
+            for get_path in (get_movie_cover_path, get_movie_fanart_path, get_movie_thumb_path):
+                p = get_path("fc2", movie.code)
+                if fast_file_exists(str(p)):
+                    ext = _Path(str(p)).suffix.lower()
+                    mt = "image/jpeg"
+                    if ext == ".png": mt = "image/png"
+                    elif ext == ".webp": mt = "image/webp"
+                    return FileResponse(str(p), media_type=mt,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+
+        # 2) DB 中 cover_url/poster_url/thumb_url 的本地路径
+        for attr in ("cover_url", "poster_url", "thumb_url"):
+            url = getattr(movie, attr, None)
+            if not url: continue
+            if not url.startswith(("http://", "https://", "/")):
+                if fast_file_exists(url):
+                    ext = _Path(url).suffix.lower()
+                    mt = "image/jpeg"
+                    if ext == ".png": mt = "image/png"
+                    elif ext == ".webp": mt = "image/webp"
+                    return FileResponse(url, media_type=mt,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+
+        # 3) 视频目录下
+        if movie.file_path:
+            try:
+                video_dir = _Path(movie.file_path).parent
+                import asyncio
+                for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg", "thumb.jpg"]:
+                    img_path = video_dir / img_name
+                    if await asyncio.wait_for(
+                        asyncio.to_thread(lambda p=img_path: p.exists() and p.is_file()),
+                        timeout=3.0,
+                    ):
+                        ext = _Path(str(img_path)).suffix.lower()
+                        mt = "image/jpeg"
+                        if ext == ".png": mt = "image/png"
+                        elif ext == ".webp": mt = "image/webp"
+                        return FileResponse(str(img_path), media_type=mt,
+                                            headers={"Cache-Control": "public, max-age=86400"})
+            except asyncio.TimeoutError:
+                pass
+
+        # 4) SVG 占位图
+        from fastapi.responses import HTMLResponse
+        placeholder = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" '
+            'viewBox="0 0 240 360"><rect fill="#f0f0f0" width="240" height="360"/>'
+            '<text x="120" y="180" text-anchor="middle" fill="#bbb" '
+            'font-size="14">暂无封面</text></svg>'
+        )
+        return HTMLResponse(content=placeholder, media_type="image/svg+xml",
+                            headers={"Cache-Control": "no-cache"})
+    finally:
+        await session.close()
+
+
 @router.get("/actors/{actor_id}")
 async def get_actor(actor_id: int):
     """获取 FC2 演员详情"""
@@ -137,6 +218,96 @@ async def get_movie(movie_id: int):
             "play_count": movie.play_count, "view_status": movie.view_status,
             "status": movie.status, "created_at": str(movie.created_at),
         }
+    finally:
+        await session.close()
+
+
+# ========== 相关推荐与演员端点（通用详情页使用） ==========
+
+
+@router.get("/movies/{movie_id}/related")
+async def get_fc2_related_movies(movie_id: int):
+    """获取FC2影片的相关推荐（同演员/同类别）"""
+    from sqlalchemy import select, or_, and_
+    from app.db.fc2_models import Fc2Movie
+
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        movie = await session.get(Fc2Movie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        related_ids = {movie_id}
+        actor_movies = []
+        genre_movies = []
+        limit = 12
+
+        if movie.actor:
+            actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
+            if actor_names:
+                filters = [Fc2Movie.actor.contains(name) for name in actor_names]
+                stmt = select(Fc2Movie).where(
+                    and_(or_(*filters), Fc2Movie.id != movie_id)
+                ).order_by(Fc2Movie.id.desc()).limit(limit)
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    if m.id not in related_ids:
+                        related_ids.add(m.id)
+                        actor_movies.append({
+                            "id": m.id, "code": m.code, "title": m.title,
+                            "module_type": "fc2", "cover_url": m.cover_url,
+                        })
+
+        if movie.genre:
+            genre_parts = [g.strip() for g in movie.genre.split(",") if g.strip()]
+            if genre_parts:
+                genre_filters = [Fc2Movie.genre.contains(gp) for gp in genre_parts[:5]]
+                stmt = select(Fc2Movie).where(
+                    and_(or_(*genre_filters), Fc2Movie.id != movie_id)
+                ).order_by(Fc2Movie.id.desc()).limit(limit)
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    if m.id not in related_ids:
+                        related_ids.add(m.id)
+                        genre_movies.append({
+                            "id": m.id, "code": m.code, "title": m.title,
+                            "module_type": "fc2", "cover_url": m.cover_url,
+                        })
+
+        return {
+            "actor_movies": actor_movies[:limit],
+            "series_movies": [],
+            "genre_movies": genre_movies[:limit],
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/movies/{movie_id}/actors")
+async def get_fc2_movie_actors(movie_id: int):
+    """获取FC2影片关联的演员列表"""
+    from app.db.fc2_models import Fc2Movie, Fc2Actor
+
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        movie = await session.get(Fc2Movie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        if not movie.actor:
+            return {"items": []}
+        actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
+        items = []
+        for name in actor_names:
+            stmt = select(Fc2Actor).where(Fc2Actor.name == name)
+            result = await session.execute(stmt)
+            actor = result.scalar_one_or_none()
+            if actor:
+                items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url})
+            else:
+                items.append({"id": name, "name": name, "avatar_url": None})
+        return {"items": items}
     finally:
         await session.close()
 

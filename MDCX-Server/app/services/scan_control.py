@@ -173,23 +173,38 @@ class ScanControlService:
             error_message: 错误信息
         """
         db = get_database()
-        async with db.session() as session:
-            stmt = select(ScanRecord).where(ScanRecord.id == record_id)
-            result = await session.execute(stmt)
-            record = result.scalar_one_or_none()
-            if record:
-                record.status = status
-                record.total_files = total_files
-                record.added_files = added_files
-                record.error_message = error_message
-                record.completed_at = datetime.now()
-                await session.commit()
-                logger.info(
-                    f"扫描控制: 更新记录 id={record_id}, status={status}, "
-                    f"total={total_files}, added={added_files}"
-                )
-            else:
-                logger.warning(f"扫描控制: 记录 id={record_id} 不存在")
+        # 带重试机制：SQLite 在并发写入时可能 database is locked
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with db.session() as session:
+                    stmt = select(ScanRecord).where(ScanRecord.id == record_id)
+                    result = await session.execute(stmt)
+                    record = result.scalar_one_or_none()
+                    if record:
+                        record.status = status
+                        record.total_files = total_files
+                        record.added_files = added_files
+                        record.error_message = error_message
+                        record.completed_at = datetime.now()
+                        await session.commit()
+                        logger.info(
+                            f"扫描控制: 更新记录 id={record_id}, status={status}, "
+                            f"total={total_files}, added={added_files}"
+                        )
+                    else:
+                        logger.warning(f"扫描控制: 记录 id={record_id} 不存在")
+                break  # 成功则退出重试循环
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"扫描控制: 更新记录 id={record_id} 失败 (第{attempt+1}次)，重试中: {e}"
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    logger.error(
+                        f"扫描控制: 更新记录 id={record_id} 失败（已重试{max_retries}次）: {e}"
+                    )
 
     async def get_scan_records(
         self,

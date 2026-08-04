@@ -2,6 +2,7 @@
 媒体管理路由
 """
 
+import asyncio
 import json
 import time
 from datetime import datetime
@@ -19,7 +20,7 @@ import logging
 
 from app.db.database import get_session
 from app.db.models import Movie, Actor, MovieActor, MovieTag, Tag, Studio, Series, FavoriteItem, FavoriteGroup
-from app.utils.media_helpers import collect_media_dirs, search_video_in_media_dirs
+from app.utils.media_helpers import collect_media_dirs, fast_file_exists, search_video_in_media_dirs
 from app.utils.media_helpers import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -511,27 +512,19 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
       3) 前端传入的 t 参数
       4) 兜底扫描影片所在目录
     """
-    # 1) DB 记录的封面路径
+    # 1) DB 记录的封面路径（快速命中：超短超时，不走磁盘扫描）
     for attr in ('cover_url', 'poster_url', 'thumb_url'):
         p = getattr(movie, attr, None)
-        if p and Path(p).exists() and Path(p).is_file():
+        if p and fast_file_exists(p):
             return p
 
     # 2) 服务端 output_dir 下的标准图片名
     output_dir = getattr(movie, 'output_dir', None)
     if output_dir:
         od = Path(output_dir)
-        if od.exists() and od.is_dir():
-            found = await _search_cover_in_output_dir(movie, od, session)
-            if found:
-                return found
-        # output_dir 不存在（如旧数据 C:\output\xxx），回退到 config 的输出目录
-        elif not od.exists():
-            fallback = await _search_cover_in_config_output_dir(movie, session)
-            if fallback:
-                return fallback
-    else:
-        # output_dir 为空，直接尝试 config 输出目录
+        found = await _search_cover_in_output_dir(movie, od, session)
+        if found:
+            return found
         fallback = await _search_cover_in_config_output_dir(movie, session)
         if fallback:
             return fallback
@@ -539,7 +532,7 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
     # 3) 前端传来的 t 参数（候选封面绝对路径）
     if t_param:
         tp = Path(t_param)
-        if tp.exists() and tp.is_file() and tp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+        if fast_file_exists(t_param) and tp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
             await _backfill_cover(movie, str(tp), session)
             return str(tp)
 
@@ -558,21 +551,27 @@ async def _resolve_cover_path(movie, t_param: Optional[str], session: AsyncSessi
         except Exception:
             pass
 
-    # 4) 兜底：扫描影片所在目录
+    # 4) 兜底：扫描影片所在目录（带超时，防止网络路径卡死）
     if movie.file_path:
         d = Path(movie.file_path).parent
         if d.exists():
-            from app.importer.image_scanner import ImageScanner
-            imgs = ImageScanner().scan(str(d))
-            for cand in (imgs.poster, imgs.fanart, imgs.thumb):
-                if cand and Path(cand).exists() and Path(cand).is_file():
-                    await _backfill_cover(movie, cand, session)
-                    return cand
-            # 仍无语义匹配：取目录里第一张图片作为兜底封面
-            for fp in sorted(d.iterdir()):
-                if fp.is_file() and fp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
-                    await _backfill_cover(movie, str(fp), session)
-                    return str(fp)
+            try:
+                from app.importer.image_scanner import ImageScanner
+                imgs = await asyncio.wait_for(
+                    asyncio.to_thread(ImageScanner().scan, str(d)),
+                    timeout=5.0
+                )
+                for cand in (imgs.poster, imgs.fanart, imgs.thumb):
+                    if cand and Path(cand).exists() and Path(cand).is_file():
+                        await _backfill_cover(movie, cand, session)
+                        return cand
+                # 仍无语义匹配：取目录里第一张图片作为兜底封面
+                for fp in sorted(d.iterdir()):
+                    if fp.is_file() and fp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
+                        await _backfill_cover(movie, str(fp), session)
+                        return str(fp)
+            except asyncio.TimeoutError:
+                logger.debug(f"封面解析: 扫描影片目录超时 (5s) [{movie.code}]")
     return None
 
 
@@ -583,9 +582,13 @@ _SOURCE_MODULE_MAP = {
     "base": "jav", "xcity": "jav", "iqqtv": "jav", "mgstage": "jav",
     "sox": "jav", "fanza": "jav", "jday": "jav", "air": "jav",
     "freejavbt": "jav", "javdb": "jav", "jmenu": "jav",
-    "fc2ppvdb": "fc2", "fc2": "fc2", "fc2search": "fc2",
-    "chinese": "chinese", "pornhub": "pornhub",
+    "javlibrary": "jav", "jav321": "jav", "arzon": "jav",
+    "faleno": "jav", "prestige": "jav", "kawaii": "jav",
+    "fc2ppvdb": "fc2", "fc2": "fc2", "fc2search": "fc2", "fc2club": "fc2",
+    "chinese": "chinese", "madou": "chinese", "guochan": "chinese",
+    "pornhub": "pornhub",
     "western": "western", "uncensored": "uncensored",
+    "adulttime": "western", "theporndb": "western", "aylo": "western",
 }
 
 
@@ -678,22 +681,85 @@ async def get_movie_cover_file(
     t: Optional[str] = Query(None, description="前端传来的候选封面路径（兜底使用）"),
     session: AsyncSession = Depends(get_session),
 ):
-    """获取电影封面图片文件（智能解析：DB 路径 -> t 参数 -> 目录扫描兜底）"""
+    """获取电影封面图片文件（纯本地查找，绝不连接外网）
+
+    查找优先级：
+    1. {data_base}/movies/{module}/{code}/poster.jpg（规范目录）
+    2. DB 的 cover_url/poster_url/thumb_url（本地路径）
+    3. 前端 t 参数本地路径
+    4. 视频所在目录扫描
+    5. 内置 SVG 占位图
+    """
     from fastapi.responses import FileResponse
+    from app.utils.media_helpers import (
+        fast_file_exists,
+        get_movie_cover_path,
+        get_movie_fanart_path,
+        get_movie_thumb_path,
+    )
+
     movie = await session.get(Movie, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="视频不存在")
 
-    path_str = await _resolve_cover_path(movie, t, session)
-    if path_str:
-        return FileResponse(str(path_str), media_type=_image_media_type(path_str))
+    # 1) 规范目录：{data_base}/movies/{module}/{code}/poster.jpg
+    if movie.code and movie.source:
+        mod = _SOURCE_MODULE_MAP.get(movie.source)
+        if mod:
+            for get_path in (get_movie_cover_path, get_movie_fanart_path, get_movie_thumb_path):
+                p = get_path(mod, movie.code)
+                if fast_file_exists(str(p)):
+                    return FileResponse(
+                        str(p), media_type=_image_media_type(str(p)),
+                        headers={"Cache-Control": "public, max-age=86400"},
+                    )
 
-    # 兜底：封面为相对 web 路径或远程 URL（如历史 javbus /pics/cover/）时 302 到源地址
-    redir = _web_cover_redirect(movie)
-    if redir:
-        return redir
+    # 2) DB 记录的本地路径
+    for attr in ('cover_url', 'poster_url', 'thumb_url'):
+        p = getattr(movie, attr, None)
+        if p and not p.startswith(("http://", "https://", "/")) and fast_file_exists(p):
+            return FileResponse(
+                p, media_type=_image_media_type(p),
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
 
-    raise HTTPException(status_code=404, detail="封面图片不存在")
+    # 3) 前端 t 参数
+    if t:
+        tp = Path(t)
+        if tp.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp') and fast_file_exists(t):
+            return FileResponse(
+                t, media_type=_image_media_type(t),
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+
+    # 4) 视频所在目录扫描（超短超时 3s）
+    if movie.file_path:
+        try:
+            d = Path(movie.file_path).parent
+            if d.exists():
+                for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg", "thumb.jpg"]:
+                    img_path = d / img_name
+                    if await asyncio.wait_for(
+                        asyncio.to_thread(lambda p=img_path: p.exists() and p.is_file()),
+                        timeout=3.0,
+                    ):
+                        return FileResponse(
+                            str(img_path), media_type=_image_media_type(str(img_path)),
+                            headers={"Cache-Control": "public, max-age=86400"},
+                        )
+        except asyncio.TimeoutError:
+            pass
+
+    # 5) 全部失败：内置 SVG 占位图（绝不连外网）
+    from fastapi.responses import HTMLResponse
+    placeholder = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" '
+        'viewBox="0 0 240 360"><rect fill="#f0f0f0" width="240" height="360"/>'
+        '<text x="120" y="180" text-anchor="middle" fill="#bbb" '
+        'font-size="14">暂无封面</text></svg>'
+    )
+    return HTMLResponse(content=placeholder, media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-cache"})
 
 
 async def run_cover_backfill(session: AsyncSession, limit: int = 2000) -> dict:
@@ -828,40 +894,50 @@ async def get_movie_poster_file(
     movie_id: int,
     session: AsyncSession = Depends(get_session),
 ):
-    """获取电影背景图文件"""
+    """获取电影背景图文件（纯本地查找）"""
     from fastapi.responses import FileResponse
+    from app.utils.media_helpers import fast_file_exists
+
     movie = await session.get(Movie, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="视频不存在")
 
-    path_str = movie.poster_url
-    if path_str:
-        from pathlib import Path
-        p = Path(path_str)
-        if p.exists() and p.is_file():
-            media_type = "image/jpeg"
-            if p.suffix.lower() in ('.png',):
-                media_type = "image/png"
-            elif p.suffix.lower() in ('.webp',):
-                media_type = "image/webp"
-            return FileResponse(str(p), media_type=media_type)
+    # 1) poster_url
+    if movie.poster_url:
+        if not movie.poster_url.startswith(("http://", "https://", "/")) and fast_file_exists(movie.poster_url):
+            return FileResponse(movie.poster_url, media_type="image/jpeg",
+                                headers={"Cache-Control": "public, max-age=86400"})
 
-    # 服务端 output_dir 兜底
+    # 2) output_dir 的 fanart.jpg/poster.jpg
     if movie.output_dir:
         od = Path(movie.output_dir)
-        if od.exists() and od.is_dir():
+        if od.exists():
             for img_name in ('fanart.jpg', 'poster.jpg', 'cover.jpg'):
                 img_path = od / img_name
                 if img_path.exists() and img_path.is_file():
-                    movie.poster_url = str(img_path)
-                    await session.commit()
-                    return FileResponse(str(img_path), media_type="image/jpeg")
+                    return FileResponse(str(img_path), media_type="image/jpeg",
+                                        headers={"Cache-Control": "public, max-age=86400"})
 
-    redir = _web_cover_redirect(movie)
-    if redir:
-        return redir
+    # 3) 视频同目录
+    if movie.file_path:
+        d = Path(movie.file_path).parent
+        if d.exists():
+            for img_name in ("fanart.jpg", "poster.jpg", "cover.jpg"):
+                p = d / img_name
+                if p.exists() and p.is_file():
+                    return FileResponse(str(p), media_type="image/jpeg",
+                                        headers={"Cache-Control": "public, max-age=86400"})
 
-    raise HTTPException(status_code=404, detail="背景图不存在")
+    # 4) SVG 占位图
+    from fastapi.responses import HTMLResponse
+    placeholder = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" '
+        'viewBox="0 0 320 180"><rect fill="#f0f0f0" width="320" height="180"/>'
+        '<text x="160" y="95" text-anchor="middle" fill="#bbb" '
+        'font-size="12">暂无背景图</text></svg>'
+    )
+    return HTMLResponse(content=placeholder, media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/{movie_id}/thumb/file")
@@ -869,44 +945,47 @@ async def get_movie_thumb_file(
     movie_id: int,
     session: AsyncSession = Depends(get_session),
 ):
-    """获取电影缩略图文件（用于 thumbnail 视图模式）
-
-    缩略图通常是 ffmpeg 截取的视频帧，比封面更代表实际内容。
-    回退顺序：thumb_url -> cover_url（保证总有图可显示）
-    """
+    """获取电影缩略图文件（纯本地查找）"""
     from fastapi.responses import FileResponse
+    from app.utils.media_helpers import fast_file_exists
+
     movie = await session.get(Movie, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="视频不存在")
 
-    # 优先 thumb_url，回退到 cover_url
     for url_attr in ['thumb_url', 'cover_url']:
-        path_str = getattr(movie, url_attr, None)
-        if path_str:
-            from pathlib import Path
-            p = Path(path_str)
-            if p.exists() and p.is_file():
-                media_type = "image/jpeg"
-                if p.suffix.lower() in ('.png',):
-                    media_type = "image/png"
-                elif p.suffix.lower() in ('.webp',):
-                    media_type = "image/webp"
-                return FileResponse(str(p), media_type=media_type)
+        p = getattr(movie, url_attr, None)
+        if p and not p.startswith(("http://", "https://", "/")) and fast_file_exists(p):
+            return FileResponse(p, media_type="image/jpeg",
+                                headers={"Cache-Control": "public, max-age=86400"})
 
-    # 服务端 output_dir 兜底
     if movie.output_dir:
         od = Path(movie.output_dir)
-        if od.exists() and od.is_dir():
+        if od.exists():
             for img_name in ('thumb.jpg', 'cover.jpg', 'poster.jpg'):
                 img_path = od / img_name
                 if img_path.exists() and img_path.is_file():
-                    return FileResponse(str(img_path), media_type="image/jpeg")
+                    return FileResponse(str(img_path), media_type="image/jpeg",
+                                        headers={"Cache-Control": "public, max-age=86400"})
 
-    redir = _web_cover_redirect(movie)
-    if redir:
-        return redir
+    if movie.file_path:
+        d = Path(movie.file_path).parent
+        if d.exists():
+            for img_name in ("thumb.jpg", "poster.jpg", "cover.jpg"):
+                p = d / img_name
+                if p.exists() and p.is_file():
+                    return FileResponse(str(p), media_type="image/jpeg",
+                                        headers={"Cache-Control": "public, max-age=86400"})
 
-    raise HTTPException(status_code=404, detail="缩略图不存在")
+    from fastapi.responses import HTMLResponse
+    placeholder = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" '
+        'viewBox="0 0 240 180"><rect fill="#f0f0f0" width="240" height="180"/>'
+        '<text x="120" y="95" text-anchor="middle" fill="#bbb" '
+        'font-size="12">暂无缩略图</text></svg>'
+    )
+    return HTMLResponse(content=placeholder, media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-cache"})
 
 
 # ===== 视频播放 =====
@@ -3285,6 +3364,87 @@ async def scrape_movie(
             "status": "error",
             "message": f"刮削过程中发生错误: {str(e)}",
         }
+
+
+@router.get("/{movie_id}/related")
+async def get_related_movies(
+    movie_id: int,
+    limit: int = Query(12, description="返回数量"),
+    session: AsyncSession = Depends(get_session),
+):
+    """获取相关影片推荐（同演员/同片商/同类型）"""
+    movie = await session.get(Movie, movie_id)
+    if not movie:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    related = []
+    seen_ids = {movie_id}
+
+    try:
+        if movie.actors:
+            actor_names = [a.name for a in movie.actors]
+            if actor_names:
+                stmt = (
+                    select(Movie)
+                    .join(MovieActor)
+                    .join(Actor)
+                    .where(Actor.name.in_(actor_names), Movie.id != movie_id)
+                    .order_by(Movie.release_date.desc())
+                    .limit(limit)
+                )
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    if m.id not in seen_ids:
+                        seen_ids.add(m.id)
+                        related.append(m)
+    except Exception:
+        pass
+
+    if len(related) < limit:
+        try:
+            if movie.studio_id:
+                stmt = (
+                    select(Movie)
+                    .where(Movie.studio_id == movie.studio_id, Movie.id.notin_(list(seen_ids)))
+                    .order_by(Movie.release_date.desc())
+                    .limit(limit - len(related))
+                )
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    seen_ids.add(m.id)
+                    related.append(m)
+        except Exception:
+            pass
+
+    if len(related) < limit:
+        try:
+            if movie.series_id:
+                stmt = (
+                    select(Movie)
+                    .where(Movie.series_id == movie.series_id, Movie.id.notin_(list(seen_ids)))
+                    .order_by(Movie.release_date.desc())
+                    .limit(limit - len(related))
+                )
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    seen_ids.add(m.id)
+                    related.append(m)
+        except Exception:
+            pass
+
+    return {
+        "items": [
+            {
+                "id": m.id,
+                "code": m.code,
+                "title": m.title,
+                "cover_url": m.cover_url,
+                "release_date": str(m.release_date) if m.release_date else None,
+            }
+            for m in related[:limit]
+        ],
+        "total": len(related[:limit]),
+    }
 
 
 @router.get("/{movie_id}", response_model=MovieResponse)

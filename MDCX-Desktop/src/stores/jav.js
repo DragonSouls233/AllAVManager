@@ -30,9 +30,10 @@ export const useJavStore = defineStore('jav', () => {
     return await getJavMovie(id)
   }
 
-  async function loadActors() {
-    const res = await getJavActors()
-    actors.value = res || []
+  async function loadActors(params = {}) {
+    const res = await getJavActors(params)
+    actors.value = res.items || []
+    total.value = res.total || 0
     return actors.value
   }
 

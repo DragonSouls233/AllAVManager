@@ -93,7 +93,13 @@ async def main(
             LogBuffer.info().write(web_info + debug_info)
 
             # ========================================================================搜索番号
-            html_search, error = await manager.computed.async_client.get_json(search_url)
+            _search_headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://www.prestige-av.com/",
+                "Origin": "https://www.prestige-av.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            }
+            html_search, error = await manager.computed.async_client.get_json(search_url, headers=_search_headers)
             if html_search is None:
                 debug_info = f"网络请求错误: {error} "
                 LogBuffer.info().write(web_info + debug_info)
@@ -110,7 +116,13 @@ async def main(
             # 'https://www.prestige-av.com/api/product/2e4a2de8-7275-4803-bb07-7585fd4f2ff3'
             debug_info = f"番号地址: {real_url.replace('api/product', 'goods')} "
             LogBuffer.info().write(web_info + debug_info)
-            page_data, error = await manager.computed.async_client.get_json(real_url)
+            _detail_headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://www.prestige-av.com/",
+                "Origin": "https://www.prestige-av.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            }
+            page_data, error = await manager.computed.async_client.get_json(real_url, headers=_detail_headers)
             if page_data is None:
                 debug_info = f"网络请求错误: {error} "
                 LogBuffer.info().write(web_info + debug_info)

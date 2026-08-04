@@ -147,7 +147,7 @@ async def _detect_module_missing_for_engine(
                     movie_id=movie.id,
                     movie_code=getattr(movie, "code", "") or "",
                     missing_fields=missing_fields,
-                    output_dir=getattr(movie, "output_dir", None) or getattr(movie, "file_path", None),
+                    output_dir=getattr(movie, "output_dir", None) or str(Path(getattr(movie, "file_path", "")).parent) if getattr(movie, "file_path", None) else None,
                 ))
 
         return missing_infos
@@ -275,7 +275,7 @@ class PatchWorkflow:
             skipper: 智能跳过器
             engine: 补刮引擎
         """
-        self.detector = detector or MissingDetector()
+        self.detector = detector
         self.skipper = skipper or Skipper()
         self.engine = engine or PatchEngine()
     
@@ -294,6 +294,11 @@ class PatchWorkflow:
         Returns:
             PatchJobResult 任务结果
         """
+        # 确保 detector 支持指定模块
+        if not self.detector or options.module:
+            from app.patcher.detector import MissingDetector as _MissingDetector
+            self.detector = _MissingDetector(module_name=options.module)
+
         job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         result = PatchJobResult(

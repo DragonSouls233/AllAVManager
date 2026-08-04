@@ -52,13 +52,18 @@ export const getFileProxyUrl = (path) => {
  *  3. cover_url 为空 → 返回占位图
  */
 export const getCoverSrc = (movie) => {
+  if (!movie) return defaultCover()
+  // 模块数据库影片，走后端代理端点（避免浏览器直连外部CDN超时/防盗链问题）
+  if (movie.id && movie.module_type) {
+    return `${getServerBaseUrl()}/api/v1/${movie.module_type}/movies/${movie.id}/cover/file`
+  }
   if (movie?.cover_url) {
     if (/^https?:\/\//i.test(movie.cover_url)) {
       return movie.cover_url
     }
     return getFileProxyUrl(movie.cover_url)
   }
-  return defaultCover(movie?.code || movie?.title)
+  return defaultCover(movie.code || movie.title)
 }
 
 /**
@@ -69,13 +74,18 @@ export const getCoverSrc = (movie) => {
  *  3. avatar_url 为空 → 返回占位图
  */
 export const getAvatarSrc = (actor) => {
-  if (actor?.avatar_url) {
+  if (!actor) return defaultAvatar()
+  // 模块数据库演员，走后端代理端点（解决远程URL防盗链/跨域问题）
+  if (actor.id && actor.module_type) {
+    return `${getServerBaseUrl()}/api/v1/modules/${actor.module_type}/actors/${actor.id}/avatar/file`
+  }
+  if (actor.avatar_url) {
     if (/^https?:\/\//i.test(actor.avatar_url)) {
       return actor.avatar_url
     }
     return getFileProxyUrl(actor.avatar_url)
   }
-  return defaultAvatar(actor?.name)
+  return defaultAvatar(actor.name)
 }
 
 /**
@@ -98,6 +108,11 @@ export const getSubtitleFileUrl = (movieId, subPath) => {
  *  只要 movie.id 存在就请求 /cover/file；仅当 id 缺失才返回占位图。
  */
 export const getMovieCoverUrl = (movie) => {
+  if (!movie) return ''
+  // 有 module_type 的影片（JAV/FC2/无码等模块数据库），走模块的封面代理端点
+  if (movie.id && movie.module_type) {
+    return `${getServerBaseUrl()}/api/v1/${movie.module_type}/movies/${movie.id}/cover/file`
+  }
   if (!movie?.id) {
     return defaultCover(movie?.code)
   }
@@ -105,6 +120,16 @@ export const getMovieCoverUrl = (movie) => {
 }
 
 export const getMoviePosterUrl = (movie) => {
+  if (!movie) return ''
+  if (movie.id && movie.module_type) {
+    return `${getServerBaseUrl()}/api/v1/${movie.module_type}/movies/${movie.id}/cover/file`
+  }
+  if (movie.poster_url && /^https?:\/\//i.test(movie.poster_url)) {
+    return movie.poster_url
+  }
+  if (movie.cover_url && /^https?:\/\//i.test(movie.cover_url)) {
+    return movie.cover_url
+  }
   if (!movie?.id) {
     return defaultCover(movie?.code)
   }
@@ -112,6 +137,16 @@ export const getMoviePosterUrl = (movie) => {
 }
 
 export const getMovieThumbUrl = (movie) => {
+  if (!movie) return ''
+  if (movie.id && movie.module_type) {
+    return `${getServerBaseUrl()}/api/v1/${movie.module_type}/movies/${movie.id}/cover/file`
+  }
+  if (movie.thumb_url && /^https?:\/\//i.test(movie.thumb_url)) {
+    return movie.thumb_url
+  }
+  if (movie.cover_url && /^https?:\/\//i.test(movie.cover_url)) {
+    return movie.cover_url
+  }
   if (!movie?.id) {
     return defaultCover(movie?.code)
   }

@@ -5,10 +5,12 @@
         <div class="toolbar-left">
           <el-select v-model="filterStatus" placeholder="状态筛选" clearable style="width: 140px">
             <el-option label="等待中" value="pending" />
+            <el-option label="排队中" value="queued" />
             <el-option label="运行中" value="running" />
-            <el-option label="成功" value="success" />
+            <el-option label="成功" value="completed" />
             <el-option label="失败" value="failed" />
             <el-option label="已取消" value="cancelled" />
+            <el-option label="重试中" value="retry" />
           </el-select>
           <el-select v-model="filterType" placeholder="任务类型" clearable style="width: 160px">
             <el-option label="刮削" value="scrape" />
@@ -175,20 +177,27 @@ const filterType = ref('')
 
 const filteredTasks = computed(() => {
   return tasks.value.filter(t => {
-    if (filterStatus.value && t.status !== filterStatus.value) return false
+    if (filterStatus.value) {
+      // 兼容新旧状态：selected "completed" 匹配 DB 中的 "completed" 或 "success"
+      if (filterStatus.value === 'completed') {
+        if (t.status !== 'completed' && t.status !== 'success') return false
+      } else if (t.status !== filterStatus.value) {
+        return false
+      }
+    }
     if (filterType.value && t.type !== filterType.value) return false
     return true
   })
 })
 
 const statusType = (s) => ({
-  pending: 'info', running: 'warning', success: 'success',
-  failed: 'danger', cancelled: 'info'
+  pending: 'info', queued: 'info', running: 'warning', completed: 'success',
+  success: 'success', failed: 'danger', cancelled: 'info', retry: 'warning'
 }[s] || 'info')
 
 const statusLabel = (s) => ({
-  pending: '等待中', running: '运行中', success: '成功',
-  failed: '失败', cancelled: '已取消'
+  pending: '等待中', queued: '排队中', running: '运行中', completed: '成功',
+  success: '成功', failed: '失败', cancelled: '已取消', retry: '重试中'
 }[s] || s || '未知')
 
 const formatTime = (t) => {

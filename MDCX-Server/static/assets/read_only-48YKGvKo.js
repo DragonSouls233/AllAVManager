@@ -1,1 +1,0 @@
-import{a_ as r}from"./index-BzNkGdTP.js";import"./vendor-vue-W2MFvHNm.js";import"./vendor-element-C8xKT-nx.js";import"./vendor-utils-BJf2zUmI.js";function i(n){return r({url:"/read-only/scan",method:"POST",params:n})}function d(){return r({url:"/read-only/index",method:"GET"})}export{d as getReadOnlyIndex,i as scanReadOnlyDirectory};

@@ -80,27 +80,45 @@ async def get_dashboard_stats(
     module_stats = {}
     try:
         from app.db.module_db import ModuleDatabase
-        for mod_name in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western"]:
-            try:
-                mod_db = ModuleDatabase.get_instance(mod_name)
-                mod_session = await mod_db.get_session()
+        
+        # 所有模块列表：(模块名, 表名覆盖) — pornhub 的表名是 movies，其他都是 xxx_movies
+        ALL_MODULES = [
+            ("chinese", "chinese_movies"),
+            ("uncensored", "uncensored_movies"),
+            ("fc2", "fc2_movies"),
+            ("pornhub", "movies"),
+            ("jav", "jav_movies"),
+            ("western", "western_movies"),
+        ]
+        
+        for mod_name, table_name in ALL_MODULES:
+            for retry in range(2):
                 try:
-                    from sqlalchemy import text
-                    movie_count = await mod_session.scalar(
-                        text(f"SELECT COUNT(*) FROM {mod_name}_movies")
-                    ) or 0
-                    actor_count = 0
+                    mod_db = ModuleDatabase.get_instance(mod_name)
+                    mod_session = await mod_db.get_session()
                     try:
-                        actor_count = await mod_session.scalar(
-                            text(f"SELECT COUNT(*) FROM {mod_name}_actors")
+                        from sqlalchemy import text
+                        movie_count = await mod_session.scalar(
+                            text(f"SELECT COUNT(*) FROM {table_name}")
                         ) or 0
-                    except Exception:
-                        pass
-                    module_stats[mod_name] = {"movies": movie_count, "actors": actor_count}
-                finally:
-                    await mod_session.close()
-            except Exception:
-                module_stats[mod_name] = {"movies": 0, "actors": 0}
+                        actor_count = 0
+                        try:
+                            actor_table = f"{mod_name}_actors" if mod_name != "pornhub" else "pornhub_actors"
+                            actor_count = await mod_session.scalar(
+                                text(f"SELECT COUNT(*) FROM {actor_table}")
+                            ) or 0
+                        except Exception:
+                            pass
+                        module_stats[mod_name] = {"movies": movie_count, "actors": actor_count}
+                        break  # 成功则退出重试
+                    finally:
+                        await mod_session.close()
+                except Exception as e:
+                    if retry == 0:
+                        logger.warning(f"仪表盘统计: 模块 [{mod_name}] 查询失败（重试中）: {e}")
+                        continue
+                    logger.warning(f"仪表盘统计: 模块 [{mod_name}] 查询失败: {e}")
+                    module_stats[mod_name] = {"movies": 0, "actors": 0}
     except Exception:
         pass
 

@@ -57,6 +57,13 @@ class TaskListResponse(BaseModel):
     items: list[TaskResponse]
 
 
+def _normalize_status(status: str) -> str:
+    """统一任务状态：将 internal 'success' 映射为前端 'completed'"""
+    if status == "success":
+        return "completed"
+    return status
+
+
 @router.get("", response_model=TaskListResponse)
 async def list_tasks(
     page: int = Query(1, ge=1),
@@ -69,7 +76,9 @@ async def list_tasks(
     query = select(Task)
 
     if status:
-        query = query.where(Task.status == status)
+        # 前端可能传 'success'，统一映射
+        mapped_status = "success" if status == "completed" else status
+        query = query.where(Task.status == mapped_status)
 
     if task_type:
         query = query.where(Task.type == task_type)
@@ -90,7 +99,7 @@ async def list_tasks(
             TaskResponse(
                 id=t.id,
                 type=t.type,
-                status=t.status,
+                status=_normalize_status(t.status),
                 movie_code=t.movie_code,
                 file_path=t.file_path,
                 error_message=t.error_message,

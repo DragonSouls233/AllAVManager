@@ -384,6 +384,20 @@ async def get_module_actors(
         await session.close()
 
 
+_SVG_EMPTY_AVATAR = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="160" '
+    'viewBox="0 0 120 160"><rect fill="#e0e0e0" width="120" height="160"/>'
+    '<text x="60" y="80" text-anchor="middle" fill="#aaa" '
+    'font-size="12">暂无头像</text></svg>'
+)
+
+
+def _avatar_placeholder():
+    from fastapi.responses import Response
+    return Response(content=_SVG_EMPTY_AVATAR, media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-cache"})
+
+
 @router.get("/{module_name}/actors/{actor_id}/avatar/file")
 async def get_module_actor_avatar_file(module_name: str, actor_id: int):
     """获取模块演员头像文件"""
@@ -412,29 +426,23 @@ async def get_module_actor_avatar_file(module_name: str, actor_id: int):
         
         avatar_url = actor.avatar_url
         if not avatar_url:
-            raise HTTPException(status_code=404, detail="演员无头像")
-        
-        # 如果是本地文件路径，读取并返回
+            return _avatar_placeholder()
+
+        # 如果 avatar_url 是远程 URL，忽略（封面显示不走外网）
         if avatar_url.startswith(("http://", "https://")):
-            import httpx
-            resp = httpx.get(avatar_url, timeout=30)
+            return _avatar_placeholder()
+
+        # 本地文件
+        from pathlib import Path
+        avatar_path = Path(avatar_url)
+        if avatar_path.exists():
             return Response(
-                content=resp.content,
-                media_type=resp.headers.get("content-type", "image/jpeg"),
-                headers={"Content-Disposition": f'inline; filename="actor_{actor_id}.jpg"'}
+                content=avatar_path.read_bytes(),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=86400"},
             )
-        else:
-            # 本地文件
-            from pathlib import Path
-            avatar_path = Path(avatar_url)
-            if avatar_path.exists():
-                return Response(
-                    content=avatar_path.read_bytes(),
-                    media_type="image/jpeg",
-                    headers={"Content-Disposition": f'inline; filename="actor_{actor_id}.jpg"'}
-                )
-            else:
-                raise HTTPException(status_code=404, detail="头像文件不存在")
+
+        return _avatar_placeholder()
     finally:
         await session.close()
 

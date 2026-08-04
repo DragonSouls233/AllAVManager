@@ -9,6 +9,7 @@
 - 演员头像缺失检测
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -239,6 +240,7 @@ class MissingDetector:
         self,
         output_base_dir: str = "/output",
         check_critical_only: bool = False,
+        module_name: Optional[str] = None,
     ):
         """
         初始化
@@ -246,9 +248,37 @@ class MissingDetector:
         Args:
             output_base_dir: 输出基础目录
             check_critical_only: 仅检查关键字段/图片
+            module_name: 模块名（jav/fc2/...），None=中心数据库
         """
         self.output_base_dir = output_base_dir
         self.check_critical_only = check_critical_only
+        self.module_name = module_name
+        self._module_db = None
+        if module_name:
+            from app.db.module_db import ModuleDatabase
+            self._module_db = ModuleDatabase.get_instance(module_name)
+    
+    @contextlib.asynccontextmanager
+    async def _get_session(self):
+        """获取数据库 session 的 async context manager"""
+        if self._module_db:
+            session = await self._module_db.get_session()
+            async with session:
+                yield session
+        else:
+            async with get_db().session() as session:
+                yield session
+    
+    def _get_table_name(self) -> str:
+        """获取当前模式下的表名"""
+        if self.module_name:
+            MODULE_TABLE_MAP = {
+                "jav": "jav_movies", "fc2": "fc2_movies",
+                "uncensored": "uncensored_movies", "chinese": "chinese_movies",
+                "western": "western_movies", "pornhub": "movies",
+            }
+            return MODULE_TABLE_MAP.get(self.module_name, f"{self.module_name}_movies")
+        return "movies"
     
     async def detect_movie(self, movie_id: int) -> Optional[MissingInfo]:
         """
@@ -260,12 +290,12 @@ class MissingDetector:
         Returns:
             MissingInfo 缺失信息
         """
-        db = get_db()
+        table = self._get_table_name()
         
-        async with db.session() as session:
+        async with self._get_session() as session:
             # 查询电影信息
             result = await session.execute(
-                sa_text("SELECT * FROM movies WHERE id = :id"), {"id": movie_id}
+                sa_text(f"SELECT * FROM {table} WHERE id = :id"), {"id": movie_id}
             )
             row = result.fetchone()
             
@@ -289,11 +319,11 @@ class MissingDetector:
         Returns:
             MissingInfo 缺失信息
         """
-        db = get_db()
+        table = self._get_table_name()
         
-        async with db.session() as session:
+        async with self._get_session() as session:
             result = await session.execute(
-                sa_text("SELECT * FROM movies WHERE code = :code"), {"code": code}
+                sa_text(f"SELECT * FROM {table} WHERE code = :code"), {"code": code}
             )
             row = result.fetchone()
             
@@ -324,23 +354,23 @@ class MissingDetector:
             缺失信息列表
         """
         results = []
-        db = get_db()
+        table = self._get_table_name()
         
-        async with db.session() as session:
+        async with self._get_session() as session:
             # 构建查询
             if movie_ids:
                 placeholders = ",".join(f":id_{i}" for i in range(len(movie_ids)))
-                query = sa_text(f"SELECT * FROM movies WHERE id IN ({placeholders})")
+                query = sa_text(f"SELECT * FROM {table} WHERE id IN ({placeholders})")
                 params = {f"id_{i}": mid for i, mid in enumerate(movie_ids)}
             elif codes:
                 placeholders = ",".join(f":code_{i}" for i in range(len(codes)))
-                query = sa_text(f"SELECT * FROM movies WHERE code IN ({placeholders})")
+                query = sa_text(f"SELECT * FROM {table} WHERE code IN ({placeholders})")
                 params = {f"code_{i}": c for i, c in enumerate(codes)}
             elif status:
-                query = sa_text("SELECT * FROM movies WHERE status = :status")
+                query = sa_text(f"SELECT * FROM {table} WHERE status = :status")
                 params = {"status": status}
             else:
-                query = sa_text("SELECT * FROM movies")
+                query = sa_text(f"SELECT * FROM {table}")
                 params = {}
             
             result = await session.execute(query, params)

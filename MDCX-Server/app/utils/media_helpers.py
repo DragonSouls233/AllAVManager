@@ -37,6 +37,31 @@ def path_reachable(p: str, timeout: float = 1.0) -> bool:
     return bool(res.get("v", False))
 
 
+def fast_file_exists(p: str, timeout: float = 0.5) -> bool:
+    """超短超时的文件存在性检查，专用于封面路径快速命中。
+
+    封面请求量大，如果每个 Path(p).exists() 都在网络盘上卡 30 秒，
+    浏览器连接池马上耗尽导致首页卡死。
+    这里用 0.5s 超时：本地路径通常 <10ms 返回，网络路径 >0.5s 直接视为不存在。
+    即使误判也只会降级到兜底步骤，不会丢失封面。
+    """
+    res: dict = {}
+
+    def _probe() -> None:
+        try:
+            p_obj = Path(p)
+            res["v"] = p_obj.exists() and p_obj.is_file()
+        except Exception:
+            res["v"] = False
+
+    th = threading.Thread(target=_probe, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        return False
+    return bool(res.get("v", False))
+
+
 def filter_reachable(paths: list[str], timeout: float = 1.0) -> list[str]:
     """并行探测多个路径的可达性, 返回可达路径列表。
 
@@ -283,3 +308,261 @@ def _find_image_in_dir(directory: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+# ──────────────────────────────────────────
+# 模块资源管理工具（6个模块共用）
+# ──────────────────────────────────────────
+
+MODULE_DIR_MAP = {
+    "jav": "jav",
+    "fc2": "fc2",
+    "chinese": "chinese",
+    "uncensored": "uncensored",
+    "pornhub": "pornhub",
+    "western": "western",
+}
+
+
+def _get_config() -> object:
+    """获取配置管理器（延迟导入避免循环依赖）"""
+    try:
+        from app.config.manager import get_config
+        return get_config()
+    except Exception:
+        return None
+
+
+def _get_data_base_dir() -> Path:
+    """自动识别数据根目录
+
+    优先级：
+    1. config_manager.computed.data_dir（由环境变量 MDCX_DATA_DIR 或启动参数确定）
+    2. 从 database.url 自动推导
+    3. 默认 ./data
+
+    最终输出：
+    - 模块封面: {data_base}/movies/{module}/{code}/poster.jpg
+    - 演员头像: {data_base}/avatars/{name}.jpg
+    """
+    try:
+        from app.config.manager import get_config_manager
+        mgr = get_config_manager()
+        if mgr and hasattr(mgr, 'computed') and mgr.computed and mgr.computed.data_dir:
+            return Path(mgr.computed.data_dir).resolve()
+    except Exception:
+        pass
+    try:
+        from app.config.manager import get_config as _gc
+        c = _gc()
+        if c and hasattr(c, 'database') and hasattr(c.database, 'url') and c.database.url:
+            db_url = c.database.url
+            if "///" in db_url:
+                p = Path(db_url.split("///")[-1]).parent.parent
+                return p.resolve()
+    except Exception:
+        pass
+    return Path("./data").resolve()
+
+
+def get_module_movies_dir(module_name: str) -> Path:
+    """获取模块对应的影视资源根目录
+
+    格式: {data_base}/movies/{module}/
+    例如: L:/data/movies/jav/
+
+    Args:
+        module_name: 模块名称（jav/fc2/chinese/uncensored/pornhub/western）
+
+    Returns:
+        该模块的影片根目录 Path 对象
+    """
+    sub = MODULE_DIR_MAP.get(module_name, module_name)
+    return _get_data_base_dir() / "movies" / sub
+
+
+def get_movie_local_dir(module_name: str, code: str) -> Path:
+    """获取单个番号资源在本地磁盘上的专属目录
+
+    格式: {data_base}/movies/{module}/{code}/
+    例如: L:/data/movies/jav/MIDE-002/
+
+    Args:
+        module_name: 模块名称
+        code: 番号
+
+    Returns:
+        本地目录路径
+    """
+    base = get_module_movies_dir(module_name)
+    return base / code
+
+
+def get_movie_cover_path(module_name: str, code: str) -> Path:
+    """获取封面图片的本地路径（统一文件名 poster.jpg）
+
+    格式: {data_base}/movies/{module}/{code}/poster.jpg
+    例如: L:/data/movies/jav/MIDE-002/poster.jpg
+
+    Args:
+        module_name: 模块名称
+        code: 番号
+
+    Returns:
+        封面本地路径
+    """
+    return get_movie_local_dir(module_name, code) / "poster.jpg"
+
+
+def get_movie_fanart_path(module_name: str, code: str) -> Path:
+    """获取背景图的本地路径"""
+    return get_movie_local_dir(module_name, code) / "fanart.jpg"
+
+
+def get_movie_thumb_path(module_name: str, code: str) -> Path:
+    """获取缩略图的本地路径"""
+    return get_movie_local_dir(module_name, code) / "thumb.jpg"
+
+
+def get_actor_avatar_path(actor_name: str) -> Path:
+    """获取演员头像的本地路径
+
+    所有模块的演员头像统一存储到 {data_base}/avatars/ 目录
+    相同名称的演员复用同一头像文件
+
+    格式: {data_base}/avatars/{actor_name}.jpg
+    例如: L:/data/avatars/三上悠亜.jpg
+
+    Args:
+        actor_name: 演员名
+
+    Returns:
+        头像本地路径
+    """
+    return _get_data_base_dir() / "avatars" / f"{actor_name}.jpg"
+
+
+async def download_image_to_local(
+    url: str,
+    local_path: Path,
+    timeout: float = 15.0,
+    referer: Optional[str] = None,
+) -> Optional[str]:
+    """下载远程图片到本地，返回本地路径字符串
+
+    Args:
+        url: 远程图片 URL
+        local_path: 本地目标路径
+        timeout: 下载超时秒数
+        referer: Referer 请求头（防盗链绕过）
+
+    Returns:
+        下载成功返回本地路径字符串，失败返回 None
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    try:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        # 如果本地已有文件则直接返回
+        if local_path.exists() and local_path.stat().st_size > 0:
+            return str(local_path)
+        import aiohttp
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        if referer:
+            headers["Referer"] = referer
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=timeout_obj) as sess:
+            async with sess.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if data:
+                        Path(str(local_path)).write_bytes(data)
+                        return str(local_path)
+    except Exception as e:
+        logger.warning(f"下载远程图片失败 [{url[:60]}]: {e}")
+    return None
+
+
+async def ensure_movie_media_local(
+    module_name: str,
+    code: str,
+    cover_url: Optional[str] = None,
+    fanart_url: Optional[str] = None,
+    thumb_url: Optional[str] = None,
+    referer: Optional[str] = None,
+) -> dict:
+    """确保模块影片的所有媒体文件已下载到本地
+
+    根据规范：
+    - 封面存到 {data_base}/movies/{module}/{code}/poster.jpg
+    - 背景图存到 {data_base}/movies/{module}/{code}/fanart.jpg
+    - 缩略图存到 {data_base}/movies/{module}/{code}/thumb.jpg
+
+    Args:
+        module_name: 模块名称
+        code: 番号
+        cover_url: 远程封面 URL
+        fanart_url: 远程背景图 URL
+        thumb_url: 远程缩略图 URL
+        referer: 防盗链 Referer
+
+    Returns:
+        {"cover": 本地路径或None, "fanart": ..., "thumb": ...}
+    """
+    result = {"cover": None, "fanart": None, "thumb": None}
+    if cover_url:
+        dst = get_movie_cover_path(module_name, code)
+        result["cover"] = await download_image_to_local(cover_url, dst, referer=referer)
+    if fanart_url:
+        dst = get_movie_fanart_path(module_name, code)
+        result["fanart"] = await download_image_to_local(fanart_url, dst, referer=referer)
+    if thumb_url:
+        dst = get_movie_thumb_path(module_name, code)
+        result["thumb"] = await download_image_to_local(thumb_url, dst, referer=referer)
+    return result
+
+
+async def ensure_actor_avatar_local(name: str, avatar_url: Optional[str]) -> Optional[str]:
+    """确保演员头像已下载到本地
+
+    根据规范：
+    所有模块的演员头像统一存入 {data_base}/avatars/
+    同演员名的头像复用同一文件，不重复下载
+
+    Args:
+        name: 演员名
+        avatar_url: 远程头像 URL
+
+    Returns:
+        本地头像路径或 None
+    """
+    if not name:
+        return None
+    local_path = get_actor_avatar_path(name)
+    if local_path.exists() and local_path.stat().st_size > 0:
+        return str(local_path)
+    if avatar_url:
+        return await download_image_to_local(avatar_url, local_path, referer="https://javdb.com/")
+    return None
+
+
+def validate_local_path(path_str: Optional[str]) -> bool:
+    """校验本地路径的有效性
+
+    检查：
+    1. 路径非空
+    2. 文件或目录存在
+    3. 文件大小 > 0
+
+    Args:
+        path_str: 本地路径字符串
+
+    Returns:
+        是否有效
+    """
+    if not path_str:
+        return False
+    p = Path(path_str)
+    return p.exists() and (p.is_file() if p.suffix else True)

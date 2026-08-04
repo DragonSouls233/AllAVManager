@@ -137,7 +137,7 @@ def _cleanup_before_start(server_port: int):
             killed_any = True
 
     # 清理 PID 和锁文件
-    for lock_file in ["data/proxy/xray_config.json", "data/proxy/nodes.json"]:
+    for lock_file in ["data/proxy/xray_config.json"]:
         lock_path = Path(lock_file)
         if lock_path.exists():
             try:

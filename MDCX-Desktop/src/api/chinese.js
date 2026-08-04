@@ -77,3 +77,11 @@ export async function getChinesePlayInfo(movieId) {
 export async function getChinesePlayUrl(movieId, protocol = 'http') {
   return api.get(`/chinese/movies/${movieId}/play/external`, { params: { protocol } })
 }
+
+// ===== 详情页相关推荐（通用详情页使用） =====
+export async function getRelatedMovies(movieId) {
+  return api.get(`/chinese/movies/${movieId}/related`)
+}
+export async function getMovieActors(movieId) {
+  return api.get(`/chinese/movies/${movieId}/actors`)
+}

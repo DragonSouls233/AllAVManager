@@ -18,6 +18,7 @@ class ImportRequest(BaseModel):
     overwrite: bool = False  # 是否覆盖已有头像
     min_movies: int = 0  # 仅导入出演影片数 >= N 的演员（0=全部）
     use_local: bool = False  # 使用本地资料库（离线 Gfriends 副本）而非 GitHub
+    module: Optional[str] = None  # 目标模块（不传则导入所有模块）
 
 
 @router.post("/import")
@@ -31,6 +32,7 @@ async def start_import(req: ImportRequest, background_tasks: BackgroundTasks):
             overwrite=req.overwrite,
             min_movies=req.min_movies,
             use_local=req.use_local,
+            module=req.module,
         )
 
     background_tasks.add_task(_run)
@@ -50,17 +52,15 @@ async def list_jobs():
 
 
 @router.get("/preview")
-async def preview_matches(use_local: bool = False):
+async def preview_matches(use_local: bool = False, module: Optional[str] = None):
     """预览匹配情况（不下载）
 
-    返回本地无头像的演员列表 + Gfriends 是否匹配。
+    从各模块数据库收集无头像的演员，匹配 Gfriends 头像库。
     use_local=true 时使用本地资料库（离线副本），不访问 GitHub。
+    module 可指定模块名（jav/fc2/...），不传则扫描所有模块。
     """
     import asyncio
-    from sqlalchemy import select
-    from app.db.database import get_database
-    from app.db.models import Actor, MovieActor
-    from sqlalchemy import func
+    from app.db.module_db import ModuleDatabase
 
     if use_local:
         from app.services.gfriends_importer import build_local_index, find_local_avatar
@@ -70,49 +70,99 @@ async def preview_matches(use_local: bool = False):
             return {"error": f"加载本地资料库索引失败: {e}"}
         index = None
     else:
-        # 加载在线索引
         try:
             index = await gfriends_importer._load_index()
         except Exception as e:
             return {"error": f"加载 Gfriends 索引失败: {e}"}
 
-    db = get_database()
-    async with db.session() as session:
-        # 查询无头像的演员
-        result = await session.execute(
-            select(Actor).where(Actor.avatar_url.is_(None)).order_by(Actor.name).limit(200)
-        )
-        actors = result.scalars().all()
+    # 收集所有模块的无头像演员
+    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+    modules_to_check = [module] if module else ALL_MODULES
 
-        matched = 0
-        unmatched = 0
-        samples = []
-        for actor in actors:
-            if use_local:
-                avatar_hit = bool(find_local_avatar(actor.name, actor.name_jp))
-            else:
-                avatar_url = gfriends_importer._find_avatar_url(actor.name, index)
-                if not avatar_url and actor.name_jp:
-                    avatar_url = gfriends_importer._find_avatar_url(actor.name_jp, index)
-                avatar_hit = bool(avatar_url)
+    all_actors = []  # [(name, name_jp, movie_count, module)]
 
-            if avatar_hit:
-                matched += 1
-                if len(samples) < 20:
-                    samples.append({"id": actor.id, "name": actor.name, "name_jp": actor.name_jp, "matched": True})
-            else:
-                unmatched += 1
-                if len(samples) < 20:
-                    samples.append({"id": actor.id, "name": actor.name, "name_jp": actor.name_jp, "matched": False})
+    for mod_name in modules_to_check:
+        try:
+            mod_db = ModuleDatabase.get_instance(mod_name)
+            async with mod_db.get_session() as sess:
+                from sqlalchemy import text
 
-        return {
-            "total_no_avatar": len(actors),
-            "matched": matched,
-            "unmatched": unmatched,
-            "match_rate": f"{matched / len(actors) * 100:.1f}%" if actors else "0%",
-            "use_local": use_local,
-            "samples": samples,
-        }
+                # 构建演员表名
+                actor_table = "pornhub_actors" if mod_name == "pornhub" else f"{mod_name}_actors"
+
+                # 查询演员（不含已下载头像的过滤逻辑——服务器上头像文件很多，
+                # 但数据库以 avatar_url 为空或 None 作为"未匹配"的标准）
+                rows = await sess.execute(
+                    text(f"""
+                        SELECT a.id, a.name, a.name_jp, a.avatar_url,
+                               (SELECT COUNT(*) FROM {MODULE_TABLE_MAP[mod_name]} m
+                                WHERE m.actor = a.name) as movie_count
+                        FROM {actor_table} a
+                        WHERE a.avatar_url IS NULL OR a.avatar_url = ''
+                        ORDER BY movie_count DESC
+                        LIMIT 500
+                    """)
+                )
+                for row in rows:
+                    all_actors.append({
+                        "id": row.id,
+                        "name": row.name,
+                        "name_jp": row.name_jp,
+                        "movie_count": row.movie_count or 0,
+                        "module": mod_name,
+                        "avatar_url": row.avatar_url,
+                    })
+        except Exception as e:
+            logger.warning(f"模块 {mod_name} 查询演员失败: {e}")
+            continue
+
+    # 用 Gfriends 索引匹配
+    matched = 0
+    unmatched = 0
+    samples = []
+    for actor in all_actors:
+        if use_local:
+            avatar_hit = bool(find_local_avatar(actor["name"], actor.get("name_jp")))
+        else:
+            avatar_url = gfriends_importer._find_avatar_url(actor["name"], index)
+            if not avatar_url and actor.get("name_jp"):
+                avatar_url = gfriends_importer._find_avatar_url(actor["name_jp"], index)
+            avatar_hit = bool(avatar_url)
+
+        if avatar_hit:
+            matched += 1
+        else:
+            unmatched += 1
+
+        if len(samples) < 30:
+            samples.append({
+                "id": actor["id"],
+                "name": actor["name"],
+                "name_jp": actor.get("name_jp"),
+                "module": actor["module"],
+                "movie_count": actor["movie_count"],
+                "matched": avatar_hit,
+            })
+
+    return {
+        "total_no_avatar": len(all_actors),
+        "matched": matched,
+        "unmatched": unmatched,
+        "match_rate": f"{matched / len(all_actors) * 100:.1f}%" if all_actors else "0%",
+        "use_local": use_local,
+        "module": module,
+        "samples": samples,
+    }
+
+
+MODULE_TABLE_MAP = {
+    "jav": "jav_movies",
+    "fc2": "fc2_movies",
+    "uncensored": "uncensored_movies",
+    "chinese": "chinese_movies",
+    "western": "western_movies",
+    "pornhub": "movies",
+}
 
 
 @router.get("/library")
@@ -177,21 +227,17 @@ async def update_gfriends_config(req: GfriendsConfigUpdate):
     if "local_library_path" in update_data:
         path_str = update_data["local_library_path"].strip()
         update_data["local_library_path"] = path_str
-        # 切换运行时检测的本地路径（立即生效，不需重启）
         set_local_library_path(path_str)
-        # 探测路径是否合法
         if path_str:
             from pathlib import Path as _Path
             p = _Path(path_str)
             content_dir = p / "Content" if not path_str.rstrip("/\\").endswith("Content") else p
             if not content_dir.exists():
-                # 允许保存，但不阻断；前端会显示警告
                 logger.warning(f"本地资料库路径不存在: {content_dir}")
 
-    # 写入配置（更新内存 + 持久化）
     for k, v in update_data.items():
         setattr(cfg, k, v)
-    manager.save()  # 持久化到 config.yaml
+    manager.save()
 
     return {"status": "ok", "updated": update_data}
 
@@ -201,12 +247,11 @@ async def test_local_library():
     """测试当前配置的本地资料库是否可访问，并返回资料库统计信息"""
     from pathlib import Path as _Path
     from app.services.gfriends_importer import build_local_index, detect_local_library
-    # 重新探测（会用最新配置）
     detected = detect_local_library()
     if not detected:
         return {"available": False, "error": "未找到本地资料库（请填写路径）"}
     try:
-        build_local_index()  # 重建索引
+        build_local_index()
         from app.services.gfriends_importer import get_local_library_status
         return get_local_library_status()
     except Exception as e:

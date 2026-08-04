@@ -98,6 +98,7 @@ class ProxyManager:
     def load_nodes(self) -> None:
         self._ensure_dirs()
         if not NODES_FILE.exists():
+            logger.info("proxy nodes file not found at %s", NODES_FILE)
             return
         try:
             data = json.loads(NODES_FILE.read_text(encoding="utf-8"))
@@ -108,9 +109,12 @@ class ProxyManager:
         self._state.subscription_url = data.get("subscription_url")
         self._state.mode = data.get("mode", "domain")
         self._state.current_node_id = data.get("current_node_id")
+        loaded = 0
         for item in data.get("nodes", []):
-            # 从 raw_url 重建 outbound
             raw = item.get("raw_url", "")
+            if not raw:
+                logger.warning("skip node with empty raw_url: %s", item.get("name", "unknown"))
+                continue
             try:
                 node = parse_node_url(raw)
                 node.id = item.get("id", node.id)
@@ -121,11 +125,15 @@ class ProxyManager:
                 logger.warning("rebuild node from raw_url failed: %s", e)
                 continue
             self._nodes[node.id] = node
+            loaded += 1
         self._state.nodes_count = len(self._nodes)
-        logger.info("proxy manager loaded %d nodes", len(self._nodes))
+        logger.info("proxy manager loaded %d nodes from %s", loaded, NODES_FILE)
 
     def save_nodes(self) -> None:
         self._ensure_dirs()
+        if not self._nodes:
+            logger.warning("save_nodes skipped: node pool is empty, file unchanged")
+            return
         data = {
             "subscription_url": self._state.subscription_url,
             "mode": self._state.mode,

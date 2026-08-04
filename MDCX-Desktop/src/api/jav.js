@@ -1,7 +1,7 @@
 import { api } from './index'
 
-export async function getJavActors() {
-  return api.get('/jav/actors')
+export async function getJavActors(params = {}) {
+  return api.get('/jav/actors', { params })
 }
 
 export async function getJavActor(id) {
@@ -58,6 +58,14 @@ export async function getJavPlayInfo(movieId) {
 
 export async function getJavPlayUrl(movieId, protocol = 'http') {
   return api.get(`/jav/movies/${movieId}/play/external`, { params: { protocol } })
+}
+
+export async function getRelatedMovies(movieId) {
+  return api.get(`/jav/movies/${movieId}/related`)
+}
+
+export async function getMovieActors(movieId) {
+  return api.get(`/jav/movies/${movieId}/actors`)
 }
 
 // ===== 番号提取测试 =====

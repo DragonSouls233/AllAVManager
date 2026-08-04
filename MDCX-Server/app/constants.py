@@ -8,18 +8,26 @@ from enum import Enum
 class TaskStatus(str, Enum):
     """任务状态"""
     PENDING = "pending"
+    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
+    SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RETRY = "retry"
 
 
 class TaskType(str, Enum):
     """任务类型"""
     SCRAPE = "scrape"  # 全量刮削
+    SCRAPE_FILE = "scrape_file"  # 单文件刮削
+    SCRAPE_BATCH = "scrape_batch"  # 批量刮削
     IMPORT = "import"  # 导入已有刮削
     PATCH = "patch"    # 补刮
     SCAN = "scan"      # 目录扫描
+    ORGANIZE = "organize"  # 文件整理
+    FINGERPRINT = "fingerprint"  # 指纹
+    THUMBNAIL = "thumbnail"  # 缩略图
 
 
 class MovieStatus(str, Enum):

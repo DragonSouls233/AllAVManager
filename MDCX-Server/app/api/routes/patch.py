@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
 from app.db.models import Movie, PatchRecord
-from app.db.module_db import ModuleDatabase
 from app.patcher.detector import MissingDetector, MissingInfo
 from app.patcher.engine import PatchWorkflow, PatchOptions, PatchJobResult, PatchMode
 from app.patcher.strategy import PatchType, PatchResult
@@ -45,9 +44,6 @@ class PatchRunRequest(BaseModel):
     mode: str = Field(default="all", description="补刮模式: all/directory/selected")
     patch_type: str = Field(default="smart", description="补刮类型: smart/images_only/metadata_only/full/custom")
 
-    # 模块名（如 jav/fc2/uncensored/chinese/pornhub/western）
-    module: Optional[str] = Field(default=None, description="模块名，不传则使用通用数据库")
-
     # 选定补刮
     movie_ids: Optional[list[int]] = Field(default=None, description="电影 ID 列表")
     codes: Optional[list[str]] = Field(default=None, description="番号列表")
@@ -66,7 +62,10 @@ class PatchRunRequest(BaseModel):
     # 自定义字段/图片（仅 custom 类型）
     custom_fields: Optional[list[str]] = Field(default=None, description="自定义字段列表")
     custom_images: Optional[list[str]] = Field(default=None, description="自定义图片列表")
-
+    
+    # 模块
+    module: Optional[str] = Field(default=None, description="模块名（jav/fc2/...），不传=中心数据库")
+    
     # 报告选项
     generate_report: bool = Field(default=True, description="生成报告")
     report_format: str = Field(default="json", description="报告格式: json/markdown/both")
@@ -188,151 +187,31 @@ async def _find_movie_ids_in_directories(
     return list(ids)
 
 
-# ===== 模块数据库补丁检测 =====
-
-# 补丁刮削UI字段 -> 模型属性名映射
-_FIELD_TO_MODEL_ATTR: dict[str, Optional[str]] = {
-    "title": "title",
-    "release_date": "release_date",
-    "actors": "actor",
-    "actor": "actor",
-    "cover": "cover_url",
-    "poster": "poster_url",
-    "fanart": None,  # 背景图，模块大多无此字段
-    "plot": "plot",
-    "genre": "genre",
-    "genres": "genre",
-    "tags": "tags",
-    "tag": "tags",
-    "studio": "studio",
-    "maker": "maker",
-    "series": "series",
-    "director": "director",
-    "rating": "rating",
-    "duration": "duration",
-    "thumbnail": "thumbnail_url",
-    "thumb": "thumbnail_url",
-}
-
-MODULE_MODEL_MAP: dict[str, type] = {}
-
-
-def _get_module_model(module: str) -> type:
-    """懒加载获取模块模型类"""
-    global MODULE_MODEL_MAP
-    if module not in MODULE_MODEL_MAP:
-        _imports = {
-            "jav": "app.db.jav_models",
-            "fc2": "app.db.fc2_models",
-            "uncensored": "app.db.uncensored_models",
-            "chinese": "app.db.chinese_models",
-            "pornhub": "app.db.pornhub_models",
-            "western": "app.db.western_models",
-        }
-        _classes = {
-            "jav": "JavMovie",
-            "fc2": "Fc2Movie",
-            "uncensored": "UncensoredMovie",
-            "chinese": "ChineseMovie",
-            "pornhub": "PornhubMovie",
-            "western": "WesternMovie",
-        }
-        if module not in _imports:
-            raise HTTPException(status_code=400, detail=f"不支持的模块: {module}")
-        import importlib
-        mod = importlib.import_module(_imports[module])
-        MODULE_MODEL_MAP[module] = getattr(mod, _classes[module])
-    return MODULE_MODEL_MAP[module]
-
-
-async def _detect_module_missing(
-    module: str,
-    fields: Optional[list[str]] = None,
-    directories: Optional[list[str]] = None,
-) -> list[dict]:
-    """检测模块数据库中的影片缺失字段"""
-    db = ModuleDatabase.get_instance(module)
-    model = _get_module_model(module)
-    session = await db.get_session()
-    try:
-        stmt = select(model)
-        if directories:
-            filters = []
-            for d in directories:
-                filters.append(model.file_path.like(f"%{d}%") if hasattr(model, "file_path") else False)
-            if filters:
-                from sqlalchemy import or_
-                stmt = stmt.where(or_(*filters))
-
-        result = await session.execute(stmt)
-        movies = result.scalars().all()
-
-        missing_infos = []
-        for movie in movies:
-            missing_fields = []
-            check_fields = fields or list(_FIELD_TO_MODEL_ATTR.keys())
-            for f in check_fields:
-                attr = _FIELD_TO_MODEL_ATTR.get(f)
-                if attr is None:
-                    continue  # 非标字段跳过
-                val = getattr(movie, attr, None)
-                if val is None or (isinstance(val, str) and not val.strip()):
-                    missing_fields.append(MissingFieldResponse(
-                        field=f,
-                        current_value="",
-                        importance="critical",
-                    ))
-
-            if missing_fields:
-                missing_infos.append(MissingInfoResponse(
-                    movie_id=movie.id,
-                    movie_code=getattr(movie, "code", "") or "",
-                    missing_fields=missing_fields,
-                    missing_images=[],
-                    nfo_exists=False,
-                    nfo_path=None,
-                    actor_images_missing=[],
-                    total_missing=len(missing_fields),
-                    critical_missing=len(missing_fields),
-                    output_dir=None,
-                ))
-
-        return missing_infos
-    finally:
-        await session.close()
-
-
 # ===== API Endpoints =====
 
 @router.get("/detect", response_model=DetectResponse)
 async def detect_missing(
     movie_id: Optional[int] = Query(None, description="电影 ID"),
     code: Optional[str] = Query(None, description="番号"),
-    module: Optional[str] = Query(None, description="模块名: jav/fc2/uncensored/chinese/pornhub/western"),
     status: Optional[str] = Query(None, description="按状态过滤"),
     directories: Optional[list[str]] = Query(None, description="按目录范围检测（匹配 output_dir/file_path）"),
     fields: Optional[list[str]] = Query(None, description="仅报告指定字段类型的缺失（如 title,cover,actors）"),
     check_critical_only: bool = Query(False, description="仅检查关键字段"),
+    module: Optional[str] = Query(None, description="模块名（jav/fc2/uncensored/chinese/western/pornhub），不传=中心数据库"),
     session: AsyncSession = Depends(get_session),
 ):
     """
     检测缺失字段/图片
 
-    - 不传参数：检测所有电影（通用数据库）
-    - 传 module：检测指定模块数据库（jav/fc2/uncensored/chinese/pornhub/western）
+    - 不传参数：检测所有电影
     - 传 movie_id：检测指定电影
     - 传 code：检测指定番号
     - 传 status：按状态过滤
     - 传 directories：仅检测该目录范围内的电影（支持演员文件夹定向补刮）
     - 传 fields：仅报告指定字段类型的缺失
+    - 传 module：指定模块数据库（jav/fc2/...），不传则用中心数据库 scraper.db.movies
     """
-    # 模块数据库检测优先
-    if module:
-        missing_infos = await _detect_module_missing(module, fields, directories)
-        total = len(missing_infos)
-        return DetectResponse(total=total, items=missing_infos)
-
-    detector = MissingDetector(check_critical_only=check_critical_only)
+    detector = MissingDetector(check_critical_only=check_critical_only, module_name=module)
 
     missing_infos = []
 
@@ -347,10 +226,13 @@ async def detect_missing(
     elif status:
         missing_infos = await detector.detect_batch(status=status)
     elif directories:
-        # 按目录范围检测：找出路径匹配的电影 ID，再逐个检测
-        ids = await _find_movie_ids_in_directories(directories, session)
-        if ids:
-            missing_infos = await detector.detect_batch(movie_ids=ids)
+        if module:
+            # 传了 module 时不支持按目录过滤，直接全量检测
+            missing_infos = await detector.detect_all()
+        else:
+            ids = await _find_movie_ids_in_directories(directories, session)
+            if ids:
+                missing_infos = await detector.detect_batch(movie_ids=ids)
     else:
         missing_infos = await detector.detect_all()
 
@@ -423,7 +305,6 @@ async def run_patch(
     options = PatchOptions(
         mode=mode,
         patch_type=patch_type,
-        module=request.module,
         movie_ids=request.movie_ids or [],
         codes=request.codes or [],
         directories=request.directories or [],
@@ -433,6 +314,7 @@ async def run_patch(
         skip_complete=request.skip_complete,
         generate_report=request.generate_report,
         report_format=request.report_format,
+        module=request.module,
     )
     
     # 创建初始状态

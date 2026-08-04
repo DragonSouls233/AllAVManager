@@ -122,7 +122,9 @@ async def list_actors():
         stmt = select(JavActor).order_by(JavActor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url} for a in actors]
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
+                 "module_type": "jav",
+                 "source": a.source, "avatar_url": a.avatar_url} for a in actors]
     finally:
         await session.close()
 
@@ -141,10 +143,10 @@ async def get_actor(actor_id: int):
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
         return {"id": actor.id, "name": actor.name, "alias": actor.alias,
-                "avatar_url": actor.avatar_url, "source": actor.source,
-                "source_site": actor.source_site,
-                "movie_count": actor.movie_count,
-                "created_at": str(actor.created_at)}
+                    "module_type": "jav",
+                    "avatar_url": actor.avatar_url, "source": actor.source,
+                    "source_site": actor.source_site, "movie_count": actor.movie_count,
+                    "created_at": str(actor.created_at)}
     finally:
         await session.close()
 
@@ -153,8 +155,8 @@ async def get_actor(actor_id: int):
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
-    keyword: Optional[str] = Query(None, description="搜索标题/番号",
-    actor: Optional[str] = Query(None, description="按演员名过滤")),
+    keyword: Optional[str] = Query(None, description="搜索标题/番号"),
+    actor: Optional[str] = Query(None, description="按演员名过滤"),
     status_filter: Optional[str] = Query(None, alias="status", description="过滤状态 pending/scraped"),
 ):
     """列出有码模块影片列表"""
@@ -197,6 +199,7 @@ async def list_movies(
             "pending_count": pending_count or 0,
             "items": [
                 {"id": m.id, "code": m.code, "title": m.title,
+                 "module_type": "jav",
                  "source_platform": m.source,
                  "series": m.series,
                  "cover_url": m.cover_url, "actor": m.actor,
@@ -206,6 +209,18 @@ async def list_movies(
         }
     finally:
         await session.close()
+
+
+def _parse_sample_images(raw: Optional[str]) -> list:
+    """解析 sample_images JSON 字符串为列表"""
+    if not raw:
+        return []
+    try:
+        import json
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 @router.get("/movies/{movie_id}")
@@ -223,11 +238,12 @@ async def get_movie(movie_id: int):
             raise HTTPException(status_code=404, detail="影片不存在")
         return {
             "id": movie.id, "code": movie.code, "title": movie.title,
+            "module_type": "jav",
             "original_title": movie.original_title,
             "is_chinese": movie.is_chinese, "is_uncensored": movie.is_uncensored,
             "is_mosaic": movie.is_mosaic,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
-            "thumb_url": movie.thumb_url, "sample_images": movie.sample_images,
+            "thumb_url": movie.thumb_url, "sample_images": _parse_sample_images(movie.sample_images),
             "actor": movie.actor, "studio": movie.studio,
             "series": movie.series, "label": movie.label,
             "release_date": movie.release_date, "duration": movie.duration,
@@ -241,6 +257,113 @@ async def get_movie(movie_id: int):
             "status": movie.status, "created_at": str(movie.created_at),
             "updated_at": str(movie.updated_at),
         }
+    finally:
+        await session.close()
+
+
+# ========== 相关推荐与演员端点（通用详情页使用） ==========
+
+
+@router.get("/movies/{movie_id}/related")
+async def get_jav_related_movies(movie_id: int):
+    """获取JAV影片的相关推荐（同演员/同系列/同类别）"""
+    from sqlalchemy import select, or_, and_
+    from app.db.jav_models import JavMovie
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        movie = await session.get(JavMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        related_ids = {movie_id}
+        actor_movies = []
+        series_movies = []
+        genre_movies = []
+        limit = 12
+
+        # 同演员
+        if movie.actor:
+            actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
+            if actor_names:
+                filters = [JavMovie.actor.contains(name) for name in actor_names]
+                stmt = select(JavMovie).where(
+                    and_(or_(*filters), JavMovie.id != movie_id)
+                ).order_by(JavMovie.id.desc()).limit(limit)
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    if m.id not in related_ids:
+                        related_ids.add(m.id)
+                        actor_movies.append({
+                            "id": m.id, "code": m.code, "title": m.title,
+                            "module_type": "jav", "cover_url": m.cover_url,
+                        })
+
+        # 同系列
+        if movie.series:
+            stmt = select(JavMovie).where(
+                and_(JavMovie.series == movie.series, JavMovie.id != movie_id)
+            ).order_by(JavMovie.id.desc()).limit(limit)
+            result = await session.execute(stmt)
+            for m in result.scalars().all():
+                if m.id not in related_ids:
+                    related_ids.add(m.id)
+                    series_movies.append({
+                        "id": m.id, "code": m.code, "title": m.title,
+                        "module_type": "jav", "cover_url": m.cover_url,
+                    })
+
+        # 同类别
+        if movie.genre:
+            genre_parts = [g.strip() for g in movie.genre.split(",") if g.strip()]
+            if genre_parts:
+                genre_filters = [JavMovie.genre.contains(gp) for gp in genre_parts[:5]]
+                stmt = select(JavMovie).where(
+                    and_(or_(*genre_filters), JavMovie.id != movie_id)
+                ).order_by(JavMovie.id.desc()).limit(limit)
+                result = await session.execute(stmt)
+                for m in result.scalars().all():
+                    if m.id not in related_ids:
+                        related_ids.add(m.id)
+                        genre_movies.append({
+                            "id": m.id, "code": m.code, "title": m.title,
+                            "module_type": "jav", "cover_url": m.cover_url,
+                        })
+
+        return {
+            "actor_movies": actor_movies[:limit],
+            "series_movies": series_movies[:limit],
+            "genre_movies": genre_movies[:limit],
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/movies/{movie_id}/actors")
+async def get_jav_movie_actors(movie_id: int):
+    """获取JAV影片关联的演员列表"""
+    from app.db.jav_models import JavMovie, JavActor
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        movie = await session.get(JavMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        if not movie.actor:
+            return {"items": []}
+        actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
+        items = []
+        for name in actor_names:
+            stmt = select(JavActor).where(JavActor.name == name)
+            result = await session.execute(stmt)
+            actor = result.scalar_one_or_none()
+            if actor:
+                items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url})
+            else:
+                items.append({"id": name, "name": name, "avatar_url": None})
+        return {"items": items}
     finally:
         await session.close()
 
@@ -279,8 +402,27 @@ async def scrape_jav_movie(movie_id: int):
         movie.title = scrape_result.title
         if scrape_result.original_title:
             movie.original_title = scrape_result.original_title
-        if scrape_result.cover_url:
-            movie.cover_url = scrape_result.cover_url
+
+        # ── 资源下载：将远程封面/预览图/头像下载到本地 ──
+        from app.utils.media_helpers import (
+            ensure_movie_media_local,
+            ensure_actor_avatar_local,
+        )
+
+        # 下载封面/背景图/缩略图到 L:/data/movies/jav/{code}/
+        local_media = await ensure_movie_media_local(
+            module_name="jav", code=movie.code,
+            cover_url=scrape_result.cover_url,
+            fanart_url=scrape_result.poster_url,
+            thumb_url=scrape_result.thumb_url,
+        )
+        # 存本地路径到数据库
+        if local_media.get("cover"):
+            movie.cover_url = local_media["cover"]
+        if local_media.get("fanart"):
+            movie.poster_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            movie.thumb_url = local_media["thumb"]
         if scrape_result.poster_url:
             movie.poster_url = scrape_result.poster_url
         if scrape_result.release_date:
@@ -323,14 +465,22 @@ async def scrape_jav_movie(movie_id: int):
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
                     db_actor.movie_count += 1
-                    if actor_info.avatar_url and not db_actor.avatar_url:
-                        db_actor.avatar_url = actor_info.avatar_url
+                    if not db_actor.avatar_url and actor_info.avatar_url:
+                        # 下载头像到 L:/data/avatars/{name}.jpg
+                        local_avatar = await ensure_actor_avatar_local(
+                            actor_info.name, actor_info.avatar_url
+                        )
+                        db_actor.avatar_url = local_avatar or actor_info.avatar_url
                     if not db_actor.source_site:
                         db_actor.source_site = scrape_result.source
                 else:
+                    # 下载头像到 L:/data/avatars/{name}.jpg
+                    local_avatar = await ensure_actor_avatar_local(
+                        actor_info.name, actor_info.avatar_url
+                    )
                     session.add(JavActor(
                         name=actor_info.name,
-                        avatar_url=actor_info.avatar_url,
+                        avatar_url=local_avatar or actor_info.avatar_url,
                         source="scraper",
                         source_site=scrape_result.source,
                         movie_count=1,
@@ -641,6 +791,109 @@ async def import_jav_nfo(
         "total": len(nfo_files),
         "message": f"NFO 导入已启动，共发现 {len(nfo_files)} 个 NFO 文件",
     }
+
+
+# ========== 封面/预览图文件代理 ==========
+
+import os as _os
+from pathlib import Path as _Path
+from fastapi import Request as _Request
+
+
+@router.get("/movies/{movie_id}/cover/file")
+async def get_jav_cover_file(movie_id: int):
+    """获取 JAV 模块影片封面图片文件
+
+    纯本地查找，绝不连接外网。
+    返回优先级：
+    1. {data_base}/movies/jav/{code}/poster.jpg（规范目录下本地文件，刮削时已下载）
+    2. DB 中 cover_url/poster_url/thumb_url 的本地路径
+    3. 视频所在目录下的 poster.jpg/cover.jpg 等
+    4. 内置 SVG 占位图
+    """
+    from fastapi.responses import FileResponse, Response
+    from app.utils.media_helpers import (
+        fast_file_exists,
+        get_movie_cover_path,
+        get_movie_fanart_path,
+        get_movie_thumb_path,
+    )
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        from app.db.jav_models import JavMovie
+        from sqlalchemy import select
+
+        stmt = select(JavMovie).where(JavMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 1) 规范目录：{data_base}/movies/jav/{code}/poster.jpg（最快命中）
+        if movie.code:
+            for get_path in (get_movie_cover_path, get_movie_fanart_path, get_movie_thumb_path):
+                p = get_path("jav", movie.code)
+                if fast_file_exists(str(p)):
+                    return FileResponse(
+                        str(p),
+                        media_type=_image_media_type(str(p)),
+                        headers={"Cache-Control": "public, max-age=86400"},
+                    )
+
+        # 2) DB 中 cover_url/poster_url/thumb_url 的本地路径
+        for attr in ("cover_url", "poster_url", "thumb_url"):
+            url = getattr(movie, attr, None)
+            if not url:
+                continue
+            if not url.startswith(("http://", "https://", "/")):
+                if fast_file_exists(url):
+                    return FileResponse(
+                        url,
+                        media_type=_image_media_type(url),
+                        headers={"Cache-Control": "public, max-age=86400"},
+                    )
+
+        # 3) 视频所在目录下的 poster.jpg/cover.jpg/fanart.jpg/thumb.jpg
+        if movie.file_path:
+            try:
+                video_dir = _Path(movie.file_path).parent
+                for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg", "thumb.jpg"]:
+                    img_path = video_dir / img_name
+                    if await asyncio.wait_for(
+                        asyncio.to_thread(lambda p=img_path: p.exists() and p.is_file()),
+                        timeout=3.0,
+                    ):
+                        return FileResponse(
+                            str(img_path),
+                            media_type=_image_media_type(img_name),
+                            headers={"Cache-Control": "public, max-age=86400"},
+                        )
+            except asyncio.TimeoutError:
+                logger.debug(f"JAV封面: 扫描视频目录超时 [movie_id={movie_id}]")
+
+        # 4) 全部找不到：返回内置 SVG 占位图（不连外网）
+        from fastapi.responses import HTMLResponse
+        _placeholder = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" '
+            'viewBox="0 0 240 360"><rect fill="#f0f0f0" width="240" height="360"/>'
+            '<text x="120" y="180" text-anchor="middle" fill="#bbb" '
+            'font-size="14">暂无封面</text></svg>'
+        )
+        return HTMLResponse(content=_placeholder, media_type="image/svg+xml",
+                            headers={"Cache-Control": "no-cache"})
+    finally:
+        await session.close()
+
+
+def _image_media_type(path: str) -> str:
+    ext = _Path(path).suffix.lower()
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    return "image/jpeg"
 
 
 # ========== 播放端点 ==========

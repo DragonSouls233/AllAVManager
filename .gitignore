@@ -1,14 +1,55 @@
+# 测试相关
 test_screenshots/
+qa_screenshots/
+qa_screenshots_v2/
+screenshots/
 .chrome-test/
-.references/
+ms-playwright/
 browser_test.js
+qa_test_*.js
+qa_test_*.py
+qa_test_*.txt
+test_*.py
+test_*.txt
+test_report_*.txt
+
+# 调试/日志
+debug.log
+qa_test_log.txt
+qa_test_log_*.bak.txt
+*.log
+
+# 开发工具
+.references/
+.vscode/
+docs/plans/
+tools/
+scripts/
+
+# 临时文件
+__pycache__/
+*.pyc
+*.pyo
 *.db
-_verify_data
+nul
+NUL
+
+# 构建产物
 node_modules
-scripts
-# 前端构建产物
 MDCX-Desktop/dist/
 MDCX-Desktop/dist-electron/
 MDCX-Desktop/release/
 MDCX-Desktop/webdist/
 MDCX-Desktop/node_modules/
+
+# 服务器静态资源（前端构建产物）
+MDCX-Server/static/assets/
+
+# 杂项
+_verify_data
+check_jav_db.py
+fix_*.py
+query_*.py
+gfriends.py
+gfriends_importer.py
+stats.py

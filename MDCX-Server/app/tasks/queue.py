@@ -23,6 +23,7 @@ class TaskStatus(str, Enum):
     PENDING = "pending"        # 待处理
     QUEUED = "queued"          # 已入队
     RUNNING = "running"        # 运行中
+    COMPLETED = "completed"    # 已完成（兼容 constants.py）
     SUCCESS = "success"        # 成功
     FAILED = "failed"          # 失败
     RETRY = "retry"            # 重试中
@@ -44,6 +45,10 @@ class TaskType(str, Enum):
     IMPORT = "import"                # 导入已有刮削
     PATCH = "patch"                  # 补刮
     ORGANIZE = "organize"            # 文件整理
+    SCRAPE = "scrape"                # 全量刮削（兼容 constants.py）
+    SCAN = "scan"                    # 目录扫描（兼容 constants.py）
+    FINGERPRINT = "fingerprint"      # 指纹（兼容 constants.py）
+    THUMBNAIL = "thumbnail"          # 缩略图（兼容 constants.py）
 
 
 @dataclass

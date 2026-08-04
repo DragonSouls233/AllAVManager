@@ -26,6 +26,11 @@
             :rows="3"
             placeholder="每行一个目录路径，例如：&#10;D:\Videos\New&#10;E:\Downloads"
           />
+          <div style="margin-top: 8px">
+            <el-button size="small" @click="showModuleDirs = true">
+              <el-icon><FolderOpened /></el-icon> 选择模块目录
+            </el-button>
+          </div>
         </el-form-item>
         <el-form-item label="递归扫描">
           <el-switch v-model="scanForm.recursive" />
@@ -306,6 +311,37 @@
       </el-tab-pane>
     </el-tabs>
 
+    <!-- 模块目录选择对话框 -->
+    <el-dialog v-model="showModuleDirs" title="选择模块目录" width="600px" :close-on-click-modal="false" @open="loadModuleDirs">
+      <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
+        勾选模块目录后点击"应用"，目录路径将填入上方文本框。
+      </div>
+      <div v-if="moduleDirsLoading" style="text-align: center; padding: 20px">
+        <el-icon class="is-loading" :size="24"><Loading /></el-icon> 加载中...
+      </div>
+      <div v-else-if="moduleDirsError" style="color: #f56c6c; padding: 12px">
+        加载失败：{{ moduleDirsError }}
+      </div>
+      <div v-else>
+        <el-checkbox-group v-model="selectedModuleDirs">
+          <el-card v-for="item in moduleDirList" :key="item.key" shadow="never" style="margin-bottom: 8px">
+            <el-checkbox :value="item.key" style="width: 100%">
+              <div style="display: flex; justify-content: space-between; align-items: center; width: 100%">
+                <div>
+                  <strong>{{ item.label }}</strong>
+                  <div style="font-size: 12px; color: #909399; margin-top: 4px">{{ item.dirs.join('; ') || '无目录' }}</div>
+                </div>
+              </div>
+            </el-checkbox>
+          </el-card>
+        </el-checkbox-group>
+      </div>
+      <template #footer>
+        <el-button @click="showModuleDirs = false">取消</el-button>
+        <el-button type="primary" @click="applyModuleDirs" :disabled="!selectedModuleDirs.length">应用</el-button>
+      </template>
+    </el-dialog>
+
     <!-- mnamer 配置对话框 -->
     <el-dialog
       v-model="mnamerConfigVisible"
@@ -420,13 +456,14 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpened, Search, Upload, ArrowRight, Document, MagicStick, Check } from '@element-plus/icons-vue'
+import { FolderOpened, Search, Upload, ArrowRight, Document, MagicStick, Check, Loading } from '@element-plus/icons-vue'
 import {
   scanImportDirectory, runImport, getImportStatus, getImportReport,
   getImportHistory, deleteImportRecord,
   getMnamerHealth, getMnamerCandidates, previewMnamerTarget, executeMnamerRename,
   getMnamerConfig, updateMnamerConfig
 } from '@/api'
+import { getModulesConfig } from '@/api/modules'
 
 // ============================================
 // Tab 状态
@@ -445,6 +482,53 @@ const currentJob = ref(null)
 const report = ref(null)
 const history = ref([])
 let pollTimer = null
+
+// 模块目录选择
+const showModuleDirs = ref(false)
+const moduleDirsLoading = ref(false)
+const moduleDirsError = ref('')
+const moduleDirList = ref([])
+const selectedModuleDirs = ref([])
+
+const MODULE_LABELS = {
+  jav: 'JAV 有码', fc2: 'FC2', uncensored: 'JAV 无码',
+  chinese: '国产', pornhub: 'PORNHub', western: '欧美',
+}
+
+async function loadModuleDirs() {
+  moduleDirsLoading.value = true
+  moduleDirsError.value = ''
+  try {
+    const config = await getModulesConfig()
+    const items = []
+    for (const [key, label] of Object.entries(MODULE_LABELS)) {
+      const mod = config?.modules?.[key]
+      const dirs = mod?.media_dirs || []
+      if (dirs.length) items.push({ key, label, dirs })
+    }
+    moduleDirList.value = items
+  } catch (e) {
+    moduleDirsError.value = e.message || '获取配置失败'
+  } finally {
+    moduleDirsLoading.value = false
+  }
+}
+
+function applyModuleDirs() {
+  const allDirs = []
+  for (const key of selectedModuleDirs.value) {
+    const item = moduleDirList.value.find(m => m.key === key)
+    if (item) allDirs.push(...item.dirs)
+  }
+  const existing = scanForm.value.directory.trim()
+  const newDirs = allDirs.filter(d => !existing.split('\n').map(s => s.trim()).includes(d))
+  if (newDirs.length) {
+    scanForm.value.directory = existing
+      ? existing + '\n' + newDirs.join('\n')
+      : newDirs.join('\n')
+  }
+  showModuleDirs.value = false
+}
 
 const scanForm = ref({
   directory: '',

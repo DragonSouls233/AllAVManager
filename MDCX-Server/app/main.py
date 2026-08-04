@@ -188,6 +188,7 @@ async def lifespan(app: FastAPI):
         modules_config = getattr(config, "modules", None)
         if modules_config and _should_scan:
             module_scanner_map = {
+                "jav": ("app.tasks.jav_scanner", "JavScanner"),
                 "chinese": ("app.tasks.chinese_scanner", "ChineseScanner"),
                 "fc2": ("app.tasks.fc2_scanner", "Fc2Scanner"),
                 "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
@@ -196,21 +197,23 @@ async def lifespan(app: FastAPI):
             }
             # 后台收集扫描结果，用于更新记录
             _scan_results = {}
+            _scan_update_lock = asyncio.Lock()
 
             async def _run_and_track(mod_name: str, scanner) -> None:
                 result = await _run_module_scan(mod_name, scanner)
-                _scan_results[mod_name] = result
-                # 每条子扫描完成时尝试更新总记录
-                if _scan_record_id:
-                    total_all = sum(r.get("total", 0) for r in _scan_results.values())
-                    added_all = sum(r.get("added_files", 0) or r.get("movies_added", 0) for r in _scan_results.values())
-                    errors = [r.get("error") for r in _scan_results.values() if r.get("error")]
-                    s = "failed" if errors else "running"
-                    await _scan_ctrl.complete_scan_record(
-                        _scan_record_id, status=s,
-                        total_files=total_all, added_files=added_all,
-                        error_message="; ".join(errors) if errors else None,
-                    )
+                async with _scan_update_lock:
+                    _scan_results[mod_name] = result
+                    # 每条子扫描完成时尝试更新总记录
+                    if _scan_record_id:
+                        total_all = sum(r.get("total", 0) for r in _scan_results.values())
+                        added_all = sum(r.get("added_files", 0) or r.get("movies_added", 0) for r in _scan_results.values())
+                        errors = [r.get("error") for r in _scan_results.values() if r.get("error")]
+                        s = "failed" if errors else "running"
+                        await _scan_ctrl.complete_scan_record(
+                            _scan_record_id, status=s,
+                            total_files=total_all, added_files=added_all,
+                            error_message="; ".join(errors) if errors else None,
+                        )
 
             for mod_name, (mod_path, cls_name) in module_scanner_map.items():
                 mod_cfg = getattr(modules_config, mod_name, None)

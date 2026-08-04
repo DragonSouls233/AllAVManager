@@ -68,7 +68,7 @@ class ScraperWorkflow:
             return "jav"
         _SOURCE_MODULE_MAP = {
             "javdb": "jav", "javbus": "jav", "dmm": "jav",
-            "javlibrary": "jav", "jav321": "jav", "arzon": "jav",
+            "javlibrary": "jav", "arzon": "jav",
             "mgstage": "jav", "faleno": "jav", "prestige": "jav",
             "kawaii": "jav", "madou": "chinese", "guochan": "chinese",
             "fc2": "fc2", "fc2club": "fc2", "fc2ppvdb": "fc2",

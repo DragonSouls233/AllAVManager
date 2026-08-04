@@ -11,6 +11,7 @@
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -18,6 +19,7 @@ from typing import Optional
 
 from sqlalchemy import text, select
 
+from pathlib import Path
 from app.patcher.detector import FieldType, ImageType, MissingInfo
 from app.scraper.engine import ScraperEngine
 from app.output.images import ImageProcessor
@@ -423,6 +425,7 @@ class PatchEngine:
                     missing_info.movie_code,
                     plan.fields_to_patch,
                     sources=effective_sources,
+                    missing_info=missing_info,
                 )
                 
                 if scraped_data:
@@ -517,14 +520,79 @@ class PatchEngine:
         code: str,
         fields: list[FieldType],
         sources: Optional[list[str]] = None,
+        missing_info: Optional[MissingInfo] = None,
     ) -> Optional[dict]:
         """刮削缺失字段
+
+        优先从已存在的 NFO 文件读取（如果输出目录下有 movie.nfo 就不走网络爬虫）。
 
         Args:
             code: 番号
             fields: 需要补的字段（用于判断是否需要重新刮削）
             sources: 指定刮削来源站点列表；None 表示自动选择
+            missing_info: 缺失信息（用于获取输出目录以读取 NFO）
         """
+        # ---- 优先从 NFO 缓存读取 ----
+        if missing_info and missing_info.output_dir:
+            nfo_path = Path(missing_info.output_dir) / "movie.nfo"
+            if nfo_path.exists():
+                try:
+                    from app.importer.nfo_parser import NFOParser
+                    parser = NFOParser()
+                    imported = parser.parse(str(nfo_path))
+                    if imported:
+                        logger.info(f"NFO \u7f13\u5b58\u547d\u4e2d: {code} (\u8df3\u8fc7\u7f51\u7edc\u722c\u866b)")
+                        actors = []
+                        if imported.actors:
+                            actors = [{"name": a} for a in imported.actors]
+                        cover_url = None
+                        for n in ["poster", "cover", "fanart", "thumb"]:
+                            p = Path(missing_info.output_dir) / f"{n}.jpg"
+                            if p.exists():
+                                cover_url = str(p)
+                                break
+                        return {
+                            "code": imported.code or code,
+                            "title": imported.title,
+                            "original_title": imported.original_title,
+                            "title_jp": None,
+                            "title_en": None,
+                            "plot": imported.plot,
+                            "plot_jp": None,
+                            "plot_en": None,
+                            "plot_short": None,
+                            "original_plot": None,
+                            "release_date": imported.release_date.isoformat() if imported.release_date else None,
+                            "duration": imported.duration,
+                            "studio": imported.studio,
+                            "maker": None,
+                            "publisher": None,
+                            "label": None,
+                            "series": imported.series,
+                            "director": None,
+                            "genre": ",".join(imported.genres) if imported.genres else None,
+                            "genres": imported.genres,
+                            "tags": [],
+                            "actors": actors,
+                            "cover_url": cover_url,
+                            "poster_url": cover_url,
+                            "thumb_url": None,
+                            "fanart_url": None,
+                            "trailer_url": None,
+                            "sample_images": [],
+                            "rating": None,
+                            "votes": None,
+                            "website": None,
+                            "source_url": None,
+                            "javdb_id": None,
+                            "source": "nfo_cache",
+                            "is_uncensored": imported.is_uncensored,
+                            "is_chinese": imported.is_chinese,
+                        }
+                except Exception as e:
+                    logger.warning(f"NFO \u89e3\u6790\u5931\u8d25: {nfo_path}: {e}")
+
+        # ---- \u8d70\u7f51\u7edc\u722c\u866b ----
         try:
             # 使用刮削引擎直接刮削番号（支持按来源站点过滤）
             result = await self.scraper_engine.scrape_number(code, sources=sources)
