@@ -151,6 +151,162 @@ async def get_actor(actor_id: int):
         await session.close()
 
 
+@router.get("/actors/{actor_id}/movies")
+async def get_actor_movies(
+    actor_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(24, ge=1, le=100),
+):
+    """获取演员作品列表"""
+    from app.db.jav_models import JavActor, JavMovie
+    from sqlalchemy import select, func, or_
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        actor = await session.get(JavActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        offset = (page - 1) * page_size
+        # 搜索含有演员名的影片
+        name_part = f"%{actor.name}%"
+        total_q = select(func.count(JavMovie.id)).where(JavMovie.actor.like(name_part))
+        total = (await session.execute(total_q)).scalar() or 0
+
+        stmt = select(JavMovie).where(JavMovie.actor.like(name_part)) \
+            .order_by(JavMovie.release_date.desc().nulls_last(), JavMovie.id.desc()) \
+            .offset(offset).limit(page_size)
+        rows = (await session.execute(stmt)).scalars().all()
+
+        items = []
+        for m in rows:
+            items.append({
+                "id": m.id, "code": m.code, "title": m.title,
+                "cover_url": m.cover_url, "poster_url": m.poster_url,
+                "release_date": str(m.release_date) if m.release_date else None,
+                "duration": m.duration, "rating": m.rating,
+                "studio": m.studio, "maker": m.maker,
+                "genre": m.genre,
+                "module_type": "jav",
+                "file_path": m.file_path,
+            })
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/timeline")
+async def get_actor_timeline(actor_id: int):
+    """获取演员作品时间线"""
+    from app.db.jav_models import JavActor, JavMovie
+    from sqlalchemy import select, func
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        actor = await session.get(JavActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        name_part = f"%{actor.name}%"
+        rows = (await session.execute(
+            select(JavMovie.release_date, func.count(JavMovie.id))
+            .where(JavMovie.actor.like(name_part))
+            .where(JavMovie.release_date.isnot(None))
+            .group_by(JavMovie.release_date)
+            .order_by(JavMovie.release_date)
+        )).all()
+
+        year_map = {}
+        for dt, cnt in rows:
+            year = str(dt)[:4]
+            year_map[year] = year_map.get(year, 0) + cnt
+
+        years_list = [{"year": y, "count": c} for y, c in sorted(year_map.items(), reverse=True)]
+
+        # 详情页最近作品
+        recent = (await session.execute(
+            select(JavMovie).where(JavMovie.actor.like(name_part))
+            .order_by(JavMovie.release_date.desc().nulls_last())
+            .limit(100)
+        )).scalars().all()
+
+        details = []
+        for y, c in sorted(year_map.items(), reverse=True):
+            year_items = [m for m in recent if m.release_date and str(m.release_date)[:4] == y]
+            details.append({
+                "year": int(y),
+                "count": c,
+                "movies": [{
+                    "id": m.id, "code": m.code, "title": m.title,
+                    "cover_url": m.cover_url,
+                    "release_date": str(m.release_date) if m.release_date else None,
+                    "module_type": "jav",
+                } for m in year_items[:12]],
+            })
+
+        return {
+            "actor_id": actor_id,
+            "actor_name": actor.name,
+            "years": years_list,
+            "details": details,
+            "module_type": "jav",
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/tags")
+async def get_actor_tags(actor_id: int):
+    """获取演员标签"""
+    from app.db.jav_models import JavActor
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        actor = await session.get(JavActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        return {"tags": [], "module_type": "jav"}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/avatar/file")
+async def get_actor_avatar_file(actor_id: int):
+    """获取演员头像文件"""
+    from app.db.jav_models import JavActor
+    from fastapi.responses import FileResponse
+    from pathlib import Path as _Path
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        actor = await session.get(JavActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        # 优先返回规范目录头像
+        avatar_path = _Path(getattr(actor, "avatar_path", "") or "")
+        if avatar_path and avatar_path.exists():
+            return FileResponse(str(avatar_path), media_type="image/jpeg",
+                                headers={"Cache-Control": "public, max-age=86400"})
+
+        # 本地头像文件回退
+        if actor.avatar_url:
+            av = actor.avatar_url
+            if av.startswith(("http://", "https://")):
+                raise HTTPException(status_code=404, detail="演员头像为远程URL，请通过 Gfriends 导入")
+            av_path = _Path(av)
+            if av_path.exists():
+                return FileResponse(str(av_path), media_type="image/jpeg",
+                                    headers={"Cache-Control": "public, max-age=86400"})
+
+        raise HTTPException(status_code=404, detail="演员头像不存在")
+    finally:
+        await session.close()
+
+
 @router.get("/movies")
 async def list_movies(
     skip: int = 0,

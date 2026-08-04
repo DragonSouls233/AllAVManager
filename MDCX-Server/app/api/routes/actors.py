@@ -27,10 +27,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.manager import get_config_manager
 from app.db.database import Database, get_session
 from app.db.models import Actor, Movie, MovieActor, ActorTag
+from app.utils.module_helper import MODULE_MODELS as MOD_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ===== 模块数据库辅助 =====
+
+async def _get_mod_session(module: str):
+    """获取模块数据库 session"""
+    from app.db.module_db import ModuleDatabase
+    mod_db = ModuleDatabase.get_instance(module)
+    return await mod_db.get_session()
+
+
+def _get_mod_model(module: str, typ: str = "movie"):
+    """获取模块模型类"""
+    import importlib
+    mod_path, movie_cls, actor_cls = MOD_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, movie_cls if typ == "movie" else "actor")
 
 
 # ===== 轻量级内存缓存 =====
@@ -217,17 +235,49 @@ async def list_actors(
     max_height: Optional[int] = Query(None, description="最大身高"),
     birthplace: Optional[str] = Query(None, description="出生地"),
     has_avatar: Optional[bool] = Query(None, description="是否有头像"),
+    module: Optional[str] = Query(None, description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """
     获取演员列表（带内存缓存，60秒 TTL）
-
-    - 支持搜索（按名字）
-    - 支持分页
-    - 包含作品数量
-    - 支持按作品数排序
-    - 支持作品数过滤：all(全部), multi(>=min_movies部,多作品/默认页), single(<min_movies部,素人/单作品)
     """
+    from app.utils.module_helper import MODULE_MODELS
+
+    # 模块数据库模式：直接查模块演员表
+    if module and module in MODULE_MODELS:
+        sess = await _get_mod_session(module)
+        async with sess:
+            actor_cls = _get_mod_model(module, "actor")
+            from sqlalchemy import select, func
+            total_q = select(func.count(actor_cls.id))
+            if search:
+                total_q = total_q.where(actor_cls.name.contains(search))
+            total = (await sess.execute(total_q)).scalar() or 0
+
+            q = select(actor_cls).order_by(actor_cls.movie_count.desc().nulls_last())
+            if search:
+                q = q.where(actor_cls.name.contains(search))
+            q = q.offset((page - 1) * page_size).limit(page_size)
+            rows = (await sess.execute(q)).scalars().all()
+
+            items = []
+            for a in rows:
+                items.append(ActorResponse(
+                    id=a.id, name=a.name, name_jp=getattr(a, "name_jp", None),
+                    name_en=getattr(a, "name_en", None), alias=getattr(a, "alias", None),
+                    birth_date=getattr(a, "birth_date", None), age=getattr(a, "age", None),
+                    height=getattr(a, "height", None), bust=getattr(a, "bust", None),
+                    waist=getattr(a, "waist", None), hip=getattr(a, "hip", None),
+                    cup=getattr(a, "cup", None), birthplace=getattr(a, "birthplace", None),
+                    hobby=getattr(a, "hobby", None), intro=getattr(a, "intro", None),
+                    avatar_url=getattr(a, "avatar_url", None),
+                    source=getattr(a, "source", None), source_url=getattr(a, "source_url", None),
+                    zodiac=getattr(a, "zodiac", None), debut_year=getattr(a, "debut_year", None),
+                    social_links=None, movie_count=getattr(a, "movie_count", None) or 0,
+                ))
+            return ActorListResponse(total=total, items=items)
+
+    # 中心数据库模式（原有逻辑）
     # 搜索和过滤不缓存，仅缓存无搜索无过滤的分页查询
     cache_key = f"actors:list:{page}:{page_size}:{sort_by}:{sort_order}:{movie_count_filter}:{min_movies}:{cup}:{min_age}:{max_age}:{min_height}:{max_height}:{birthplace}:{has_avatar}" if not search else None
     if cache_key:
@@ -516,6 +566,7 @@ async def scrape_actor_profile(
 @router.get("/{actor_id}", response_model=ActorDetailResponse)
 async def get_actor(
     actor_id: int,
+    module: Optional[str] = Query(None, description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -523,6 +574,49 @@ async def get_actor(
     
     包含基本信息和最近作品
     """
+    from app.utils.module_helper import MODULE_MODELS
+
+    # 模块数据库模式
+    if module and module in MODULE_MODELS:
+        sess = await _get_mod_session(module)
+        async with sess:
+            actor_cls = _get_mod_model(module, "actor")
+            actor = await sess.get(actor_cls, actor_id)
+            if not actor:
+                raise HTTPException(status_code=404, detail="演员不存在")
+            movie_count = getattr(actor, "movie_count", None) or 0
+
+            # 最近作品
+            movie_cls = _get_mod_model(module, "movie")
+            from sqlalchemy import select
+            recent_q = select(movie_cls).order_by(
+                movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc()
+            ).limit(20)
+            recent_rows = (await sess.execute(recent_q)).scalars().all()
+
+            recent_movies = []
+            for m in recent_rows:
+                recent_movies.append(ActorMovieResponse(
+                    id=m.id, code=m.code, title=m.title,
+                    release_date=str(m.release_date) if getattr(m, "release_date", None) else None,
+                    cover_url=getattr(m, "cover_url", None),
+                ))
+
+            actor_resp = ActorResponse(
+                id=actor.id, name=actor.name, name_jp=getattr(actor, "name_jp", None),
+                name_en=getattr(actor, "name_en", None), alias=getattr(actor, "alias", None),
+                birth_date=getattr(actor, "birth_date", None), age=getattr(actor, "age", None),
+                height=getattr(actor, "height", None), bust=getattr(actor, "bust", None),
+                waist=getattr(actor, "waist", None), hip=getattr(actor, "hip", None),
+                cup=getattr(actor, "cup", None), birthplace=getattr(actor, "birthplace", None),
+                hobby=getattr(actor, "hobby", None), intro=getattr(actor, "intro", None),
+                avatar_url=getattr(actor, "avatar_url", None),
+                source=getattr(actor, "source", None), source_url=getattr(actor, "source_url", None),
+                zodiac=getattr(actor, "zodiac", None), debut_year=getattr(actor, "debut_year", None),
+                social_links=None, movie_count=movie_count,
+            )
+            return ActorDetailResponse(actor=actor_resp, movie_count=movie_count, recent_movies=recent_movies)
+
     actor = await session.get(Actor, actor_id)
     if not actor:
         raise HTTPException(status_code=404, detail="演员不存在")
@@ -563,6 +657,7 @@ async def get_actor_movies(
     actor_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    module: Optional[str] = Query(None, description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -571,6 +666,37 @@ async def get_actor_movies(
     - 支持分页
     - 按发行日期倒序
     """
+    from app.utils.module_helper import MODULE_MODELS
+
+    # 模块数据库模式
+    if module and module in MODULE_MODELS:
+        sess = await _get_mod_session(module)
+        async with sess:
+            actor_cls = _get_mod_model(module, "actor")
+            actor = await sess.get(actor_cls, actor_id)
+            if not actor:
+                raise HTTPException(status_code=404, detail="演员不存在")
+            movie_cls = _get_mod_model(module, "movie")
+            from sqlalchemy import select, func, or_
+            name_part = f"%{actor.name}%"
+            total_q = select(func.count(movie_cls.id)).where(
+                or_(movie_cls.actor.like(name_part), movie_cls.folder_based_actors.like(name_part))
+            )
+            total = (await sess.execute(total_q)).scalar() or 0
+            offset = (page - 1) * page_size
+            q = select(movie_cls).where(
+                or_(movie_cls.actor.like(name_part), movie_cls.folder_based_actors.like(name_part))
+            ).order_by(movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc()).offset(offset).limit(page_size)
+            rows = (await sess.execute(q)).scalars().all()
+            movie_items = []
+            for m in rows:
+                movie_items.append(ActorMovieResponse(
+                    id=m.id, code=m.code, title=m.title,
+                    release_date=str(m.release_date) if getattr(m, "release_date", None) else None,
+                    cover_url=getattr(m, "cover_url", None),
+                ))
+            return {"actor_id": actor_id, "actor_name": actor.name, "total": total, "items": movie_items}
+
     actor = await session.get(Actor, actor_id)
     if not actor:
         raise HTTPException(status_code=404, detail="演员不存在")

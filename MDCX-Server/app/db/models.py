@@ -315,7 +315,7 @@ class FavoriteItem(Base):
     """收藏夹条目"""
     __tablename__ = "favorite_items"
     __table_args__ = (
-        UniqueConstraint("group_id", "entity_id", name="uq_favorite_item"),
+        UniqueConstraint("group_id", "entity_id", "module", name="uq_favorite_item"),
         {"sqlite_autoincrement": True},
     )
 
@@ -323,6 +323,7 @@ class FavoriteItem(Base):
     group_id: Mapped[int] = mapped_column(Integer, ForeignKey("favorite_groups.id", ondelete="CASCADE"), nullable=False, index=True)
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)  # Movie/Actor/Studio/Series 的 ID
     entity_type: Mapped[str] = mapped_column(String(20), nullable=False)  # 冗余存一份，方便查询
+    module: Mapped[Optional[str]] = mapped_column(String(20), default="", comment="模块名 jav/fc2/... 空=中心库")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     added_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 

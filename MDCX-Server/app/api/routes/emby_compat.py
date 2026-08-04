@@ -21,6 +21,7 @@ Emby 客户端识别为标准 Emby 服务器。
 挂在 /emby 路径下，不走 /api/v1 前缀，认证由 AuthMiddleware._check_emby_auth 处理。
 """
 
+import importlib
 import os
 import secrets
 from typing import Optional
@@ -37,6 +38,16 @@ from app.db.models import Movie, Actor, MovieActor, Studio, Series
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 模块数据库映射：module_name -> (models_module_path, movie_class_name, actor_class_name)
+MODULE_MODELS = {
+    "jav": ("app.db.jav_models", "JavMovie", "JavActor"),
+    "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
+    "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor"),
+    "chinese": ("app.db.chinese_models", "ChineseMovie", "ChineseActor"),
+    "western": ("app.db.western_models", "WesternMovie", "WesternActor"),
+    "pornhub": ("app.db.pornhub_models", "PornhubMovie", "PornhubActor"),
+}
 
 router = APIRouter()
 
@@ -104,13 +115,155 @@ def _parse_genres(raw) -> list:
         return [g.strip() for g in str(raw).split(",") if g.strip()]
 
 
+async def _find_movie_anywhere(movie_id: int):
+    """跨模块查找影片：先查中心库 Movie 表，查不到时遍历所有模块数据库
+
+    Returns:
+        (movie_obj, module_session, module_name) 元组。
+        - module_name 为 None 表示中心库的 Movie 对象（此时 module_session 也为 None）
+        - module_name 为具体字符串表示模块数据库的对象（如 "jav"），
+          调用方必须在使用后关闭 module_session
+        如果所有库都查不到，返回 (None, None, None)
+    """
+    from app.db.database import get_session_context
+    from app.db.module_db import ModuleDatabase
+
+    # 1. 先查中心库（不返回 session，调用方用自己的注入 session）
+    async with get_session_context() as central_session:
+        movie = await central_session.get(Movie, movie_id)
+        if movie:
+            return movie, None, None
+
+    # 2. 遍历各模块数据库
+    for module_name, (mod_path, movie_cls_name, _) in MODULE_MODELS.items():
+        try:
+            mod_db = ModuleDatabase.get_instance(module_name)
+            mod_session = await mod_db.get_session()
+            mod = importlib.import_module(mod_path)
+            movie_cls = getattr(mod, movie_cls_name)
+
+            movie = await mod_session.get(movie_cls, movie_id)
+            if movie:
+                return movie, mod_session, module_name
+            await mod_session.close()
+        except Exception as e:
+            logger.warning(f"查询模块数据库 [{module_name}] 失败: {e}")
+            continue
+
+    return None, None, None
+
+
+async def _find_actor_anywhere(actor_id: int):
+    """跨模块查找演员：先查中心库 Actor 表，查不到时遍历所有模块数据库
+
+    Returns:
+        (actor_obj, module_session, module_name) 元组
+    """
+    from app.db.database import get_session_context
+    from app.db.module_db import ModuleDatabase
+
+    # 1. 先查中心库
+    async with get_session_context() as central_session:
+        actor = await central_session.get(Actor, actor_id)
+        if actor:
+            return actor, None, None
+
+    # 2. 遍历各模块数据库
+    for module_name, (mod_path, _, actor_cls_name) in MODULE_MODELS.items():
+        try:
+            mod_db = ModuleDatabase.get_instance(module_name)
+            mod_session = await mod_db.get_session()
+            mod = importlib.import_module(mod_path)
+            actor_cls = getattr(mod, actor_cls_name)
+
+            actor = await mod_session.get(actor_cls, actor_id)
+            if actor:
+                return actor, mod_session, module_name
+            await mod_session.close()
+        except Exception as e:
+            logger.warning(f"查询模块数据库 [{module_name}] 演员失败: {e}")
+            continue
+
+    return None, None, None
+
+
+async def _module_movie_to_emby_item(
+    movie,
+    module_name: str,
+    base_url: str,
+    nsfw_hidden: bool = False,
+) -> dict:
+    """将模块数据库的 Movie 对象转换为 Emby Item
+
+    模块数据库的影片将 act_info 存储在 movie.actor 字段（逗号分隔），
+    片商存储在 movie.studio 字段，系列存储在 movie.series 字段。
+    没有独立的 Actor/Studio/Series 关联表。
+    """
+    # 从 actor 字段解析演员列表
+    actors = []
+    if hasattr(movie, 'actor') and movie.actor:
+        actors = [a.strip() for a in str(movie.actor).split(",") if a.strip()]
+
+    # 处理 NSFW 模式（隐藏标题）
+    name = movie.code
+    if not nsfw_hidden and movie.title:
+        name = f"[{movie.code}] {movie.title}"
+
+    # 类型
+    genres = _parse_genres(getattr(movie, 'genre', None))
+    tags = _parse_genres(getattr(movie, 'tag', None))
+
+    # 使用 module_name 作为 Id 前缀避免跨库 ID 冲突
+    item_id = f"{module_name}_{movie.id}"
+
+    # 片商名（模块数据库直接存字符串，如 studio 字段）
+    studio_name = getattr(movie, 'studio', None)
+
+    # 系列名
+    series_name = getattr(movie, 'series', None)
+
+    return {
+        "Id": item_id,
+        "Name": name,
+        "OriginalTitle": movie.original_title or movie.title or movie.code,
+        "SortName": movie.code,
+        "ForcedSortName": movie.code,
+        "Type": "Movie",
+        "MediaType": "Video",
+        "DateCreated": movie.created_at.isoformat() if getattr(movie, 'created_at', None) else None,
+        "Overview": movie.plot or "",
+        "ProductionYear": _parse_year(movie.release_date),
+        "PremiereDate": movie.release_date,
+        "CommunityRating": float(movie.rating) if movie.rating else None,
+        "RunTimeTicks": _ticks_from_seconds(movie.duration),
+        "Studios": [{"Name": studio_name}] if studio_name else [],
+        "Genres": genres,
+        "Tags": tags,
+        "People": [
+            {"Name": name, "Type": "Actor", "Role": "Actor"}
+            for name in actors
+        ],
+        "Path": movie.file_path or f"/movies/{item_id}",
+        "ImageTags": {"Primary": "primary"} if (getattr(movie, 'cover_url', None) or getattr(movie, 'poster_url', None)) else {},
+        "BackdropImageTags": ["backdrop"] if getattr(movie, 'cover_url', None) else [],
+        "UserData": {
+            "Played": movie.play_count > 0 if hasattr(movie, 'play_count') else False,
+            "PlayCount": getattr(movie, 'play_count', 0),
+            "IsFavorite": False,
+            "Key": item_id,
+        },
+        "ProviderIds": {"Imdb": movie.code},
+        "Taglines": [series_name] if series_name else [],
+    }
+
+
 async def _movie_to_emby_item(
     movie: Movie,
     session: AsyncSession,
     base_url: str,
     nsfw_hidden: bool = False,
 ) -> dict:
-    """将 Movie 对象转换为 Emby Item"""
+    """将中心库 Movie 对象转换为 Emby Item"""
     # 查询演员
     actors_result = await session.execute(
         select(Actor.name)
@@ -418,7 +571,7 @@ async def get_user_item(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    """单个媒体项详情"""
+    """单个媒体项详情（支持跨模块查询）"""
     base_url = str(request.base_url).rstrip("/")
     cfg = get_config().emby_compat
 
@@ -427,11 +580,21 @@ async def get_user_item(
     except ValueError:
         raise HTTPException(status_code=404, detail="无效的 Item ID")
 
-    movie = await session.get(Movie, movie_id)
+    # 跨模块查找：先查中心库，再查模块数据库
+    movie, mod_session, module_name = await _find_movie_anywhere(movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
 
-    return await _movie_to_emby_item(movie, session, base_url, cfg.nsfw_hidden)
+    # 根据来源选择对应的转换函数
+    if module_name is not None:
+        # 来自模块数据库
+        try:
+            return await _module_movie_to_emby_item(movie, module_name, base_url, cfg.nsfw_hidden)
+        finally:
+            await mod_session.close()
+    else:
+        # 来自中心库，module_session 为 None
+        return await _movie_to_emby_item(movie, session, base_url, cfg.nsfw_hidden)
 
 
 # ===== Items 通用端点 =====
@@ -466,23 +629,32 @@ async def get_item_image(
     session: AsyncSession = Depends(get_session),
     max_width: Optional[int] = None,
 ):
-    """获取媒体图片（重定向到 MDCX 的 cover/poster URL）"""
+    """获取媒体图片（重定向到 MDCX 的 cover/poster URL，支持跨模块查询）"""
     try:
         movie_id = int(item_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="无效的 Item ID")
 
-    movie = await session.get(Movie, movie_id)
+    # 跨模块查找
+    movie, mod_session, module_name = await _find_movie_anywhere(movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
 
     # Primary 用海报，Backdrop 用封面
+    cover_url = getattr(movie, 'cover_url', None)
+    poster_url = getattr(movie, 'poster_url', None)
+    thumb_url = getattr(movie, 'thumb_url', None)
+
     if image_type == "Backdrop":
-        url = movie.cover_url
+        url = cover_url
     elif image_type == "Thumb":
-        url = movie.thumb_url or movie.cover_url
+        url = thumb_url or cover_url
     else:
-        url = movie.poster_url or movie.cover_url
+        url = poster_url or cover_url
+
+    # 关闭模块 session（如果是从模块库查到的）
+    if module_name is not None:
+        await mod_session.close()
 
     if not url:
         # 返回 1x1 透明 PNG

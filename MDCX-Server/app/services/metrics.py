@@ -79,6 +79,18 @@ if _HAS_PROMETHEUS:
     db_connection_pool_size = Gauge(
         "mdcx_db_connection_pool_size", "数据库连接池大小", registry=_registry
     )
+    db_module_movies_total = Gauge(
+        "mdcx_db_module_movies_total",
+        "各模块影片总数",
+        ["module"],
+        registry=_registry,
+    )
+    db_module_actors_total = Gauge(
+        "mdcx_db_module_actors_total",
+        "各模块演员总数",
+        ["module"],
+        registry=_registry,
+    )
 
     # --- 刮削引擎指标 ---
     scrape_total = Counter(
@@ -224,6 +236,7 @@ async def collect_db_metrics():
         from sqlalchemy import select, func
         from app.db.database import get_database
         from app.db.models import Movie, Task, Actor, Tag, Studio, Series, Favorite
+        from app.db.module_db import ModuleDatabase
 
         db = get_database()
         async with db.session() as session:
@@ -248,6 +261,31 @@ async def collect_db_metrics():
                         select(func.count(Task.id)).where(Task.status == status)
                     ) or 0
                     db_tasks_total.labels(status=status).set(count)
+
+                # === 模块数据库统计 ===
+                _MODULE_TABLES = [
+                    ("jav", "jav_movies", "jav_actors"),
+                    ("fc2", "fc2_movies", "fc2_actors"),
+                    ("chinese", "chinese_movies", "chinese_actors"),
+                    ("uncensored", "uncensored_movies", "uncensored_actors"),
+                    ("western", "western_movies", "western_actors"),
+                    ("pornhub", "movies", "pornhub_actors"),
+                ]
+                for module_name, movies_table, actors_table in _MODULE_TABLES:
+                    try:
+                        mod_db = ModuleDatabase.get_instance(module_name)
+                        async with mod_db.get_session() as mod_session:
+                            from sqlalchemy import text as sa_text
+                            movie_count = await mod_session.scalar(
+                                sa_text(f"SELECT COUNT(*) FROM {movies_table}")
+                            ) or 0
+                            actor_count = await mod_session.scalar(
+                                sa_text(f"SELECT COUNT(*) FROM {actors_table}")
+                            ) or 0
+                            db_module_movies_total.labels(module=module_name).set(movie_count)
+                            db_module_actors_total.labels(module=module_name).set(actor_count)
+                    except Exception as e:
+                        logger.debug(f"采集模块 [{module_name}] 数据库指标失败: {e}")
 
             return True
     except Exception as e:

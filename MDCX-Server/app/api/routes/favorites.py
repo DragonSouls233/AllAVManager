@@ -79,8 +79,27 @@ class ItemResponse(BaseModel):
 
 # ===== 辅助函数 =====
 
-async def _get_entity_info(session: AsyncSession, entity_type: str, entity_id: int) -> dict:
-    """获取实体的名称和封面"""
+async def _get_entity_info(session: AsyncSession, entity_type: str, entity_id: int, module: str = "") -> dict:
+    """获取实体的名称和封面（支持跨模块查询）"""
+    from app.utils.module_helper import MODULE_MODELS
+
+    if module and module in MODULE_MODELS:
+        # 模块数据库模式
+        mod_sess = await _get_mod_session(module)
+        async with mod_sess:
+            if entity_type == "movie":
+                cls = _get_mod_model(module, "movie")
+                m = await mod_sess.get(cls, entity_id)
+                if m:
+                    return {"name": m.title or m.code, "cover": getattr(m, "cover_url", None)}
+            elif entity_type == "actor":
+                cls = _get_mod_model(module, "actor")
+                a = await mod_sess.get(cls, entity_id)
+                if a:
+                    return {"name": a.name, "cover": getattr(a, "avatar_url", None)}
+            return {"name": None, "cover": None}
+
+    # 中心数据库模式
     if entity_type == "movie":
         m = await session.get(Movie, entity_id)
         if m:
@@ -98,6 +117,24 @@ async def _get_entity_info(session: AsyncSession, entity_type: str, entity_id: i
         if s:
             return {"name": s.name, "cover": None}
     return {"name": None, "cover": None}
+
+
+# ===== 模块数据库辅助（复用 actors.py 逻辑）=====
+
+async def _get_mod_session(module: str):
+    """获取模块数据库 session"""
+    from app.db.module_db import ModuleDatabase
+    mod_db = ModuleDatabase.get_instance(module)
+    return await mod_db.get_session()
+
+
+def _get_mod_model(module: str, typ: str = "movie"):
+    """获取模块模型类"""
+    import importlib
+    from app.utils.module_helper import MODULE_MODELS
+    mod_path, movie_cls, actor_cls = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, movie_cls if typ == "movie" else "actor")
 
 
 # ===== 收藏夹 CRUD =====
@@ -217,7 +254,8 @@ async def list_items(
 
     resp = []
     for item in items:
-        info = await _get_entity_info(session, item.entity_type, item.entity_id)
+        mod = getattr(item, "module", "") or ""
+        info = await _get_entity_info(session, item.entity_type, item.entity_id, mod)
         resp.append(ItemResponse(
             id=item.id,
             group_id=item.group_id,
@@ -234,6 +272,7 @@ async def list_items(
 async def add_item(
     group_id: int,
     req: AddItemRequest,
+    module: str = Query("", description="模块名 jav/fc2/... 空=中心库"),
     session: AsyncSession = Depends(get_session),
 ):
     """添加条目到收藏夹"""
@@ -241,39 +280,56 @@ async def add_item(
     if not group:
         raise HTTPException(status_code=404, detail="收藏夹不存在")
 
-    # 检查是否已存在
+    # 检查是否已存在（含 module 判断）
     existing = await session.scalar(
         select(FavoriteItem).where(
             and_(
                 FavoriteItem.group_id == group_id,
                 FavoriteItem.entity_id == req.entity_id,
+                FavoriteItem.module == (module or ""),
             )
         )
     )
     if existing:
         return {"status": "exists", "message": "该条目已在收藏夹中"}
 
-    # 获取当前最大 sort_order
-    max_order = await session.scalar(
-        select(func.max(FavoriteItem.sort_order))
-        .where(FavoriteItem.group_id == group_id)
+    # 获取当前最大排序值
+    max_sort = await session.scalar(
+        select(func.max(FavoriteItem.sort_order)).where(FavoriteItem.group_id == group_id)
     )
 
     item = FavoriteItem(
         group_id=group_id,
         entity_id=req.entity_id,
         entity_type=group.entity_type,
-        sort_order=(max_order or 0) + 1,
+        module=module or "",
+        sort_order=(max_sort or 0) + 1,
     )
     session.add(item)
     await session.commit()
-    return {"status": "ok", "item_id": item.id}
+    await session.refresh(item)
+
+    info = await _get_entity_info(session, item.entity_type, item.entity_id, module)
+
+    return {
+        "status": "ok",
+        "item": ItemResponse(
+            id=item.id,
+            group_id=item.group_id,
+            entity_id=item.entity_id,
+            entity_type=item.entity_type,
+            sort_order=item.sort_order,
+            entity_name=info["name"],
+            entity_cover=info["cover"],
+        ),
+    }
 
 
 @router.delete("/groups/{group_id}/items/{entity_id}")
-async def remove_item(
+async def delete_item(
     group_id: int,
     entity_id: int,
+    module: str = Query("", description="模块名 jav/fc2/... 空=中心库"),
     session: AsyncSession = Depends(get_session),
 ):
     """从收藏夹移除条目"""
@@ -282,6 +338,7 @@ async def remove_item(
             and_(
                 FavoriteItem.group_id == group_id,
                 FavoriteItem.entity_id == entity_id,
+                FavoriteItem.module == (module or ""),
             )
         )
     )
@@ -317,6 +374,7 @@ async def update_item_order(
 async def check_favorite(
     entity_type: str = Query(...),
     entity_id: int = Query(...),
+    module: str = Query("", description="模块名 jav/fc2/... 空=中心库"),
     session: AsyncSession = Depends(get_session),
 ):
     """检查某实体是否已在任意收藏夹中"""
@@ -327,6 +385,7 @@ async def check_favorite(
             and_(
                 FavoriteItem.entity_type == entity_type,
                 FavoriteItem.entity_id == entity_id,
+                FavoriteItem.module == (module or ""),
             )
         )
     )

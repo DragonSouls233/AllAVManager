@@ -131,6 +131,10 @@ class AuthMiddleware:
         if path.startswith("/api/v1/modules/") and path.endswith("/avatar/file"):
             await self.app(scope, receive, send)
             return
+        if any(path.startswith(f"/api/v1/{mod}/") for mod in ("jav", "fc2", "chinese", "uncensored", "pornhub", "western")):
+            if path.endswith("/avatar/file"):
+                await self.app(scope, receive, send)
+                return
         # 视频流端点放行（浏览器 <video> 标签无法携带 Bearer token）
         if path.startswith("/api/v1/movies/") and path.endswith("/play/file"):
             await self.app(scope, receive, send)

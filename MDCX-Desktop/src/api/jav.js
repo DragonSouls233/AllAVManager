@@ -68,6 +68,32 @@ export async function getMovieActors(movieId) {
   return api.get(`/jav/movies/${movieId}/actors`)
 }
 
+// ===== 演员作品/时间线/标签/头像 =====
+
+export async function getJavActorMovies(id, params = {}) {
+  return api.get(`/jav/actors/${id}/movies`, { params })
+}
+
+export async function getJavActorTimeline(id) {
+  return api.get(`/jav/actors/${id}/timeline`)
+}
+
+export async function getJavActorTags(id) {
+  return api.get(`/jav/actors/${id}/tags`)
+}
+
+export async function uploadJavActorAvatar(id, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api.post(`/jav/actors/${id}/avatar`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+}
+
+export async function getJavActorAvatarUrl(id) {
+  return api.get(`/jav/actors/${id}/avatar/file`)
+}
+
 // ===== 番号提取测试 =====
 
 export async function testCodeExtract(filename) {
