@@ -30,27 +30,54 @@ router = APIRouter()
 async def get_dashboard_stats(
     session: AsyncSession = Depends(get_session),
 ):
-    """
-    获取仪表盘概览
-    
-    - 电影总数、已完成、待处理
-    - 任务总数、进行中、失败
-    - 演员总数
-    - 最近活动
-    """
-    # 电影统计
-    movie_total = await session.scalar(select(func.count(Movie.id))) or 0
-    movie_completed = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.status == "completed")
-    ) or 0
-    movie_pending = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.status == "pending")
-    ) or 0
-    movie_failed = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.status == "failed")
-    ) or 0
-    
-    # 任务统计
+    """仪表盘概览 - 聚合所有模块数据库的统计"""
+    from app.db.module_db import ModuleDatabase
+    from sqlalchemy import text
+
+    # 汇总所有模块的影片和演员数
+    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+    movie_total = 0
+    movie_pending = 0
+    movie_completed = 0
+    movie_failed = 0
+    actor_total = 0
+    recent_scraped = 0
+    today_scraped = 0
+    module_stats = {}
+
+    recent_date = datetime.now() - timedelta(days=7)
+    today_start = datetime.now().replace(hour=0, minute=0, second=0)
+
+    for mod_name in ALL_MODULES:
+        try:
+            mod_db = ModuleDatabase.get_instance(mod_name)
+            mod_session = await mod_db.get_session()
+            try:
+                mc = await mod_session.scalar(text("SELECT COUNT(*) FROM movies")) or 0
+                mp = await mod_session.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE status = 'pending'")
+                ) or 0
+                mok = await mod_session.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE status IN ('completed', 'scraped')")
+                ) or 0
+                mf = await mod_session.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE status = 'failed'")
+                ) or 0
+                ac = await mod_session.scalar(text("SELECT COUNT(*) FROM actors")) or 0
+                
+                movie_total += mc
+                movie_pending += mp
+                movie_completed += mok
+                movie_failed += mf
+                actor_total += ac
+                module_stats[mod_name] = {"movies": mc, "actors": ac}
+            finally:
+                await mod_session.close()
+        except Exception as e:
+            logger.warning(f"仪表盘: 模块 [{mod_name}] 统计失败: {e}")
+            module_stats[mod_name] = {"movies": 0, "actors": 0}
+
+    # 任务统计（system.db）
     task_total = await session.scalar(select(func.count(Task.id))) or 0
     task_running = await session.scalar(
         select(func.count(Task.id)).where(Task.status == "running")
@@ -61,66 +88,6 @@ async def get_dashboard_stats(
     task_failed = await session.scalar(
         select(func.count(Task.id)).where(Task.status == "failed")
     ) or 0
-    
-    # 演员统计
-    actor_total = await session.scalar(select(func.count(Actor.id))) or 0
-    
-    # 最近刮削（7天内）
-    recent_date = datetime.now() - timedelta(days=7)
-    recent_scraped = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.scraped_at >= recent_date)
-    ) or 0
-    
-    # 今日刮削
-    today_start = datetime.now().replace(hour=0, minute=0, second=0)
-    today_scraped = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.scraped_at >= today_start)
-    ) or 0
-
-    # 模块统计（从模块数据库汇总）
-    module_stats = {}
-    try:
-        from app.db.module_db import ModuleDatabase
-        
-        # 所有模块列表（新架构：统一 actors / movies 表名）
-        ALL_MODULES = [
-            ("chinese", "movies"),
-            ("uncensored", "movies"),
-            ("fc2", "movies"),
-            ("pornhub", "movies"),
-            ("jav", "movies"),
-            ("western", "movies"),
-        ]
-        
-        for mod_name, table_name in ALL_MODULES:
-            for retry in range(2):
-                try:
-                    mod_db = ModuleDatabase.get_instance(mod_name)
-                    mod_session = await mod_db.get_session()
-                    try:
-                        from sqlalchemy import text
-                        movie_count = await mod_session.scalar(
-                            text(f"SELECT COUNT(*) FROM {table_name}")
-                        ) or 0
-                        actor_count = 0
-                        try:
-                            actor_count = await mod_session.scalar(
-                                text("SELECT COUNT(*) FROM actors")
-                            ) or 0
-                        except Exception:
-                            pass
-                        module_stats[mod_name] = {"movies": movie_count, "actors": actor_count}
-                        break  # 成功则退出重试
-                    finally:
-                        await mod_session.close()
-                except Exception as e:
-                    if retry == 0:
-                        logger.warning(f"仪表盘统计: 模块 [{mod_name}] 查询失败（重试中）: {e}")
-                        continue
-                    logger.warning(f"仪表盘统计: 模块 [{mod_name}] 查询失败: {e}")
-                    module_stats[mod_name] = {"movies": 0, "actors": 0}
-    except Exception:
-        pass
 
     return {
         "movies": {

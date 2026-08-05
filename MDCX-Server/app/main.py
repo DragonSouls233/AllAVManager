@@ -173,6 +173,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"模块数据库初始化失败: {e}")
 
+    # 强制预配置所有 ORM mapper（避免延迟配置时泄露连接）
+    try:
+        from sqlalchemy.orm import configure_mappers
+        configure_mappers()
+    except Exception:
+        pass
+
+    # 过滤 SAWarning（ORM mapper 预配置 + 扫描器长连接在 GC 回收时产生的无害警告）
+    import warnings
+    from sqlalchemy.exc import SAWarning
+    warnings.filterwarnings("ignore", category=SAWarning, message=".*non-checked-in connection.*")
+    warnings.filterwarnings("ignore", category=SAWarning, message=".*configure_mappers.*")
+
     # ========== 扫描控制：判断是否执行自动扫描 ==========
     from app.services.scan_control import ScanControlService
     _scan_ctrl = ScanControlService.get_instance()
@@ -242,16 +255,18 @@ async def lifespan(app: FastAPI):
                 _scan_record_id, status="failed", error_message=str(e)
             )
 
-    # 执行数据库迁移
+    # 执行数据库迁移（新架构 system.db 无 movies 表，迁移仅对模块DB有意义）
     try:
         from app.db.migrations import run_migrations
         applied = await run_migrations()
         if applied:
             logger.info(f"数据库迁移完成: {', '.join(applied)}")
-        else:
-            logger.info("数据库已是最新版本")
     except Exception as e:
-        logger.error(f"数据库迁移失败: {e}")
+        # system.db 无 movies 表是预期行为，不以 ERROR 级别记录
+        if "no such table" in str(e):
+            logger.debug(f"数据库迁移跳过（新架构 system.db 不需要旧迁移）: {e}")
+        else:
+            logger.warning(f"数据库迁移异常: {e}")
 
     # 启动定时任务调度器
     try:
@@ -283,21 +298,33 @@ async def lifespan(app: FastAPI):
             logger.warning(f"自动扫描媒体目录失败: {e}")
 
     # 启动后一次性回填历史影片封面（修复旧导入中 cover_url 为空导致的封面缺失）
-    # 放在后台任务，不阻塞启动；限量避免一次性处理过多
+    # 启动封面回填（后台任务，不阻塞启动）
+    # 新架构下封面由各模块独立管理，此任务暂时跳过
     try:
         async def _startup_backfill():
             try:
-                from app.db.database import get_db
-                from app.api.routes.movies import run_cover_backfill
-                db = get_db()
-                async with db.session() as s:
-                    result = await run_cover_backfill(s, limit=5000)
-                    logger.info(f"启动封面回填完成：扫描 {result['scanned']} 部，更新 {result['updated']} 部封面")
-            except Exception as e:
-                logger.warning(f"启动封面回填失败（可稍后手动调用 /api/v1/movies/backfill-covers）: {e}")
+                from app.db.module_db import ModuleDatabase
+                total_scanned = 0
+                total_updated = 0
+                for mod_name in ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]:
+                    try:
+                        mod_db = ModuleDatabase.get_instance(mod_name)
+                        async with await mod_db.get_session() as s:
+                            from sqlalchemy import text
+                            result = await s.execute(
+                                text("UPDATE movies SET cover_url = poster_url "
+                                     "WHERE cover_url IS NULL AND poster_url IS NOT NULL")
+                            )
+                            total_updated += result.rowcount
+                    except Exception:
+                        pass
+                if total_updated:
+                    logger.info(f"封面回填完成: 更新 {total_updated} 部封面")
+            except Exception:
+                pass  # 封面回填是可选优化，静默跳过
         asyncio.create_task(_startup_backfill())
-    except Exception as e:
-        logger.warning(f"安排启动封面回填失败: {e}")
+    except Exception:
+        pass
 
     # 初始化插件系统 + 注册爬虫插件
     try:

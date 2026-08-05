@@ -27,11 +27,13 @@ class MovieMixin:
     code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(String(500))
     original_title: Mapped[str | None] = mapped_column(String(500))
+    title_jp: Mapped[str | None] = mapped_column(String(500))
     director: Mapped[str | None] = mapped_column(String(100))
     release_date: Mapped[str | None] = mapped_column(String(20), index=True)
     duration: Mapped[int | None] = mapped_column(Integer)
     rating: Mapped[float | None] = mapped_column(Float)
     plot: Mapped[str | None] = mapped_column(Text)
+    plot_short: Mapped[str | None] = mapped_column(String(500))
     genre: Mapped[str | None] = mapped_column(Text)   # JSON
     tag: Mapped[str | None] = mapped_column(Text)      # JSON
 

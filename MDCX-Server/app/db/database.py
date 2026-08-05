@@ -35,8 +35,9 @@ class Database:
             self.database_url,
             echo=self.echo,
             pool_size=config.database.pool_size,
-            max_overflow=0,
+            max_overflow=20,
             pool_pre_ping=True,
+            pool_recycle=300,
             connect_args={"check_same_thread": False} if "sqlite" in self.database_url else {},
         )
 

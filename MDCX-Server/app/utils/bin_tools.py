@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 # 项目根目录
-APP_ROOT = Path(__file__).resolve().parent.parent
+APP_ROOT = Path(__file__).resolve().parent.parent.parent
 BIN_DIR = APP_ROOT / "bin"
 
 # 工具名称到 bin/ 目录下文件名的映射

@@ -351,9 +351,9 @@ class GfriendsImporter:
 
                         actor_tbl, movie_tbl = MODULE_TABLE[mod_name]
 
-                        sql = f"SELECT id, name, name_jp FROM {actor_tbl}"
+                        sql = f"SELECT id, name, name_jp FROM {actor_tbl} WHERE 1=1"
                         if not overwrite:
-                            sql += " WHERE avatar_url IS NULL OR avatar_url = ''"
+                            sql += " AND (avatar_url IS NULL OR avatar_url = '')"
 
                         if min_movies > 0:
                             sql += f" AND id IN (SELECT a.id FROM {actor_tbl} a WHERE " \
