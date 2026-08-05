@@ -158,12 +158,13 @@ def should_use_uncensored_crawler(mosaic: MosaicType, site_name: str) -> bool:
     return True
 
 
-async def detect_and_update_movie(movie_id: int, code: str, title: str = None, studio: str = None) -> MosaicType:
+async def detect_and_update_movie(movie_id: int, code: str, module: str = "jav", title: str = None, studio: str = None) -> MosaicType:
     """识别马赛克类型并更新影片记录
 
     Args:
         movie_id: 影片 ID
         code: 番号
+        module: 模块名 jav/fc2/uncensored/chinese/western/pornhub
         title: 标题
         studio: 片商
 
@@ -173,19 +174,18 @@ async def detect_and_update_movie(movie_id: int, code: str, title: str = None, s
     mosaic = identify_mosaic_type(code, title, studio)
 
     try:
-        from app.db.database import get_session_factory
-        from app.db.models import Movie
+        from app.utils.module_helper import get_module_model, get_module_session
         from sqlalchemy import select
 
-        factory = get_session_factory()
-        async with factory() as session:
-            result = await session.execute(select(Movie).where(Movie.id == movie_id))
+        session = await get_module_session(module)
+        MovieModel = get_module_model(module, "movie")
+        async with session, session.begin():
+            result = await session.execute(select(MovieModel).where(MovieModel.id == movie_id))
             movie = result.scalar_one_or_none()
             if movie:
                 movie.is_uncensored = mosaic.is_uncensored
                 movie.is_mosaic = mosaic.is_mosaic
                 movie.is_chinese = mosaic.is_chinese
-                await session.commit()
                 logger.info(
                     f"影片 {code} 马赛克类型已更新: {mosaic.display_name} "
                     f"({mosaic.reason})"

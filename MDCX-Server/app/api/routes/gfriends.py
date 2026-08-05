@@ -87,16 +87,17 @@ async def preview_matches(use_local: bool = False, module: Optional[str] = None)
             async with await mod_db.get_session() as sess:
                 from sqlalchemy import text
 
-                # 构建演员表名
-                actor_table = "pornhub_actors" if mod_name == "pornhub" else f"{mod_name}_actors"
+                # 新架构：所有模块统一使用 actors / movies 表名
+                actor_table = "actors"
+                movie_table = "movies"
 
                 # 查询演员（不含已下载头像的过滤逻辑——服务器上头像文件很多，
                 # 但数据库以 avatar_url 为空或 None 作为"未匹配"的标准）
                 rows = await sess.execute(
                     text(f"""
                         SELECT a.id, a.name, a.name_jp, a.avatar_url,
-                               (SELECT COUNT(*) FROM {MODULE_TABLE_MAP[mod_name]} m
-                                WHERE m.actor = a.name) as movie_count
+                               (SELECT COUNT(*) FROM {movie_table} m
+                                WHERE m.actor LIKE '%' || a.name || '%') as movie_count
                         FROM {actor_table} a
                         WHERE a.avatar_url IS NULL OR a.avatar_url = ''
                         ORDER BY movie_count DESC
@@ -156,11 +157,11 @@ async def preview_matches(use_local: bool = False, module: Optional[str] = None)
 
 
 MODULE_TABLE_MAP = {
-    "jav": "jav_movies",
-    "fc2": "fc2_movies",
-    "uncensored": "uncensored_movies",
-    "chinese": "chinese_movies",
-    "western": "western_movies",
+    "jav": "movies",
+    "fc2": "movies",
+    "uncensored": "movies",
+    "chinese": "movies",
+    "western": "movies",
     "pornhub": "movies",
 }
 

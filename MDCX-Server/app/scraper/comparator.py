@@ -19,7 +19,7 @@ from parsel import Selector
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 from app.scraper.number import extract_number, parse_suffix, normalize_number, strip_episode_suffix
 
 logger = logging.getLogger(__name__)

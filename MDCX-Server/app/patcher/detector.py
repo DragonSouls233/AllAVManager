@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Optional
 
 from app.db.database import get_db
-from app.db.models import Movie
 
 logger = logging.getLogger(__name__)
 
@@ -280,14 +279,7 @@ class MissingDetector:
                 yield session
     
     def _get_table_name(self) -> str:
-        """获取当前模式下的表名"""
-        if self.module_name:
-            MODULE_TABLE_MAP = {
-                "jav": "jav_movies", "fc2": "fc2_movies",
-                "uncensored": "uncensored_movies", "chinese": "chinese_movies",
-                "western": "western_movies", "pornhub": "movies",
-            }
-            return MODULE_TABLE_MAP.get(self.module_name, f"{self.module_name}_movies")
+        """获取当前模式下的表名（所有模块统一使用 movies 表）"""
         return "movies"
     
     async def detect_movie(self, movie_id: int) -> Optional[MissingInfo]:
@@ -424,8 +416,7 @@ class MissingDetector:
         
         # 预填 actors 关联表计数（movies 表没有 actors 列，需查关联表）
         try:
-            db = get_db()
-            async with db.session() as session:
+            async with self._get_session() as session:
                 result = await session.execute(
                     sa_text("SELECT COUNT(*) FROM movie_actors WHERE movie_id = :mid"),
                     {"mid": movie_id},
@@ -438,8 +429,7 @@ class MissingDetector:
         studio_id = movie_data.get("studio_id")
         if studio_id:
             try:
-                db = get_db()
-                async with db.session() as session:
+                async with self._get_session() as session:
                     result = await session.execute(
                         sa_text("SELECT name FROM studios WHERE id = :sid"),
                         {"sid": studio_id},
@@ -452,8 +442,7 @@ class MissingDetector:
         series_id = movie_data.get("series_id")
         if series_id:
             try:
-                db = get_db()
-                async with db.session() as session:
+                async with self._get_session() as session:
                     result = await session.execute(
                         sa_text("SELECT name FROM series WHERE id = :sid"),
                         {"sid": series_id},
@@ -467,12 +456,6 @@ class MissingDetector:
         # 绝不写到视频原目录（网络盘 H:\ I:\ J:\ 等）。
         # 1) 如果 DB 里 output_dir 已设且指向服务端 → 用它
         # 2) 否则 → 用 <PROJECT_ROOT>/data/movies/<code>/
-        # 修复历史 bug：原用 .parent.parent.parent.parent (4 层) 算成了 G:\MDCX（项目根），
-        # 而不是 G:\MDCX\MDCX-Server。导致补刮产物落到 G:\data\movies（开发机）
-        # 或 E:\data\movies（服务器），而非 E:\MDCX-Server\data\movies。
-        # detector.py 在 app/patcher/ 下，正确路径是 .parent.parent.parent (3 层)。
-        # 为避免硬编码层级数（PyInstaller 打包后 __file__ 路径会变），
-        # 改用 app.config.manager.PROJECT_ROOT（源码运行下已正确指向 MDCX-Server/）。
         from app.config.manager import PROJECT_ROOT
         code = movie_data.get("code", str(movie_id))
         project_root = PROJECT_ROOT

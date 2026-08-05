@@ -14,19 +14,22 @@ from typing import List, Optional
 from difflib import SequenceMatcher
 
 from sqlalchemy import select, String
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Studio, Movie
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
 
 async def merge_studios(
-    session: AsyncSession,
     canonical_id: int,
     source_ids: List[int],
+    module: str = "jav",
 ) -> dict:
     """合并片商（将 source_ids 合并到 canonical_id）"""
+    session = await get_module_session(module)
+    StudioModel = get_module_model(module, "studio")
+    MovieModel = get_module_model(module, "movie")
+
     if canonical_id <= 0:
         return {"error": "canonical_id must be positive"}
 
@@ -34,14 +37,14 @@ async def merge_studios(
     if not clean_ids:
         return {"error": "merge_ids required"}
 
-    canonical = await session.get(Studio, canonical_id)
+    canonical = await session.get(StudioModel, canonical_id)
     if not canonical:
         return {"error": f"目标片商 (id={canonical_id}) 不存在"}
 
     # 收集 source
     source_studios = []
     for sid in clean_ids:
-        s = await session.get(Studio, sid)
+        s = await session.get(StudioModel, sid)
         if s:
             source_studios.append(s)
 
@@ -69,17 +72,11 @@ async def merge_studios(
     canonical.alias = ",".join(new_aliases)
 
     # 更新影片关联
-    all_movie_names = [canonical.name]
-    for src in source_studios:
-        all_movie_names.extend(src.name.split("/"))
-
     from sqlalchemy import or_
-    name_filters = [Movie.studio == src.name for src in source_studios]
-    name_filters.append(Movie.maker == src.name for src in source_studios)
 
-    stmt = select(Movie).where(
-        or_(Movie.studio.in_([s.name for s in source_studios]),
-            Movie.maker.in_([s.name for s in source_studios]))
+    stmt = select(MovieModel).where(
+        or_(MovieModel.studio.in_([s.name for s in source_studios]),
+            MovieModel.maker.in_([s.name for s in source_studios]))
     )
     result = await session.execute(stmt)
     movies = result.scalars().all()
@@ -112,9 +109,12 @@ async def merge_studios(
     }
 
 
-async def search_similar_studios(session: AsyncSession, name: str, threshold: float = 0.7) -> List[dict]:
+async def search_similar_studios(name: str, threshold: float = 0.7, module: str = "jav") -> List[dict]:
     """搜索名称相似的片商"""
-    stmt = select(Studio).order_by(Studio.movie_count.desc()).limit(200)
+    session = await get_module_session(module)
+    StudioModel = get_module_model(module, "studio")
+
+    stmt = select(StudioModel).order_by(StudioModel.movie_count.desc()).limit(200)
     result = await session.execute(stmt)
     studios = result.scalars().all()
 

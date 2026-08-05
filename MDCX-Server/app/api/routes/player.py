@@ -10,27 +10,34 @@
 挂载在 /api/v1/player，所有端点都需要影片 ID。
 """
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_session
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 from app.services import ffmpeg_thumbnail, gif_generator, chapter_marker, subtitle_matcher
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    return module if module in MODULE_MODELS else "jav"
+
+
 # ===== 共用工具 =====
 
-async def _get_movie(session: AsyncSession, movie_id: int) -> Movie:
-    movie = await session.get(Movie, movie_id)
+async def _get_movie(module: str, movie_id: int):
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
     return movie
@@ -41,10 +48,10 @@ async def _get_movie(session: AsyncSession, movie_id: int) -> Movie:
 @router.get("/{movie_id}/thumbnail-sprite")
 async def get_thumbnail_sprite_meta(
     movie_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取缩略图进度条元数据"""
-    movie = await _get_movie(session, movie_id)
+    _ = await _get_movie(module, movie_id)
     meta = ffmpeg_thumbnail.get_thumbnail_sprite(movie_id)
     if not meta:
         raise HTTPException(status_code=404, detail="未生成缩略图进度条")
@@ -59,10 +66,10 @@ async def generate_thumbnail_sprite(
     thumb_height: int = Query(90, ge=45, le=300),
     cols: int = Query(10, ge=2, le=20),
     force: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """生成或刷新缩略图进度条"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
     result = ffmpeg_thumbnail.generate_thumbnail_sprite(
@@ -109,10 +116,10 @@ async def list_gifs(movie_id: int):
 async def generate_gif(
     movie_id: int,
     req: GifRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """生成 GIF"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
     result = gif_generator.generate_gif(
@@ -164,10 +171,10 @@ async def list_chapters(movie_id: int):
 async def add_chapter(
     movie_id: int,
     req: ChapterCreate,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """添加章节"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     duration = None
     if movie.duration:
         duration = float(movie.duration)
@@ -204,10 +211,10 @@ async def auto_detect_chapters(
     movie_id: int,
     threshold: float = Query(0.4, ge=0.05, le=1.0),
     min_duration: float = Query(10.0, ge=2.0, le=120.0),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """自动检测章节（基于场景变化）"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
     result = chapter_marker.auto_detect_chapters(
@@ -222,10 +229,10 @@ async def auto_detect_chapters(
 @router.post("/{movie_id}/chapters/generate-thumbnails")
 async def generate_chapter_thumbnails(
     movie_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """为所有章节生成缩略图"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
     result = chapter_marker.generate_chapter_thumbnails(movie_id, movie.file_path)
@@ -248,10 +255,10 @@ async def serve_chapter_thumbnail(movie_id: int, filename: str):
 @router.get("/{movie_id}/subtitles")
 async def list_subtitles(
     movie_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """列出所有可用字幕（内嵌 + 外挂）"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
     result = subtitle_matcher.list_all_subtitles(movie_id, movie.file_path)
@@ -262,10 +269,10 @@ async def list_subtitles(
 async def serve_subtitle_file(
     movie_id: int,
     path: str = Query(..., description="字幕文件绝对路径"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """提供字幕文件内容"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     # 安全检查：字幕必须在该影片的可用列表中
     available = subtitle_matcher.find_local_subtitles(movie.file_path or "")
     target_path = Path(path).resolve()
@@ -291,10 +298,10 @@ async def serve_subtitle_file(
 @router.get("/{movie_id}/config")
 async def get_player_config(
     movie_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取影片的播放器配置（一次性返回所有元数据，减少前端请求次数）"""
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
 
@@ -340,16 +347,16 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
     返回:
         [
             {
-                "index": 1,              # 流索引（ffprobe 中的 stream.index）
-                "codec": "aac",          # 音频编码
-                "channels": 2,           # 声道数
-                "channel_layout": "stereo",  # 声道布局
-                "language": "jpn",       # 语言标签（如 jpn/chi/eng，可能为 und）
-                "title": "日语",          # 轨道标题（部分文件有）
-                "default": True,         # 是否默认轨道
-                "bitrate": 128000,       # 比特率（bps，可能为 None）
-                "sample_rate": 48000,    # 采样率
-                "label": "音轨 1 (日语)",  # 显示用标签
+                "index": 1,
+                "codec": "aac",
+                "channels": 2,
+                "channel_layout": "stereo",
+                "language": "jpn",
+                "title": "日语",
+                "default": True,
+                "bitrate": 128000,
+                "sample_rate": 48000,
+                "label": "音轨 1 (日语)",
             },
             ...
         ]
@@ -367,7 +374,7 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
             ffprobe, "-v", "quiet",
             "-print_format", "json",
             "-show_streams",
-            "-select_streams", "a",  # 仅音频流
+            "-select_streams", "a",
             file_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
@@ -390,7 +397,6 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
         bitrate = int(stream.get("bit_rate", 0) or 0) or None
         is_default = stream.get("disposition", {}).get("default", 0) == 1
 
-        # 构建显示标签
         lang_map = {
             "jpn": "日语", "chi": "中文", "eng": "英语",
             "kor": "韩语", "fra": "法语", "deu": "德语",
@@ -401,7 +407,7 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
         label = f"音轨 {idx + 1} ({lang_label}{title_part})"
 
         tracks.append({
-            "index": idx,  # 前端使用的序号（0-based）
+            "index": idx,
             "stream_index": stream.get("index", idx),
             "codec": codec,
             "channels": channels,
@@ -420,7 +426,7 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
 @router.get("/{movie_id}/audio-tracks")
 async def list_audio_tracks(
     movie_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """
     列出影片所有音轨（v3.5 新增）
@@ -429,7 +435,7 @@ async def list_audio_tracks(
     - 直接播放（MP4）：浏览器需支持 HTMLAudioTrack API（Chrome/Edge 支持，Firefox 有限）
     - HLS 播放：通过 hls.js 的 audioTrack 切换（推荐）
     """
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     if not movie.file_path:
         raise HTTPException(status_code=400, detail="影片无关联文件")
     tracks = get_audio_tracks_info(movie.file_path)
@@ -440,7 +446,7 @@ async def list_audio_tracks(
 async def switch_audio_track(
     movie_id: int,
     track_index: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """
     记录音轨切换偏好（v3.5 新增）
@@ -451,7 +457,7 @@ async def switch_audio_track(
 
     后端仅记录用户偏好（可选，持久化到 Movie 元数据）。
     """
-    movie = await _get_movie(session, movie_id)
+    movie = await _get_movie(module, movie_id)
     tracks = get_audio_tracks_info(movie.file_path) if movie.file_path else []
     if track_index < 0 or track_index >= len(tracks):
         raise HTTPException(status_code=400, detail=f"音轨索引越界（0-{len(tracks) - 1}）")

@@ -18,6 +18,7 @@ API 端点：
 1. 未更新：在线有、本地无
 2. 中字差异：在线中字、本地非中字（本地是英文版）
 """
+import importlib
 import logging
 import re
 from datetime import datetime
@@ -30,17 +31,20 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config_manager
-from app.db.database import get_session
-from app.scraper.comparator import (
-    JavDBListCrawler,
-    JavBusListCrawler,
-    LocalOnlineComparator,
-    LocalScanner,
-)
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ===== 模块辅助 =====
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 # ===== 请求/响应模型 =====
@@ -107,7 +111,7 @@ class SearchDirectoriesRequest(BaseModel):
 @router.post("/search-directories")
 async def search_directories(
     req: SearchDirectoriesRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """按演员名搜索本地媒体目录，返回名称匹配的目录路径列表
 
@@ -122,7 +126,8 @@ async def search_directories(
 
     # 如果未配置 media_dirs，从数据库有 file_path 的影片提取父目录作为搜索根
     if not search_roots:
-        from app.db.models import Movie
+        session = await get_module_session(module)
+        Movie = get_module_model(module, "movie")
         result = await session.execute(
             select(Movie.file_path).where(
                 Movie.file_path.isnot(None),
@@ -178,10 +183,15 @@ async def search_directories(
 @router.post("/scan-local")
 async def scan_local(
     req: ScanLocalRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """扫描本地文件目录，返回本地番号汇总（普通/中字）"""
     import asyncio
+
+    from app.scraper.comparator import (
+        LocalScanner,
+        LocalOnlineComparator,
+    )
 
     scanner = LocalScanner()
     directories = _resolve_directories(req.directories)
@@ -198,6 +208,7 @@ async def scan_local(
 
     db_codes = []
     try:
+        session = await get_module_session(module)
         db_codes = await scanner.scan_database(session)
     except Exception as e:
         errors.append({"database": True, "error": str(e)})
@@ -218,7 +229,7 @@ async def scan_local(
 @router.post("/online")
 async def compare_online(
     req: OnlineCompareRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     在线对比：爬取 javdb 列表（演员页或搜索）并与本地对比
@@ -231,6 +242,13 @@ async def compare_online(
     """
     if not req.actress_url and not req.keyword:
         raise HTTPException(status_code=400, detail="必须提供 actress_url 或 keyword")
+
+    from app.scraper.comparator import (
+        JavDBListCrawler,
+        JavBusListCrawler,
+        LocalOnlineComparator,
+        LocalScanner,
+    )
 
     # 1. 采集本地集合（文件 + 数据库）
     import asyncio
@@ -248,6 +266,7 @@ async def compare_online(
     db_codes = []
     if req.include_database:
         try:
+            session = await get_module_session(module)
             db_codes = await scanner.scan_database(session)
         except Exception as e:
             logger.warning(f"扫描数据库失败: {e}")
@@ -301,11 +320,14 @@ async def compare_online(
 
 @router.post("/database")
 async def local_database_summary(
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """仅返回数据库中本地影片的汇总（中字/非中字/有文件路径）"""
+    from app.scraper.comparator import LocalScanner, LocalOnlineComparator
+
     scanner = LocalScanner()
     try:
+        session = await get_module_session(module)
         db_codes = await scanner.scan_database(session)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -327,10 +349,11 @@ async def compare_online_by_actor(
     directories: list[str] = Body(default_factory=list, description="覆盖的本地目录，为空则用配置的"),
     include_database: bool = Body(True, description="是否计入数据库影片"),
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """按演员对比URL配置执行在线对比"""
-    from app.db.models import ActorCompareURL
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
 
     config = await session.scalar(
         select(ActorCompareURL).where(ActorCompareURL.actor_id == actor_id)
@@ -355,7 +378,7 @@ async def compare_online_by_actor(
     # 复用原有在线对比逻辑
     return await compare_online(
         OnlineCompareRequest(**payload),
-        session=session,
+        module=module,
     )
 
 
@@ -363,13 +386,17 @@ async def compare_online_by_actor(
 async def list_compare_actors(
     min_movies: int = Query(10, ge=1, le=100, description="最少作品数"),
     search: Optional[str] = Query(None, description="搜索演员名"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """获取可配置对比URL的演员列表（作品数>=min_movies）
-    
+
     返回每个演员的ID、名称、作品数、已有的对比URL配置、本地目录。
     """
-    from app.db.models import ActorCompareURL, Actor, Movie, MovieActor
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
+    Actor = get_module_model(module, "actor")
+    Movie = get_module_model(module, "movie")
+    MovieActor = _get_mod_cls(module, "MovieActor")
 
     # 子查询：计算每个演员的作品数
     movie_count_subq = (
@@ -429,10 +456,11 @@ async def list_compare_actors(
 @router.get("/actors/{actor_id}/url")
 async def get_actor_compare_url(
     actor_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """获取某个演员的对比URL配置"""
-    from app.db.models import ActorCompareURL
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
 
     config = await session.scalar(
         select(ActorCompareURL).where(ActorCompareURL.actor_id == actor_id)
@@ -459,10 +487,12 @@ async def save_actor_compare_url(
     source: str = Body(..., description="数据源: javbus/javdb"),
     url: str = Body(..., description="演员页URL"),
     local_directory: Optional[str] = Body(None, description="本地目录路径"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """保存/更新演员的对比URL配置"""
-    from app.db.models import ActorCompareURL, Actor
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
+    Actor = get_module_model(module, "actor")
 
     if source not in ("javbus", "javdb"):
         raise HTTPException(status_code=400, detail="source 必须为 javbus 或 javdb")
@@ -502,14 +532,18 @@ async def save_actor_compare_url(
 @router.post("/actors/scan")
 async def scan_all_compare_actors(
     min_movies: int = Query(10, ge=1, le=100, description="最少作品数"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """批量扫描所有符合条件的演员（作品数>=min_movies）并自动探测本地目录
-    
+
     自动探测逻辑：从数据库中有 file_path 的影片提取父目录，然后向上回溯匹配演员名，
     取演员根目录（而非单个视频子目录）。
     """
-    from app.db.models import ActorCompareURL, Actor, Movie, MovieActor
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
+    Actor = get_module_model(module, "actor")
+    Movie = get_module_model(module, "movie")
+    MovieActor = _get_mod_cls(module, "MovieActor")
 
     # 查询作品数 >= min_movies 的演员
     movie_count_subq = (
@@ -600,10 +634,13 @@ async def scan_all_compare_actors(
 @router.post("/actors/{actor_id}/detect-dir")
 async def detect_actor_local_dir(
     actor_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """自动探测某个演员的根目录（向上回溯匹配演员名的目录层级，而非视频子目录）"""
-    from app.db.models import Actor, Movie, MovieActor
+    session = await get_module_session(module)
+    Actor = get_module_model(module, "actor")
+    Movie = get_module_model(module, "movie")
+    MovieActor = _get_mod_cls(module, "MovieActor")
 
     actor = await session.get(Actor, actor_id)
     if not actor:

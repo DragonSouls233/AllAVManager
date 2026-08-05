@@ -38,8 +38,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
 from app.db.database import get_session
-from app.db.models import Movie, Actor, MovieActor, Studio, Series, FavoriteItem
+from app.db.system_models import FavoriteItem
 from app.utils.logger import get_logger
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = get_logger(__name__)
 
@@ -87,30 +88,38 @@ def _build_play_url(movie_id: int, base_url: str) -> str:
     return f"{cfg.play_from}${stream_url}"
 
 
-def _apply_nsfw_filter(query, nsfw_hidden: bool):
+async def _get_nsfw_fav_ids(session: AsyncSession) -> list[int]:
+    """获取 NSFW 模式下已收藏的影片 ID 列表（从 system.db）"""
+    result = await session.execute(
+        select(FavoriteItem.entity_id).where(FavoriteItem.entity_type == "movie")
+    )
+    return [r[0] for r in result.fetchall()]
+
+
+def _apply_nsfw_filter(query, fav_ids: list[int], MovieCls):
     """NSFW 模式：仅展示已收藏的影片"""
-    if not nsfw_hidden:
-        return query
-    fav_subq = select(FavoriteItem.entity_id).where(FavoriteItem.entity_type == "movie")
-    return query.where(Movie.id.in_(fav_subq))
+    if not fav_ids:
+        # 没有收藏则返回空（加一个永假条件）
+        return query.where(False)
+    return query.where(MovieCls.id.in_(fav_ids))
 
 
-def _apply_category_filter(query, t: Optional[str]):
+def _apply_category_filter(query, t: Optional[str], MovieCls):
     """根据 MacCMS 分类 ID 应用筛选（与 TVBox 分类保持一致）"""
     if not t or t in ("0", "all"):
         return query
     if t == "censored":
-        return query.where(Movie.is_uncensored == False)  # noqa: E712
+        return query.where(MovieCls.is_uncensored == False)  # noqa: E712
     if t == "uncensored":
-        return query.where(Movie.is_uncensored == True)  # noqa: E712
+        return query.where(MovieCls.is_uncensored == True)  # noqa: E712
     if t == "chinese":
-        return query.where(Movie.is_chinese == True)  # noqa: E712
+        return query.where(MovieCls.is_chinese == True)  # noqa: E712
     return query
 
 
 # ============== MacCMS 列表项构建 ==============
 
-def _movie_to_vod_list_item(movie: Movie) -> dict:
+def _movie_to_vod_list_item(movie) -> dict:
     """Movie -> MacCMS 列表项（ac=list 精简字段）"""
     cfg = get_config().tvbox
     if cfg.nsfw_hidden:
@@ -129,10 +138,10 @@ def _movie_to_vod_list_item(movie: Movie) -> dict:
     }
 
 
-def _movie_to_vod_detail_item(movie: Movie, base_url: str, session: AsyncSession) -> dict:
+def _movie_to_vod_detail_item(movie, base_url: str) -> dict:
     """Movie -> MacCMS 详情项（ac=detail 完整字段）
 
-    演员列表需在调用处异步查询后填充。
+    演员直接从 movie.actor（逗号分隔文本）读取。
     """
     cfg = get_config().tvbox
     if cfg.nsfw_hidden:
@@ -161,14 +170,14 @@ def _movie_to_vod_detail_item(movie: Movie, base_url: str, session: AsyncSession
         "vod_duration": str(movie.duration // 60) if movie.duration else "",
         "vod_play_from": cfg.play_from,
         "vod_play_url": vod_play_url,
-        "vod_actor": "",
+        "vod_actor": movie.actor or "",
         "vod_director": movie.director or "",
         "vod_score": f"{movie.rating:.1f}" if movie.rating else "",
     }
     return item
 
 
-def _movie_to_vod_video_item(movie: Movie, base_url: str) -> dict:
+def _movie_to_vod_video_item(movie, base_url: str) -> dict:
     """Movie -> MacCMS 视频列表项（ac=videolist 含播放地址）"""
     cfg = get_config().tvbox
     if cfg.nsfw_hidden:
@@ -220,6 +229,14 @@ def _maccms_response(
     }
 
 
+# ============== MacCMS 模块辅助 ==============
+
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    from app.utils.module_helper import MODULE_MODELS
+    return module if module in MODULE_MODELS else "jav"
+
+
 # ============== MacCMS 端点 ==============
 
 @router.get("/api.php/provide/vod/")
@@ -234,6 +251,7 @@ async def maccms_provide_vod(
     h: Optional[int] = Query(None, description="最近 h 小时更新"),
     pg: int = Query(1, ge=1, description="页码"),
     pgc: Optional[int] = Query(None, description="总页数（客户端回传）"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """MacCMS v10 采集接口入口
@@ -252,6 +270,15 @@ async def maccms_provide_vod(
     page_size = cfg.page_size
     base_url = _build_base_url(request)
 
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
+
+    # NSFW 过滤：从 system.db 获取收藏影片 ID
+    fav_ids: list[int] = []
+    if cfg.nsfw_hidden:
+        fav_ids = await _get_nsfw_fav_ids(session)
+
     # ===== ac=detail / ac=videolist: 按 ids 查询详情 =====
     if ac in ("detail", "videolist"):
         if not ids:
@@ -264,75 +291,66 @@ async def maccms_provide_vod(
         if not id_list:
             return _maccms_response([], 0, pg, page_size, msg="无有效 ID")
 
-        result = await session.execute(
-            select(Movie).where(Movie.id.in_(id_list))
+        result = await mod_session.execute(
+            select(MovieModel).where(MovieModel.id.in_(id_list))
         )
         movies = result.scalars().all()
 
         if ac == "detail":
-            items = [_movie_to_vod_detail_item(m, base_url, session) for m in movies]
-            # 填充演员
-            if not cfg.nsfw_hidden:
-                for item, movie in zip(items, movies):
-                    actor_result = await session.execute(
-                        select(Actor.name)
-                        .join(MovieActor, MovieActor.actor_id == Actor.id)
-                        .where(MovieActor.movie_id == movie.id)
-                        .limit(20)
-                    )
-                    actors = [r[0] for r in actor_result.fetchall()]
-                    item["vod_actor"] = ",".join(actors)
+            items = [_movie_to_vod_detail_item(m, base_url) for m in movies]
         else:  # videolist
             items = [_movie_to_vod_video_item(m, base_url) for m in movies]
 
         return _maccms_response(items, len(items), 1, len(items), msg="数据列表")
 
     # ===== ac=list 或默认: 列表查询 =====
-    query = select(Movie).where(Movie.file_path.isnot(None))
-    query = _apply_nsfw_filter(query, cfg.nsfw_hidden)
+    query = select(MovieModel).where(MovieModel.file_path.isnot(None))
+    if cfg.nsfw_hidden:
+        query = _apply_nsfw_filter(query, fav_ids, MovieModel)
 
     # 搜索
     if wd:
         kw = f"%{wd}%"
         query = query.where(
             or_(
-                Movie.code.like(kw),
-                Movie.title.like(kw),
-                Movie.original_title.like(kw),
+                MovieModel.code.like(kw),
+                MovieModel.title.like(kw),
+                MovieModel.original_title.like(kw),
             )
         )
 
     # 分类筛选
-    query = _apply_category_filter(query, t)
+    query = _apply_category_filter(query, t, MovieModel)
 
     # 最近 h 小时更新
     if h and h > 0:
         threshold = datetime.now() - timedelta(hours=h)
-        query = query.where(Movie.updated_at >= threshold)
+        query = query.where(MovieModel.updated_at >= threshold)
 
     # 总数
-    count_query = select(func.count(Movie.id)).where(Movie.file_path.isnot(None))
-    count_query = _apply_nsfw_filter(count_query, cfg.nsfw_hidden)
+    count_query = select(func.count(MovieModel.id)).where(MovieModel.file_path.isnot(None))
+    if cfg.nsfw_hidden:
+        count_query = _apply_nsfw_filter(count_query, fav_ids, MovieModel)
     if wd:
         kw = f"%{wd}%"
         count_query = count_query.where(
             or_(
-                Movie.code.like(kw),
-                Movie.title.like(kw),
-                Movie.original_title.like(kw),
+                MovieModel.code.like(kw),
+                MovieModel.title.like(kw),
+                MovieModel.original_title.like(kw),
             )
         )
-    count_query = _apply_category_filter(count_query, t)
+    count_query = _apply_category_filter(count_query, t, MovieModel)
     if h and h > 0:
         threshold = datetime.now() - timedelta(hours=h)
-        count_query = count_query.where(Movie.updated_at >= threshold)
+        count_query = count_query.where(MovieModel.updated_at >= threshold)
 
-    total = await session.scalar(count_query) or 0
+    total = await mod_session.scalar(count_query) or 0
 
     # 排序：最新更新优先
-    query = query.order_by(Movie.updated_at.desc().nulls_last(), Movie.id.desc())
+    query = query.order_by(MovieModel.updated_at.desc().nulls_last(), MovieModel.id.desc())
     query = query.offset((pg - 1) * page_size).limit(page_size)
-    result = await session.execute(query)
+    result = await mod_session.execute(query)
     movies = result.scalars().all()
 
     items = [_movie_to_vod_list_item(m) for m in movies]

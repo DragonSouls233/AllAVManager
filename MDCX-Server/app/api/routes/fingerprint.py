@@ -10,79 +10,39 @@ API 端点：
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from sqlalchemy import select, func, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_session
-from app.db.models import Movie
 from app.services.fingerprint import compute_video_fingerprint, hamming_distance
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# 模块数据库模型映射
-_MODULE_MODELS = {
-    "jav": ("app.db.jav_models", "JavMovie"),
-    "fc2": ("app.db.fc2_models", "Fc2Movie"),
-    "uncensored": ("app.db.uncensored_models", "UncensoredMovie"),
-    "chinese": ("app.db.chinese_models", "ChineseMovie"),
-    "pornhub": ("app.db.pornhub_models", "PornhubMovie"),
-    "western": ("app.db.western_models", "WesternMovie"),
-}
-
-
-def _get_module_model(module: str):
-    """懒加载获取模块模型类"""
-    import importlib
-    mod_path, cls_name = _MODULE_MODELS[module]
-    mod = importlib.import_module(mod_path)
-    return getattr(mod, cls_name)
-
-
-async def _get_module_session(module: str):
-    """获取模块数据库 session"""
-    from app.db.module_db import ModuleDatabase
-    mod_db = ModuleDatabase.get_instance(module)
-    session = await mod_db.get_session()
-    return session
 
 
 @router.post("/compute/{movie_id}")
 async def compute_fingerprint(
     movie_id: int,
     module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western"),
-    session: AsyncSession = Depends(get_session),
 ):
     """计算单个影片的视频指纹"""
-    # 模块数据库优先
-    if module in _MODULE_MODELS:
-        sess = await _get_module_session(module)
-        async with sess:
-            model = _get_module_model(module)
-            movie = await sess.get(model, movie_id)
-            if not movie:
-                raise HTTPException(status_code=404, detail="影片不存在")
-            if not movie.file_path:
-                raise HTTPException(status_code=400, detail="影片没有关联文件")
-            fp = compute_video_fingerprint(movie.file_path)
-            if not fp:
-                raise HTTPException(status_code=500, detail="指纹计算失败")
-            movie.fingerprint = fp
-            await sess.commit()
-            return {"status": "ok", "movie_id": movie_id, "fingerprint": fp}
-    else:
-        movie = await session.get(Movie, movie_id)
+    if module not in MODULE_MODELS:
+        raise HTTPException(status_code=400, detail=f"未知模块: {module}")
+
+    sess = await get_module_session(module)
+    async with sess:
+        model = get_module_model(module, "movie")
+        movie = await sess.get(model, movie_id)
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
         if not movie.file_path:
             raise HTTPException(status_code=400, detail="影片没有关联文件")
         fp = compute_video_fingerprint(movie.file_path)
         if not fp:
-            raise HTTPException(status_code=500, detail="指纹计算失败（ffmpeg 未安装或文件无法读取）")
+            raise HTTPException(status_code=500, detail="指纹计算失败")
         movie.fingerprint = fp
-        await session.commit()
+        await sess.commit()
         return {"status": "ok", "movie_id": movie_id, "fingerprint": fp}
 
 
@@ -90,189 +50,111 @@ async def compute_fingerprint(
 async def scan_fingerprints(
     background_tasks: BackgroundTasks,
     limit: int = Query(50, ge=1, le=500),
-    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western/center（center=中心数据库）"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western"),
 ):
     """批量扫描所有有文件路径但无指纹的影片"""
-    from app.db.database import get_database
+    if module not in MODULE_MODELS:
+        raise HTTPException(status_code=400, detail=f"未知模块: {module}")
 
-    # 模块数据库
-    if module in _MODULE_MODELS:
-        sess = await _get_module_session(module)
-        async with sess:
-            model = _get_module_model(module)
-            result = await sess.execute(
-                select(model)
-                .where(and_(model.file_path.isnot(None), model.fingerprint.is_(None)))
-                .limit(limit)
-            )
-            movies = result.scalars().all()
-            if not movies:
-                return {"status": "ok", "message": "没有需要计算指纹的影片", "processed": 0}
+    sess = await get_module_session(module)
+    async with sess:
+        model = get_module_model(module, "movie")
+        result = await sess.execute(
+            select(model)
+            .where(and_(model.file_path.isnot(None), model.fingerprint.is_(None)))
+            .limit(limit)
+        )
+        movies = result.scalars().all()
+        if not movies:
+            return {"status": "ok", "message": "没有需要计算指纹的影片", "processed": 0}
 
-            async def _compute_batch_module(mid_list: list[int]):
-                s2 = await _get_module_session(module)
-                async with s2:
-                    m2 = _get_module_model(module)
-                    for mid in mid_list:
-                        m = await s2.get(m2, mid)
-                        if m and m.file_path:
-                            fp = compute_video_fingerprint(m.file_path)
-                            if fp:
-                                m.fingerprint = fp
-                                await s2.commit()
-                                logger.info(f"[{module}] 影片 {m.code} 指纹: {fp[:16]}...")
+        async def _compute_batch(mid_list: list[int]):
+            s2 = await get_module_session(module)
+            async with s2:
+                m2 = get_module_model(module, "movie")
+                for mid in mid_list:
+                    m = await s2.get(m2, mid)
+                    if m and m.file_path:
+                        fp = compute_video_fingerprint(m.file_path)
+                        if fp:
+                            m.fingerprint = fp
+                            await s2.commit()
+                            logger.info(f"[{module}] 影片 {m.code} 指纹: {fp[:16]}...")
 
-            movie_ids = [m.id for m in movies]
-            background_tasks.add_task(_compute_batch_module, movie_ids)
-            return {
-                "status": "ok",
-                "message": f"已排队 {len(movies)} 个 [{module}] 影片进行指纹计算",
-                "queued": len(movies),
-                "movie_ids": movie_ids,
-            }
-
-    # 中心数据库
-    result = await session.execute(
-        select(Movie)
-        .where(and_(Movie.file_path.isnot(None), Movie.fingerprint.is_(None)))
-        .limit(limit)
-    )
-    movies = result.scalars().all()
-
-    if not movies:
-        return {"status": "ok", "message": "没有需要计算指纹的影片", "processed": 0}
-
-    async def _compute_batch(movie_ids: list[int]):
-        db = get_database()
-        async with db.session() as s:
-            for mid in movie_ids:
-                m = await s.get(Movie, mid)
-                if m and m.file_path:
-                    fp = compute_video_fingerprint(m.file_path)
-                    if fp:
-                        m.fingerprint = fp
-                        await s.commit()
-                        logger.info(f"影片 {m.code} 指纹: {fp[:16]}...")
-
-    movie_ids = [m.id for m in movies]
-    background_tasks.add_task(_compute_batch, movie_ids)
-
-    return {
-        "status": "ok",
-        "message": f"已排队 {len(movies)} 个影片进行指纹计算",
-        "queued": len(movies),
-        "movie_ids": movie_ids,
-    }
+        movie_ids = [m.id for m in movies]
+        background_tasks.add_task(_compute_batch, movie_ids)
+        return {
+            "status": "ok",
+            "message": f"已排队 {len(movies)} 个 [{module}] 影片进行指纹计算",
+            "queued": len(movies),
+            "movie_ids": movie_ids,
+        }
 
 
 @router.get("/duplicates")
 async def find_duplicates(
     threshold: int = Query(5, ge=0, le=20, description="汉明距离阈值"),
-    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western/center"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western"),
 ):
     """查找重复影片（指纹相似度高于阈值）"""
-    # 模块数据库
-    if module in _MODULE_MODELS:
-        sess = await _get_module_session(module)
-        async with sess:
-            model = _get_module_model(module)
-            result = await sess.execute(
-                select(model.id, model.code, model.title, model.file_path, model.fingerprint)
-                .where(model.fingerprint.isnot(None))
-                .order_by(model.id)
-            )
-            rows = result.fetchall()
-            if len(rows) < 2:
-                return {"status": "ok", "duplicates": [], "total_with_fingerprint": len(rows)}
-            duplicates = []
-            for i in range(len(rows)):
-                for j in range(i + 1, len(rows)):
-                    r1, r2 = rows[i], rows[j]
-                    dist = hamming_distance(r1[4], r2[4])
-                    if 0 <= dist <= threshold:
-                        duplicates.append({
-                            "movie_1": {"id": r1[0], "code": r1[1], "title": r1[2], "file_path": r1[3]},
-                            "movie_2": {"id": r2[0], "code": r2[1], "title": r2[2], "file_path": r2[3]},
-                            "hamming_distance": dist,
-                        })
-            return {
-                "status": "ok",
-                "duplicates": duplicates,
-                "duplicate_count": len(duplicates),
-                "total_with_fingerprint": len(rows),
-            }
+    if module not in MODULE_MODELS:
+        raise HTTPException(status_code=400, detail=f"未知模块: {module}")
 
-    # 中心数据库
-    result = await session.execute(
-        select(Movie.id, Movie.code, Movie.title, Movie.file_path, Movie.fingerprint)
-        .where(Movie.fingerprint.isnot(None))
-        .order_by(Movie.id)
-    )
-    rows = result.fetchall()
+    sess = await get_module_session(module)
+    async with sess:
+        model = get_module_model(module, "movie")
+        result = await sess.execute(
+            select(model.id, model.code, model.title, model.file_path, model.fingerprint)
+            .where(model.fingerprint.isnot(None))
+            .order_by(model.id)
+        )
+        rows = result.fetchall()
+        if len(rows) < 2:
+            return {"status": "ok", "duplicates": [], "total_with_fingerprint": len(rows)}
 
-    if len(rows) < 2:
-        return {"status": "ok", "duplicates": [], "total_with_fingerprint": len(rows)}
+        duplicates = []
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                r1, r2 = rows[i], rows[j]
+                dist = hamming_distance(r1[4], r2[4])
+                if 0 <= dist <= threshold:
+                    duplicates.append({
+                        "movie_1": {"id": r1[0], "code": r1[1], "title": r1[2], "file_path": r1[3]},
+                        "movie_2": {"id": r2[0], "code": r2[1], "title": r2[2], "file_path": r2[3]},
+                        "hamming_distance": dist,
+                    })
 
-    duplicates = []
-    for i in range(len(rows)):
-        for j in range(i + 1, len(rows)):
-            r1 = rows[i]
-            r2 = rows[j]
-            dist = hamming_distance(r1[4], r2[4])
-            if 0 <= dist <= threshold:
-                duplicates.append({
-                    "movie_1": {"id": r1[0], "code": r1[1], "title": r1[2], "file_path": r1[3]},
-                    "movie_2": {"id": r2[0], "code": r2[1], "title": r2[2], "file_path": r2[3]},
-                    "hamming_distance": dist,
-                })
-
-    return {
-        "status": "ok",
-        "duplicates": duplicates,
-        "duplicate_count": len(duplicates),
-        "total_with_fingerprint": len(rows),
-    }
+        return {
+            "status": "ok",
+            "duplicates": duplicates,
+            "duplicate_count": len(duplicates),
+            "total_with_fingerprint": len(rows),
+        }
 
 
 @router.get("/status")
 async def fingerprint_status(
-    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western/center（center=中心数据库）"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/pornhub/western"),
 ):
     """指纹覆盖率统计"""
-    # 模块数据库
-    if module in _MODULE_MODELS:
-        sess = await _get_module_session(module)
-        async with sess:
-            model = _get_module_model(module)
-            total = await sess.scalar(
-                select(func.count()).select_from(model).where(model.file_path.isnot(None))
-            )
-            with_fp = await sess.scalar(
-                select(func.count()).select_from(model).where(
-                    and_(model.file_path.isnot(None), model.fingerprint.isnot(None))
-                )
-            )
-            return {
-                "module": module,
-                "total_movies": total or 0,
-                "with_fingerprint": with_fp or 0,
-                "without_fingerprint": (total or 0) - (with_fp or 0),
-                "coverage": f"{(with_fp / total * 100):.1f}%" if total else "0%",
-            }
+    if module not in MODULE_MODELS:
+        raise HTTPException(status_code=400, detail=f"未知模块: {module}")
 
-    # 中心数据库
-    total = await session.scalar(select(func.count()).select_from(Movie).where(Movie.file_path.isnot(None)))
-    with_fp = await session.scalar(select(func.count()).select_from(Movie).where(
-        and_(Movie.file_path.isnot(None), Movie.fingerprint.isnot(None))
-    ))
-
-    return {
-        "module": "center",
-        "total_movies": total or 0,
-        "with_fingerprint": with_fp or 0,
-        "without_fingerprint": (total or 0) - (with_fp or 0),
-        "coverage": f"{(with_fp / total * 100):.1f}%" if total else "0%",
-    }
+    sess = await get_module_session(module)
+    async with sess:
+        model = get_module_model(module, "movie")
+        total = await sess.scalar(
+            select(func.count()).select_from(model).where(model.file_path.isnot(None))
+        )
+        with_fp = await sess.scalar(
+            select(func.count()).select_from(model).where(
+                and_(model.file_path.isnot(None), model.fingerprint.isnot(None))
+            )
+        )
+        return {
+            "module": module,
+            "total_movies": total or 0,
+            "with_fingerprint": with_fp or 0,
+            "without_fingerprint": (total or 0) - (with_fp or 0),
+            "coverage": f"{(with_fp / total * 100):.1f}%" if total else "0%",
+        }

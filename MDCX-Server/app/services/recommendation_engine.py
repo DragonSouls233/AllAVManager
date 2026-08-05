@@ -11,10 +11,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import (
-    User, Movie, PlayHistory, FavoriteItem, FavoriteGroup,
-    MovieActor, MovieTag, Tag, Actor
-)
+from app.db.system_models import User, FavoriteItem, FavoriteGroup
+from app.utils.module_helper import get_module_model
 from app.config.manager import get_config
 
 logger = logging.getLogger(__name__)
@@ -23,31 +21,46 @@ logger = logging.getLogger(__name__)
 class RecommendationEngine:
     """AI 智能推荐引擎"""
 
+    def _get_models(self, module: str) -> dict:
+        """获取模块对应的模型类"""
+        return {
+            "Movie": get_module_model(module, "movie"),
+            "Actor": get_module_model(module, "actor"),
+            "MovieActor": get_module_model(module, "movie_actor"),
+            "MovieTag": get_module_model(module, "movie_tag"),
+            "Tag": get_module_model(module, "tag"),
+            "PlayHistory": get_module_model(module, "play_history"),
+            "UserRecommendation": get_module_model(module, "user_recommendation"),
+        }
+
     async def get_recommendations(
         self,
         user_id: Optional[int] = None,
         limit: int = 20,
-        session: AsyncSession = None
+        session: AsyncSession = None,
+        module: str = "jav",
     ) -> list[dict]:
         """获取推荐列表"""
         config = get_config()
+        models = self._get_models(module)
+        Movie = models["Movie"]
 
         # 1. 提取用户偏好
-        preferences = await self._extract_preferences(user_id, session)
+        preferences = await self._extract_preferences(user_id, session, module)
         if not self._has_preferences(preferences):
             # 无偏好数据:返回热门影片
-            return await self._get_popular_movies(limit, session)
+            return await self._get_popular_movies(limit, session, module)
 
         # 2. 查询候选影片(排除已看过的)
-        watched_ids = await self._get_watched_ids(user_id, session)
+        watched_ids = await self._get_watched_ids(user_id, session, module)
 
         # 3. 计算每部候选影片的推荐分数
-        candidates = await self._get_candidates(watched_ids, session)
+        candidates = await self._get_candidates(watched_ids, session, module)
 
         # 批量加载候选影片的 actors/tags,避免在循环中 await
         candidate_ids = [m.id for m in candidates]
-        movie_actors = await self._batch_load_actors(candidate_ids, session)
-        movie_tags = await self._batch_load_tags(candidate_ids, session)
+        movie_actors = await self._batch_load_actors(candidate_ids, session, module)
+        movie_tags = await self._batch_load_tags(candidate_ids, session, module)
 
         scored = []
         for movie in candidates:
@@ -81,9 +94,10 @@ class RecommendationEngine:
         )
 
     async def _batch_load_actors(
-        self, movie_ids: list[int], session: AsyncSession
+        self, movie_ids: list[int], session: AsyncSession, module: str = "jav"
     ) -> dict[int, set[int]]:
         """批量加载多个影片的 actor_id 集合"""
+        MovieActor = self._get_models(module)["MovieActor"]
         result: dict[int, set[int]] = {mid: set() for mid in movie_ids}
         if not movie_ids:
             return result
@@ -286,7 +300,8 @@ class RecommendationEngine:
 
     async def dismiss_recommendation(self, user_id: Optional[int], movie_id: int, session: AsyncSession) -> bool:
         """忽略推荐"""
-        from app.db.models import UserRecommendation
+        from app.utils.module_helper import get_module_model
+        UserRecommendation = get_module_model(module or 'jav', 'UserRecommendation')
         # 校验影片存在,避免外键约束失败
         movie = await session.get(Movie, movie_id)
         if not movie:
@@ -314,7 +329,8 @@ class RecommendationEngine:
         recs = await self.get_recommendations(user_id, 20, session)
 
         # 保存到数据库
-        from app.db.models import UserRecommendation
+        from app.utils.module_helper import get_module_model
+        UserRecommendation = get_module_model(module or 'jav', 'UserRecommendation')
         for rec in recs:
             existing = await session.execute(
                 select(UserRecommendation).where(

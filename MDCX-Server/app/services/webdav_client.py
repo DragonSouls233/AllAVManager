@@ -20,8 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
-from app.db.database import get_session_factory
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.websocket import emit_log, emit_progress
 
 logger = logging.getLogger(__name__)
@@ -295,6 +294,7 @@ async def import_webdav_movies(
     link_mode: str = "link",
     local_dir: Optional[str] = None,
     task_id: str = "webdav-import",
+    module: str = "jav",
 ) -> dict:
     """导入 WebDAV 影片到数据库
 
@@ -303,7 +303,7 @@ async def import_webdav_movies(
         - copy: 下载到 local_dir
         - move: 下载后删除远程（慎用）
     """
-    session_factory = get_session_factory()
+    session = await get_module_session(module)
     success = 0
     skipped = 0
     failed = 0
@@ -311,7 +311,8 @@ async def import_webdav_movies(
     total = len(movies)
     await emit_progress(task_id, "WebDAV 导入", 0, total, status="running")
 
-    async with session_factory() as session:
+    Movie = get_module_model(module, "movie")
+    async with session:
         for idx, item in enumerate(movies, 1):
             number = item.get("number")
             if not number:

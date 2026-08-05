@@ -19,11 +19,9 @@ from typing import Optional
 from xml.sax.saxutils import escape
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
-from app.db.database import get_session_factory
-from app.db.models import Movie, Actor, MovieActor, Studio, Series
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services import naming
 from app.services.websocket import emit_log
 from app.utils.logger import get_logger
@@ -32,7 +30,7 @@ logger = get_logger(__name__)
 
 
 async def generate_strm_for_movie(
-    movie: Movie,
+    movie,
     actors: Optional[list[str]] = None,
     studio_name: Optional[str] = None,
     series_name: Optional[str] = None,
@@ -134,7 +132,7 @@ async def generate_strm_for_movie(
 
 
 def _build_nfo_content(
-    movie: Movie,
+    movie,
     actors: list[str],
     studio: Optional[str] = None,
     series: Optional[str] = None,
@@ -197,6 +195,7 @@ async def generate_strm_batch(
     movie_ids: Optional[list[int]] = None,
     overwrite: Optional[bool] = None,
     task_id: str = "strm-gen",
+    module: str = "jav",
 ) -> dict:
     """批量生成 STRM 文件
 
@@ -204,6 +203,7 @@ async def generate_strm_batch(
         movie_ids: 指定影片 ID 列表，None 表示所有影片
         overwrite: 是否覆盖已存在文件，None 使用配置
         task_id: 任务 ID（用于日志推送）
+        module: 模块名
 
     Returns:
         { "total": int, "success": int, "skipped": int, "failed": int, "errors": list }
@@ -211,84 +211,88 @@ async def generate_strm_batch(
     if overwrite is None:
         overwrite = get_config().strm.overwrite
 
-    factory = get_session_factory()
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    ActorModel = get_module_model(module, "actor")
+    MovieActorModel = get_module_model(module, "movie_actor")
+    StudioModel = get_module_model(module, "studio")
+    SeriesModel = get_module_model(module, "series")
     total = success = skipped = failed = 0
     errors = []
 
     await emit_log("INFO", "开始批量生成 STRM 文件", task_id=task_id, module="strm")
 
-    async with factory() as session:
-        # 查询影片
-        query = select(Movie)
-        if movie_ids:
-            query = query.where(Movie.id.in_(movie_ids))
-        query = query.order_by(Movie.id)
+    # 查询影片
+    query = select(MovieModel)
+    if movie_ids:
+        query = query.where(MovieModel.id.in_(movie_ids))
+    query = query.order_by(MovieModel.id)
 
-        result = await session.execute(query)
-        movies = result.scalars().all()
-        total = len(movies)
+    result = await session.execute(query)
+    movies = result.scalars().all()
+    total = len(movies)
 
-        await emit_log(
-            "INFO",
-            f"待处理影片 {total} 部",
-            task_id=task_id,
-            module="strm",
-        )
+    await emit_log(
+        "INFO",
+        f"待处理影片 {total} 部",
+        task_id=task_id,
+        module="strm",
+    )
 
-        for idx, movie in enumerate(movies, 1):
-            try:
-                # 查询演员
-                actors_result = await session.execute(
-                    select(Actor.name)
-                    .join(MovieActor, MovieActor.actor_id == Actor.id)
-                    .where(MovieActor.movie_id == movie.id)
-                )
-                actors = [r[0] for r in actors_result.fetchall()]
+    for idx, movie in enumerate(movies, 1):
+        try:
+            # 查询演员
+            actors_result = await session.execute(
+                select(ActorModel.name)
+                .join(MovieActorModel, MovieActorModel.actor_id == ActorModel.id)
+                .where(MovieActorModel.movie_id == movie.id)
+            )
+            actors = [r[0] for r in actors_result.fetchall()]
 
-                # 查询片商
-                studio_name = None
-                if movie.studio_id:
-                    studio_obj = await session.get(Studio, movie.studio_id)
-                    studio_name = studio_obj.name if studio_obj else None
+            # 查询片商
+            studio_name = None
+            if movie.studio_id:
+                studio_obj = await session.get(StudioModel, movie.studio_id)
+                studio_name = studio_obj.name if studio_obj else None
 
-                # 查询系列
-                series_name = None
-                if movie.series_id:
-                    series_obj = await session.get(Series, movie.series_id)
-                    series_name = series_obj.name if series_obj else None
+            # 查询系列
+            series_name = None
+            if movie.series_id:
+                series_obj = await session.get(SeriesModel, movie.series_id)
+                series_name = series_obj.name if series_obj else None
 
-                # 临时覆盖配置
-                if overwrite is not None:
-                    cfg = get_config()
-                    original = cfg.strm.overwrite
-                    cfg.strm.overwrite = overwrite
+            # 临时覆盖配置
+            if overwrite is not None:
+                cfg = get_config()
+                original = cfg.strm.overwrite
+                cfg.strm.overwrite = overwrite
 
-                r = await generate_strm_for_movie(movie, actors, studio_name, series_name)
+            r = await generate_strm_for_movie(movie, actors, studio_name, series_name)
 
-                # 还原配置
-                if overwrite is not None:
-                    cfg.strm.overwrite = original
+            # 还原配置
+            if overwrite is not None:
+                cfg.strm.overwrite = original
 
-                if r["skipped"]:
-                    skipped += 1
-                elif r["ok"]:
-                    success += 1
-                else:
-                    failed += 1
-                    errors.append({"movie_id": movie.id, "code": movie.code, "error": r["error"]})
-
-                if idx % 20 == 0 or idx == total:
-                    await emit_log(
-                        "DEBUG",
-                        f"进度: {idx}/{total} · 成功 {success} / 跳过 {skipped} / 失败 {failed}",
-                        task_id=task_id,
-                        module="strm",
-                    )
-
-            except Exception as e:
+            if r["skipped"]:
+                skipped += 1
+            elif r["ok"]:
+                success += 1
+            else:
                 failed += 1
-                errors.append({"movie_id": movie.id, "code": movie.code, "error": str(e)})
-                logger.exception(f"影片 {movie.code} STRM 生成失败")
+                errors.append({"movie_id": movie.id, "code": movie.code, "error": r["error"]})
+
+            if idx % 20 == 0 or idx == total:
+                await emit_log(
+                    "DEBUG",
+                    f"进度: {idx}/{total} · 成功 {success} / 跳过 {skipped} / 失败 {failed}",
+                    task_id=task_id,
+                    module="strm",
+                )
+
+        except Exception as e:
+            failed += 1
+            errors.append({"movie_id": movie.id, "code": movie.code, "error": str(e)})
+            logger.exception(f"影片 {movie.code} STRM 生成失败")
 
     summary = f"STRM 生成完成 · 成功 {success} / 跳过 {skipped} / 失败 {failed} / 总计 {total}"
     await emit_log(

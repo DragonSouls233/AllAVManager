@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crawlers.provider import CrawlerProvider
 from app.db.database import get_session
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ async def list_crawlers(
 
     返回所有已注册的爬虫信息（从数据库读取启用状态和优先级）
     """
-    from app.db.models import Setting
+    from app.db.system_models import Setting
     from sqlalchemy import select
 
     provider = CrawlerProvider()
@@ -271,24 +271,25 @@ async def set_crawler_priority(
 
 
 @router.get("/stats")
-async def get_crawler_stats(
-    session: AsyncSession = Depends(get_session),
-):
+async def get_crawler_stats(module: str = "jav"):
     """
     获取站点统计
 
     - 各站点刮削数量
     - 成功率
     """
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+
     # 按来源统计
     query = (
         select(
-            Movie.source,
-            func.count(Movie.id).label("count")
+            MovieModel.source,
+            func.count(MovieModel.id).label("count")
         )
-        .where(Movie.source.isnot(None))
-        .group_by(Movie.source)
-        .order_by(func.count(Movie.id).desc())
+        .where(MovieModel.source.isnot(None))
+        .group_by(MovieModel.source)
+        .order_by(func.count(MovieModel.id).desc())
     )
 
     result = await session.execute(query)
@@ -449,7 +450,7 @@ async def disable_crawler(
 
 async def _save_crawler_setting(session, key: str, value: str):
     """保存爬虫配置到数据库"""
-    from app.db.models import Setting
+    from app.db.system_models import Setting
     from sqlalchemy import select
 
     existing = await session.execute(
@@ -465,7 +466,7 @@ async def _save_crawler_setting(session, key: str, value: str):
 
 async def _get_crawler_setting(session, key: str) -> Optional[str]:
     """从数据库获取爬虫配置"""
-    from app.db.models import Setting
+    from app.db.system_models import Setting
     from sqlalchemy import select
 
     existing = await session.execute(

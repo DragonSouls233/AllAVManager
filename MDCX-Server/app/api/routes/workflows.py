@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
-from app.db.models import Workflow, Movie
+from app.db.system_models import Workflow
 
 router = APIRouter()
 

@@ -23,7 +23,8 @@ from app.api.routes.crawlers import _test_url, _ping_one_crawler
 from app.config.manager import get_config_manager
 from app.crawlers.provider import CrawlerProvider
 from app.db.database import get_session
-from app.db.models import Movie, Setting
+from app.db.system_models import Setting
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ class PriorityOrderUpdate(BaseModel):
 @router.get("/visualization", response_model=SitePriorityVisualization)
 async def get_priority_visualization(
     session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """获取站点优先级可视化数据（聚合优先级 + 测速 + 统计）"""
     config = get_config_manager().config
@@ -86,12 +88,14 @@ async def get_priority_visualization(
             settings[row.key] = row.value
 
     # 2. 各站点刮削数量统计
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
     count_query = (
-        select(Movie.source, func.count(Movie.id).label("cnt"))
-        .where(Movie.source.isnot(None))
-        .group_by(Movie.source)
+        select(MovieModel.source, func.count(MovieModel.id).label("cnt"))
+        .where(MovieModel.source.isnot(None))
+        .group_by(MovieModel.source)
     )
-    count_result = await session.execute(count_query)
+    count_result = await mod_session.execute(count_query)
     source_counts = {row[0]: row[1] for row in count_result.fetchall()}
     total_movies = sum(source_counts.values())
 

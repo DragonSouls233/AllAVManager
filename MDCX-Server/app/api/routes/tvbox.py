@@ -27,14 +27,15 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config, PROJECT_ROOT
 from app.db.database import get_session
-from app.db.models import Movie, Actor, MovieActor, Studio, Series, FavoriteItem
+from app.db.system_models import FavoriteItem
 from app.utils.logger import get_logger
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = get_logger(__name__)
 
@@ -75,14 +76,12 @@ def _build_stream_url(movie_id: int, base_url: str) -> str:
     """构造流媒体播放 URL（指向 /tvbox/stream/{id}）"""
     cfg = get_config().tvbox
     sep = "&" if "?" in base_url else "?"
-    # base_url 本身不带 token 参数，这里追加
     token_part = f"{sep}token={cfg.token}" if cfg.token else ""
     return f"{base_url}/tvbox/stream/{movie_id}{token_part}"
 
 
-def _movie_to_list_item(movie: Movie, base_url: str) -> dict:
+def _movie_to_list_item(movie, base_url: str) -> dict:
     """Movie -> TVBox 列表项（精简字段）"""
-    # NSFW 隐藏模式下仅返回番号作为标题
     cfg = get_config().tvbox
     if cfg.nsfw_hidden:
         title = movie.code
@@ -96,10 +95,10 @@ def _movie_to_list_item(movie: Movie, base_url: str) -> dict:
     }
 
 
-def _movie_to_detail_item(movie: Movie, base_url: str, session: AsyncSession) -> dict:
+def _movie_to_detail_item(movie, base_url: str) -> dict:
     """Movie -> TVBox 详情项（含播放源）
 
-    注意：演员列表需在调用处异步查询后填充。
+    演员直接从 movie.actor（逗号分隔文本）读取。
     """
     cfg = get_config().tvbox
     if cfg.nsfw_hidden:
@@ -110,7 +109,6 @@ def _movie_to_detail_item(movie: Movie, base_url: str, session: AsyncSession) ->
         content = movie.plot or movie.plot_short or ""
 
     play_url = _build_stream_url(movie.id, base_url)
-    # TVBox 播放格式：播放源标识$播放URL（多个用 # 分隔）
     play_from = cfg.play_from
     vod_play_url = f"{play_from}${play_url}"
 
@@ -125,39 +123,48 @@ def _movie_to_detail_item(movie: Movie, base_url: str, session: AsyncSession) ->
         "vod_type": "电影",
         "vod_play_from": play_from,
         "vod_play_url": vod_play_url,
+        "vod_actor": movie.actor or "",
     }
 
 
 # ============== 通用查询构建 ==============
 
-def _apply_category_filter(query, category: str):
+def _apply_category_filter(query, category: str, MovieCls):
     """根据 TVBox 分类 ID 应用筛选"""
     if category == "all" or not category:
         return query
     if category == "censored":
-        # 有码
-        return query.where(Movie.is_uncensored == False)  # noqa: E712
+        return query.where(MovieCls.is_uncensored == False)  # noqa: E712
     if category == "uncensored":
-        # 无码
-        return query.where(Movie.is_uncensored == True)  # noqa: E712
+        return query.where(MovieCls.is_uncensored == True)  # noqa: E712
     if category == "chinese":
-        # 中文字幕
-        return query.where(Movie.is_chinese == True)  # noqa: E712
+        return query.where(MovieCls.is_chinese == True)  # noqa: E712
     if category == "latest":
-        # 最新（按发布日期降序）
         return query  # 排序在外部处理
     if category == "hot":
-        # 热门（按播放次数降序）
         return query  # 排序在外部处理
     return query
 
 
-def _apply_nsfw_filter(query, nsfw_hidden: bool):
+def _apply_nsfw_filter(query, fav_ids: list[int], MovieCls):
     """NSFW 模式：仅展示已收藏的影片"""
-    if not nsfw_hidden:
-        return query
-    fav_subq = select(FavoriteItem.entity_id).where(FavoriteItem.entity_type == "movie")
-    return query.where(Movie.id.in_(fav_subq))
+    if not fav_ids:
+        return query.where(False)
+    return query.where(MovieCls.id.in_(fav_ids))
+
+
+async def _get_nsfw_fav_ids(session: AsyncSession) -> list[int]:
+    """获取 NSFW 模式下已收藏的影片 ID 列表（从 system.db）"""
+    result = await session.execute(
+        select(FavoriteItem.entity_id).where(FavoriteItem.entity_type == "movie")
+    )
+    return [r[0] for r in result.fetchall()]
+
+
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    from app.utils.module_helper import MODULE_MODELS
+    return module if module in MODULE_MODELS else "jav"
 
 
 # ============== TVBox 端点 ==============
@@ -187,7 +194,6 @@ async def tvbox_config(request: Request, token: Optional[str] = None):
             {
                 "key": "mdcx",
                 "name": cfg.site_name,
-                # type=1: JSON X selection（MacCMS 风格 API）
                 "type": 1,
                 "api": site_api,
                 "searchable": 1,
@@ -199,7 +205,6 @@ async def tvbox_config(request: Request, token: Optional[str] = None):
         "lives": [],
         "rules": [],
         "wallpaper": "",
-        # 额外信息（TVBox 客户端会忽略未识别字段）
         "version": _version,
         "site_name": cfg.site_name,
         "home_url": f"{base_url}/tvbox/home.html{token_part}",
@@ -231,6 +236,7 @@ async def tvbox_category(
     token: Optional[str] = None,
     t: str = Query("all", description="分类ID"),
     pg: int = Query(1, ge=1, description="页码"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """TVBox 分类影片列表（分页）
@@ -243,27 +249,37 @@ async def tvbox_category(
     page_size = cfg.page_size
     base_url = _build_base_url(request)
 
-    query = select(Movie).where(Movie.file_path.isnot(None))
-    query = _apply_category_filter(query, t)
-    query = _apply_nsfw_filter(query, cfg.nsfw_hidden)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
+
+    fav_ids: list[int] = []
+    if cfg.nsfw_hidden:
+        fav_ids = await _get_nsfw_fav_ids(session)
+
+    query = select(MovieModel).where(MovieModel.file_path.isnot(None))
+    query = _apply_category_filter(query, t, MovieModel)
+    if cfg.nsfw_hidden:
+        query = _apply_nsfw_filter(query, fav_ids, MovieModel)
 
     # 排序
     if t == "latest":
-        query = query.order_by(Movie.release_date.desc().nulls_last(), Movie.id.desc())
+        query = query.order_by(MovieModel.release_date.desc().nulls_last(), MovieModel.id.desc())
     elif t == "hot":
-        query = query.order_by(Movie.play_count.desc().nulls_last(), Movie.id.desc())
+        query = query.order_by(MovieModel.play_count.desc().nulls_last(), MovieModel.id.desc())
     else:
-        query = query.order_by(Movie.id.desc())
+        query = query.order_by(MovieModel.id.desc())
 
     # 总数
-    count_query = select(func.count(Movie.id)).where(Movie.file_path.isnot(None))
-    count_query = _apply_category_filter(count_query, t)
-    count_query = _apply_nsfw_filter(count_query, cfg.nsfw_hidden)
-    total = await session.scalar(count_query) or 0
+    count_query = select(func.count(MovieModel.id)).where(MovieModel.file_path.isnot(None))
+    count_query = _apply_category_filter(count_query, t, MovieModel)
+    if cfg.nsfw_hidden:
+        count_query = _apply_nsfw_filter(count_query, fav_ids, MovieModel)
+    total = await mod_session.scalar(count_query) or 0
 
     # 分页
     query = query.offset((pg - 1) * page_size).limit(page_size)
-    result = await session.execute(query)
+    result = await mod_session.execute(query)
     movies = result.scalars().all()
 
     return {
@@ -280,6 +296,7 @@ async def tvbox_detail(
     request: Request,
     token: Optional[str] = None,
     code: str = Query(..., description="影片番号或 ID"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """TVBox 影片详情
@@ -289,29 +306,23 @@ async def tvbox_detail(
     _verify_token(token)
     base_url = _build_base_url(request)
 
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
+
     # 先按 ID 查，再按番号查
     movie = None
     if code.isdigit():
-        movie = await session.get(Movie, int(code))
+        movie = await mod_session.get(MovieModel, int(code))
     if not movie:
-        result = await session.execute(select(Movie).where(Movie.code == code).limit(1))
+        result = await mod_session.execute(
+            select(MovieModel).where(MovieModel.code == code).limit(1)
+        )
         movie = result.scalar_one_or_none()
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
 
-    item = _movie_to_detail_item(movie, base_url, session)
-
-    # 演员列表（非 NSFW 隐藏模式才返回）
-    cfg = get_config().tvbox
-    if not cfg.nsfw_hidden:
-        actor_result = await session.execute(
-            select(Actor.name)
-            .join(MovieActor, MovieActor.actor_id == Actor.id)
-            .where(MovieActor.movie_id == movie.id)
-            .limit(20)
-        )
-        actors = [r[0] for r in actor_result.fetchall()]
-        item["vod_actor"] = ",".join(actors)
+    item = _movie_to_detail_item(movie, base_url)
 
     return {"list": [item]}
 
@@ -322,6 +333,7 @@ async def tvbox_search(
     token: Optional[str] = None,
     wd: str = Query(..., description="搜索关键字"),
     pg: int = Query(1, ge=1, description="页码"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """TVBox 搜索接口
@@ -333,37 +345,47 @@ async def tvbox_search(
     page_size = cfg.page_size
     base_url = _build_base_url(request)
 
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
+
+    fav_ids: list[int] = []
+    if cfg.nsfw_hidden:
+        fav_ids = await _get_nsfw_fav_ids(session)
+
     kw = f"%{wd}%"
     query = (
-        select(Movie)
+        select(MovieModel)
         .where(
-            Movie.file_path.isnot(None),
+            MovieModel.file_path.isnot(None),
             or_(
-                Movie.code.like(kw),
-                Movie.title.like(kw),
-                Movie.original_title.like(kw),
+                MovieModel.code.like(kw),
+                MovieModel.title.like(kw),
+                MovieModel.original_title.like(kw),
             ),
         )
     )
-    query = _apply_nsfw_filter(query, cfg.nsfw_hidden)
-    query = query.order_by(Movie.id.desc())
+    if cfg.nsfw_hidden:
+        query = _apply_nsfw_filter(query, fav_ids, MovieModel)
+    query = query.order_by(MovieModel.id.desc())
 
     count_query = (
-        select(func.count(Movie.id))
+        select(func.count(MovieModel.id))
         .where(
-            Movie.file_path.isnot(None),
+            MovieModel.file_path.isnot(None),
             or_(
-                Movie.code.like(kw),
-                Movie.title.like(kw),
-                Movie.original_title.like(kw),
+                MovieModel.code.like(kw),
+                MovieModel.title.like(kw),
+                MovieModel.original_title.like(kw),
             ),
         )
     )
-    count_query = _apply_nsfw_filter(count_query, cfg.nsfw_hidden)
-    total = await session.scalar(count_query) or 0
+    if cfg.nsfw_hidden:
+        count_query = _apply_nsfw_filter(count_query, fav_ids, MovieModel)
+    total = await mod_session.scalar(count_query) or 0
 
     query = query.offset((pg - 1) * page_size).limit(page_size)
-    result = await session.execute(query)
+    result = await mod_session.execute(query)
     movies = result.scalars().all()
 
     return {
@@ -380,6 +402,7 @@ async def tvbox_play(
     request: Request,
     token: Optional[str] = None,
     id: str = Query(..., description="影片 ID"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
     session: AsyncSession = Depends(get_session),
 ):
     """TVBox 播放地址
@@ -391,13 +414,18 @@ async def tvbox_play(
 
     if not id.isdigit():
         raise HTTPException(status_code=400, detail="id 必须是数字 ID")
-    movie = await session.get(Movie, int(id))
+
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
+
+    movie = await mod_session.get(MovieModel, int(id))
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
 
     play_url = _build_stream_url(movie.id, base_url)
     return {
-        "parse": 0,  # 0 = 直接播放，1 = 需要解析
+        "parse": 0,
         "url": play_url,
         "header": {
             "User-Agent": "MDCX-TVBox/1.0",
@@ -425,7 +453,7 @@ async def tvbox_stream(
     movie_id: int,
     request: Request,
     token: Optional[str] = None,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """直接流式播放视频文件
 
@@ -434,19 +462,23 @@ async def tvbox_stream(
     """
     _verify_token(token)
 
-    movie = await session.get(Movie, movie_id)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    mod_session = await get_module_session(module)
+
+    movie = await mod_session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
     if not movie.file_path:
         raise HTTPException(status_code=404, detail="影片没有关联文件")
 
-    file_path = Path(movie.file_path)
-    if not file_path.exists():
+    file_path_obj = Path(movie.file_path)
+    if not file_path_obj.exists():
         raise HTTPException(status_code=404, detail="视频文件不存在")
 
-    ext = file_path.suffix.lower()
+    ext = file_path_obj.suffix.lower()
     media_type = VIDEO_EXT_MAP.get(ext, "application/octet-stream")
-    file_size = file_path.stat().st_size
+    file_size = file_path_obj.stat().st_size
 
     # 处理 Range 请求
     range_header = request.headers.get("range")
@@ -459,7 +491,7 @@ async def tvbox_stream(
             content_length = end - start + 1
 
             def iter_range():
-                with open(file_path, "rb") as f:
+                with open(file_path_obj, "rb") as f:
                     f.seek(start)
                     remaining = content_length
                     while remaining > 0:
@@ -485,7 +517,7 @@ async def tvbox_stream(
 
     # 完整文件流
     def iter_file():
-        with open(file_path, "rb") as f:
+        with open(file_path_obj, "rb") as f:
             while True:
                 data = f.read(1024 * 1024)
                 if not data:

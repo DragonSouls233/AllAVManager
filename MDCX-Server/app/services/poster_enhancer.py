@@ -312,12 +312,14 @@ class PosterEnhancerService:
         self,
         movie_ids: list[int],
         session=None,
+        module: str = "jav",
     ) -> dict:
         """批量增强海报
 
         Args:
             movie_ids: 影片 ID 列表
             session: 数据库会话（必须由调用方传入）
+            module: 模块名 jav/fc2/uncensored/chinese/western/pornhub
 
         Returns:
             统计结果 {success, failed, skipped}
@@ -328,7 +330,8 @@ class PosterEnhancerService:
             logger.error("batch_enhance 需要传入数据库 session")
             return results
 
-        from app.db.models import Movie
+        from app.utils.module_helper import get_module_model
+        Movie = get_module_model(module, "movie")
 
         for movie_id in movie_ids:
             try:

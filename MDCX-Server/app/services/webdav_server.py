@@ -29,14 +29,12 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, quote
 
-from fastapi import APIRouter, Request, Response, HTTPException, Depends
+from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, Response as FastResponse
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
-from app.db.database import get_session
-from app.db.models import Movie, MovieActor, Actor, Studio
+from app.utils.module_helper import get_module_model, get_module_session
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

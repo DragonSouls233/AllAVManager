@@ -16,7 +16,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
-from app.db.models import Movie, Task, Actor, MovieActor
+from app.db.system_models import Task
+# Module stats use ModuleDatabase directly
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,14 @@ async def get_dashboard_stats(
     try:
         from app.db.module_db import ModuleDatabase
         
-        # 所有模块列表：(模块名, 表名覆盖) — pornhub 的表名是 movies，其他都是 xxx_movies
+        # 所有模块列表（新架构：统一 actors / movies 表名）
         ALL_MODULES = [
-            ("chinese", "chinese_movies"),
-            ("uncensored", "uncensored_movies"),
-            ("fc2", "fc2_movies"),
+            ("chinese", "movies"),
+            ("uncensored", "movies"),
+            ("fc2", "movies"),
             ("pornhub", "movies"),
-            ("jav", "jav_movies"),
-            ("western", "western_movies"),
+            ("jav", "movies"),
+            ("western", "movies"),
         ]
         
         for mod_name, table_name in ALL_MODULES:
@@ -103,9 +104,8 @@ async def get_dashboard_stats(
                         ) or 0
                         actor_count = 0
                         try:
-                            actor_table = f"{mod_name}_actors" if mod_name != "pornhub" else "pornhub_actors"
                             actor_count = await mod_session.scalar(
-                                text(f"SELECT COUNT(*) FROM {actor_table}")
+                                text("SELECT COUNT(*) FROM actors")
                             ) or 0
                         except Exception:
                             pass

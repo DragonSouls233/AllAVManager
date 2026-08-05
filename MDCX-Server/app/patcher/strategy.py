@@ -24,7 +24,8 @@ from app.patcher.detector import FieldType, ImageType, MissingInfo
 from app.scraper.engine import ScraperEngine
 from app.output.images import ImageProcessor
 from app.output.nfo import NFOGenerator
-from app.db.models import Movie, Studio, Series, MovieActor, Actor
+from app.db.module_db import ModuleDatabase
+from app.utils.module_helper import MODULE_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -451,13 +452,14 @@ class PatchEngine:
             if plan.need_update_nfo and scraped_data:
                 await self._update_nfo(missing_info, scraped_data)
             
-            # 5. 更新数据库
+            # 5. 更新数据库（仅模块数据库）
             if scraped_data or result.patched_images:
                 await self._update_database(
                     missing_info.movie_id,
                     scraped_data,
                     result.patched_images,
                     output_dir=missing_info.output_dir,
+                    module=self._detect_module(missing_info),
                 )
             
             # 6. 判断最终状态
@@ -515,6 +517,17 @@ class PatchEngine:
 
         return results
     
+    def _detect_module(self, missing_info: MissingInfo) -> Optional[str]:
+        """从 missing_info 推断所属模块"""
+        # 优先从 output_dir 路径推断（格式：.../data/movies/{module}/{code}/）
+        if missing_info.output_dir:
+            from pathlib import Path
+            parts = Path(missing_info.output_dir).parts
+            for i, part in enumerate(parts):
+                if part == "movies" and i + 1 < len(parts):
+                    return parts[i + 1]
+        return None
+
     async def _scrape_missing(
         self,
         code: str,
@@ -541,7 +554,7 @@ class PatchEngine:
                     parser = NFOParser()
                     imported = parser.parse(str(nfo_path))
                     if imported:
-                        logger.info(f"NFO \u7f13\u5b58\u547d\u4e2d: {code} (\u8df3\u8fc7\u7f51\u7edc\u722c\u866b)")
+                        logger.info(f"NFO 缓存命中: {code} (跳过网络爬虫)")
                         actors = []
                         if imported.actors:
                             actors = [{"name": a} for a in imported.actors]
@@ -590,9 +603,9 @@ class PatchEngine:
                             "is_chinese": imported.is_chinese,
                         }
                 except Exception as e:
-                    logger.warning(f"NFO \u89e3\u6790\u5931\u8d25: {nfo_path}: {e}")
+                    logger.warning(f"NFO 解析失败: {nfo_path}: {e}")
 
-        # ---- \u8d70\u7f51\u7edc\u722c\u866b ----
+        # ---- 走网络爬虫 ----
         try:
             # 使用刮削引擎直接刮削番号（支持按来源站点过滤）
             result = await self.scraper_engine.scrape_number(code, sources=sources)
@@ -806,122 +819,105 @@ class PatchEngine:
             logger.error(f"更新NFO失败: {e}")
             return False
     
-    async def _update_database(
+    # ---- 模块数据库字段映射（scraped key → DB column） ----
+    _MODULE_COLUMN_MAP = {
+        "title": "title",
+        "original_title": "original_title",
+        "plot": "plot",
+        "release_date": "release_date",
+        "duration": "duration",
+        "rating": "rating",
+        "genre": "genre",
+        "source": "source",
+        "source_url": "source_url",
+        "cover_url": "cover_url",
+        "poster_url": "poster_url",
+        "thumb_url": "thumb_url",
+        "trailer_url": "trailer_url",
+        "sample_images": "sample_images",
+        "studio": "studio",
+        "series": "series",
+        "maker": "studio",
+    }
+
+    async def _update_module_database(
         self,
         movie_id: int,
         scraped_data: Optional[dict],
         patched_images: list[str],
-        output_dir: Optional[str] = None,
+        output_dir: Optional[str],
+        module: str,
     ) -> bool:
-        """更新数据库"""
-        from app.db.database import get_db
+        """使用原生 SQL 更新模块数据库"""
+        try:
+            mod_db = ModuleDatabase.get_instance(module)
+            session = await mod_db.get_session()
+        except Exception as e:
+            logger.error(f"获取模块数据库失败 ({module}): {e}")
+            return False
 
-        db = get_db()
+        table_info = MODULE_TABLES.get(module)
+        if not table_info:
+            logger.error(f"未知模块: {module}")
+            return False
+        _actor_table, movie_table = table_info
 
         try:
-            async with db.session() as session:
-                # 先拿已有 Movie 记录
-                movie = await session.get(Movie, movie_id)
-                if not movie:
-                    # 模块数据库的 movie_id 可能与主数据库不一致，按番号回退查找
-                    code = (scraped_data or {}).get("code")
-                    if code:
-                        r = await session.execute(select(Movie).where(Movie.code == code))
-                        movie = r.scalar_one_or_none()
-                if not movie:
-                    logger.warning(f"Movie {movie_id} 数据库更新未找到")
+            async with session:
+                # 按番号查找记录
+                code = (scraped_data or {}).get("code")
+                if not code:
+                    logger.warning(f"模块数据库更新：无番号，movie_id={movie_id}")
                     return False
 
-                # 更新 output_dir 到服务端路径
+                result = await session.execute(
+                    text(f"SELECT id FROM {movie_table} WHERE code = :code"),
+                    {"code": code},
+                )
+                row = result.fetchone()
+                if not row:
+                    logger.warning(f"模块数据库未找到番号: {code}")
+                    return False
+
+                mod_movie_id = row[0]
+
+                # 更新 output_dir（模块表不一定有该列，容错）
                 if output_dir:
-                    movie.output_dir = output_dir
+                    try:
+                        await session.execute(
+                            text(f"UPDATE {movie_table} SET output_dir = :dir WHERE id = :id"),
+                            {"dir": output_dir, "id": mod_movie_id},
+                        )
+                    except Exception:
+                        pass  # 该模块表没有 output_dir 列
 
                 if scraped_data:
-                    # 字段名映射：scraped key → DB column（排除非列字段）
-                    COLUMN_MAP = {
-                        "title": "title",
-                        "plot": "plot",
-                        "release_date": "release_date",
-                        "duration": "duration",
-                        "maker": "maker",
-                        "director": "director",
-                        "genre": "genre",
-                        "cover_url": "cover_url",
-                        "poster_url": "poster_url",
-                        "thumb_url": "thumb_url",
-                        "trailer_url": "trailer_url",
-                        "sample_images": "sample_images",
-                        "rating": "rating",
-                        "source": "source",
-                    }
-
                     updates = []
                     params = {}
 
                     for key, value in scraped_data.items():
                         if value is None:
                             continue
-                        col = COLUMN_MAP.get(key)
+                        col = self._MODULE_COLUMN_MAP.get(key)
                         if col is None:
-                            continue  # 跳过 studio/series/actors —— 它们有独立处理逻辑
+                            continue
                         if isinstance(value, list):
                             value = json.dumps(value, ensure_ascii=False, default=_json_safe)
                         updates.append(f"{col} = :{col}")
                         params[col] = value
 
-                    # --- 处理 studio ---
-                    studio_name = scraped_data.get("studio")
-                    if studio_name:
-                        result = await session.execute(
-                            select(Studio).where(Studio.name == studio_name)
-                        )
-                        studio = result.scalar_one_or_none()
-                        if not studio:
-                            studio = Studio(name=studio_name)
-                            session.add(studio)
-                            await session.flush()
-                        movie.studio_id = studio.id
-
-                    # --- 处理 series ---
-                    series_name = scraped_data.get("series")
-                    if series_name:
-                        result = await session.execute(
-                            select(Series).where(Series.name == series_name)
-                        )
-                        series = result.scalar_one_or_none()
-                        if not series:
-                            series = Series(name=series_name)
-                            session.add(series)
-                            await session.flush()
-                        movie.series_id = series.id
-
-                    # --- 处理 actors ---
+                    # --- 处理 actors（模块表多为 actor 单列，western 为 actors 文本列） ---
                     actors_data = scraped_data.get("actors")
                     if actors_data:
-                        # 清除旧关联
-                        await session.execute(
-                            text("DELETE FROM movie_actors WHERE movie_id = :mid"),
-                            {"mid": movie_id},
-                        )
                         actor_names = [a.name if hasattr(a, "name") else str(a) for a in actors_data]
-                        for name in actor_names:
-                            if not name:
-                                continue
-                            result = await session.execute(
-                                select(Actor).where(Actor.name == name)
-                            )
-                            actor = result.scalar_one_or_none()
-                            if not actor:
-                                actor = Actor(name=name)
-                                session.add(actor)
-                                await session.flush()
-                            ma = MovieActor(movie_id=movie_id, actor_id=actor.id)
-                            session.add(ma)
+                        joined = ", ".join(filter(None, actor_names))
+                        if joined:
+                            updates.append("actor = :actor")
+                            params["actor"] = joined
 
-                    # --- 执行 UPDATE（普通列） ---
                     if updates:
-                        params["movie_id"] = movie_id
-                        query = f"UPDATE movies SET {', '.join(updates)} WHERE id = :movie_id"
+                        params["id"] = mod_movie_id
+                        query = f"UPDATE {movie_table} SET {', '.join(updates)} WHERE id = :id"
                         await session.execute(text(query), params)
 
                     await session.commit()
@@ -929,8 +925,28 @@ class PatchEngine:
             return True
 
         except Exception as e:
-            logger.error(f"更新数据库失败: {e}")
+            logger.error(f"更新模块数据库失败 ({module}): {e}")
             return False
+
+    async def _update_database(
+        self,
+        movie_id: int,
+        scraped_data: Optional[dict],
+        patched_images: list[str],
+        output_dir: Optional[str] = None,
+        module: Optional[str] = None,
+    ) -> bool:
+        """更新模块数据库
+        
+        中心数据库已废弃，仅更新模块数据库。
+        当 module 未指定时，跳过更新。
+        """
+        if not module:
+            logger.warning("模块未指定，跳过数据库更新")
+            return False
+        return await self._update_module_database(
+            movie_id, scraped_data, patched_images, output_dir, module,
+        )
 
 
 async def patch_movie(

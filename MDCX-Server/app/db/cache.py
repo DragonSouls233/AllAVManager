@@ -18,7 +18,7 @@ from functools import lru_cache
 from typing import Any, Callable, Optional, TypeVar
 
 from app.db.database import get_db
-from app.db.models import Cache
+from app.db.system_models import Cache
 from sqlalchemy import func
 
 logger = logging.getLogger(__name__)

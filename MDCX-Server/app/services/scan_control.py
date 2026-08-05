@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
 from app.db.database import get_database
-from app.db.models import ScanRecord
+from app.db.system_models import ScanRecord
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.mpv_player import (
     DEFAULT_HOTKEYS,
     play_video,
@@ -47,6 +48,7 @@ class SaveConfigRequest(BaseModel):
 async def play_with_mpv(
     movie_id: int,
     req: PlayRequest = Body(default_factory=PlayRequest),
+    module: str = Query("jav", description="模块名"),
 ):
     """启动 mpv 播放指定影片"""
     # 合并配置：请求参数 > 数据库配置 > 默认值
@@ -68,11 +70,10 @@ async def play_with_mpv(
         raise HTTPException(status_code=code, detail=result["message"])
 
     # 更新播放次数
-    from app.db.database import get_database
-    from app.db.models import Movie
     from datetime import datetime
-    db = get_database()
-    async with db.session() as session:
+    Movie = get_module_model(module, "movie")
+    session = await get_module_session(module)
+    async with session:
         movie = await session.get(Movie, movie_id)
         if movie:
             movie.play_count = (movie.play_count or 0) + 1

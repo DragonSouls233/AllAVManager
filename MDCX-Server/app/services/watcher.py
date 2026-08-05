@@ -146,15 +146,15 @@ class _DebouncedScanner(FileSystemEventHandler):
         except Exception as e:
             logger.error(f"目录监听扫描失败: {e}")
 
-    async def _async_scan_and_link(self, directories: list[str]):
+    async def _async_scan_and_link(self, directories: list[str], module: str = "jav"):
         """异步扫描并关联文件"""
-        from app.db.database import get_database
+        from app.utils.module_helper import get_module_model, get_module_session
         from app.scraper.number import extract_number, normalize_number
         from sqlalchemy import select
-        from app.db.models import Movie
 
-        db = get_database()
-        async with db.session() as session:
+        Movie = get_module_model(module, "movie")
+        session = await get_module_session(module)
+        async with session:
             linked = 0
             for directory in directories:
                 scan_dir = Path(directory)

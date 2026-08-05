@@ -4,14 +4,27 @@
 - 图谱数据结构:nodes(影片) + edges(关联类型+权重)
 - 关联推荐算法:基于图谱权重排序 Top N
 """
+import importlib
 import logging
 from typing import Optional
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Movie, MovieRelation, MovieActor, MovieTag, Tag
 from app.config.manager import get_config
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    return module if module in MODULE_MODELS else "jav"
+
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 class MovieGraphService:
@@ -21,6 +34,7 @@ class MovieGraphService:
         self,
         movie_id: int,
         depth: int = 1,
+        module: str = "jav",
         session: AsyncSession = None
     ) -> dict:
         """
@@ -32,6 +46,15 @@ class MovieGraphService:
                 "edges": [{"source": int, "target": int, "type": str, "weight": float}]
             }
         """
+        module = _resolve_module(module)
+        MovieModel = get_module_model(module, "movie")
+        MovieRelationCls = _get_mod_cls(module, "MovieRelation")
+        MovieActorCls = _get_mod_cls(module, "MovieActor")
+        MovieTagCls = _get_mod_cls(module, "MovieTag")
+
+        if session is None:
+            session = await get_module_session(module)
+
         config = get_config()
         max_relations = config.movie_graph.max_relations_per_movie
         min_weight = config.movie_graph.min_weight_threshold
@@ -40,7 +63,7 @@ class MovieGraphService:
         edges: list[dict] = []
 
         # 获取中心影片
-        center_movie = await session.get(Movie, movie_id)
+        center_movie = await session.get(MovieModel, movie_id)
         if not center_movie:
             return {"nodes": [], "edges": []}
 
@@ -48,12 +71,12 @@ class MovieGraphService:
 
         # 查询已存储的关联关系
         relations = await session.execute(
-            select(MovieRelation).where(MovieRelation.movie_id == movie_id)
+            select(MovieRelationCls).where(MovieRelationCls.movie_id == movie_id)
         )
         for rel in relations.scalars():
             if rel.weight < min_weight:
                 continue
-            related = await session.get(Movie, rel.related_movie_id)
+            related = await session.get(MovieModel, rel.related_movie_id)
             if related:
                 nodes[related.id] = self._movie_to_node(related)
                 edges.append({
@@ -65,11 +88,11 @@ class MovieGraphService:
 
         # 动态计算关联(同演员)
         actor_movies = await session.execute(
-            select(Movie).join(MovieActor, MovieActor.movie_id == Movie.id)
-            .where(MovieActor.actor_id.in_(
-                select(MovieActor.actor_id).where(MovieActor.movie_id == movie_id)
+            select(MovieModel).join(MovieActorCls, MovieActorCls.movie_id == MovieModel.id)
+            .where(MovieActorCls.actor_id.in_(
+                select(MovieActorCls.actor_id).where(MovieActorCls.movie_id == movie_id)
             ))
-            .where(Movie.id != movie_id)
+            .where(MovieModel.id != movie_id)
             .limit(max_relations)
         )
         for m in actor_movies.scalars():
@@ -85,9 +108,9 @@ class MovieGraphService:
         # 动态计算关联(同系列)
         if center_movie.series_id:
             series_movies = await session.execute(
-                select(Movie).where(
-                    Movie.series_id == center_movie.series_id,
-                    Movie.id != movie_id
+                select(MovieModel).where(
+                    MovieModel.series_id == center_movie.series_id,
+                    MovieModel.id != movie_id
                 ).limit(max_relations)
             )
             for m in series_movies.scalars():
@@ -102,11 +125,11 @@ class MovieGraphService:
 
         # 动态计算关联(同标签)
         tag_movies = await session.execute(
-            select(Movie).join(MovieTag, MovieTag.movie_id == Movie.id)
-            .where(MovieTag.tag_id.in_(
-                select(MovieTag.tag_id).where(MovieTag.movie_id == movie_id)
+            select(MovieModel).join(MovieTagCls, MovieTagCls.movie_id == MovieModel.id)
+            .where(MovieTagCls.tag_id.in_(
+                select(MovieTagCls.tag_id).where(MovieTagCls.movie_id == movie_id)
             ))
-            .where(Movie.id != movie_id)
+            .where(MovieModel.id != movie_id)
             .limit(max_relations)
         )
         for m in tag_movies.scalars():
@@ -122,9 +145,9 @@ class MovieGraphService:
         # 动态计算关联(同厂商)
         if center_movie.studio_id:
             studio_movies = await session.execute(
-                select(Movie).where(
-                    Movie.studio_id == center_movie.studio_id,
-                    Movie.id != movie_id
+                select(MovieModel).where(
+                    MovieModel.studio_id == center_movie.studio_id,
+                    MovieModel.id != movie_id
                 ).limit(max_relations)
             )
             for m in studio_movies.scalars():
@@ -142,13 +165,13 @@ class MovieGraphService:
             "edges": edges
         }
 
-    def _movie_to_node(self, movie: Movie) -> dict:
+    def _movie_to_node(self, movie) -> dict:
         return {
             "id": movie.id,
             "code": movie.code,
             "title": movie.title,
             "cover_url": movie.cover_url,
-            "poster_url": movie.poster_url,
+            "poster_url": movie.poster_url if hasattr(movie, "poster_url") else None,
             "release_date": movie.release_date,
             "rating": movie.rating
         }
@@ -157,10 +180,11 @@ class MovieGraphService:
         self,
         movie_id: int,
         limit: int = 10,
+        module: str = "jav",
         session: AsyncSession = None
     ) -> list[dict]:
         """基于图谱获取关联推荐"""
-        graph = await self.get_graph(movie_id, session=session)
+        graph = await self.get_graph(movie_id, module=module, session=session)
 
         # 按权重聚合
         scores: dict[int, float] = {}
@@ -191,20 +215,27 @@ class MovieGraphService:
         related_movie_id: int,
         relation_type: str,
         weight: float = 1.0,
+        module: str = "jav",
         session: AsyncSession = None
     ) -> bool:
         """保存关联关系到数据库"""
+        module = _resolve_module(module)
+        MovieRelationCls = _get_mod_cls(module, "MovieRelation")
+
+        if session is None:
+            session = await get_module_session(module)
+
         existing = await session.execute(
-            select(MovieRelation).where(
-                MovieRelation.movie_id == movie_id,
-                MovieRelation.related_movie_id == related_movie_id,
-                MovieRelation.relation_type == relation_type
+            select(MovieRelationCls).where(
+                MovieRelationCls.movie_id == movie_id,
+                MovieRelationCls.related_movie_id == related_movie_id,
+                MovieRelationCls.relation_type == relation_type
             )
         )
         if existing.scalars().first():
             return False
 
-        relation = MovieRelation(
+        relation = MovieRelationCls(
             movie_id=movie_id,
             related_movie_id=related_movie_id,
             relation_type=relation_type,

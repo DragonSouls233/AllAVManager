@@ -267,13 +267,15 @@ class TelegramBotService:
 
     async def _cmd_status(self, update: dict) -> dict:
         chat_id = update["message"]["chat"]["id"]
+        module = "jav"
         try:
-            from app.db.database import async_session_factory
             from sqlalchemy import select, func
-            from app.db.models import Movie, Actor
-            async with async_session_factory() as session:
-                movie_count = (await session.execute(select(func.count(Movie.id)))).scalar_one()
-                actor_count = (await session.execute(select(func.count(Actor.id)))).scalar_one()
+            from app.utils.module_helper import get_module_model, get_module_session
+            session = await get_module_session(module)
+            MovieModel = get_module_model(module, "movie")
+            ActorModel = get_module_model(module, "actor")
+            movie_count = (await session.execute(select(func.count(MovieModel.id)))).scalar_one()
+            actor_count = (await session.execute(select(func.count(ActorModel.id)))).scalar_one()
             return await self.send_message(
                 chat_id,
                 f"📊 *系统状态*\n\n"
@@ -295,17 +297,18 @@ class TelegramBotService:
         if len(parts) < 2:
             return await self.send_message(chat_id, "⚠️ 用法: /subscribe 演员名")
         actor_name = parts[1].strip()
+        module = "jav"
         try:
-            from app.db.database import async_session_factory
             from sqlalchemy import select
-            from app.db.models import Actor
+            from app.utils.module_helper import get_module_model, get_module_session
             from app.services.actor_subscription import subscribe, list_subscriptions
-            async with async_session_factory() as session:
-                stmt = select(Actor).where(Actor.name == actor_name).limit(1)
-                actor = (await session.execute(stmt)).scalar_one_or_none()
-                if actor is None:
-                    return await self.send_message(chat_id, f"❌ 未找到演员: {actor_name}")
-                await subscribe(user_id=None, actor_id=actor.id, notify_new_movie=True, session=session)
+            session = await get_module_session(module)
+            ActorModel = get_module_model(module, "actor")
+            stmt = select(ActorModel).where(ActorModel.name == actor_name).limit(1)
+            actor = (await session.execute(stmt)).scalar_one_or_none()
+            if actor is None:
+                return await self.send_message(chat_id, f"❌ 未找到演员: {actor_name}")
+            await subscribe(user_id=None, actor_id=actor.id, notify_new_movie=True, module=module)
             return await self.send_message(
                 chat_id, f"✅ 已订阅演员: *{actor_name}*\n新片发布时会自动通知。"
             )
@@ -314,11 +317,10 @@ class TelegramBotService:
 
     async def _cmd_list_subscriptions(self, update: dict) -> dict:
         chat_id = update["message"]["chat"]["id"]
+        module = "jav"
         try:
-            from app.db.database import async_session_factory
             from app.services.actor_subscription import list_subscriptions
-            async with async_session_factory() as session:
-                subs = await list_subscriptions(user_id=None, session=session)
+            subs = await list_subscriptions(user_id=None, module=module)
             if not subs:
                 return await self.send_message(chat_id, "📭 暂无订阅")
             lines = ["📋 订阅列表：\n"]
@@ -336,15 +338,16 @@ class TelegramBotService:
         if len(parts) < 2:
             return await self.send_message(chat_id, "⚠️ 用法: /search 番号")
         code = parts[1].strip()
+        module = "jav"
         try:
-            from app.db.database import async_session_factory
             from sqlalchemy import select, or_
-            from app.db.models import Movie
-            async with async_session_factory() as session:
-                stmt = select(Movie).where(
-                    or_(Movie.code == code, Movie.code.contains(code))
-                ).limit(5)
-                movies = (await session.execute(stmt)).scalars().all()
+            from app.utils.module_helper import get_module_model, get_module_session
+            session = await get_module_session(module)
+            MovieModel = get_module_model(module, "movie")
+            stmt = select(MovieModel).where(
+                or_(MovieModel.code == code, MovieModel.code.contains(code))
+            ).limit(5)
+            movies = (await session.execute(stmt)).scalars().all()
             if not movies:
                 return await self.send_message(chat_id, f"🔍 未找到影片: {code}")
             lines = ["🔍 搜索结果：\n"]
@@ -361,11 +364,10 @@ class TelegramBotService:
 
     async def _cmd_report(self, update: dict) -> dict:
         chat_id = update["message"]["chat"]["id"]
+        module = "jav"
         try:
-            from app.db.database import async_session_factory
             from app.services.viewing_report import generate_report
-            async with async_session_factory() as session:
-                report = await generate_report(user_id=None, session=session, days=30)
+            report = await generate_report(user_id=None, module=module, days=30)
             summary = report["summary"]
             lines = [
                 f"📈 *最近 {report['period_days']} 天观影报告*\n",

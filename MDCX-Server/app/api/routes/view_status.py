@@ -5,19 +5,24 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, update
 
-from app.db.database import get_session
-from app.db.models import Movie
-from app.services.view_status import (
-    view_status_service,
-    VALID_STATUSES,
-    VIEW_STATUS_BROWSED,
-    VIEW_STATUS_WATCHED,
-    VIEW_STATUS_WANTED,
-)
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 router = APIRouter()
+
+
+# 三态枚举
+VIEW_STATUS_BROWSED = "browsed"
+VIEW_STATUS_WATCHED = "watched"
+VIEW_STATUS_WANTED = "wanted"
+
+VALID_STATUSES = {VIEW_STATUS_BROWSED, VIEW_STATUS_WATCHED, VIEW_STATUS_WANTED}
+
+
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    return module if module in MODULE_MODELS else "jav"
 
 
 # ============================================
@@ -53,15 +58,37 @@ class ViewStatusStatsResponse(BaseModel):
 # ============================================
 
 @router.get("/stats", response_model=ViewStatusStatsResponse, summary="统计各状态影片数量")
-async def get_view_status_stats(session: AsyncSession = Depends(get_session)):
+async def get_view_status_stats(
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
+):
     """统计 browsed/watched/wanted/unmarked 各状态影片数量"""
-    counts = await view_status_service.count_by_status(session)
-    return ViewStatusStatsResponse(**counts)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    result = {}
+    for status in VALID_STATUSES:
+        stmt = select(func.count(MovieModel.id)).where(MovieModel.view_status == status)
+        r = await session.execute(stmt)
+        result[status] = r.scalar() or 0
+
+    stmt = select(func.count(MovieModel.id)).where(MovieModel.view_status.is_(None))
+    r = await session.execute(stmt)
+    result["unmarked"] = r.scalar() or 0
+
+    return ViewStatusStatsResponse(**result)
 
 
 @router.get("/{movie_id}", response_model=ViewStatusResponse, summary="获取单部影片观看状态")
-async def get_movie_view_status(movie_id: int, session: AsyncSession = Depends(get_session)):
-    movie = await session.get(Movie, movie_id)
+async def get_movie_view_status(
+    movie_id: int,
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
+):
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(404, f"影片 {movie_id} 不存在")
     return ViewStatusResponse(
@@ -73,7 +100,7 @@ async def get_movie_view_status(movie_id: int, session: AsyncSession = Depends(g
 async def set_movie_view_status(
     movie_id: int,
     body: ViewStatusRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """设置单部影片观看状态
 
@@ -83,13 +110,20 @@ async def set_movie_view_status(
     - `wanted`：想看
     - `null`：清除标记
     """
-    try:
-        movie = await view_status_service.set_status(session, movie_id, body.status)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    if body.status is not None and body.status not in VALID_STATUSES:
+        raise HTTPException(400, f"无效的 view_status: {body.status}，有效值: {VALID_STATUSES}")
 
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(404, f"影片 {movie_id} 不存在")
+
+    movie.view_status = body.status
+    await session.commit()
+    await session.refresh(movie)
 
     return ViewStatusResponse(
         movie_id=movie.id, code=movie.code, view_status=movie.view_status
@@ -99,15 +133,27 @@ async def set_movie_view_status(
 @router.post("/batch", summary="批量设置观看状态")
 async def batch_set_view_status(
     body: BatchViewStatusRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """批量设置影片观看状态"""
-    try:
-        updated = await view_status_service.batch_set_status(
-            session, body.movie_ids, body.status
-        )
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    if body.status not in VALID_STATUSES:
+        raise HTTPException(400, f"无效的 view_status: {body.status}")
+
+    if not body.movie_ids:
+        return {"updated": 0, "status": body.status, "total_requested": 0}
+
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    stmt = (
+        update(MovieModel)
+        .where(MovieModel.id.in_(body.movie_ids))
+        .values(view_status=body.status)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    updated = result.rowcount or 0
 
     return {"updated": updated, "status": body.status, "total_requested": len(body.movie_ids)}
 
@@ -117,13 +163,25 @@ async def list_movies_by_status(
     status: str = Query(..., description="browsed/watched/wanted"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """按观看状态列出影片"""
-    try:
-        movies = await view_status_service.list_by_status(session, status, limit, offset)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    if status not in VALID_STATUSES:
+        raise HTTPException(400, f"无效的 view_status: {status}")
+
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    stmt = (
+        select(MovieModel)
+        .where(MovieModel.view_status == status)
+        .order_by(MovieModel.updated_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(stmt)
+    movies = result.scalars().all()
 
     return {
         "status": status,

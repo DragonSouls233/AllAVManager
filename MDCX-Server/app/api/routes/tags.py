@@ -11,6 +11,7 @@ API 端点：
 - POST /api/v1/tags/sync-from-movies - 从现有电影的 genre 字段同步标签
 """
 
+import importlib
 import logging
 from typing import Optional
 
@@ -19,12 +20,20 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import Database, get_session
-from app.db.models import Tag, MovieTag, Movie
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ===== 模块辅助 =====
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 # ===== Response Models =====
@@ -73,7 +82,7 @@ class TagUpdateRequest(BaseModel):
 
 @router.get("/stats")
 async def get_tag_stats(
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     获取标签统计
@@ -82,6 +91,9 @@ async def get_tag_stats(
     - 各分类标签数
     - 关联作品最多的标签 TOP 10
     """
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+
     # 总数
     total = await session.scalar(select(func.count(Tag.id))) or 0
 
@@ -117,7 +129,7 @@ async def list_tags(
     search: Optional[str] = None,
     category: Optional[str] = None,
     is_user: Optional[bool] = Query(None, description="true=仅用户标签 / false=仅抓取标签 / null=全部"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     获取标签列表
@@ -127,6 +139,9 @@ async def list_tags(
     - 支持 is_user 区分用户/抓取标签
     - 支持分页
     """
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+
     query = select(Tag)
 
     if search:
@@ -163,13 +178,16 @@ async def list_tags(
 @router.post("", response_model=TagResponse)
 async def create_tag(
     body: TagCreateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     创建标签
 
     - 标签名唯一
     """
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+
     # 检查是否已存在
     existing = await session.scalar(
         select(Tag).where(Tag.name == body.name)
@@ -197,13 +215,16 @@ async def create_tag(
 @router.post("/batch")
 async def batch_create_tags(
     body: TagBatchCreateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     批量创建标签
 
     - 跳过已存在的标签
     """
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+
     created = 0
     skipped = 0
 
@@ -237,9 +258,13 @@ async def batch_create_tags(
 @router.post("/batch-tag-movies")
 async def batch_tag_movies(
     data: dict,  # {"tag_id": int, "movie_ids": [int]}
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """批量给电影打标签"""
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
+
     tag_id = data.get("tag_id")
     movie_ids = data.get("movie_ids", [])
 
@@ -288,9 +313,13 @@ async def batch_tag_movies(
 @router.post("/remove-tag-movies")
 async def remove_tag_from_movies(
     data: dict,  # {"tag_id": int, "movie_ids": [int]}
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """批量移除电影的标签 - 参考 PornBoss removeTagsFromVideos"""
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
+
     tag_id = data.get("tag_id")
     movie_ids = data.get("movie_ids", [])
 
@@ -331,9 +360,13 @@ async def remove_tag_from_movies(
 @router.post("/replace-tags-movies")
 async def replace_tags_for_movies(
     data: dict,  # {"movie_ids": [int], "tag_ids": [int]}
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """批量替换电影的标签 - 参考 PornBoss replaceTagsForVideos"""
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
+
     movie_ids = data.get("movie_ids", [])
     tag_ids = data.get("tag_ids", [])
 
@@ -393,9 +426,13 @@ async def replace_tags_for_movies(
 @router.post("/batch-delete-tags")
 async def batch_delete_tags(
     data: dict,  # {"tag_ids": [int]}
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """批量删除标签 - 参考 PornBoss deleteTagsBatch"""
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
+
     tag_ids = data.get("tag_ids", [])
 
     if not tag_ids or not isinstance(tag_ids, list):
@@ -426,7 +463,7 @@ async def batch_delete_tags(
 
 @router.post("/sync-from-movies")
 async def sync_tags_from_movies(
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     从现有电影的 genre 字段同步标签（批量优化版，避免 N+1 查询导致超时）
@@ -438,6 +475,11 @@ async def sync_tags_from_movies(
     """
     import json as _json
     from sqlalchemy import insert
+
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
 
     # 1. 获取所有电影的 genre
     result = await session.execute(
@@ -552,13 +594,16 @@ async def sync_tags_from_movies(
 async def update_tag(
     tag_id: int,
     body: TagUpdateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     更新标签信息
 
     - 支持更新: name, category, color
     """
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+
     tag = await session.get(Tag, tag_id)
     if not tag:
         raise HTTPException(status_code=404, detail="标签不存在")
@@ -593,13 +638,17 @@ async def update_tag(
 @router.delete("/{tag_id}")
 async def delete_tag(
     tag_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     删除标签
 
     - 同时删除 MovieTag 关联
     """
+    session = await get_module_session(module)
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
+
     tag = await session.get(Tag, tag_id)
     if not tag:
         raise HTTPException(status_code=404, detail="标签不存在")

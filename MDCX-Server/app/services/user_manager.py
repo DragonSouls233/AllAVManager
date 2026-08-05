@@ -30,7 +30,7 @@ from typing import Optional
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import User, UserSession
+from app.db.system_models import User, UserSession
 
 logger = logging.getLogger(__name__)
 

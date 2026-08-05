@@ -15,7 +15,7 @@ from typing import Optional
 
 from sqlalchemy import text as sa_text
 
-from app.db.database import get_db
+from app.db.module_db import ModuleDatabase
 from app.patcher.detector import MissingDetector, MissingInfo, MissingField, FieldType
 from app.patcher.skipper import Skipper, SkipResult
 from app.patcher.strategy import PatchEngine, PatchResult, PatchType, PatchStatus
@@ -109,7 +109,6 @@ async def _detect_module_missing_for_engine(
     directories: Optional[list[str]] = None,
 ) -> list[MissingInfo]:
     """检测模块数据库中的影片缺失字段，返回 MissingInfo dataclass 列表（供引擎使用）"""
-    from app.db.module_db import ModuleDatabase
     from sqlalchemy import select, or_
 
     db = ModuleDatabase.get_instance(module)
@@ -143,12 +142,30 @@ async def _detect_module_missing_for_engine(
                         importance="critical",
                     ))
 
+            # output_dir 优先级: DB 值 > 规范目录 {data_dir}/movies/{module}/{code}
+            output_dir = getattr(movie, "output_dir", None) or ""
+            if not output_dir:
+                try:
+                    from app.config.manager import get_config_manager
+                    data_dir = get_config_manager().computed.data_dir
+                    module_name = getattr(movie, "module_name", None) or "jav"
+                    code = getattr(movie, "code", "") or ""
+                    if code:
+                        output_dir = str(Path(data_dir) / "movies" / module_name / code)
+                except Exception:
+                    pass
+            if not output_dir:
+                # 最终回退：视频文件父目录
+                fp = getattr(movie, "file_path", None)
+                if fp:
+                    output_dir = str(Path(fp).parent)
+
             if missing_fields:
                 missing_infos.append(MissingInfo(
                     movie_id=movie.id,
                     movie_code=getattr(movie, "code", "") or "",
                     missing_fields=missing_fields,
-                    output_dir=getattr(movie, "output_dir", None) or str(Path(getattr(movie, "file_path", "")).parent) if getattr(movie, "file_path", None) else None,
+                    output_dir=output_dir,
                 ))
 
         return missing_infos
@@ -446,7 +463,9 @@ class PatchWorkflow:
         
         elif options.mode == PatchMode.DIRECTORY:
             # 查找目录对应的数据库记录
-            movie_ids = await self._find_movies_in_directories(options.directories)
+            movie_ids = await self._find_movies_in_directories(
+                options.directories, options.module or self.detector.module_name if self.detector else None
+            )
             return await self.detector.detect_batch(movie_ids=movie_ids)
         
         else:
@@ -455,19 +474,27 @@ class PatchWorkflow:
     async def _find_movies_in_directories(
         self,
         directories: list[str],
+        module: Optional[str] = None,
     ) -> list[int]:
-        """查找目录中的电影 ID"""
+        """查找目录中的电影 ID（从模块数据库查询）"""
         movie_ids = []
-        db = get_db()
-        
-        async with db.session() as session:
-            for directory in directories:
-                result = await session.execute(
-                    sa_text("SELECT id FROM movies WHERE output_dir LIKE :dir OR file_path LIKE :dir"),
-                    {"dir": f"%{directory}%"},
-                )
-                rows = result.fetchall()
-                movie_ids.extend([row[0] for row in rows])
+
+        if module:
+            try:
+                mod_db = ModuleDatabase.get_instance(module)
+                session = await mod_db.get_session()
+                async with session:
+                    for directory in directories:
+                        result = await session.execute(
+                            sa_text("SELECT id FROM movies WHERE output_dir LIKE :dir OR file_path LIKE :dir"),
+                            {"dir": f"%{directory}%"},
+                        )
+                        rows = result.fetchall()
+                        movie_ids.extend([row[0] for row in rows])
+            except Exception as e:
+                logger.warning(f"模块数据库目录查询失败 ({module}): {e}")
+        else:
+            logger.warning("未指定模块，无法查询目录电影列表")
         
         return list(set(movie_ids))
     
@@ -489,26 +516,35 @@ class PatchWorkflow:
             f"skip_complete={options.skip_complete}"
         )
         
-        # 从数据库获取 scraped_at 和 verified 状态
+        # 从模块数据库获取 scraped_at 和 verified 状态
         scraped_times = {}
         verified_ids = set()
-        try:
-            from app.db.database import get_db
-            from app.db.models import Movie
-            from sqlalchemy import select
 
-            db = get_db()
-            async with db.session() as session:
-                for info in missing_infos:
-                    if info.movie_id:
-                        movie = await session.get(Movie, info.movie_id)
-                        if movie:
-                            if movie.scraped_at:
-                                scraped_times[info.movie_id] = movie.scraped_at
-                            if movie.status == "verified":
-                                verified_ids.add(info.movie_id)
-        except Exception as e:
-            logger.warning(f"获取数据库状态失败: {e}")
+        module = options.module or (self.detector.module_name if self.detector else None)
+        if module:
+            try:
+                from sqlalchemy import select
+
+                MovieModel = _get_module_model(module)
+                mod_db = ModuleDatabase.get_instance(module)
+                session = await mod_db.get_session()
+                try:
+                    async with session:
+                        for info in missing_infos:
+                            if info.movie_id:
+                                result_row = await session.execute(
+                                    select(MovieModel).where(MovieModel.id == info.movie_id)
+                                )
+                                movie = result_row.scalar_one_or_none()
+                                if movie:
+                                    if getattr(movie, "scraped_at", None):
+                                        scraped_times[info.movie_id] = movie.scraped_at
+                                    if getattr(movie, "status", None) == "verified":
+                                        verified_ids.add(info.movie_id)
+                finally:
+                    await session.close()
+            except Exception as e:
+                logger.warning(f"获取模块数据库状态失败 ({module}): {e}")
 
         return self.skipper.batch_filter(
             missing_infos,

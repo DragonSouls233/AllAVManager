@@ -19,7 +19,7 @@ from typing import Optional
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Movie, PlayHistory
+from app.utils.module_helper import get_module_model
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class ViewStatusService:
         movie_id: int,
         status: Optional[str],
         user_id: Optional[int] = None,
+        module: str = "jav",
     ) -> Optional[Movie]:
         """
         设置影片观看状态
@@ -50,6 +51,7 @@ class ViewStatusService:
             movie_id: 影片 ID
             status: 状态（browsed/watched/wanted），None 表示清除标记
             user_id: 用户 ID（可选，目前 view_status 全局，预留多用户隔离）
+            module: 模块名
 
         Returns:
             更新后的 Movie 对象，None 表示影片不存在
@@ -62,6 +64,7 @@ class ViewStatusService:
         - 任意 → wanted：标记想看
         - None：清除标记
         """
+        Movie = get_module_model(module, "movie")
         if status is not None and status not in VALID_STATUSES:
             raise ValueError(f"无效的 view_status: {status}，有效值: {VALID_STATUSES}")
 
@@ -81,6 +84,7 @@ class ViewStatusService:
         session: AsyncSession,
         movie_ids: list[int],
         status: str,
+        module: str = "jav",
     ) -> int:
         """批量设置观看状态
 
@@ -88,10 +92,12 @@ class ViewStatusService:
             session: 数据库会话
             movie_ids: 影片 ID 列表
             status: 目标状态
+            module: 模块名
 
         Returns:
             实际更新的数量
         """
+        Movie = get_module_model(module, "movie")
         if status not in VALID_STATUSES:
             raise ValueError(f"无效的 view_status: {status}")
 
@@ -109,8 +115,9 @@ class ViewStatusService:
         logger.info(f"批量设置 {updated} 部影片 view_status → {status}")
         return updated
 
-    async def get_status(self, session: AsyncSession, movie_id: int) -> Optional[str]:
+    async def get_status(self, session: AsyncSession, movie_id: int, module: str = "jav") -> Optional[str]:
         """获取单部影片观看状态"""
+        Movie = get_module_model(module, "movie")
         movie = await session.get(Movie, movie_id)
         return movie.view_status if movie else None
 
@@ -120,8 +127,10 @@ class ViewStatusService:
         status: str,
         limit: int = 100,
         offset: int = 0,
+        module: str = "jav",
     ) -> list[Movie]:
         """按状态列出影片"""
+        Movie = get_module_model(module, "movie")
         if status not in VALID_STATUSES:
             raise ValueError(f"无效的 view_status: {status}")
 
@@ -135,12 +144,13 @@ class ViewStatusService:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
-    async def count_by_status(self, session: AsyncSession) -> dict[str, int]:
+    async def count_by_status(self, session: AsyncSession, module: str = "jav") -> dict[str, int]:
         """统计各状态影片数量
 
         Returns:
             {"browsed": N, "watched": N, "wanted": N, "unmarked": N}
         """
+        Movie = get_module_model(module, "movie")
         result = {}
         for status in VALID_STATUSES:
             stmt = select(func.count(Movie.id)).where(Movie.view_status == status)
@@ -160,6 +170,7 @@ class ViewStatusService:
         movie_id: int,
         user_id: Optional[int] = None,
         progress: float = 0.0,
+        module: str = "jav",
     ) -> None:
         """播放完成时自动标记为 watched
 
@@ -170,7 +181,9 @@ class ViewStatusService:
             movie_id: 影片 ID
             user_id: 用户 ID
             progress: 播放进度 0-1
+            module: 模块名
         """
+        Movie = get_module_model(module, "movie")
         if progress < 0.85:
             return
 
@@ -195,12 +208,14 @@ class ViewStatusService:
         self,
         session: AsyncSession,
         movie_id: int,
+        module: str = "jav",
     ) -> None:
         """查看影片详情时自动标记为 browsed
 
         仅在当前无标记或已标记为 wanted 时触发，
         不覆盖 watched 状态。
         """
+        Movie = get_module_model(module, "movie")
         movie = await session.get(Movie, movie_id)
         if not movie:
             return

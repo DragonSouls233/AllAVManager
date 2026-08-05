@@ -16,6 +16,7 @@
 集成 Jinja2 命名模板（复用 app.services.naming）。
 """
 import hashlib
+import importlib
 import logging
 import os
 import re
@@ -29,10 +30,22 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Movie, FileOrganizeJob, PlayHistory, AutoOrganizeRule
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 from app.services.naming import render_dirpath, render_filename
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    return module if module in MODULE_MODELS else "jav"
+
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 class OrganizeType(str, Enum):
@@ -69,7 +82,7 @@ class OrganizeResult:
     source_path: str
     target_path: str
     job_type: str
-    status: str  # completed/failed/skipped
+    status: str
     error_message: Optional[str] = None
     file_size: Optional[int] = None
 
@@ -87,6 +100,7 @@ class FileOrganizeService:
         job_type: str,
         output_dir: str,
         template: str,
+        module: str = "jav",
         conflict_strategy: str = "skip",
     ) -> list[OrganizeTask]:
         """
@@ -109,9 +123,12 @@ class FileOrganizeService:
         if conflict_strategy not in [s.value for s in ConflictStrategy]:
             raise ValueError(f"无效的冲突策略: {conflict_strategy}")
 
+        module = _resolve_module(module)
+        MovieModel = get_module_model(module, "movie")
+
         tasks: list[OrganizeTask] = []
         for movie_id in movie_ids:
-            movie = await session.get(Movie, movie_id)
+            movie = await session.get(MovieModel, movie_id)
             if not movie:
                 logger.warning(f"影片 {movie_id} 不存在，跳过")
                 continue
@@ -120,28 +137,22 @@ class FileOrganizeService:
                 logger.warning(f"影片 {movie_id} ({movie.code}) 文件不存在: {movie.file_path}")
                 continue
 
-            # 渲染目标路径（用 naming 模块的 render_dirpath）
+            # 渲染目标路径
             try:
-                # 准备 movie_dict 和 actors
                 movie_dict = self._movie_to_dict(movie)
                 actors = [a.actor.name for a in (movie.actors or []) if a.actor and a.actor.name]
-                # 模板可能既包含目录部分又包含文件名部分，统一用 render_dirpath 渲染目录，
-                # 再用 render_filename 渲染文件名（这里简化：模板整体当目录路径渲染）
                 rendered = render_dirpath(template, movie_dict, actors)
             except Exception as e:
                 logger.error(f"渲染命名模板失败（影片 {movie_id}）: {e}")
                 continue
 
-            # 拼接完整目标路径
             source_path = movie.file_path
             source_ext = os.path.splitext(source_path)[1]
 
             if job_type == OrganizeType.RENAME.value:
-                # 原地点名：同目录，仅改文件名
                 source_dir = os.path.dirname(source_path)
                 target_path = os.path.join(source_dir, rendered + source_ext)
             else:
-                # 其他模式：output_dir + rendered + 扩展名
                 target_path = os.path.join(output_dir, rendered + source_ext)
 
             # 冲突检测
@@ -151,7 +162,6 @@ class FileOrganizeService:
                 elif conflict_strategy == ConflictStrategy.SKIP.value:
                     logger.info(f"目标已存在，跳过: {target_path}")
                     continue
-                # overwrite 模式不在此处理，执行时再删除
 
             tasks.append(OrganizeTask(
                 movie_id=movie_id,
@@ -167,6 +177,7 @@ class FileOrganizeService:
         self,
         session: AsyncSession,
         tasks: list[OrganizeTask],
+        module: str = "jav",
     ) -> list[OrganizeResult]:
         """
         执行整理任务
@@ -178,11 +189,13 @@ class FileOrganizeService:
         Returns:
             整理结果列表
         """
+        module = _resolve_module(module)
+        FileOrganizeJobCls = _get_mod_cls(module, "FileOrganizeJob")
+
         results: list[OrganizeResult] = []
 
         for task in tasks:
-            # 创建任务记录
-            job = FileOrganizeJob(
+            job = FileOrganizeJobCls(
                 job_type=task.job_type,
                 source_path=task.source_path,
                 target_path=task.target_path,
@@ -195,7 +208,7 @@ class FileOrganizeService:
             await session.commit()
             await session.refresh(job)
 
-            result = await self._execute_single(session, job, task)
+            result = await self._execute_single(session, job, task, module)
             results.append(result)
 
         return results
@@ -203,12 +216,15 @@ class FileOrganizeService:
     async def _execute_single(
         self,
         session: AsyncSession,
-        job: FileOrganizeJob,
+        job,
         task: OrganizeTask,
+        module: str = "jav",
     ) -> OrganizeResult:
         """执行单个整理任务"""
+        module = _resolve_module(module)
+        MovieModel = get_module_model(module, "movie")
+
         try:
-            # 检查源文件
             if not os.path.exists(task.source_path):
                 job.status = "failed"
                 job.error_message = f"源文件不存在: {task.source_path}"
@@ -221,10 +237,8 @@ class FileOrganizeService:
                     error_message=job.error_message,
                 )
 
-            # 文件大小
             job.file_size = os.path.getsize(task.source_path)
 
-            # 冲突处理
             if os.path.exists(task.target_path):
                 if task.conflict_strategy == ConflictStrategy.SKIP.value:
                     job.status = "skipped"
@@ -244,12 +258,10 @@ class FileOrganizeService:
                         os.remove(task.target_path)
                     logger.info(f"覆盖目标: {task.target_path}")
 
-            # 确保目标目录存在
             target_dir = os.path.dirname(task.target_path)
             if target_dir:
                 os.makedirs(target_dir, exist_ok=True)
 
-            # 执行整理
             success = self._do_organize(task.job_type, task.source_path, task.target_path)
             if not success:
                 job.status = "failed"
@@ -263,9 +275,8 @@ class FileOrganizeService:
                     error_message=job.error_message, file_size=job.file_size,
                 )
 
-            # 更新影片 file_path（move/rename 模式）
             if task.job_type in (OrganizeType.MOVE.value, OrganizeType.RENAME.value):
-                movie = await session.get(Movie, task.movie_id)
+                movie = await session.get(MovieModel, task.movie_id)
                 if movie:
                     movie.file_path = task.target_path
 
@@ -274,7 +285,7 @@ class FileOrganizeService:
             await session.commit()
 
             logger.info(
-                f"整理完成: {task.source_path} → {task.target_path} ({task.job_type})"
+                f"整理完成: {task.source_path} -> {task.target_path} ({task.job_type})"
             )
             return OrganizeResult(
                 job_id=job.id, movie_id=task.movie_id,
@@ -297,40 +308,25 @@ class FileOrganizeService:
             )
 
     def _do_organize(self, job_type: str, source: str, target: str) -> bool:
-        """执行实际文件操作
-
-        Args:
-            job_type: 整理模式
-            source: 源路径
-            target: 目标路径
-
-        Returns:
-            是否成功
-        """
+        """执行实际文件操作"""
         try:
             if job_type == OrganizeType.HARDLINK.value:
-                # 硬链接：同盘符
                 os.link(source, target)
             elif job_type == OrganizeType.COPY.value:
-                # 复制
                 shutil.copy2(source, target)
             elif job_type == OrganizeType.MOVE.value:
-                # 移动
                 shutil.move(source, target)
             elif job_type == OrganizeType.SYMLINK.value:
-                # 软链接
                 os.symlink(os.path.abspath(source), target)
             elif job_type == OrganizeType.RENAME.value:
-                # 原地点名（等同 move，但同目录）
                 shutil.move(source, target)
             else:
                 logger.error(f"未知的整理模式: {job_type}")
                 return False
             return True
         except OSError as e:
-            # 硬链接跨盘符会失败
             if job_type == OrganizeType.HARDLINK.value and e.errno == 18:
-                logger.warning(f"硬链接失败（跨盘符），降级为复制: {source} → {target}")
+                logger.warning(f"硬链接失败（跨盘符），降级为复制: {source} -> {target}")
                 try:
                     shutil.copy2(source, target)
                     return True
@@ -348,15 +344,8 @@ class FileOrganizeService:
             counter += 1
         return f"{base}_{counter}{ext}"
 
-    def _movie_to_dict(self, movie: Movie) -> dict:
-        """将 Movie ORM 对象转为 naming 模块所需的 dict
-
-        Args:
-            movie: Movie ORM 对象
-
-        Returns:
-            影片字段字典
-        """
+    def _movie_to_dict(self, movie) -> dict:
+        """将 Movie ORM 对象转为 naming 模块所需的 dict"""
         return {
             "code": movie.code or "",
             "title": movie.title or "",
@@ -372,39 +361,46 @@ class FileOrganizeService:
             "is_uncensored": movie.is_uncensored,
             "is_chinese": movie.is_chinese,
             "is_mosaic": movie.is_mosaic,
-            # studio/series 名称需关联查询，此处简化，可后续扩展
             "studio": "",
             "series": "",
-            "actor": "",
+            "actor": movie.actor if hasattr(movie, "actor") else "",
             "actors": [],
         }
 
     async def list_jobs(
         self,
         session: AsyncSession,
+        module: str = "jav",
         status: Optional[str] = None,
         job_type: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[FileOrganizeJob]:
+    ) -> list:
         """列出整理任务"""
-        stmt = select(FileOrganizeJob)
+        module = _resolve_module(module)
+        FileOrganizeJobCls = _get_mod_cls(module, "FileOrganizeJob")
+
+        stmt = select(FileOrganizeJobCls)
         if status:
-            stmt = stmt.where(FileOrganizeJob.status == status)
+            stmt = stmt.where(FileOrganizeJobCls.status == status)
         if job_type:
-            stmt = stmt.where(FileOrganizeJob.job_type == job_type)
-        stmt = stmt.order_by(FileOrganizeJob.created_at.desc()).limit(limit).offset(offset)
+            stmt = stmt.where(FileOrganizeJobCls.job_type == job_type)
+        stmt = stmt.order_by(FileOrganizeJobCls.created_at.desc()).limit(limit).offset(offset)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_job_stats(self, session: AsyncSession) -> dict:
+    async def get_job_stats(self, session: AsyncSession, module: str = "jav") -> dict:
         """获取任务统计"""
-        from sqlalchemy import func
+        module = _resolve_module(module)
+        FileOrganizeJobCls = _get_mod_cls(module, "FileOrganizeJob")
+
         result = {}
-        for status in ("pending", "running", "completed", "failed", "skipped"):
-            stmt = select(func.count(FileOrganizeJob.id)).where(FileOrganizeJob.status == status)
+        for status_val in ("pending", "running", "completed", "failed", "skipped"):
+            stmt = select(func.count(FileOrganizeJobCls.id)).where(
+                FileOrganizeJobCls.status == status_val
+            )
             r = await session.execute(stmt)
-            result[status] = r.scalar() or 0
+            result[status_val] = r.scalar() or 0
         return result
 
 
@@ -417,15 +413,7 @@ file_organize_service = FileOrganizeService()
 # ============================================
 
 def _sha256_of_file(path: str, chunk_size: int = 1024 * 1024) -> str:
-    """计算文件 SHA256 校验值
-
-    Args:
-        path: 文件路径
-        chunk_size: 分块读取大小（字节）
-
-    Returns:
-        文件内容的 SHA256 十六进制摘要
-    """
+    """计算文件 SHA256 校验值"""
     sha = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(chunk_size), b""):
@@ -437,27 +425,11 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
     """安全移动文件（v4.1 B3）
 
     安全模式流程：
-        1. 校验目标磁盘空间 (shutil.disk_usage) ≥ 文件大小 × 1.1
+        1. 校验目标磁盘空间 (shutil.disk_usage) >= 文件大小 x 1.1
         2. 复制文件 (shutil.copy2)
         3. SHA256 校验源文件和目标文件完整性
         4. 校验通过才删除原文件 (os.remove)
         5. 任一环节失败自动回滚（删除已复制的目标文件）
-
-    Args:
-        src: 源文件路径
-        dst: 目标文件路径
-        safe_mode: 是否启用安全模式（关闭则直接 shutil.move）
-
-    Returns:
-        dict，包含字段：
-            - success: bool 是否成功
-            - error: str | None 错误信息
-            - checksum: str | None 源文件 SHA256（成功时）
-            - dst_checksum: str | None 目标文件 SHA256（成功且 safe_mode 时）
-            - file_size: int | None 文件大小
-            - src: str 源路径
-            - dst: str 目标路径
-            - safe_mode: bool 是否启用了安全模式
     """
     result = {
         "success": False,
@@ -470,7 +442,6 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
         "safe_mode": safe_mode,
     }
 
-    # 校验源文件
     if not os.path.exists(src):
         result["error"] = f"源文件不存在: {src}"
         return result
@@ -481,7 +452,6 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
     file_size = os.path.getsize(src)
     result["file_size"] = file_size
 
-    # 确保目标目录存在
     target_dir = os.path.dirname(dst)
     if target_dir:
         try:
@@ -490,7 +460,6 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
             result["error"] = f"创建目标目录失败: {e}"
             return result
 
-    # 非安全模式：直接 shutil.move
     if not safe_mode:
         try:
             shutil.move(src, dst)
@@ -501,7 +470,6 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
             return result
 
     # ===== 安全模式 =====
-    # 1. 校验目标磁盘空间
     try:
         target_disk = os.path.splitdrive(os.path.abspath(dst))[0] or "/"
         usage = shutil.disk_usage(target_disk)
@@ -509,14 +477,13 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
         if usage.free < required:
             result["error"] = (
                 f"目标磁盘空间不足: 可用 {usage.free} 字节，需要 {required} 字节"
-                f"（文件 {file_size} × 1.1）"
+                f"（文件 {file_size} x 1.1）"
             )
             return result
     except Exception as e:
         result["error"] = f"磁盘空间校验失败: {e}"
         return result
 
-    # 2. 计算源文件 SHA256（在复制前）
     try:
         src_checksum = _sha256_of_file(src)
         result["checksum"] = src_checksum
@@ -524,7 +491,6 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
         result["error"] = f"源文件 SHA256 计算失败: {e}"
         return result
 
-    # 3. 复制文件（保留元数据）
     copied = False
     try:
         shutil.copy2(src, dst)
@@ -533,12 +499,10 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
         result["error"] = f"复制文件失败: {e}"
         return result
 
-    # 4. 校验目标文件 SHA256
     try:
         dst_checksum = _sha256_of_file(dst)
         result["dst_checksum"] = dst_checksum
     except Exception as e:
-        # 回滚
         if copied:
             try:
                 os.remove(dst)
@@ -547,9 +511,7 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
         result["error"] = f"目标文件 SHA256 计算失败: {e}"
         return result
 
-    # 5. 校验完整性
     if src_checksum != dst_checksum:
-        # 回滚：删除已复制的目标文件
         try:
             os.remove(dst)
         except Exception:
@@ -559,11 +521,9 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
         )
         return result
 
-    # 6. 校验通过，删除原文件
     try:
         os.remove(src)
     except Exception as e:
-        # 源文件删除失败：清理目标文件以避免重复，整体视为失败
         try:
             os.remove(dst)
         except Exception:
@@ -589,14 +549,6 @@ def _evaluate_condition(field_value: object, op: str, expected: str) -> bool:
         - gt / lt / ge / le: 数值比较
         - regex: 正则匹配
         - in: 子串包含（值以逗号分隔多个候选）
-
-    Args:
-        field_value: 影片字段的实际值
-        op: 操作符
-        expected: 规则中的期望值
-
-    Returns:
-        是否满足条件
     """
     if field_value is None:
         return False
@@ -632,20 +584,12 @@ def _evaluate_condition(field_value: object, op: str, expected: str) -> bool:
     return False
 
 
-def _get_movie_field(movie: Movie, field: str) -> object:
-    """从影片对象中安全取出条件字段值
-
-    Args:
-        movie: Movie ORM 对象
-        field: 字段名（如 play_count / view_status / code / maker 等）
-
-    Returns:
-        字段值；未知字段返回 None
-    """
+def _get_movie_field(movie, field: str) -> object:
+    """从影片对象中安全取出条件字段值"""
     return getattr(movie, field, None)
 
 
-async def auto_organize_watched(session: AsyncSession) -> dict:
+async def auto_organize_watched(session: AsyncSession, module: str = "jav") -> dict:
     """自动整理已观看视频（v4.1 B1）
 
     流程：
@@ -657,13 +601,12 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
         4. 用 safe_move_file 将命中影片移动到 target_path（action=move 时），
            或执行 copy/hardlink/symlink 等动作
         5. 移动成功后更新 Movie.file_path（move/rename 动作）
-
-    Args:
-        session: 数据库会话
-
-    Returns:
-        dict，包含 processed / moved / failed / skipped 数量与明细列表
     """
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    AutoOrganizeRuleCls = _get_mod_cls(module, "AutoOrganizeRule")
+    PlayHistoryCls = _get_mod_cls(module, "PlayHistory")
+
     summary = {
         "processed": 0,
         "moved": 0,
@@ -673,8 +616,7 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
         "details": [],
     }
 
-    # 查询所有启用的规则
-    stmt = select(AutoOrganizeRule).where(AutoOrganizeRule.enabled == True)  # noqa: E712
+    stmt = select(AutoOrganizeRuleCls).where(AutoOrganizeRuleCls.enabled == True)  # noqa: E712
     rules = (await session.execute(stmt)).scalars().all()
 
     if not rules:
@@ -690,9 +632,8 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
             "failed": 0,
         }
 
-        candidate_movies: list[Movie] = []
+        candidate_movies: list = []
 
-        # play_count 走 PlayHistory 聚合
         if rule.condition_field == "play_count":
             try:
                 threshold = int(float(rule.condition_value))
@@ -702,14 +643,13 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
                 )
                 continue
 
-            # 聚合每部影片的观看次数
             agg = (
                 select(
-                    PlayHistory.movie_id,
-                    func.count(PlayHistory.id).label("cnt"),
+                    PlayHistoryCls.movie_id,
+                    func.count(PlayHistoryCls.id).label("cnt"),
                 )
-                .group_by(PlayHistory.movie_id)
-                .having(func.count(PlayHistory.id) >= threshold)
+                .group_by(PlayHistoryCls.movie_id)
+                .having(func.count(PlayHistoryCls.id) >= threshold)
             )
             rows = (await session.execute(agg)).all()
             movie_ids = [r[0] for r in rows]
@@ -717,15 +657,14 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
             if not movie_ids:
                 continue
 
-            m_stmt = select(Movie).where(
-                Movie.id.in_(movie_ids),
-                Movie.file_path.is_not(None),
+            m_stmt = select(MovieModel).where(
+                MovieModel.id.in_(movie_ids),
+                MovieModel.file_path.is_not(None),
             )
             candidate_movies = list((await session.execute(m_stmt)).scalars().all())
         else:
-            # 通用：在 Movie 表上按字段过滤
             try:
-                m_stmt = select(Movie).where(Movie.file_path.is_not(None))
+                m_stmt = select(MovieModel).where(MovieModel.file_path.is_not(None))
                 candidates = (await session.execute(m_stmt)).scalars().all()
                 for m in candidates:
                     fv = _get_movie_field(m, rule.condition_field)
@@ -752,18 +691,15 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
                 })
                 continue
 
-            # 计算目标路径：target_path / 番号.ext
             if not rule.target_path:
                 summary["skipped"] += 1
                 rule_detail["failed"] += 1
                 continue
 
             ext = os.path.splitext(src)[1]
-            # 用番号做文件名（避免重名），含安全过滤
-            safe_code = re.sub(r"[\\/:*?\"<>|]", "_", movie.code or f"movie_{movie.id}")
+            safe_code = re.sub(r'[\\/:*?"<>|]', "_", movie.code or f"movie_{movie.id}")
             dst = os.path.join(rule.target_path, f"{safe_code}{ext}")
 
-            # 目标已存在则跳过（避免覆盖）
             if os.path.exists(dst):
                 summary["skipped"] += 1
                 rule_detail["failed"] += 1
@@ -834,7 +770,6 @@ async def auto_organize_watched(session: AsyncSession) -> dict:
                         summary["copied"] += 1
                         rule_detail["ok"] += 1
                     except OSError as e:
-                        # 跨盘符降级为复制
                         if e.errno == 18:
                             res = safe_move_file(src, dst, safe_mode=False)
                             if res["success"]:

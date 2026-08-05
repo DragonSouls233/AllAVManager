@@ -22,7 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config, get_config_manager
 from app.db.database import get_session
-from app.db.models import Movie, MovieActor, Actor
+# Module-specific models now accessed via get_module_model()
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.webdav_client import WebDAVClient, scan_webdav_for_movies, import_webdav_movies
 
 logger = logging.getLogger(__name__)

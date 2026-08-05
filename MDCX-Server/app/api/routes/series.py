@@ -10,20 +10,28 @@ API 端点：
 - POST /api/v1/series/sync-from-movies - 从现有电影的 series 字段同步系列
 """
 
+import importlib
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from pydantic import BaseModel
 from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import Database, get_session
-from app.db.models import Series, Studio, Movie
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ===== 模块辅助 =====
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 # ===== Response Models =====
@@ -87,7 +95,7 @@ async def list_series(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     获取系列列表
@@ -95,6 +103,10 @@ async def list_series(
     - 支持搜索（按名字）
     - 支持分页
     """
+    session = await get_module_session(module)
+    Series = _get_mod_cls(module, "Series")
+    Studio = _get_mod_cls(module, "Studio")
+
     query = select(Series)
 
     if search:
@@ -135,13 +147,18 @@ async def list_series(
 @router.get("/{series_id}", response_model=SeriesDetailResponse)
 async def get_series(
     series_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     获取系列详情
 
     包含基本信息和最近10部作品
     """
+    session = await get_module_session(module)
+    Series = _get_mod_cls(module, "Series")
+    Studio = _get_mod_cls(module, "Studio")
+    Movie = get_module_model(module, "movie")
+
     series = await session.get(Series, series_id)
     if not series:
         raise HTTPException(status_code=404, detail="系列不存在")
@@ -191,7 +208,7 @@ async def get_series(
 @router.post("", response_model=SeriesResponse)
 async def create_series(
     body: SeriesCreateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     创建系列
@@ -199,6 +216,10 @@ async def create_series(
     - 系列名唯一
     - 可关联 studio_id
     """
+    session = await get_module_session(module)
+    Series = _get_mod_cls(module, "Series")
+    Studio = _get_mod_cls(module, "Studio")
+
     existing = await session.scalar(
         select(Series).where(Series.name == body.name)
     )
@@ -232,7 +253,7 @@ async def create_series(
 
 @router.post("/sync-from-movies")
 async def sync_series_from_movies(
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     从现有电影的 series 字段同步系列
@@ -242,6 +263,11 @@ async def sync_series_from_movies(
     - 尝试根据 maker/studio 字段关联 studio_id
     - 更新 movie_count 冗余字段
     """
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
+    Series = _get_mod_cls(module, "Series")
+    Studio = _get_mod_cls(module, "Studio")
+
     # 获取所有电影的 series 字段
     result = await session.execute(
         select(Movie.series_id, Movie.maker, Movie.studio_id).where(
@@ -321,13 +347,17 @@ async def sync_series_from_movies(
 async def update_series(
     series_id: int,
     body: SeriesUpdateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     更新系列信息
 
     - 支持更新: name, name_jp, studio_id
     """
+    session = await get_module_session(module)
+    Series = _get_mod_cls(module, "Series")
+    Studio = _get_mod_cls(module, "Studio")
+
     series = await session.get(Series, series_id)
     if not series:
         raise HTTPException(status_code=404, detail="系列不存在")
@@ -371,11 +401,14 @@ async def update_series(
 @router.delete("/{series_id}")
 async def delete_series(
     series_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     删除系列
     """
+    session = await get_module_session(module)
+    Series = _get_mod_cls(module, "Series")
+
     series = await session.get(Series, series_id)
     if not series:
         raise HTTPException(status_code=404, detail="系列不存在")

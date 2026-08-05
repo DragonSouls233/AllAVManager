@@ -455,12 +455,12 @@ class SpaceManagementWorkflow(BaseWorkflow):
 
                     logger.warning(f"磁盘 [{media_dir}] 空间不足: 剩余 {free_gb:.1f}GB，需释放至少 {need_free:.1f}GB")
 
-                    from app.db.database import get_session_factory
-                    from app.db.models import Movie
+                    from app.utils.module_helper import get_module_model, get_module_session
                     from sqlalchemy import select
 
-                    factory = get_session_factory()
-                    async with factory() as session:
+                    Movie = get_module_model("jav", "movie")
+                    session = await get_module_session("jav")
+                    async with session:
                         query = (
                             select(Movie)
                             .where(Movie.file_path.like(f"{media_dir}%"))

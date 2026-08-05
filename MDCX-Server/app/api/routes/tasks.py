@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import TaskStatus, TaskType
 from app.db.database import get_session
-from app.db.models import Task
+from app.db.system_models import Task
 
 router = APIRouter()
 

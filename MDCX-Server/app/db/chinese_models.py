@@ -1,69 +1,140 @@
 """
-国产模块数据模型
-国产内容没有标准化番号，文件夹名即演员名
+国产模块数据模型 (chinese.db)
 """
-
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.db.module_db import ModuleBase
+class CHINESE_BASE(DeclarativeBase):
+    pass
+
+from app.db._module_mixins import (
+    MovieMixin, ActorMixin,
+    MovieActorMixin, StudioMixin, SeriesMixin,
+    TagMixin, MovieTagMixin, ActorTagMixin,
+    TierConfigMixin, ActorTierMixin, ActorCompareURLMixin,
+    PlayHistoryMixin, ImportRecordMixin, PatchRecordMixin,
+    FileOrganizeJobMixin, AutoOrganizeRuleMixin,
+    MovieRelationMixin, UserRecommendationMixin,
+    ActorSubscriptionMixin, SeriesSubscriptionMixin,
+)
 
 
-class ChineseMovie(ModuleBase):
-    """国产影片模型"""
-    __tablename__ = "chinese_movies"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
-    title: Mapped[str | None] = mapped_column(String(500))
-    original_title: Mapped[str | None] = mapped_column(String(500))
+class ChineseMovie(MovieMixin, CHINESE_BASE):
+    """国产影片"""
+    __tablename__ = "movies"
 
     folder_name: Mapped[str | None] = mapped_column(String(200), index=True)
     folder_based_actors: Mapped[str | None] = mapped_column(Text)
     extracted_actor: Mapped[str | None] = mapped_column(String(100))
+
+
+class ChineseActor(ActorMixin, CHINESE_BASE):
+    """国产演员"""
+    __tablename__ = "actors"
+
+    # 国产特有：演员所属工作室/平台
     studio: Mapped[str | None] = mapped_column(String(100))
 
-    cover_url: Mapped[str | None] = mapped_column(String(500))
-    poster_url: Mapped[str | None] = mapped_column(String(500))
-    thumb_url: Mapped[str | None] = mapped_column(String(500))
-    trailer_url: Mapped[str | None] = mapped_column(String(500))
-    sample_images: Mapped[str | None] = mapped_column(Text)
 
-    release_date: Mapped[str | None] = mapped_column(String(20))
-    duration: Mapped[int | None] = mapped_column(Integer)
-    rating: Mapped[float | None] = mapped_column(Float)
-    plot: Mapped[str | None] = mapped_column(Text)
-    genre: Mapped[str | None] = mapped_column(Text)
-    tag: Mapped[str | None] = mapped_column(Text)
-    source: Mapped[str | None] = mapped_column(String(50))
-    source_url: Mapped[str | None] = mapped_column(String(500))
+class MovieActor(MovieActorMixin, CHINESE_BASE):
+    __tablename__ = "movie_actors"
 
-    file_path: Mapped[str | None] = mapped_column(String(1000))
-    file_size: Mapped[int | None] = mapped_column(Integer)
-    fingerprint: Mapped[str | None] = mapped_column(String(64))
+class Studio(StudioMixin, CHINESE_BASE):
+    __tablename__ = "studios"
 
-    play_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_played_at: Mapped[datetime | None] = mapped_column(DateTime)
-    view_status: Mapped[str | None] = mapped_column(String(20))
-    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+class Series(SeriesMixin, CHINESE_BASE):
+    __tablename__ = "series"
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
-    scraped_at: Mapped[datetime | None] = mapped_column(DateTime)
+class Tag(TagMixin, CHINESE_BASE):
+    __tablename__ = "tags"
 
+class MovieTag(MovieTagMixin, CHINESE_BASE):
+    __tablename__ = "movie_tags"
 
-class ChineseActor(ModuleBase):
-    """国产演员表"""
-    __tablename__ = "chinese_actors"
+class ActorTag(ActorTagMixin, CHINESE_BASE):
+    __tablename__ = "actor_tags"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, unique=True)
-    alias: Mapped[str | None] = mapped_column(Text)
-    avatar_url: Mapped[str | None] = mapped_column(String(500))
-    source: Mapped[str] = mapped_column(String(20), default="folder")
-    studio: Mapped[str | None] = mapped_column(String(100))
-    movie_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+class TierConfig(TierConfigMixin, CHINESE_BASE):
+    __tablename__ = "tier_config"
+
+class ActorTier(ActorTierMixin, CHINESE_BASE):
+    __tablename__ = "actor_tiers"
+
+class ActorCompareURL(ActorCompareURLMixin, CHINESE_BASE):
+    __tablename__ = "actor_compare_urls"
+
+class ActorSubscription(ActorSubscriptionMixin, CHINESE_BASE):
+    __tablename__ = "actor_subscriptions"
+
+class SeriesSubscription(SeriesSubscriptionMixin, CHINESE_BASE):
+    __tablename__ = "series_subscriptions"
+
+class PlayHistory(PlayHistoryMixin, CHINESE_BASE):
+    __tablename__ = "play_history"
+
+class ImportRecord(ImportRecordMixin, CHINESE_BASE):
+    __tablename__ = "import_records"
+
+class PatchRecord(PatchRecordMixin, CHINESE_BASE):
+    __tablename__ = "patch_records"
+
+class FileOrganizeJob(FileOrganizeJobMixin, CHINESE_BASE):
+    __tablename__ = "file_organize_jobs"
+
+class AutoOrganizeRule(AutoOrganizeRuleMixin, CHINESE_BASE):
+    __tablename__ = "auto_organize_rules"
+
+class MovieRelation(MovieRelationMixin, CHINESE_BASE):
+    __tablename__ = "movie_relations"
+
+class UserRecommendation(UserRecommendationMixin, CHINESE_BASE):
+    __tablename__ = "user_recommendations"
+# ===== 关系声明（跨类 relationship，因 Mixin 无法使用通用类名） =====
+from sqlalchemy.orm import relationship as _rel
+
+# --- MovieActor → Movie / Actor ---
+MovieActor.movie = _rel(ChineseMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors")
+MovieActor.actor = _rel(ChineseActor, foreign_keys=[MovieActor.actor_id], back_populates="movies")
+
+# --- MovieTag → Movie / Tag ---
+MovieTag.movie = _rel(ChineseMovie, foreign_keys=[MovieTag.movie_id], back_populates="tags_rel")
+MovieTag.tag = _rel(Tag, foreign_keys=[MovieTag.tag_id])
+
+# --- PlayHistory / ImportRecord / PatchRecord / FileOrganizeJob → Movie ---
+PlayHistory.movie = _rel(ChineseMovie, foreign_keys=[PlayHistory.movie_id])
+ImportRecord.movie = _rel(ChineseMovie, foreign_keys=[ImportRecord.movie_id])
+PatchRecord.movie = _rel(ChineseMovie, foreign_keys=[PatchRecord.movie_id])
+FileOrganizeJob.movie = _rel(ChineseMovie, foreign_keys=[FileOrganizeJob.movie_id])
+
+# --- MovieRelation → Movie ---
+MovieRelation.movie = _rel(ChineseMovie, foreign_keys=[MovieRelation.movie_id])
+MovieRelation.related_movie = _rel(ChineseMovie, foreign_keys=[MovieRelation.related_movie_id])
+
+# --- UserRecommendation → Movie ---
+UserRecommendation.movie = _rel(ChineseMovie, foreign_keys=[UserRecommendation.movie_id])
+
+# --- Movie → 关联表 ---
+ChineseMovie.actors = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
+ChineseMovie.tags_rel = _rel(MovieTag, back_populates="movie", cascade="all, delete-orphan")
+ChineseMovie.studio_ref = _rel(Studio, foreign_keys=[ChineseMovie.studio_id])
+ChineseMovie.series_ref = _rel(Series, foreign_keys=[ChineseMovie.series_id])
+
+# --- Actor → 关联表 ---
+ChineseActor.movies = _rel(MovieActor, back_populates="actor", cascade="all, delete-orphan")
+ChineseActor.tags_rel = _rel(ActorTag, back_populates="actor", cascade="all, delete-orphan", foreign_keys=[ActorTag.actor_id])
+ChineseActor.tier = _rel(ActorTier, back_populates="actor", uselist=False, cascade="all, delete-orphan")
+ChineseActor.compare_urls = _rel(ActorCompareURL, back_populates="actor", cascade="all, delete-orphan")
+
+# --- ActorTier / ActorCompareURL / ActorTag → Actor ---
+ActorTier.actor = _rel(ChineseActor, foreign_keys=[ActorTier.actor_id])
+ActorCompareURL.actor = _rel(ChineseActor, foreign_keys=[ActorCompareURL.actor_id])
+ActorTag.actor = _rel(ChineseActor, foreign_keys=[ActorTag.actor_id])
+
+# --- Series → Studio ---
+Series.studio = _rel(Studio, foreign_keys=[Series.studio_id])
+
+# --- ActorSubscription / SeriesSubscription ---
+ActorSubscription.actor = _rel(ChineseActor, foreign_keys=[ActorSubscription.actor_id])
+SeriesSubscription.series = _rel(Series, foreign_keys=[SeriesSubscription.series_id])

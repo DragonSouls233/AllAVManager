@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_session
-from app.db.models import PlayHistory, FavoriteItem, Movie
+from app.db.system_models import FavoriteItem
+# PlayHistory/Movie now per-module
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.recommendation_engine import recommendation_engine
 from app.api.routes.auth import require_user
 

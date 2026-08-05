@@ -65,18 +65,17 @@ class Database:
                 cursor.close()
 
     async def init(self) -> None:
-        """初始化数据库"""
+        """初始化数据库（系统库 system.db）"""
         if self._initialized:
             return
-
-        logger.info(f"初始化数据库: {self.database_url}")
 
         # 确保数据库目录存在
         if "sqlite" in self.database_url:
             db_path = self.database_url.split("///")[-1]
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"初始化系统数据库: {db_path}")
 
-        # 启用 WAL 模式和相关优化（在每个新连接上执行）
+        # 启用 WAL 模式
         if "sqlite" in self.database_url:
             async with self.engine.begin() as conn:
                 await conn.execute(text("PRAGMA journal_mode=WAL"))
@@ -87,28 +86,17 @@ class Database:
                 await conn.execute(text("PRAGMA temp_store=MEMORY"))
                 await conn.execute(text("PRAGMA mmap_size=2147483648"))
                 await conn.execute(text("PRAGMA page_size=16384"))
-                logger.info("SQLite 优化: WAL + mmap(2GB) + 512MB缓存 + 16KB页 (32GB内存配置)")
 
-        # 创建表
+        # 使用 SystemBase 创建系统表（非旧的 scraper.db 表）
+        from app.db.system_models import SystemBase
         async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(SystemBase.metadata.create_all)
 
-        # 标记为已初始化(迁移过程中会用到 session,必须在迁移前设置,避免递归调用)
+        # 标记为已初始化
         self._initialized = True
 
-        # 数据库迁移:统一走 MigrationManager(删除旧的 _run_migrations 方法)
-        # 018 迁移整合了 studio_id/series_id/original_title/is_uncensored/
-        # sample_images/play_count/last_played_at/fingerprint 等所有列迁移
-        try:
-            from app.db.migrations import MigrationManager
-            manager = MigrationManager()
-            applied = await manager.upgrade()
-            if applied:
-                logger.info(f"数据库迁移完成: 已应用 {len(applied)} 个迁移 {applied}")
-        except Exception as e:
-            logger.warning(f"数据库迁移失败(可能已应用过): {e}")
+        logger.info("系统数据库初始化完成")
 
-        logger.info("数据库初始化完成")
 
     async def close(self) -> None:
         """关闭数据库连接"""

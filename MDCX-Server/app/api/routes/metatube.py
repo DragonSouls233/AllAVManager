@@ -21,20 +21,18 @@ MDCX 作为 provider="mdcx"，id=数据库 movie_id 或 actor_id。
 """
 
 import base64
+import importlib
 import logging
-from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select, or_
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config, get_config_manager
-from app.db.database import get_session
-from app.db.models import Movie, Actor, MovieActor
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +70,16 @@ class MetatubeMovie(BaseModel):
     """影片详情（兼容 Jellyfin）"""
     provider: str
     id: str
-    number: str  # 番号
+    number: str
     title: str
     overview: Optional[str] = None
     release_date: Optional[str] = None
-    runtime: Optional[int] = None  # 分钟
+    runtime: Optional[int] = None
     director: Optional[str] = None
     maker: Optional[str] = None
     series: Optional[str] = None
     genres: list[str] = []
-    actors: list[dict] = []  # [{id, name}]
+    actors: list[dict] = []
     cover_url: Optional[str] = None
     poster_url: Optional[str] = None
     trailer_url: Optional[str] = None
@@ -101,6 +99,20 @@ class MetatubeActor(BaseModel):
     blood_type: Optional[str] = None
 
 
+# ============== 模块辅助 ==============
+
+def _resolve_module(module: str) -> str:
+    """解析模块名，无效时回退到 jav"""
+    return module if module in MODULE_MODELS else "jav"
+
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
+
+
 # ============== 鉴权辅助 ==============
 
 def _check_token(request: Request):
@@ -108,7 +120,6 @@ def _check_token(request: Request):
     cfg = get_config().metatube
     if not cfg.token:
         return
-    # 从 query 或 header 获取 token
     token = request.query_params.get("token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -209,7 +220,7 @@ async def update_config_api(req: MetatubeConfigUpdate):
 async def search(
     request: Request,
     keyword: str = Query(..., description="搜索关键字"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """搜索影片（关键字模糊匹配番号 / 标题）"""
     _check_token(request)
@@ -220,17 +231,20 @@ async def search(
     if not keyword.strip():
         return {"results": []}
 
-    # 数据库查询
-    query = select(Movie).where(
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    query = select(MovieModel).where(
         or_(
-            Movie.code.startswith(keyword),
-            Movie.title.contains(keyword),
+            MovieModel.code.startswith(keyword),
+            MovieModel.title.contains(keyword),
         )
     ).limit(cfg.search_limit)
 
     # NSFW 过滤
     if not _is_nsfw_allowed():
-        query = query.where(Movie.is_mosaic == True)  # 仅有码
+        query = query.where(MovieModel.is_mosaic == True)  # 仅有码
 
     result = await session.execute(query)
     movies = result.scalars().all()
@@ -257,7 +271,7 @@ async def get_movie(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取影片详情"""
     _check_token(request)
@@ -269,18 +283,31 @@ async def get_movie(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid movie id")
 
-    movie = await session.get(Movie, movie_id)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    ActorModel = get_module_model(module, "actor")
+    MovieActorCls = _get_mod_cls(module, "MovieActor")
+    session = await get_module_session(module)
+
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
-    # 获取演员列表
-    actor_query = (
-        select(Actor.id, Actor.name)
-        .join(MovieActor, Actor.id == MovieActor.actor_id)
-        .where(MovieActor.movie_id == movie_id)
-    )
-    actor_result = await session.execute(actor_query)
-    actors = [{"id": str(a_id), "name": a_name} for a_id, a_name in actor_result.fetchall()]
+    # 获取演员列表（优先用 movie.actor 文本字段，回退到 JOIN 查询）
+    actors = []
+    if hasattr(movie, "actor") and movie.actor:
+        # actor 字段是逗号分隔的演员名列表（兼容格式）
+        actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
+        actors = [{"id": "0", "name": name} for name in actor_names]
+    else:
+        # 回退到 JOIN 查询（需要完整的 id + name）
+        actor_query = (
+            select(ActorModel.id, ActorModel.name)
+            .join(MovieActorCls, ActorModel.id == MovieActorCls.actor_id)
+            .where(MovieActorCls.movie_id == movie_id)
+        )
+        actor_result = await session.execute(actor_query)
+        actors = [{"id": str(a_id), "name": a_name} for a_id, a_name in actor_result.fetchall()]
 
     # 解析标签
     genres = []
@@ -313,7 +340,7 @@ async def get_movie(
         actors=actors,
         cover_url=cover_url,
         poster_url=poster_url,
-        trailer_url=movie.trailer_url,
+        trailer_url=movie.trailer_url if hasattr(movie, "trailer_url") else None,
         is_uncensored=movie.is_uncensored,
     ).model_dump()
 
@@ -325,7 +352,7 @@ async def get_actor(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取演员详情"""
     _check_token(request)
@@ -337,7 +364,11 @@ async def get_actor(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid actor id")
 
-    actor = await session.get(Actor, actor_id)
+    module = _resolve_module(module)
+    ActorModel = get_module_model(module, "actor")
+    session = await get_module_session(module)
+
+    actor = await session.get(ActorModel, actor_id)
     if not actor:
         raise HTTPException(status_code=404, detail="Actor not found")
 
@@ -370,7 +401,6 @@ async def _return_image(request: Request, url: Optional[str], content_type: str 
         raise HTTPException(status_code=404, detail="Image not available")
 
     if cfg.image_base64:
-        # 返回 Base64
         try:
             content = await _fetch_image(url)
             encoded = base64.b64encode(content).decode("ascii")
@@ -378,7 +408,6 @@ async def _return_image(request: Request, url: Optional[str], content_type: str 
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Image fetch failed: {e}")
     else:
-        # 直接重定向
         return RedirectResponse(url=url, status_code=302)
 
 
@@ -387,7 +416,7 @@ async def get_primary_image(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取主图（封面）"""
     _check_token(request)
@@ -399,7 +428,11 @@ async def get_primary_image(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid movie id")
 
-    movie = await session.get(Movie, movie_id)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
@@ -412,7 +445,7 @@ async def get_backdrop_image(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取背景图（海报）"""
     _check_token(request)
@@ -424,7 +457,11 @@ async def get_backdrop_image(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid movie id")
 
-    movie = await session.get(Movie, movie_id)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
@@ -436,7 +473,6 @@ async def get_logo_image(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
 ):
     """获取 Logo（MDCX 暂无 Logo 概念，返回 404）"""
     _check_token(request)
@@ -448,7 +484,7 @@ async def get_thumb_image(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取缩略图"""
     _check_token(request)
@@ -460,11 +496,16 @@ async def get_thumb_image(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid movie id")
 
-    movie = await session.get(Movie, movie_id)
+    module = _resolve_module(module)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+
+    movie = await session.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
-    return await _return_image(request, movie.thumb_url or movie.cover_url)
+    thumb_url = movie.thumb_url if hasattr(movie, "thumb_url") else None
+    return await _return_image(request, thumb_url or movie.cover_url)
 
 
 @router.get("/image/actor/{provider}/{item_id}")
@@ -472,7 +513,7 @@ async def get_actor_image(
     request: Request,
     provider: str,
     item_id: str,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
 ):
     """获取演员头像"""
     _check_token(request)
@@ -484,7 +525,11 @@ async def get_actor_image(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid actor id")
 
-    actor = await session.get(Actor, actor_id)
+    module = _resolve_module(module)
+    ActorModel = get_module_model(module, "actor")
+    session = await get_module_session(module)
+
+    actor = await session.get(ActorModel, actor_id)
     if not actor:
         raise HTTPException(status_code=404, detail="Actor not found")
 

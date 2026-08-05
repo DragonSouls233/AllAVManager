@@ -28,8 +28,6 @@ import aiohttp
 from sqlalchemy import select, or_
 
 from app.config.manager import get_config, get_config_manager
-from app.db.database import get_database
-from app.db.models import Actor
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -325,65 +323,41 @@ class GfriendsImporter:
 
             # 2. 查询演员（按 module 区分）
 
-            # 模块数据库表名
+            # 模块数据库表名（新架构：统一 actors / movies）
             MODULE_TABLE = {
-                "jav": ("jav_actors", "jav_movies"),
-                "fc2": ("fc2_actors", "fc2_movies"),
-                "uncensored": ("uncensored_actors", "uncensored_movies"),
-                "chinese": ("chinese_actors", "chinese_movies"),
-                "western": ("western_actors", "western_movies"),
-                "pornhub": ("pornhub_actors", "movies"),
+                "jav": ("actors", "movies"),
+                "fc2": ("actors", "movies"),
+                "uncensored": ("actors", "movies"),
+                "chinese": ("actors", "movies"),
+                "western": ("actors", "movies"),
+                "pornhub": ("actors", "movies"),
             }
 
             actors = []
             actor_sources = {}  # actor_id -> module_name
 
             if module:
-                # 单模块模式
                 all_modules = [module]
             else:
-                # 全模块模式
                 all_modules = list(MODULE_TABLE.keys())
-                # 先读中心数据库
-                db = get_database()
-                async with db.session() as session:
-                    query = select(Actor)
-                    if not overwrite:
-                        query = query.where(Actor.avatar_url.is_(None))
-                    if min_movies > 0:
-                        from app.db.models import MovieActor
-                        from sqlalchemy import func
-                        subq = (
-                            select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("cnt"))
-                            .group_by(MovieActor.actor_id)
-                            .having(func.count(MovieActor.movie_id) >= min_movies)
-                            .subquery()
-                        )
-                        query = query.join(subq, Actor.id == subq.c.actor_id)
-                    result = await session.execute(query.order_by(Actor.name))
-                    actors = list(result.scalars().all())
 
-            # 再从模块数据库收集演员
+            # 只从模块数据库收集演员（已废除中心库 scraper.db）
             from app.db.module_db import ModuleDatabase
             for mod_name in all_modules:
                 try:
                     mod_db = ModuleDatabase.get_instance(mod_name)
                     async with await mod_db.get_session() as sess:
                         from sqlalchemy import text
+
                         actor_tbl, movie_tbl = MODULE_TABLE[mod_name]
 
-                        # 检查演员表是否有 avatar_url 列
-                        cols = await sess.execute(text(f"PRAGMA table_info({actor_tbl})"))
-                        col_names = [r[1] for r in cols.fetchall()]
-                        has_avatar_col = "avatar_url" in col_names
-
                         sql = f"SELECT id, name, name_jp FROM {actor_tbl}"
-                        if has_avatar_col:
+                        if not overwrite:
                             sql += " WHERE avatar_url IS NULL OR avatar_url = ''"
 
                         if min_movies > 0:
                             sql += f" AND id IN (SELECT a.id FROM {actor_tbl} a WHERE " \
-                                    f"(SELECT COUNT(*) FROM {movie_tbl} m WHERE m.actor = a.name) >= {min_movies})"
+                                    f"(SELECT COUNT(*) FROM {movie_tbl} m WHERE m.actor LIKE '%' || a.name || '%') >= {min_movies})"
 
                         rows = await sess.execute(text(sql))
                         for r in rows:
@@ -459,13 +433,6 @@ class GfriendsImporter:
                     self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
                     progress["downloaded"] += 1
 
-                # 中心数据库提交（仅在非 module 模式时才有中心数据库的 actors）
-                if not module:
-                    try:
-                        await session.commit()
-                    except Exception:
-                        pass
-
                 self._jobs[job_id]["status"] = "completed"
                 self._jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
                 logger.info(
@@ -489,42 +456,35 @@ class GfriendsImporter:
         return [{"job_id": k, **v} for k, v in self._jobs.items()]
 
     async def _set_actor_avatar(self, actor, module_name: Optional[str], avatars_dir):
-        """设置演员头像 URL（支持中心数据库和模块数据库）"""
+        """设置演员头像 URL（写入模块数据库）"""
         actor_id = getattr(actor, "id", None)
         if not actor_id:
             return
-        avatar_url = f"/api/v1/actors/{actor_id}/avatar/file"
+        avatar_url = f"/api/v1/{module_name or 'jav'}/actors/{actor_id}/avatar/file"
 
         if module_name:
-            # 模块数据库 — 直接 update
             from app.db.module_db import ModuleDatabase
             from sqlalchemy import text
             try:
                 mod_db = ModuleDatabase.get_instance(module_name)
                 async with await mod_db.get_session() as sess:
-                    actor_tbl = "pornhub_actors" if module_name == "pornhub" else f"{module_name}_actors"
                     await sess.execute(
-                        text(f"UPDATE {actor_tbl} SET avatar_url = :url WHERE id = :id"),
+                        text("UPDATE actors SET avatar_url = :url WHERE id = :id"),
                         {"url": avatar_url, "id": actor_id}
                     )
                     await sess.commit()
             except Exception as e:
                 logger.warning(f"更新模块 {module_name} 演员头像失败: {e}")
-        else:
-            # 中心数据库
-            try:
-                setattr(actor, "avatar_url", avatar_url)
-            except Exception:
-                pass
 
 
+# 新架构表名映射（统一 actors / movies）
 MODULE_TABLE_ACTOR = {
-    "jav": ("jav_actors", "jav_movies"),
-    "fc2": ("fc2_actors", "fc2_movies"),
-    "uncensored": ("uncensored_actors", "uncensored_movies"),
-    "chinese": ("chinese_actors", "chinese_movies"),
-    "western": ("western_actors", "western_movies"),
-    "pornhub": ("pornhub_actors", "movies"),
+    "jav": ("actors", "movies"),
+    "fc2": ("actors", "movies"),
+    "uncensored": ("actors", "movies"),
+    "chinese": ("actors", "movies"),
+    "western": ("actors", "movies"),
+    "pornhub": ("actors", "movies"),
 }
 
 

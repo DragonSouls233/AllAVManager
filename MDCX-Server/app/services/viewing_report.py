@@ -24,12 +24,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func, and_, cast, Date, extract
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import (
-    PlayHistory, Movie, MovieActor, Actor, MovieTag, Tag,
-    Studio, Series,
-)
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +40,18 @@ async def record_play(
     completed: bool,
     total_duration: Optional[int],
     ip_address: Optional[str],
-    session: AsyncSession,
+    module: str = "jav",
 ) -> None:
     """记录一次播放"""
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    PlayHistoryModel = get_module_model(module, "play_history")
+
     # 取 movie_code 冗余存储
-    movie = await session.get(Movie, movie_id)
+    movie = await session.get(MovieModel, movie_id)
     if movie is None:
         return
-    record = PlayHistory(
+    record = PlayHistoryModel(
         user_id=user_id,
         movie_id=movie_id,
         movie_code=movie.code,
@@ -67,17 +67,20 @@ async def record_play(
 
 async def list_play_history(
     user_id: Optional[int],
-    session: AsyncSession,
+    module: str = "jav",
     limit: int = 50,
     offset: int = 0,
     movie_id: Optional[int] = None,
 ) -> dict:
     """查询观影历史"""
-    base = select(PlayHistory)
+    session = await get_module_session(module)
+    PlayHistoryModel = get_module_model(module, "play_history")
+
+    base = select(PlayHistoryModel)
     if user_id is not None:
-        base = base.where((PlayHistory.user_id == user_id) | (PlayHistory.user_id.is_(None)))
+        base = base.where((PlayHistoryModel.user_id == user_id) | (PlayHistoryModel.user_id.is_(None)))
     if movie_id is not None:
-        base = base.where(PlayHistory.movie_id == movie_id)
+        base = base.where(PlayHistoryModel.movie_id == movie_id)
 
     # 总数
     count_stmt = select(func.count()).select_from(base.subquery())
@@ -85,7 +88,7 @@ async def list_play_history(
 
     # 分页
     stmt = (
-        base.order_by(PlayHistory.played_at.desc())
+        base.order_by(PlayHistoryModel.played_at.desc())
         .limit(limit).offset(offset)
     )
     result = await session.execute(stmt)
@@ -110,7 +113,7 @@ async def list_play_history(
 
 async def generate_report(
     user_id: Optional[int],
-    session: AsyncSession,
+    module: str = "jav",
     days: int = 30,
 ) -> dict:
     """
@@ -118,27 +121,38 @@ async def generate_report(
 
     Args:
         user_id: 用户 ID，None 表示全部
+        module: 模块名
         days: 统计最近多少天
 
     Returns:
         报告 dict
     """
+    session = await get_module_session(module)
+    PlayHistoryModel = get_module_model(module, "play_history")
+    MovieModel = get_module_model(module, "movie")
+    MovieActorModel = get_module_model(module, "movie_actor")
+    ActorModel = get_module_model(module, "actor")
+    MovieTagModel = get_module_model(module, "movie_tag")
+    TagModel = get_module_model(module, "tag")
+    StudioModel = get_module_model(module, "studio")
+    SeriesModel = get_module_model(module, "series")
+
     since = datetime.utcnow() - timedelta(days=days)
 
     base_filter = [
-        PlayHistory.played_at >= since,
+        PlayHistoryModel.played_at >= since,
     ]
     if user_id is not None:
         base_filter.append(
-            (PlayHistory.user_id == user_id) | (PlayHistory.user_id.is_(None))
+            (PlayHistoryModel.user_id == user_id) | (PlayHistoryModel.user_id.is_(None))
         )
 
     # ===== 基础统计 =====
     base_query = select(
-        func.count(PlayHistory.id).label("play_count"),
-        func.coalesce(func.sum(PlayHistory.duration_watched), 0).label("total_duration"),
-        func.count(PlayHistory.movie_id.distinct()).label("unique_movies"),
-        func.avg(PlayHistory.progress).label("avg_progress"),
+        func.count(PlayHistoryModel.id).label("play_count"),
+        func.coalesce(func.sum(PlayHistoryModel.duration_watched), 0).label("total_duration"),
+        func.count(PlayHistoryModel.movie_id.distinct()).label("unique_movies"),
+        func.avg(PlayHistoryModel.progress).label("avg_progress"),
     ).where(*base_filter)
     row = (await session.execute(base_query)).one()
     play_count = row.play_count or 0
@@ -147,24 +161,24 @@ async def generate_report(
     avg_progress = float(row.avg_progress or 0)
 
     # 完成数
-    completed_query = select(func.count(PlayHistory.id)).where(
-        *base_filter, PlayHistory.completed.is_(True)
+    completed_query = select(func.count(PlayHistoryModel.id)).where(
+        *base_filter, PlayHistoryModel.completed.is_(True)
     )
     completed_count = (await session.execute(completed_query)).scalar_one() or 0
 
     # ===== Top 演员 =====
     actor_stmt = (
         select(
-            Actor.name,
-            func.count(PlayHistory.id).label("play_count"),
-            func.coalesce(func.sum(PlayHistory.duration_watched), 0).label("duration"),
+            ActorModel.name,
+            func.count(PlayHistoryModel.id).label("play_count"),
+            func.coalesce(func.sum(PlayHistoryModel.duration_watched), 0).label("duration"),
         )
-        .join(Movie, PlayHistory.movie_id == Movie.id)
-        .join(MovieActor, Movie.id == MovieActor.movie_id)
-        .join(Actor, MovieActor.actor_id == Actor.id)
+        .join(MovieModel, PlayHistoryModel.movie_id == MovieModel.id)
+        .join(MovieActorModel, MovieModel.id == MovieActorModel.movie_id)
+        .join(ActorModel, MovieActorModel.actor_id == ActorModel.id)
         .where(*base_filter)
-        .group_by(Actor.id, Actor.name)
-        .order_by(func.count(PlayHistory.id).desc())
+        .group_by(ActorModel.id, ActorModel.name)
+        .order_by(func.count(PlayHistoryModel.id).desc())
         .limit(10)
     )
     top_actors = [
@@ -175,16 +189,16 @@ async def generate_report(
     # ===== Top 标签 =====
     tag_stmt = (
         select(
-            Tag.name,
-            Tag.is_user,
-            func.count(PlayHistory.id).label("play_count"),
+            TagModel.name,
+            TagModel.is_user,
+            func.count(PlayHistoryModel.id).label("play_count"),
         )
-        .join(MovieTag, Tag.id == MovieTag.tag_id)
-        .join(Movie, MovieTag.movie_id == Movie.id)
-        .join(PlayHistory, PlayHistory.movie_id == Movie.id)
+        .join(MovieTagModel, TagModel.id == MovieTagModel.tag_id)
+        .join(MovieModel, MovieTagModel.movie_id == MovieModel.id)
+        .join(PlayHistoryModel, PlayHistoryModel.movie_id == MovieModel.id)
         .where(*base_filter)
-        .group_by(Tag.id, Tag.name, Tag.is_user)
-        .order_by(func.count(PlayHistory.id).desc())
+        .group_by(TagModel.id, TagModel.name, TagModel.is_user)
+        .order_by(func.count(PlayHistoryModel.id).desc())
         .limit(15)
     )
     top_tags = [
@@ -199,14 +213,14 @@ async def generate_report(
     # ===== Top 系列 =====
     series_stmt = (
         select(
-            Series.name,
-            func.count(PlayHistory.id).label("play_count"),
+            SeriesModel.name,
+            func.count(PlayHistoryModel.id).label("play_count"),
         )
-        .join(Movie, PlayHistory.movie_id == Movie.id)
-        .join(Series, Movie.series_id == Series.id)
-        .where(*base_filter, Series.id.isnot(None))
-        .group_by(Series.id, Series.name)
-        .order_by(func.count(PlayHistory.id).desc())
+        .join(MovieModel, PlayHistoryModel.movie_id == MovieModel.id)
+        .join(SeriesModel, MovieModel.series_id == SeriesModel.id)
+        .where(*base_filter, SeriesModel.id.isnot(None))
+        .group_by(SeriesModel.id, SeriesModel.name)
+        .order_by(func.count(PlayHistoryModel.id).desc())
         .limit(10)
     )
     top_series = [
@@ -217,14 +231,14 @@ async def generate_report(
     # ===== Top 厂商 =====
     studio_stmt = (
         select(
-            Studio.name,
-            func.count(PlayHistory.id).label("play_count"),
+            StudioModel.name,
+            func.count(PlayHistoryModel.id).label("play_count"),
         )
-        .join(Movie, PlayHistory.movie_id == Movie.id)
-        .join(Studio, Movie.studio_id == Studio.id)
-        .where(*base_filter, Studio.id.isnot(None))
-        .group_by(Studio.id, Studio.name)
-        .order_by(func.count(PlayHistory.id).desc())
+        .join(MovieModel, PlayHistoryModel.movie_id == MovieModel.id)
+        .join(StudioModel, MovieModel.studio_id == StudioModel.id)
+        .where(*base_filter, StudioModel.id.isnot(None))
+        .group_by(StudioModel.id, StudioModel.name)
+        .order_by(func.count(PlayHistoryModel.id).desc())
         .limit(10)
     )
     top_studios = [
@@ -234,19 +248,19 @@ async def generate_report(
 
     # ===== 时间分布 =====
     hour_dist = await _time_distribution(
-        session, base_filter, extract("hour", PlayHistory.played_at), range(24)
+        session, base_filter, extract("hour", PlayHistoryModel.played_at), range(24)
     )
     weekday_dist = await _time_distribution(
-        session, base_filter, extract("dow", PlayHistory.played_at), range(1, 8)
+        session, base_filter, extract("dow", PlayHistoryModel.played_at), range(1, 8)
     )
 
     # ===== 评分分布 =====
     rating_stmt = (
-        select(Movie.rating, func.count(PlayHistory.id).label("cnt"))
-        .join(Movie, PlayHistory.movie_id == Movie.id)
-        .where(*base_filter, Movie.rating.isnot(None))
-        .group_by(Movie.rating)
-        .order_by(Movie.rating)
+        select(MovieModel.rating, func.count(PlayHistoryModel.id).label("cnt"))
+        .join(MovieModel, PlayHistoryModel.movie_id == MovieModel.id)
+        .where(*base_filter, MovieModel.rating.isnot(None))
+        .group_by(MovieModel.rating)
+        .order_by(MovieModel.rating)
     )
     rating_dist = [
         {"rating": float(r.rating), "count": r.cnt}
@@ -254,13 +268,12 @@ async def generate_report(
     ]
 
     # ===== 趋势（按天） =====
-    # 修复:SQLite 的 CAST(x AS DATE) 不会截断日期,使用 func.date()
-    day_expr = func.date(PlayHistory.played_at).label("day")
+    day_expr = func.date(PlayHistoryModel.played_at).label("day")
     daily_stmt = (
         select(
             day_expr,
-            func.count(PlayHistory.id).label("play_count"),
-            func.coalesce(func.sum(PlayHistory.duration_watched), 0).label("duration"),
+            func.count(PlayHistoryModel.id).label("play_count"),
+            func.coalesce(func.sum(PlayHistoryModel.duration_watched), 0).label("duration"),
         )
         .where(*base_filter)
         .group_by(day_expr)
@@ -315,20 +328,38 @@ async def generate_report(
 
 
 async def _time_distribution(
-    session: AsyncSession,
+    session,
     base_filter,
     field,
     keys_range,
 ) -> dict:
     """通用时间分布查询"""
+    PlayHistoryModel = get_instance_of_playhistory(session)
     stmt = (
-        select(field.label("k"), func.count(PlayHistory.id).label("cnt"))
+        select(field.label("k"), func.count().label("cnt"))
         .where(*base_filter)
         .group_by(field)
     )
     rows = (await session.execute(stmt)).all()
     result = {int(r.k) if r.k is not None else -1: r.cnt for r in rows}
     return {str(k): result.get(k, 0) for k in keys_range}
+
+
+def get_instance_of_playhistory(session):
+    """获取 session 对应的 PlayHistory 模型（从 session bind 推断）"""
+    # 简化：返回 session 绑定的模型
+    # 实际从 model registry 查找
+    from app.utils.module_helper import MODULE_MODELS
+    import importlib
+    for module_name in MODULE_MODELS:
+        try:
+            mod_path, _, _ = MODULE_MODELS[module_name]
+            mod = importlib.import_module(mod_path)
+            if hasattr(mod, "PlayHistory"):
+                return getattr(mod, "PlayHistory")
+        except Exception:
+            continue
+    return None
 
 
 def _humanize_duration(seconds: int) -> str:

@@ -16,7 +16,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
-from app.db.models import Movie, Actor, MovieActor, Studio, Series
+# Module-specific models now accessed via get_module_model()
+from app.utils.module_helper import get_module_model, get_module_session
 from app.importer.image_scanner import ImageScanner, MovieImages
 from app.importer.nfo_parser import ImportedMovie, NFOParser
 from app.importer.number_matcher import NumberMatcher

@@ -5,6 +5,7 @@ NFO 导入导出路由
 """
 
 import asyncio
+import importlib
 import io
 import json
 import logging
@@ -17,13 +18,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from xml.dom import minidom
 
-from app.db.database import get_session
-from app.db.models import Movie, Actor, MovieActor, Tag, MovieTag
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+# ===== 模块辅助 =====
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 def _prettify_xml(elem: ET.Element) -> str:
@@ -64,7 +74,7 @@ def _add_cdata_text_element(parent: ET.Element, tag: str, text: Optional[str]) -
 
 
 def _build_nfo_xml(
-    movie: Movie,
+    movie,
     actors: list[dict],
     tags: list[str],
     kodi: bool = False,
@@ -253,7 +263,7 @@ def _build_nfo_xml(
     return root
 
 
-def _add_kodi_elements_for_movie(root: ET.Element, movie: Movie) -> None:
+def _add_kodi_elements_for_movie(root: ET.Element, movie) -> None:
     """为 Movie ORM 添加 Kodi 兼容的额外字段
 
     Kodi NFO 规范参考：https://kodi.wiki/view/NFO_files/Movies
@@ -352,9 +362,9 @@ def _add_text_element(parent: ET.Element, tag: str, text: Optional[str], **attri
     return elem
 
 
-async def _get_movie_with_relations(session: AsyncSession, movie_id: int) -> Optional[Movie]:
+async def _get_movie_with_relations(session, movie_id: int, module: str):
     """获取电影对象（含关联数据），不存在则抛出 404"""
-    from sqlalchemy.orm import selectinload
+    Movie = get_module_model(module, "movie")
     stmt = select(Movie).where(Movie.id == movie_id).options(
         selectinload(Movie.studio_ref),
         selectinload(Movie.series_ref),
@@ -366,8 +376,11 @@ async def _get_movie_with_relations(session: AsyncSession, movie_id: int) -> Opt
     return movie
 
 
-async def _get_movie_actors(session: AsyncSession, movie_id: int) -> list[dict]:
+async def _get_movie_actors(session, movie_id: int, module: str) -> list[dict]:
     """获取电影的演员信息列表"""
+    Actor = get_module_model(module, "actor")
+    MovieActor = _get_mod_cls(module, "MovieActor")
+
     actor_query = (
         select(Actor.id, Actor.name, Actor.avatar_url, MovieActor.role)
         .join(MovieActor, Actor.id == MovieActor.actor_id)
@@ -384,8 +397,11 @@ async def _get_movie_actors(session: AsyncSession, movie_id: int) -> list[dict]:
     return actors
 
 
-async def _get_movie_tags(session: AsyncSession, movie_id: int) -> list[str]:
+async def _get_movie_tags(session, movie_id: int, module: str) -> list[str]:
     """获取电影的标签名称列表"""
+    Tag = _get_mod_cls(module, "Tag")
+    MovieTag = _get_mod_cls(module, "MovieTag")
+
     tag_query = (
         select(Tag.name)
         .join(MovieTag, Tag.id == MovieTag.tag_id)
@@ -399,7 +415,7 @@ async def _get_movie_tags(session: AsyncSession, movie_id: int) -> list[str]:
 async def export_nfo(
     movie_id: int,
     kodi: bool = Query(False, description="输出 Kodi 兼容的额外字段（uniqueId/ratings/art/fileinfo 等）"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """导出单个电影的 NFO（返回 XML Response）
 
@@ -407,9 +423,10 @@ async def export_nfo(
     - `kodi=true` 时追加 Kodi 期望的 uniqueId/ratings/userrating/code/country/aired/
       tagline/playcount/lastplayed/dateadded/art/fileinfo 等字段
     """
-    movie = await _get_movie_with_relations(session, movie_id)
-    actors = await _get_movie_actors(session, movie_id)
-    tags = await _get_movie_tags(session, movie_id)
+    session = await get_module_session(module)
+    movie = await _get_movie_with_relations(session, movie_id, module)
+    actors = await _get_movie_actors(session, movie_id, module)
+    tags = await _get_movie_tags(session, movie_id, module)
 
     root = _build_nfo_xml(movie, actors, tags, kodi=kodi)
 
@@ -435,16 +452,17 @@ async def export_nfo(
 async def download_nfo(
     movie_id: int,
     kodi: bool = Query(False, description="输出 Kodi 兼容的额外字段"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """下载 NFO 文件
 
     - 默认输出 Emby/Jellyfin 兼容格式
     - `kodi=true` 时追加 Kodi 期望的额外字段
     """
-    movie = await _get_movie_with_relations(session, movie_id)
-    actors = await _get_movie_actors(session, movie_id)
-    tags = await _get_movie_tags(session, movie_id)
+    session = await get_module_session(module)
+    movie = await _get_movie_with_relations(session, movie_id, module)
+    actors = await _get_movie_actors(session, movie_id, module)
+    tags = await _get_movie_tags(session, movie_id, module)
 
     root = _build_nfo_xml(movie, actors, tags, kodi=kodi)
 
@@ -470,7 +488,7 @@ async def download_nfo(
 async def import_nfo(
     xml_content: Optional[str] = Body(None, description="NFO XML 字符串"),
     file: Optional[UploadFile] = File(None, description="NFO 文件上传"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     导入 NFO（接收 XML 字符串或文件上传，解析并更新/创建电影）
@@ -478,6 +496,11 @@ async def import_nfo(
     优先使用文件上传，其次使用 XML 字符串。
     通过 <id> (番号) 匹配已有电影，更新缺失字段。
     """
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
+    Actor = get_module_model(module, "actor")
+    MovieActor = _get_mod_cls(module, "MovieActor")
+
     # 获取 XML 内容
     content = None
     if file:
@@ -550,18 +573,18 @@ async def import_nfo(
     _update_field("director", "director")
     _update_field("release_date", "premiered")
     # Kodi 兼容：<aired> 作为 <premiered> 的兜底
-    if movie.release_date is None:
+    if getattr(movie, "release_date", None) is None:
         _update_field("release_date", "aired")
 
     # 年份
-    if movie.release_date is None:
+    if getattr(movie, "release_date", None) is None:
         year_str = _get_element_text(root, "year")
         if year_str:
             movie.release_date = f"{year_str}-01-01"
             updated_fields.append("release_date")
 
     # 时长
-    if movie.duration is None:
+    if getattr(movie, "duration", None) is None:
         runtime_str = _get_element_text(root, "runtime")
         if runtime_str:
             import re
@@ -571,7 +594,7 @@ async def import_nfo(
                 updated_fields.append("duration")
 
     # 评分
-    if movie.rating is None:
+    if getattr(movie, "rating", None) is None:
         rating_str = _get_element_text(root, "rating")
         # Kodi 兼容：<ratings><rating><value>8.5</value></rating></ratings>
         if not rating_str:
@@ -590,28 +613,28 @@ async def import_nfo(
                 pass
 
     # 有码/无码
-    if movie.is_mosaic is None:
+    if getattr(movie, "is_mosaic", None) is None:
         mpaa = _get_element_text(root, "mpaa")
         if mpaa:
             movie.is_mosaic = "有码" in mpaa
             updated_fields.append("is_mosaic")
 
     # 标签 (genre)
-    if movie.genre is None:
+    if getattr(movie, "genre", None) is None:
         genres = _get_element_texts(root, "genre")
         if genres:
             movie.genre = json.dumps(genres, ensure_ascii=False)
             updated_fields.append("genre")
 
     # 额外标签 (tag)
-    if movie.tag is None:
+    if getattr(movie, "tag", None) is None:
         tags = _get_element_texts(root, "tag")
         if tags:
             movie.tag = json.dumps(tags, ensure_ascii=False)
             updated_fields.append("tag")
 
     # 封面
-    if movie.cover_url is None:
+    if getattr(movie, "cover_url", None) is None:
         for thumb_elem in root.findall("thumb"):
             aspect = thumb_elem.get("aspect", "")
             if aspect == "poster" and thumb_elem.text:
@@ -619,7 +642,7 @@ async def import_nfo(
                 updated_fields.append("cover_url")
                 break
         # 如果没有 poster aspect 的 thumb，取第一个 thumb
-        if movie.cover_url is None:
+        if getattr(movie, "cover_url", None) is None:
             first_thumb = root.find("thumb")
             if first_thumb is not None and first_thumb.text:
                 movie.cover_url = first_thumb.text.strip()
@@ -683,13 +706,16 @@ async def import_nfo(
 async def batch_export_nfo(
     movie_ids: list[int] = Body(..., description="电影 ID 列表"),
     kodi: bool = Query(False, description="输出 Kodi 兼容的额外字段"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """批量导出 NFO（接收 movie_ids 列表，返回 zip 文件）
 
     - 默认输出 Emby/Jellyfin 兼容格式
     - `kodi=true` 时追加 Kodi 期望的额外字段（含 fileinfo/streamdetails）
     """
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
+
     if not movie_ids:
         raise HTTPException(status_code=400, detail="请提供电影 ID 列表")
 
@@ -713,8 +739,8 @@ async def batch_export_nfo(
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for movie in movies:
             try:
-                actors = await _get_movie_actors(session, movie.id)
-                tags = await _get_movie_tags(session, movie.id)
+                actors = await _get_movie_actors(session, movie.id, module)
+                tags = await _get_movie_tags(session, movie.id, module)
 
                 root = _build_nfo_xml(movie, actors, tags, kodi=kodi)
 

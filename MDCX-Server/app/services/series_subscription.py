@@ -22,11 +22,8 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select, func, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import (
-    Movie, Series, SeriesSubscription,
-)
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
@@ -35,26 +32,31 @@ logger = logging.getLogger(__name__)
 
 async def list_series_subscriptions(
     user_id: Optional[int],
-    session: AsyncSession,
+    module: str = "jav",
 ) -> list[dict]:
     """列出用户的所有系列订阅（含系列信息 + 新片数）"""
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    SeriesModel = get_module_model(module, "series")
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     stmt = (
         select(
-            SeriesSubscription,
-            Series.name,
+            SeriesSubscriptionModel,
+            SeriesModel.name,
         )
-        .join(Series, SeriesSubscription.series_id == Series.id)
+        .join(SeriesModel, SeriesSubscriptionModel.series_id == SeriesModel.id)
         .where(
-            (SeriesSubscription.user_id == user_id)
-            | (SeriesSubscription.user_id.is_(None))
+            (SeriesSubscriptionModel.user_id == user_id)
+            | (SeriesSubscriptionModel.user_id.is_(None))
         )
-        .order_by(SeriesSubscription.created_at.desc())
+        .order_by(SeriesSubscriptionModel.created_at.desc())
     )
     result = await session.execute(stmt)
     items = []
     for sub, name in result.all():
         # 当前影片数
-        cnt_stmt = select(func.count(Movie.id)).where(Movie.series_id == sub.series_id)
+        cnt_stmt = select(func.count(MovieModel.id)).where(MovieModel.series_id == sub.series_id)
         current_count = (await session.execute(cnt_stmt)).scalar_one()
         new_count = max(0, current_count - sub.last_movie_count)
         items.append({
@@ -80,28 +82,32 @@ async def subscribe_series(
     notify_new_movie: bool,
     auto_download: bool,
     preferred_quality: str,
-    session: AsyncSession,
+    module: str = "jav",
 ) -> dict:
     """订阅系列（如已订阅则更新配置）"""
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     # 查询是否已存在（user_id 为 NULL 时用 is_(None)）
     if user_id is None:
-        stmt = select(SeriesSubscription).where(
+        stmt = select(SeriesSubscriptionModel).where(
             and_(
-                SeriesSubscription.series_id == series_id,
-                SeriesSubscription.user_id.is_(None),
+                SeriesSubscriptionModel.series_id == series_id,
+                SeriesSubscriptionModel.user_id.is_(None),
             )
         )
     else:
-        stmt = select(SeriesSubscription).where(
+        stmt = select(SeriesSubscriptionModel).where(
             and_(
-                SeriesSubscription.series_id == series_id,
-                SeriesSubscription.user_id == user_id,
+                SeriesSubscriptionModel.series_id == series_id,
+                SeriesSubscriptionModel.user_id == user_id,
             )
         )
     existing = (await session.execute(stmt)).scalar_one_or_none()
 
     # 当前影片数
-    cnt_stmt = select(func.count(Movie.id)).where(Movie.series_id == series_id)
+    cnt_stmt = select(func.count(MovieModel.id)).where(MovieModel.series_id == series_id)
     current_count = (await session.execute(cnt_stmt)).scalar_one()
 
     if existing:
@@ -110,7 +116,7 @@ async def subscribe_series(
         existing.preferred_quality = preferred_quality
         sub = existing
     else:
-        sub = SeriesSubscription(
+        sub = SeriesSubscriptionModel(
             user_id=user_id,
             series_id=series_id,
             notify_new_movie=notify_new_movie,
@@ -136,21 +142,24 @@ async def subscribe_series(
 async def unsubscribe_series(
     user_id: Optional[int],
     series_id: int,
-    session: AsyncSession,
+    module: str = "jav",
 ) -> bool:
     """取消订阅"""
+    session = await get_module_session(module)
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     if user_id is None:
-        stmt = select(SeriesSubscription).where(
+        stmt = select(SeriesSubscriptionModel).where(
             and_(
-                SeriesSubscription.series_id == series_id,
-                SeriesSubscription.user_id.is_(None),
+                SeriesSubscriptionModel.series_id == series_id,
+                SeriesSubscriptionModel.user_id.is_(None),
             )
         )
     else:
-        stmt = select(SeriesSubscription).where(
+        stmt = select(SeriesSubscriptionModel).where(
             and_(
-                SeriesSubscription.series_id == series_id,
-                SeriesSubscription.user_id == user_id,
+                SeriesSubscriptionModel.series_id == series_id,
+                SeriesSubscriptionModel.user_id == user_id,
             )
         )
     sub = (await session.execute(stmt)).scalar_one_or_none()
@@ -164,21 +173,24 @@ async def unsubscribe_series(
 async def is_series_subscribed(
     user_id: Optional[int],
     series_id: int,
-    session: AsyncSession,
+    module: str = "jav",
 ) -> bool:
     """检查是否已订阅"""
+    session = await get_module_session(module)
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     if user_id is None:
-        stmt = select(SeriesSubscription.id).where(
+        stmt = select(SeriesSubscriptionModel.id).where(
             and_(
-                SeriesSubscription.series_id == series_id,
-                SeriesSubscription.user_id.is_(None),
+                SeriesSubscriptionModel.series_id == series_id,
+                SeriesSubscriptionModel.user_id.is_(None),
             )
         )
     else:
-        stmt = select(SeriesSubscription.id).where(
+        stmt = select(SeriesSubscriptionModel.id).where(
             and_(
-                SeriesSubscription.series_id == series_id,
-                SeriesSubscription.user_id == user_id,
+                SeriesSubscriptionModel.series_id == series_id,
+                SeriesSubscriptionModel.user_id == user_id,
             )
         )
     return (await session.execute(stmt)).first() is not None
@@ -188,22 +200,27 @@ async def is_series_subscribed(
 
 async def check_new_movies_for_series(
     series_id: int,
-    session: AsyncSession,
-) -> list[Movie]:
+    module: str = "jav",
+) -> list:
     """
     检查某系列的新片（自上次检查以来增加的影片）
 
     会更新 last_checked_at 和 last_movie_count。
     返回新片列表（最近添加的 N 部，N = current - last）。
     """
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    SeriesModel = get_module_model(module, "series")
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     # 找到该系列的所有订阅（任意用户 + 全局）
-    stmt = select(SeriesSubscription).where(SeriesSubscription.series_id == series_id)
+    stmt = select(SeriesSubscriptionModel).where(SeriesSubscriptionModel.series_id == series_id)
     subs = (await session.execute(stmt)).scalars().all()
     if not subs:
         return []
 
     # 当前影片数
-    cnt_stmt = select(func.count(Movie.id)).where(Movie.series_id == series_id)
+    cnt_stmt = select(func.count(MovieModel.id)).where(MovieModel.series_id == series_id)
     current_count = (await session.execute(cnt_stmt)).scalar_one()
 
     # 取最早的 last_movie_count 作为基线
@@ -211,12 +228,12 @@ async def check_new_movies_for_series(
     new_count = max(0, current_count - baseline)
 
     # 取最近 new_count 部影片
-    new_movies: list[Movie] = []
+    new_movies: list = []
     if new_count > 0:
         movies_stmt = (
-            select(Movie)
-            .where(Movie.series_id == series_id)
-            .order_by(Movie.created_at.desc())
+            select(MovieModel)
+            .where(MovieModel.series_id == series_id)
+            .order_by(MovieModel.created_at.desc())
             .limit(new_count)
         )
         new_movies = list((await session.execute(movies_stmt)).scalars().all())
@@ -231,15 +248,19 @@ async def check_new_movies_for_series(
     return new_movies
 
 
-async def check_all_series_subscriptions(session: AsyncSession) -> dict:
+async def check_all_series_subscriptions(module: str = "jav") -> dict:
     """
     检测所有订阅系列的新片，触发 Webhook 通知
 
     Returns:
         统计信息 {checked, with_new, total_new, notified}
     """
+    session = await get_module_session(module)
+    SeriesModel = get_module_model(module, "series")
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     # 找到所有订阅过的系列
-    stmt = select(SeriesSubscription.series_id).distinct()
+    stmt = select(SeriesSubscriptionModel.series_id).distinct()
     series_ids = (await session.execute(stmt)).scalars().all()
 
     checked = 0
@@ -250,14 +271,14 @@ async def check_all_series_subscriptions(session: AsyncSession) -> dict:
     for series_id in series_ids:
         checked += 1
         try:
-            new_movies = await check_new_movies_for_series(series_id, session)
+            new_movies = await check_new_movies_for_series(series_id, module=module)
             if not new_movies:
                 continue
             with_new += 1
             total_new += len(new_movies)
 
             # 取系列名
-            series = await session.get(Series, series_id)
+            series = await session.get(SeriesModel, series_id)
             series_name = series.name if series else f"series#{series_id}"
 
             # 触发 Webhook 通知
@@ -296,7 +317,7 @@ async def check_all_series_subscriptions(session: AsyncSession) -> dict:
 
 async def list_new_movies_for_series_subscription(
     user_id: Optional[int],
-    session: AsyncSession,
+    module: str = "jav",
     limit: int = 50,
 ) -> list[dict]:
     """
@@ -305,13 +326,18 @@ async def list_new_movies_for_series_subscription(
     Returns:
         新片列表（含系列信息）
     """
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    SeriesModel = get_module_model(module, "series")
+    SeriesSubscriptionModel = get_module_model(module, "series_subscription")
+
     # 找到用户订阅的系列
     if user_id is None:
-        stmt = select(SeriesSubscription.series_id).distinct()
+        stmt = select(SeriesSubscriptionModel.series_id).distinct()
     else:
-        stmt = select(SeriesSubscription.series_id).where(
-            (SeriesSubscription.user_id == user_id)
-            | (SeriesSubscription.user_id.is_(None))
+        stmt = select(SeriesSubscriptionModel.series_id).where(
+            (SeriesSubscriptionModel.user_id == user_id)
+            | (SeriesSubscriptionModel.user_id.is_(None))
         ).distinct()
     series_ids = (await session.execute(stmt)).scalars().all()
     if not series_ids:
@@ -320,13 +346,13 @@ async def list_new_movies_for_series_subscription(
     # 查询这些系列的影片，按发布日期倒序
     movies_stmt = (
         select(
-            Movie.id, Movie.code, Movie.title, Movie.cover_url,
-            Movie.release_date, Movie.created_at,
-            Series.name.label("series_name"),
+            MovieModel.id, MovieModel.code, MovieModel.title, MovieModel.cover_url,
+            MovieModel.release_date, MovieModel.created_at,
+            SeriesModel.name.label("series_name"),
         )
-        .join(Series, Movie.series_id == Series.id)
-        .where(Movie.series_id.in_(series_ids))
-        .order_by(Movie.release_date.desc().nullslast(), Movie.created_at.desc())
+        .join(SeriesModel, MovieModel.series_id == SeriesModel.id)
+        .where(MovieModel.series_id.in_(series_ids))
+        .order_by(MovieModel.release_date.desc().nullslast(), MovieModel.created_at.desc())
         .limit(limit)
     )
     result = await session.execute(movies_stmt)

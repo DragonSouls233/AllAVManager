@@ -186,7 +186,7 @@ async def get_actor_movies(
                 "cover_url": m.cover_url, "poster_url": m.poster_url,
                 "release_date": str(m.release_date) if m.release_date else None,
                 "duration": m.duration, "rating": m.rating,
-                "studio": m.studio, "maker": m.maker,
+                "studio": m.studio, "maker": getattr(m, "maker", None),
                 "genre": m.genre,
                 "module_type": "jav",
                 "file_path": m.file_path,

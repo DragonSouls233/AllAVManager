@@ -12,7 +12,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.proxy_player import proxy_player_service
 
 router = APIRouter()

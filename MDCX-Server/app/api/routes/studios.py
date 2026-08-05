@@ -13,20 +13,28 @@ API 端点：
 - PATCH /api/v1/studios/{id}/alias   - 更新片商别名
 """
 
+import importlib
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from pydantic import BaseModel
 from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import Database, get_session
-from app.db.models import Studio, Movie
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ===== 模块辅助 =====
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 # ===== Response Models =====
@@ -86,7 +94,7 @@ async def list_studios(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     获取厂商列表
@@ -94,6 +102,9 @@ async def list_studios(
     - 支持搜索（按名字）
     - 支持分页
     """
+    session = await get_module_session(module)
+    Studio = _get_mod_cls(module, "Studio")
+
     query = select(Studio)
 
     if search:
@@ -128,13 +139,17 @@ async def list_studios(
 @router.get("/{studio_id}", response_model=StudioDetailResponse)
 async def get_studio(
     studio_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     获取厂商详情
 
     包含基本信息和最近10部作品
     """
+    session = await get_module_session(module)
+    Studio = _get_mod_cls(module, "Studio")
+    Movie = get_module_model(module, "movie")
+
     studio = await session.get(Studio, studio_id)
     if not studio:
         raise HTTPException(status_code=404, detail="厂商不存在")
@@ -180,13 +195,16 @@ async def get_studio(
 @router.post("", response_model=StudioResponse)
 async def create_studio(
     body: StudioCreateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     创建厂商
 
     - 厂商名唯一
     """
+    session = await get_module_session(module)
+    Studio = _get_mod_cls(module, "Studio")
+
     existing = await session.scalar(
         select(Studio).where(Studio.name == body.name)
     )
@@ -210,7 +228,7 @@ async def create_studio(
 
 @router.post("/sync-from-movies")
 async def sync_studios_from_movies(
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     从现有电影的 maker/studio 字段同步厂商
@@ -219,6 +237,10 @@ async def sync_studios_from_movies(
     - 为每个唯一值创建 Studio（如果不存在）
     - 更新 movie_count 冗余字段
     """
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
+    Studio = _get_mod_cls(module, "Studio")
+
     # 获取所有电影的 maker 和 studio
     result = await session.execute(
         select(Movie.maker, Movie.studio_id).where(
@@ -279,13 +301,16 @@ async def sync_studios_from_movies(
 async def update_studio(
     studio_id: int,
     body: StudioUpdateRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     更新厂商信息
 
     - 支持更新: name, name_jp
     """
+    session = await get_module_session(module)
+    Studio = _get_mod_cls(module, "Studio")
+
     studio = await session.get(Studio, studio_id)
     if not studio:
         raise HTTPException(status_code=404, detail="厂商不存在")
@@ -315,11 +340,14 @@ async def update_studio(
 @router.delete("/{studio_id}")
 async def delete_studio(
     studio_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """
     删除厂商
     """
+    session = await get_module_session(module)
+    Studio = _get_mod_cls(module, "Studio")
+
     studio = await session.get(Studio, studio_id)
     if not studio:
         raise HTTPException(status_code=404, detail="厂商不存在")
@@ -336,7 +364,7 @@ async def delete_studio(
 @router.post("/merge")
 async def merge_studios_api(
     data: dict,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """合并片商（将 source_ids 合并到 canonical_id）
 
@@ -344,6 +372,7 @@ async def merge_studios_api(
     合并后 source 的别名自动加入 canonical 的 alias 字段，
     所有影片的 studio/maker 字段更新为 canonical 的名称。
     """
+    session = await get_module_session(module)
     from app.services.studio_merge_service import merge_studios as merge_fn
     return await merge_fn(
         session,
@@ -355,9 +384,10 @@ async def merge_studios_api(
 @router.get("/similar")
 async def search_similar_studios_api(
     name: str = Query(..., description="搜索名称相似的片商"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """搜索名称相似的片商（推荐合并候选）"""
+    session = await get_module_session(module)
     from app.services.studio_merge_service import search_similar_studios
     result = await search_similar_studios(session, name)
     return {"items": result, "total": len(result)}
@@ -367,13 +397,16 @@ async def search_similar_studios_api(
 async def update_studio_alias(
     studio_id: int,
     body: dict,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """更新片商别名
 
     参考 JavBoss v1.9.0 片商名称/别名管理。
     别名用于处理同一个片商的不同命名（如 MOODYZ / ムーディーズ）。
     """
+    session = await get_module_session(module)
+    Studio = _get_mod_cls(module, "Studio")
+
     studio = await session.get(Studio, studio_id)
     if not studio:
         raise HTTPException(status_code=404, detail="厂商不存在")

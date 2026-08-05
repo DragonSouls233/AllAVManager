@@ -4,6 +4,7 @@
 每个 Tier 设置数量上限，接近上限时预警，超量时标记风险。
 """
 
+import importlib
 from datetime import datetime
 from typing import Optional
 
@@ -13,9 +14,19 @@ from sqlalchemy import select, func, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
-from app.db.models import Actor, ActorTier, TierConfig, AssetChangeLog, MovieActor
+from app.db.system_models import AssetChangeLog
+from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 router = APIRouter()
+
+
+# ===== 模块辅助 =====
+
+def _get_mod_cls(module: str, cls_name: str):
+    """获取模块中的任意模型类"""
+    mod_path, _, _ = MODULE_MODELS[module]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, cls_name)
 
 
 # 默认 Tier 配置（首次访问时自动初始化）
@@ -70,11 +81,12 @@ class ChangeLogResponse(BaseModel):
 
 # ============== 内部工具 ==============
 
-async def _ensure_default_tiers(session: AsyncSession):
+async def _ensure_default_tiers(session: AsyncSession, module: str):
     """首次访问时初始化默认 Tier 配置
 
     使用单条逐一检查 + ignore 的方式，避免并发请求的竞态问题。
     """
+    TierConfig = _get_mod_cls(module, "TierConfig")
     for item in DEFAULT_TIERS:
         stmt = select(TierConfig).where(TierConfig.tier == item["tier"])
         result = await session.execute(stmt)
@@ -84,7 +96,7 @@ async def _ensure_default_tiers(session: AsyncSession):
 
 
 async def _log_change(
-    session: AsyncSession,
+    sys_session: AsyncSession,
     entity_type: str,
     entity_id: int,
     entity_name: Optional[str],
@@ -93,7 +105,7 @@ async def _log_change(
     new_value: Optional[str] = None,
     description: Optional[str] = None,
 ):
-    """记录资产变化日志"""
+    """记录资产变化日志（写入 system.db）"""
     log = AssetChangeLog(
         entity_type=entity_type,
         entity_id=entity_id,
@@ -103,11 +115,12 @@ async def _log_change(
         new_value=new_value,
         description=description,
     )
-    session.add(log)
+    sys_session.add(log)
 
 
-async def _get_actor_movie_count(session: AsyncSession, actor_id: int) -> int:
+async def _get_actor_movie_count(session: AsyncSession, actor_id: int, module: str) -> int:
     """获取演员的影片数量"""
+    MovieActor = _get_mod_cls(module, "MovieActor")
     result = await session.execute(
         select(func.count()).select_from(MovieActor).where(MovieActor.actor_id == actor_id)
     )
@@ -117,9 +130,13 @@ async def _get_actor_movie_count(session: AsyncSession, actor_id: int) -> int:
 # ============== 路由 ==============
 
 @router.get("/config")
-async def get_tier_config(session: AsyncSession = Depends(get_session)):
+async def get_tier_config(
+    module: str = Query("jav"),
+):
     """获取分级档位配置"""
-    await _ensure_default_tiers(session)
+    session = await get_module_session(module)
+    await _ensure_default_tiers(session, module)
+    TierConfig = _get_mod_cls(module, "TierConfig")
     result = await session.execute(
         select(TierConfig).order_by(TierConfig.sort_order)
     )
@@ -141,10 +158,13 @@ async def get_tier_config(session: AsyncSession = Depends(get_session)):
 @router.put("/config")
 async def update_tier_config(
     req: TierConfigUpdate,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """更新分级档位配置（整体覆盖）"""
-    await _ensure_default_tiers(session)
+    session = await get_module_session(module)
+    await _ensure_default_tiers(session, module)
+    TierConfig = _get_mod_cls(module, "TierConfig")
+
     valid_tiers = {"S", "A", "B", "C", "D"}
     for item in req.items:
         if item.tier not in valid_tiers:
@@ -160,19 +180,26 @@ async def update_tier_config(
 
 
 @router.get("/dashboard")
-async def get_tier_dashboard(session: AsyncSession = Depends(get_session)):
+async def get_tier_dashboard(
+    module: str = Query("jav"),
+):
     """分级仪表盘：各档位统计 + 风险状态
 
     返回每个 Tier 的当前演员数、影片总数、上限、使用率、风险等级。
     """
-    await _ensure_default_tiers(session)
+    session = await get_module_session(module)
+    await _ensure_default_tiers(session, module)
+
+    TierConfig = _get_mod_cls(module, "TierConfig")
+    ActorTier = _get_mod_cls(module, "ActorTier")
+    Actor = get_module_model(module, "actor")
+    MovieActor = _get_mod_cls(module, "MovieActor")
 
     # 查询所有 Tier 配置
     tier_result = await session.execute(select(TierConfig).order_by(TierConfig.sort_order))
     tiers = tier_result.scalars().all()
 
     # 查询每个演员的 tier 和影片数
-    # 用一条 SQL：actor_tiers JOIN actors LEFT JOIN movie_actors GROUP BY actor
     stmt = (
         select(
             ActorTier.tier.label("tier"),
@@ -234,13 +261,19 @@ async def get_tier_dashboard(session: AsyncSession = Depends(get_session)):
 @router.get("/risk")
 async def get_risk_actors(
     level: Optional[str] = Query(None, description="风险等级过滤: warning/overflow/normal"),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """风险状态列表：接近上限/超量的演员
 
     每个演员返回：tier、影片数、上限、使用率、风险等级。
     """
-    await _ensure_default_tiers(session)
+    session = await get_module_session(module)
+    await _ensure_default_tiers(session, module)
+
+    TierConfig = _get_mod_cls(module, "TierConfig")
+    ActorTier = _get_mod_cls(module, "ActorTier")
+    Actor = get_module_model(module, "actor")
+    MovieActor = _get_mod_cls(module, "MovieActor")
 
     # 查询已分级演员的影片数
     stmt = (
@@ -303,9 +336,12 @@ async def get_risk_actors(
 @router.get("/actors/{actor_id}")
 async def get_actor_tier(
     actor_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
 ):
     """获取单个演员的分级"""
+    session = await get_module_session(module)
+    ActorTier = _get_mod_cls(module, "ActorTier")
+
     result = await session.execute(
         select(ActorTier).where(ActorTier.actor_id == actor_id)
     )
@@ -325,9 +361,14 @@ async def get_actor_tier(
 async def set_actor_tier(
     actor_id: int,
     req: ActorTierSet,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
+    sys_session: AsyncSession = Depends(get_session),
 ):
     """设置演员分级"""
+    session = await get_module_session(module)
+    ActorTier = _get_mod_cls(module, "ActorTier")
+    Actor = get_module_model(module, "actor")
+
     valid_tiers = {"S", "A", "B", "C", "D"}
     if req.tier not in valid_tiers:
         raise HTTPException(status_code=400, detail=f"无效的 tier: {req.tier}，必须是 S/A/B/C/D")
@@ -357,9 +398,9 @@ async def set_actor_tier(
         )
         session.add(existing)
 
-    # 记录日志
+    # 记录日志（写入 system.db）
     await _log_change(
-        session, "actor", actor_id, actor.name,
+        sys_session, "actor", actor_id, actor.name,
         "tier_changed",
         old_value=old_tier,
         new_value=req.tier,
@@ -367,15 +408,21 @@ async def set_actor_tier(
     )
 
     await session.commit()
+    await sys_session.commit()
     return {"status": "ok", "actor_id": actor_id, "tier": req.tier, "old_tier": old_tier}
 
 
 @router.post("/batch")
 async def batch_set_tier(
     req: BatchTierSet,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
+    sys_session: AsyncSession = Depends(get_session),
 ):
     """批量设置演员分级"""
+    session = await get_module_session(module)
+    ActorTier = _get_mod_cls(module, "ActorTier")
+    Actor = get_module_model(module, "actor")
+
     valid_tiers = {"S", "A", "B", "C", "D"}
     if req.tier not in valid_tiers:
         raise HTTPException(status_code=400, detail=f"无效的 tier: {req.tier}")
@@ -401,7 +448,7 @@ async def batch_set_tier(
             session.add(ActorTier(actor_id=actor_id, tier=req.tier, max_count=0))
 
         await _log_change(
-            session, "actor", actor_id, actor.name,
+            sys_session, "actor", actor_id, actor.name,
             "tier_changed",
             old_value=old_tier,
             new_value=req.tier,
@@ -410,15 +457,21 @@ async def batch_set_tier(
         success.append(actor_id)
 
     await session.commit()
+    await sys_session.commit()
     return {"status": "ok", "success_count": len(success), "actor_ids": success}
 
 
 @router.delete("/actors/{actor_id}")
 async def remove_actor_tier(
     actor_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav"),
+    sys_session: AsyncSession = Depends(get_session),
 ):
     """移除演员分级（回到未分级状态）"""
+    session = await get_module_session(module)
+    ActorTier = _get_mod_cls(module, "ActorTier")
+    Actor = get_module_model(module, "actor")
+
     result = await session.execute(
         select(ActorTier).where(ActorTier.actor_id == actor_id)
     )
@@ -431,13 +484,14 @@ async def remove_actor_tier(
 
     await session.delete(existing)
     await _log_change(
-        session, "actor", actor_id, actor.name if actor else None,
+        sys_session, "actor", actor_id, actor.name if actor else None,
         "tier_changed",
         old_value=old_tier,
         new_value=None,
         description=f"演员 {actor.name if actor else actor_id} 移除分级 {old_tier}",
     )
     await session.commit()
+    await sys_session.commit()
     return {"status": "ok", "actor_id": actor_id, "old_tier": old_tier}
 
 
@@ -451,9 +505,9 @@ async def get_change_logs(
     change_type: Optional[str] = Query(None, description="变化类型: added/removed/tier_changed/rating_changed/scraped"),
     start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
-    session: AsyncSession = Depends(get_session),
+    sys_session: AsyncSession = Depends(get_session),
 ):
-    """资产变化日志（分页+筛选）"""
+    """资产变化日志（分页+筛选）- 使用 system.db"""
     query = select(AssetChangeLog)
     count_query = select(func.count()).select_from(AssetChangeLog)
 
@@ -482,11 +536,11 @@ async def get_change_logs(
             pass
 
     # 总数
-    total = (await session.execute(count_query)).scalar() or 0
+    total = (await sys_session.execute(count_query)).scalar() or 0
 
     # 分页查询
     query = query.order_by(AssetChangeLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
-    result = await session.execute(query)
+    result = await sys_session.execute(query)
     items = result.scalars().all()
 
     return {
@@ -513,13 +567,13 @@ async def get_change_logs(
 @router.delete("/logs")
 async def clear_change_logs(
     before_days: int = Query(30, ge=1, description="清除多少天前的日志"),
-    session: AsyncSession = Depends(get_session),
+    sys_session: AsyncSession = Depends(get_session),
 ):
     """清除旧日志"""
     from datetime import timedelta
     cutoff = datetime.now() - timedelta(days=before_days)
-    result = await session.execute(
+    result = await sys_session.execute(
         delete(AssetChangeLog).where(AssetChangeLog.created_at < cutoff)
     )
-    await session.commit()
+    await sys_session.commit()
     return {"status": "ok", "deleted": result.rowcount}

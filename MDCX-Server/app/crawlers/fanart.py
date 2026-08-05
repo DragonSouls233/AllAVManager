@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model
 
 logger = logging.getLogger(__name__)
 
@@ -183,12 +183,13 @@ class FanartCrawler:
         logger.info(f"fanart 图片已保存: {save_path_obj}")
         return str(save_path_obj)
 
-    async def get_fanarts_for_movie(self, movie_id: int, session: AsyncSession) -> dict:
+    async def get_fanarts_for_movie(self, movie_id: int, session: AsyncSession, module: str = "jav") -> dict:
         """根据影片的 tmdb_id 获取 fanart 资源
 
         Args:
             movie_id: 影片 ID（数据库 movies.id）
             session: 异步数据库会话
+            module: 模块名
 
         Returns:
             search_fanarts 的返回结果，附加 movie_id / code 字段
@@ -196,6 +197,7 @@ class FanartCrawler:
         Raises:
             RuntimeError: 影片不存在 / 未配置 TMDB ID / 调用 API 失败
         """
+        Movie = get_module_model(module, "movie")
         result = await session.execute(select(Movie).where(Movie.id == movie_id))
         movie = result.scalar_one_or_none()
         if movie is None:
@@ -217,6 +219,7 @@ class FanartCrawler:
         movie_id: int,
         session: AsyncSession,
         image_url: Optional[str] = None,
+        module: str = "jav",
     ) -> dict:
         """下载 fanart 背景图并应用到影片
 
@@ -237,6 +240,7 @@ class FanartCrawler:
         Raises:
             RuntimeError: 影片不存在 / 无 TMDB ID / 无可用背景图 / 下载失败
         """
+        Movie = get_module_model(module, "movie")
         result = await session.execute(select(Movie).where(Movie.id == movie_id))
         movie = result.scalar_one_or_none()
         if movie is None:

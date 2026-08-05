@@ -11,13 +11,11 @@
 """
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_session
-from app.db.models import AutoOrganizeRule
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.file_organize import auto_organize_watched
 
 router = APIRouter()
@@ -66,7 +64,7 @@ class RuleResponse(BaseModel):
     created_at: str | None = None
 
 
-def _to_response(rule: AutoOrganizeRule) -> dict:
+def _to_response(rule) -> dict:
     """把 ORM 对象转为响应 dict"""
     return {
         "id": rule.id,
@@ -86,16 +84,20 @@ def _to_response(rule: AutoOrganizeRule) -> dict:
 # ============================================
 
 @router.get("/rules", summary="列出所有自动整理规则")
-async def list_rules(session: AsyncSession = Depends(get_session)):
+async def list_rules(module: str = "jav"):
     """列出所有自动整理规则"""
+    session = await get_module_session(module)
+    AutoOrganizeRule = get_module_model(module, "auto_organize_rule")
     stmt = select(AutoOrganizeRule).order_by(AutoOrganizeRule.id.asc())
     rules = (await session.execute(stmt)).scalars().all()
     return {"total": len(rules), "items": [_to_response(r) for r in rules]}
 
 
 @router.post("/rules", summary="创建自动整理规则")
-async def create_rule(body: RuleCreate, session: AsyncSession = Depends(get_session)):
+async def create_rule(body: RuleCreate, module: str = "jav"):
     """创建一条自动整理规则"""
+    session = await get_module_session(module)
+    AutoOrganizeRule = get_module_model(module, "auto_organize_rule")
     rule = AutoOrganizeRule(
         name=body.name,
         condition_field=body.condition_field,
@@ -115,9 +117,11 @@ async def create_rule(body: RuleCreate, session: AsyncSession = Depends(get_sess
 async def update_rule(
     rule_id: int,
     body: RuleUpdate,
-    session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """更新一条自动整理规则（仅更新传入的字段）"""
+    session = await get_module_session(module)
+    AutoOrganizeRule = get_module_model(module, "auto_organize_rule")
     rule = await session.get(AutoOrganizeRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail=f"规则 {rule_id} 不存在")
@@ -132,8 +136,10 @@ async def update_rule(
 
 
 @router.delete("/rules/{rule_id}", summary="删除自动整理规则")
-async def delete_rule(rule_id: int, session: AsyncSession = Depends(get_session)):
+async def delete_rule(rule_id: int, module: str = "jav"):
     """删除一条自动整理规则"""
+    session = await get_module_session(module)
+    AutoOrganizeRule = get_module_model(module, "auto_organize_rule")
     rule = await session.get(AutoOrganizeRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail=f"规则 {rule_id} 不存在")
@@ -144,12 +150,13 @@ async def delete_rule(rule_id: int, session: AsyncSession = Depends(get_session)
 
 
 @router.post("/check", summary="手动触发一次自动整理检查")
-async def check_now(session: AsyncSession = Depends(get_session)):
+async def check_now(module: str = "jav"):
     """手动触发一次自动整理检查
 
     遍历所有启用的规则，将命中的影片按规则动作整理到目标路径。
     """
     try:
+        session = await get_module_session(module)
         result = await auto_organize_watched(session)
         result["triggered_at"] = datetime.now().isoformat()
         return result

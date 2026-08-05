@@ -22,8 +22,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, or_
 
 from app.config.manager import get_config
-from app.db.database import get_database
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 from app.scraper.number import extract_number, normalize_number
 from app.utils.logger import get_logger
 
@@ -56,12 +55,14 @@ class UnrecognizedFileService:
         self,
         directories: Optional[list[str]] = None,
         scan_mode: str = "all",  # all / no_number / no_match
+        module: str = "jav",
     ) -> dict:
         """扫描未识别的文件
 
         Args:
             directories: 要扫描的目录列表（None = 使用配置的 media_dirs）
             scan_mode: all=全部 / no_number=仅无法提取番号 / no_match=仅番号无匹配
+            module: 模块名 jav/fc2/uncensored/chinese/western/pornhub
 
         Returns:
             {
@@ -77,9 +78,9 @@ class UnrecognizedFileService:
         if not directories:
             return {"total_files": 0, "no_number": [], "no_match": [], "scanned_dirs": []}
 
-        db = get_database()
-        # 预取所有已识别的番号集合
-        async with db.session() as session:
+        Movie = get_module_model(module, "movie")
+        session = await get_module_session(module)
+        async with session:
             result = await session.execute(select(Movie.code).where(Movie.code.is_not(None)))
             existing_codes = {row[0] for row in result.fetchall()}
 
@@ -179,18 +180,21 @@ class UnrecognizedFileService:
         self,
         file_path: str,
         movie_id: int,
+        module: str = "jav",
     ) -> dict:
         """手动将文件关联到现有 Movie 记录
 
         Args:
             file_path: 文件路径
             movie_id: 目标 Movie ID
+            module: 模块名
 
         Returns:
             {"ok": bool, "msg": str}
         """
-        db = get_database()
-        async with db.session() as session:
+        Movie = get_module_model(module, "movie")
+        session = await get_module_session(module)
+        async with session:
             movie = await session.get(Movie, movie_id)
             if not movie:
                 return {"ok": False, "msg": f"Movie ID {movie_id} 不存在"}
@@ -213,6 +217,7 @@ class UnrecognizedFileService:
         file_path: str,
         number: str,
         create_if_missing: bool = True,
+        module: str = "jav",
     ) -> dict:
         """手动指定文件番号（用于修正识别错误）
 
@@ -220,11 +225,13 @@ class UnrecognizedFileService:
             file_path: 文件路径
             number: 指定的番号
             create_if_missing: 如果 Movie 不存在是否创建空记录
+            module: 模块名
 
         Returns:
             {"ok": bool, "msg": str, "movie_id": int}
         """
-        db = get_database()
+        Movie = get_module_model(module, "movie")
+        session = await get_module_session(module)
         normalized = normalize_number(number)
 
         async with db.session() as session:
@@ -270,6 +277,7 @@ class UnrecognizedFileService:
         self,
         old_path: str,
         new_filename: str,
+        module: str = "jav",
     ) -> dict:
         """重命名文件（修正文件名后可重新识别）
 
@@ -298,8 +306,9 @@ class UnrecognizedFileService:
             logger.info(f"重命名: {old_path_obj.name} → {new_filename}")
 
             # 如果关联的 Movie 存在，更新 file_path
-            db = get_database()
-            async with db.session() as session:
+            Movie = get_module_model(module, "movie")
+            session = await get_module_session(module)
+            async with session:
                 result = await session.execute(
                     select(Movie).where(Movie.file_path == old_path)
                 )

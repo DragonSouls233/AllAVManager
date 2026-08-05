@@ -21,7 +21,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
-from app.db.models import ImportRecord, Movie, Actor
+from app.utils.module_helper import get_module_model, get_module_session
 from app.importer.sync import ImportSync, ImportResult, ImportReport
 
 logger = logging.getLogger(__name__)
@@ -528,13 +528,15 @@ async def get_import_report(job_id: str):
 async def get_import_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """
     获取导入历史记录
     
     从数据库 import_records 表查询
     """
+    session = await get_module_session(module)
+    ImportRecord = get_module_model(module, "import_record")
     query = select(ImportRecord).order_by(ImportRecord.imported_at.desc())
     
     # 计算总数
@@ -567,13 +569,15 @@ async def get_import_history(
 @router.delete("/history/{record_id}")
 async def delete_import_record(
     record_id: int,
-    session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """
     删除导入记录
     
     - record_id: 记录 ID
     """
+    session = await get_module_session(module)
+    ImportRecord = get_module_model(module, "import_record")
     record = await session.get(ImportRecord, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="记录不存在")
@@ -591,6 +595,7 @@ async def _run_import_background(
     directories: list[str],
     conflict_strategy: str,
     skip_hours: int = 72,
+    module: str = "jav",
 ):
     """
     后台执行导入任务
@@ -607,11 +612,13 @@ async def _run_import_background(
     job = _active_import_jobs[job_id]
     job["status"] = "running"
 
+    ImportRecord = get_module_model(module, "import_record")
+
     # ===== 增量扫描：加载冷却期内已成功导入的目录 =====
-    recently_imported = await _load_recently_imported(skip_hours)
+    recently_imported = await _load_recently_imported(skip_hours, module=module)
 
     # 批量保存导入记录，减少事务次数
-    pending_records: list[ImportRecord] = []
+    pending_records: list = []
     BATCH_SIZE = 200  # 每 200 条批量写入一次
     IMPORT_DELAY = 0.01  # 每条导入间隔 10ms
 
@@ -621,20 +628,18 @@ async def _run_import_background(
         """批量写入待保存的导入记录"""
         if not pending_records:
             return
-        from app.db.database import get_db
-        db = get_db()
         try:
-            async with db.session() as session:
-                session.add_all(pending_records)
-                await session.commit()
+            session = await get_module_session(module)
+            session.add_all(pending_records)
+            await session.commit()
             pending_records.clear()
         except Exception as e:
             logger.warning(f"批量保存导入记录失败: {e}")
             for record in list(pending_records):
                 try:
-                    async with db.session() as session:
-                        session.add(record)
-                        await session.commit()
+                    session2 = await get_module_session(module)
+                    session2.add(record)
+                    await session2.commit()
                 except Exception:
                     pass
             pending_records.clear()
@@ -725,59 +730,56 @@ async def _run_import_background(
         job["finished_at"] = datetime.now()
 
 
-async def _load_recently_imported(hours: int = 72) -> set[str]:
+async def _load_recently_imported(hours: int = 72, module: str = "jav") -> set[str]:
     """
     加载冷却期内已成功导入的目录路径集合
 
     用于增量扫描：如果目录在冷却期内已成功导入，直接跳过，不再扫描。
     默认 72 小时（3 天）。
     """
-    from app.db.database import get_db
     from datetime import timedelta
 
-    db = get_db()
+    session = await get_module_session(module)
+    ImportRecord = get_module_model(module, "import_record")
     cutoff = datetime.now() - timedelta(hours=hours)
 
     try:
-        async with db.session() as session:
-            result = await session.execute(
-                select(ImportRecord.file_path).where(
-                    ImportRecord.status.in_(["success", "skipped"]),
-                    ImportRecord.imported_at.isnot(None),
-                    ImportRecord.imported_at >= cutoff,
-                )
+        result = await session.execute(
+            select(ImportRecord.file_path).where(
+                ImportRecord.status.in_(["success", "skipped"]),
+                ImportRecord.imported_at.isnot(None),
+                ImportRecord.imported_at >= cutoff,
             )
-            paths = {row[0] for row in result.fetchall()}
-            if paths:
-                logger.info(f"增量扫描：冷却期 {hours} 小时内，跳过 {len(paths)} 个已导入目录")
-            return paths
+        )
+        paths = {row[0] for row in result.fetchall()}
+        if paths:
+            logger.info(f"增量扫描：冷却期 {hours} 小时内，跳过 {len(paths)} 个已导入目录")
+        return paths
     except Exception as e:
         logger.warning(f"加载最近导入记录失败: {e}")
         return set()
 
 
-async def _save_import_record(result: ImportResult):
+async def _save_import_record(result: ImportResult, module: str = "jav"):
     """保存导入记录到数据库（带重试机制处理 SQLite 锁）"""
-    from app.db.database import get_db
-
-    db = get_db()
+    ImportRecord = get_module_model(module, "import_record")
 
     # 最多重试 5 次，指数退避
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            async with db.session() as session:
-                record = ImportRecord(
-                    file_path=result.directory,
-                    movie_code=result.number,
-                    movie_id=result.movie_id,
-                    source_type="nfo",
-                    status=result.status,
-                    imported_at=result.imported_at or datetime.now(),
-                )
-                session.add(record)
-                await session.commit()
-                return
+            session = await get_module_session(module)
+            record = ImportRecord(
+                file_path=result.directory,
+                movie_code=result.number,
+                movie_id=result.movie_id,
+                source_type="nfo",
+                status=result.status,
+                imported_at=result.imported_at or datetime.now(),
+            )
+            session.add(record)
+            await session.commit()
+            return
         except Exception as e:
             # 数据库锁定时重试
             if "database is locked" in str(e).lower() and attempt < max_retries - 1:
@@ -820,7 +822,7 @@ class CleanupResult(BaseModel):
 @router.post("/cleanup", response_model=CleanupResult)
 async def cleanup_missing_files(
     req: CleanupRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """检测并清理数据库中引用已不存在文件的记录。
 
@@ -836,13 +838,16 @@ async def cleanup_missing_files(
     """
     from pathlib import Path
 
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+
     result = CleanupResult(dry_run=req.dry_run)
 
     rows = await session.execute(
-        select(Movie).where(
+        select(MovieModel).where(
             or_(
-                Movie.file_path.isnot(None),
-                Movie.cover_url.isnot(None),
+                MovieModel.file_path.isnot(None),
+                MovieModel.cover_url.isnot(None),
             )
         ).limit(req.limit)
     )
@@ -924,7 +929,7 @@ class ResyncResult(BaseModel):
 @router.post("/resync", response_model=ResyncResult)
 async def resync_database(
     req: ResyncRequest,
-    session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """重新同步数据库：检测文件系统变化并更新数据库。
 
@@ -935,6 +940,10 @@ async def resync_database(
     """
     from pathlib import Path
 
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    ActorModel = get_module_model(module, "actor")
+
     result = ResyncResult(dry_run=req.dry_run)
 
     VIDEO_EXTENSIONS_FOR_SYNC = {
@@ -943,8 +952,8 @@ async def resync_database(
     }
 
     rows = await session.execute(
-        select(Movie).where(
-            or_(Movie.code.isnot(None), Movie.file_path.isnot(None), Movie.cover_url.isnot(None))
+        select(MovieModel).where(
+            or_(MovieModel.code.isnot(None), MovieModel.file_path.isnot(None), MovieModel.cover_url.isnot(None))
         ).limit(req.limit)
     )
     movies = list(rows.scalars().all())
@@ -1010,7 +1019,7 @@ async def resync_database(
 
     if req.update_actor_names:
         rows_actors = await session.execute(
-            select(Actor).limit(req.limit)
+            select(ActorModel).limit(req.limit)
         )
         actors = list(rows_actors.scalars().all())
         actor_by_name = {a.name: a for a in actors if a.name}
@@ -1047,7 +1056,7 @@ async def resync_database(
             delete_missing_movies=False,
             limit=req.limit,
         )
-        cleanup_result = await cleanup_missing_files(cleanup_req, session)
+        cleanup_result = await cleanup_missing_files(cleanup_req, module=module)
         result.detected_deleted = cleanup_result.missing_video_files + cleanup_result.missing_cover_files
         result.deleted_records = cleanup_result.deleted_movies
 

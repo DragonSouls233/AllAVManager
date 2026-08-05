@@ -69,12 +69,13 @@ if _HAS_PROMETHEUS:
     )
 
     # --- 数据库指标 ---
+    # 全局聚合指标（从模块统计汇总）
     db_movies_total = Gauge("mdcx_db_movies_total", "影片总数", ["status"], registry=_registry)
-    db_actors_total = Gauge("mdcx_db_actors_total", "演员总数", registry=_registry)
+    db_actors_total = Gauge("mdcx_db_actors_total", "演员总数（全局聚合）", registry=_registry)
     db_tasks_total = Gauge("mdcx_db_tasks_total", "任务总数", ["status"], registry=_registry)
-    db_tags_total = Gauge("mdcx_db_tags_total", "标签总数", registry=_registry)
-    db_studios_total = Gauge("mdcx_db_studios_total", "厂商总数", registry=_registry)
-    db_series_total = Gauge("mdcx_db_series_total", "系列总数", registry=_registry)
+    db_tags_total = Gauge("mdcx_db_tags_total", "标签总数（全局聚合）", registry=_registry)
+    db_studios_total = Gauge("mdcx_db_studios_total", "厂商总数（全局聚合）", registry=_registry)
+    db_series_total = Gauge("mdcx_db_series_total", "系列总数（全局聚合）", registry=_registry)
     db_favorites_total = Gauge("mdcx_db_favorites_total", "收藏总数", registry=_registry)
     db_connection_pool_size = Gauge(
         "mdcx_db_connection_pool_size", "数据库连接池大小", registry=_registry
@@ -96,7 +97,7 @@ if _HAS_PROMETHEUS:
     scrape_total = Counter(
         "mdcx_scrape_total",
         "刮削请求总数",
-        ["status"],  # success / failed / skipped
+        ["status"],
         registry=_registry,
     )
     scrape_duration_seconds = Histogram(
@@ -111,7 +112,7 @@ if _HAS_PROMETHEUS:
     crawler_requests_total = Counter(
         "mdcx_crawler_requests_total",
         "爬虫请求总数",
-        ["site", "status"],  # status: 200/403/429/timeout/error
+        ["site", "status"],
         registry=_registry,
     )
 
@@ -234,60 +235,76 @@ async def collect_db_metrics():
     """异步采集数据库统计指标（定时调用或按需调用）"""
     try:
         from sqlalchemy import select, func
-        from app.db.database import get_database
-        from app.db.models import Movie, Task, Actor, Tag, Studio, Series, Favorite
+        from app.db.system_db import SystemDatabase
+        from app.db.system_models import Task
         from app.db.module_db import ModuleDatabase
 
-        db = get_database()
-        async with db.session() as session:
+        # === 系统数据库统计 (Task) ===
+        sys_db = SystemDatabase.get_instance()
+        async with sys_db.session_factory() as session:
             if _HAS_PROMETHEUS:
-                # 影片按状态统计
-                for status in ("completed", "pending", "failed", "scraping"):
-                    count = await session.scalar(
-                        select(func.count(Movie.id)).where(Movie.status == status)
-                    ) or 0
-                    db_movies_total.labels(status=status).set(count)
-
-                # 其他表统计
-                db_actors_total.set(await session.scalar(select(func.count(Actor.id))) or 0)
-                db_tags_total.set(await session.scalar(select(func.count(Tag.id))) or 0)
-                db_studios_total.set(await session.scalar(select(func.count(Studio.id))) or 0)
-                db_series_total.set(await session.scalar(select(func.count(Series.id))) or 0)
-                db_favorites_total.set(await session.scalar(select(func.count(Favorite.id))) or 0)
-
-                # 任务按状态统计
                 for status in ("pending", "running", "completed", "failed", "cancelled"):
                     count = await session.scalar(
                         select(func.count(Task.id)).where(Task.status == status)
                     ) or 0
                     db_tasks_total.labels(status=status).set(count)
 
-                # === 模块数据库统计 ===
-                _MODULE_TABLES = [
-                    ("jav", "jav_movies", "jav_actors"),
-                    ("fc2", "fc2_movies", "fc2_actors"),
-                    ("chinese", "chinese_movies", "chinese_actors"),
-                    ("uncensored", "uncensored_movies", "uncensored_actors"),
-                    ("western", "western_movies", "western_actors"),
-                    ("pornhub", "movies", "pornhub_actors"),
-                ]
-                for module_name, movies_table, actors_table in _MODULE_TABLES:
-                    try:
-                        mod_db = ModuleDatabase.get_instance(module_name)
-                        async with mod_db.get_session() as mod_session:
-                            from sqlalchemy import text as sa_text
-                            movie_count = await mod_session.scalar(
-                                sa_text(f"SELECT COUNT(*) FROM {movies_table}")
-                            ) or 0
-                            actor_count = await mod_session.scalar(
-                                sa_text(f"SELECT COUNT(*) FROM {actors_table}")
-                            ) or 0
-                            db_module_movies_total.labels(module=module_name).set(movie_count)
-                            db_module_actors_total.labels(module=module_name).set(actor_count)
-                    except Exception as e:
-                        logger.debug(f"采集模块 [{module_name}] 数据库指标失败: {e}")
+        # === 收藏统计（从 system.db） ===
+        try:
+            from app.db.system_models import FavoriteItem
+            async with sys_db.session_factory() as session:
+                if _HAS_PROMETHEUS:
+                    fav_count = await session.scalar(
+                        select(func.count(FavoriteItem.id))
+                    ) or 0
+                    db_favorites_total.set(fav_count)
+        except Exception as e:
+            logger.debug(f"采集收藏统计失败: {e}")
 
-            return True
+        # === 模块数据库统计 ===
+        # 每个模块使用统一的表名 movies/actors
+        _MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+        _aggregate_movies: dict[str, int] = {}
+        _aggregate_actors = 0
+
+        for module_name in _MODULES:
+            try:
+                mod_db = ModuleDatabase.get_instance(module_name)
+                async with mod_db.get_session() as mod_session:
+                    from sqlalchemy import text as sa_text
+                    movie_count = await mod_session.scalar(
+                        sa_text("SELECT COUNT(*) FROM movies")
+                    ) or 0
+                    actor_count = await mod_session.scalar(
+                        sa_text("SELECT COUNT(*) FROM actors")
+                    ) or 0
+                    if _HAS_PROMETHEUS:
+                        db_module_movies_total.labels(module=module_name).set(movie_count)
+                        db_module_actors_total.labels(module=module_name).set(actor_count)
+                    _aggregate_actors += actor_count
+
+                    # 按状态统计影片（如有 status 列）
+                    try:
+                        for status_label in ("completed", "pending", "failed", "scraping"):
+                            count = await mod_session.scalar(
+                                sa_text(f"SELECT COUNT(*) FROM movies WHERE status = :s"),
+                                {"s": status_label}
+                            ) or 0
+                            _aggregate_movies[status_label] = (
+                                _aggregate_movies.get(status_label, 0) + count
+                            )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"采集模块 [{module_name}] 数据库指标失败: {e}")
+
+        # 设置聚合指标
+        if _HAS_PROMETHEUS:
+            for status_label, count in _aggregate_movies.items():
+                db_movies_total.labels(status=status_label).set(count)
+            db_actors_total.set(_aggregate_actors)
+
+        return True
     except Exception as e:
         logger.debug(f"采集数据库指标失败: {e}")
         return False
@@ -300,9 +317,7 @@ def collect_system_metrics():
 
     try:
         import resource
-        # RSS 内存（字节）
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # Linux 返回 KB，macOS 返回字节
         if sys.platform == "linux":
             rss *= 1024
         process_memory_rss_bytes.set(rss)

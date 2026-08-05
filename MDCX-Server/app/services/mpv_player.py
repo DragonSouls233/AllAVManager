@@ -20,7 +20,7 @@ from typing import Optional
 from app.config.manager import get_config_manager
 from app.utils.bin_tools import get_tool_path
 from app.db.database import get_database
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
@@ -207,16 +207,17 @@ async def play_video(
         return {"status": "error", "message": str(e)}
 
 
-async def _get_movie(movie_id: int) -> Optional[Movie]:
+async def _get_movie(movie_id: int, module: str = "jav") -> Optional["Movie"]:
     """从数据库获取影片"""
-    db = get_database()
-    async with db.session() as session:
-        return await session.get(Movie, movie_id)
+    MovieModel = get_module_model(module, "movie")
+    session = await get_module_session(module)
+    async with session:
+        return await session.get(MovieModel, movie_id)
 
 
 async def get_mpv_config() -> dict:
     """获取 mpv 配置（热键、音量等）"""
-    from app.db.models import Setting
+    from app.db.system_models import Setting
 
     db = get_database()
     async with db.session() as session:
@@ -256,7 +257,7 @@ async def save_mpv_config(
     window_height: Optional[int] = None,
 ) -> dict:
     """保存 mpv 配置到数据库"""
-    from app.db.models import Setting
+    from app.db.system_models import Setting
 
     updates = {}
     if hotkeys is not None:

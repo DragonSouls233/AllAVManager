@@ -11,13 +11,11 @@ from pathlib import Path
 from typing import Optional
 
 from app.crawlers.base import ScrapeResult
-from app.db.database import get_db
 from app.db.module_db import ModuleDatabase
 from app.output.images import ImageProcessor, download_movie_images
 from app.output.nfo import NFOGenerator, generate_nfo
 from app.scraper.engine import ScraperEngine, get_scraper_engine
 from app.scraper.number import extract_number
-from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +30,7 @@ class ScraperWorkflow:
     3. 结果合并
     4. 图片下载
     5. NFO生成
-    6. 数据库写入
+    6. 数据库写入（模块数据库）
     """
     
     def __init__(
@@ -184,7 +182,7 @@ class ScraperWorkflow:
             if nfo_path:
                 logger.info(f"NFO已保存: {nfo_path}")
         
-        # 6. 保存到数据库
+        # 6. 保存到模块数据库
         if self.save_to_db:
             logger.info("正在保存到数据库")
             module_name = self._source_to_module(result.source or "")
@@ -224,13 +222,11 @@ class ScraperWorkflow:
         file_path: Optional[str] = None,
         module: Optional[str] = None,
     ) -> None:
-        """保存到数据库（使用 SQLAlchemy ORM）
+        """保存到模块数据库（使用 SQLAlchemy ORM）
 
-        当 module 参数不为空时，写入对应的模块数据库（如 jav.db、chinese.db）；
-        当 module 为空时，写入中心数据库（兼容旧行为）。
+        始终写入模块数据库。当 module 未指定时，从刮削结果推断。
+        中心数据库（scraper.db）已废弃。
         """
-        # 规则3：刮削内容已在 output_dir(服务端目录) 落地，DB 引用本地路径，
-        # 避免存远程 URL 导致封面解析回退扫描视频源目录。
         from pathlib import Path
         _movie_dir_path = Path(movie_dir).resolve() if movie_dir else None
         _local_cover = None
@@ -269,282 +265,93 @@ class ScraperWorkflow:
             except Exception:
                 pass
 
-        if module:
-            # ---- 写入模块数据库 ----
-            models = self._get_module_models(module)
+        # 无 module 时从来源推断
+        if not module:
+            if result.source:
+                module = self._source_to_module(result.source)
+            else:
+                module = "jav"
+
+        # ---- 写入模块数据库 ----
+        models = self._get_module_models(module)
+        if models is None:
+            logger.warning(f"未知模块 [{module}]，默认回退到 jav")
+            models = self._get_module_models("jav")
             if models is None:
-                logger.warning(f"未知模块 [{module}]，回退到中心数据库")
-                return await self._save_to_db(result, movie_dir, file_path, module=None)
+                logger.error("无法获取任何模块数据库，跳过保存")
+                return
+            module = "jav"
 
-            MovieCls, ActorCls, mod_db = models
+        MovieCls, ActorCls, mod_db = models
 
-            # 模块数据库没有 Studio/Series/MovieActor 关联表，使用简单字段
-            async with mod_db.session_factory() as session:
-                from sqlalchemy import select
+        # 模块数据库没有 Studio/Series/MovieActor 关联表，使用简单字段
+        async with mod_db.session_factory() as session:
+            from sqlalchemy import select
 
-                existing = await session.execute(
-                    select(MovieCls).where(MovieCls.code == result.code)
+            existing = await session.execute(
+                select(MovieCls).where(MovieCls.code == result.code)
+            )
+            movie = existing.scalar_one_or_none()
+
+            # 构造共有的字段字典
+            common_fields = dict(
+                title=result.title,
+                original_title=original_title,
+                cover_url=_local_cover or result.cover_url,
+                poster_url=_local_cover or result.poster_url,
+                thumb_url=_local_cover or result.poster_url or result.cover_url,
+                sample_images=json.dumps(_local_samples or result.sample_images, ensure_ascii=False) if (_local_samples or result.sample_images) else None,
+                release_date=str(result.release_date) if result.release_date else None,
+                duration=result.duration,
+                rating=result.rating,
+                plot=result.plot,
+                genre=genre_str,
+                tag=tag_str,
+                source=result.source,
+                source_url=raw.get("website") or raw.get("source_url"),
+                file_path=file_path,
+                file_size=file_size,
+                status="completed",
+                scraped_at=datetime.now(),
+            )
+
+            # 模块特有字段
+            # 大部分模块的 Movie 类有 actor 字段（逗号分隔名称）
+            if result.actors:
+                actor_names = ", ".join(a.name for a in result.actors)
+                common_fields["actor"] = actor_names
+            # studio 字段（不是外键，是普通字符串）
+            if hasattr(MovieCls, "studio") and result.studio:
+                common_fields["studio"] = result.studio
+            if hasattr(MovieCls, "series") and result.series:
+                common_fields["series"] = result.series
+            if hasattr(MovieCls, "is_uncensored"):
+                common_fields["is_uncensored"] = result.is_uncensored
+            if hasattr(MovieCls, "is_mosaic"):
+                common_fields["is_mosaic"] = result.is_mosaic
+
+            if movie:
+                # 更新现有记录
+                for key, value in common_fields.items():
+                    setattr(movie, key, value)
+                # 额外字段只更新非空值
+                if result.maker:
+                    movie.studio = result.maker
+            else:
+                # 创建新记录
+                movie = MovieCls(
+                    code=result.code,
+                    **common_fields,
                 )
-                movie = existing.scalar_one_or_none()
+                session.add(movie)
 
-                # 构造共有的字段字典
-                common_fields = dict(
-                    title=result.title,
-                    original_title=original_title,
-                    cover_url=_local_cover or result.cover_url,
-                    poster_url=_local_cover or result.poster_url,
-                    thumb_url=_local_cover or result.poster_url or result.cover_url,
-                    sample_images=json.dumps(_local_samples or result.sample_images, ensure_ascii=False) if (_local_samples or result.sample_images) else None,
-                    release_date=str(result.release_date) if result.release_date else None,
-                    duration=result.duration,
-                    rating=result.rating,
-                    plot=result.plot,
-                    genre=genre_str,
-                    tag=tag_str,
-                    source=result.source,
-                    source_url=raw.get("website") or raw.get("source_url"),
-                    file_path=file_path,
-                    file_size=file_size,
-                    status="completed",
-                    scraped_at=datetime.now(),
-                )
+            await session.flush()
+            _movie_id = movie.id
 
-                # 模块特有字段
-                # 大部分模块的 Movie 类有 actor 字段（逗号分隔名称）
-                if result.actors:
-                    actor_names = ", ".join(a.name for a in result.actors)
-                    common_fields["actor"] = actor_names
-                # studio 字段（不是外键，是普通字符串）
-                if hasattr(MovieCls, "studio") and result.studio:
-                    common_fields["studio"] = result.studio
-                if hasattr(MovieCls, "series") and result.series:
-                    common_fields["series"] = result.series
-                if hasattr(MovieCls, "is_uncensored"):
-                    common_fields["is_uncensored"] = result.is_uncensored
-                if hasattr(MovieCls, "is_mosaic"):
-                    common_fields["is_mosaic"] = result.is_mosaic
+            # 模块数据库的 Actor 通常是独立的，没有多对多关联表，直接记录名称
+            # 无需创建 MovieActor 关联（模块模型没有该表）
 
-                if movie:
-                    # 更新现有记录
-                    for key, value in common_fields.items():
-                        setattr(movie, key, value)
-                    # 额外字段只更新非空值
-                    if result.maker:
-                        movie.studio = result.maker
-                else:
-                    # 创建新记录
-                    movie = MovieCls(
-                        code=result.code,
-                        **common_fields,
-                    )
-                    session.add(movie)
-
-                await session.flush()
-                _movie_id = movie.id
-
-                # 模块数据库的 Actor 通常是独立的，没有多对多关联表，直接记录名称
-                # 无需创建 MovieActor 关联（模块模型没有该表）
-            # end of module db session
-
-        else:
-            # ---- 写入中心数据库 ----
-            from app.db.models import Movie, Actor, MovieActor, Studio, Series
-            from sqlalchemy import select, delete as sa_delete
-
-            db = get_db()
-
-            async with db.session() as session:
-                existing = await session.execute(
-                    select(Movie).where(Movie.code == result.code)
-                )
-                movie = existing.scalar_one_or_none()
-
-                # 查找或创建 Studio（FK 关联）
-                studio_id = None
-                if result.studio:
-                    existing_studio = await session.scalar(
-                        select(Studio).where(Studio.name == result.studio)
-                    )
-                    if existing_studio:
-                        studio_id = existing_studio.id
-                    else:
-                        new_studio = Studio(name=result.studio, movie_count=0)
-                        session.add(new_studio)
-                        await session.flush()
-                        studio_id = new_studio.id
-
-                # 查找或创建 Series（FK 关联）
-                series_id = None
-                if result.series:
-                    existing_series = await session.scalar(
-                        select(Series).where(Series.name == result.series)
-                    )
-                    if existing_series:
-                        series_id = existing_series.id
-                    else:
-                        new_series = Series(name=result.series, studio_id=studio_id, movie_count=0)
-                        session.add(new_series)
-                        await session.flush()
-                        series_id = new_series.id
-
-                if movie:
-                    # 更新现有记录
-                    movie.title = result.title
-                    movie.original_title = original_title
-                    movie.title_jp = original_title
-                    movie.studio_id = studio_id
-                    movie.maker = result.maker
-                    movie.series_id = series_id
-                    movie.director = director
-                    movie.release_date = str(result.release_date) if result.release_date else None
-                    movie.duration = result.duration
-                    movie.plot = result.plot
-                    movie.plot_short = (result.plot[:200] + "...") if result.plot and len(result.plot) > 200 else result.plot
-                    movie.cover_url = _local_cover or result.cover_url
-                    movie.poster_url = _local_cover or result.poster_url
-                    movie.thumb_url = _local_cover or result.poster_url or result.cover_url
-                    movie.sample_images = json.dumps(_local_samples or result.sample_images, ensure_ascii=False) if (_local_samples or result.sample_images) else None
-                    movie.trailer_url = result.trailer_url
-                    movie.rating = result.rating
-                    movie.source = result.source
-                    movie.source_url = raw.get("website") or raw.get("source_url")
-                    movie.genre = genre_str
-                    movie.tag = tag_str
-                    movie.is_uncensored = result.is_uncensored
-                    movie.is_mosaic = result.is_mosaic
-                    movie.is_chinese = result.is_chinese
-                    movie.file_size = file_size
-                    movie.file_date = file_date
-                    movie.status = "completed"
-                    movie.scraped_at = datetime.now()
-
-                    # 清除旧的演员关联，重新建立
-                    await session.execute(
-                        sa_delete(MovieActor).where(MovieActor.movie_id == movie.id)
-                    )
-
-                    # 清除旧的标签关联，重新建立
-                    from app.db.models import Tag, MovieTag
-                    await session.execute(
-                        sa_delete(MovieTag).where(MovieTag.movie_id == movie.id)
-                    )
-                else:
-                    # 创建新记录
-                    movie = Movie(
-                        code=result.code,
-                        title=result.title,
-                        original_title=original_title,
-                        title_jp=original_title,
-                        studio_id=studio_id,
-                        maker=result.maker,
-                        series_id=series_id,
-                        director=director,
-                        release_date=str(result.release_date) if result.release_date else None,
-                        duration=result.duration,
-                        plot=result.plot,
-                        plot_short=(result.plot[:200] + "...") if result.plot and len(result.plot) > 200 else result.plot,
-                        cover_url=_local_cover or result.cover_url,
-                        poster_url=_local_cover or result.poster_url,
-                        thumb_url=_local_cover or result.poster_url or result.cover_url,
-                        sample_images=json.dumps(_local_samples or result.sample_images, ensure_ascii=False) if (_local_samples or result.sample_images) else None,
-                        trailer_url=result.trailer_url,
-                        rating=result.rating,
-                        source=result.source,
-                        source_url=raw.get("website") or raw.get("source_url"),
-                        genre=genre_str,
-                        tag=tag_str,
-                        is_uncensored=result.is_uncensored,
-                        is_mosaic=result.is_mosaic,
-                        is_chinese=result.is_chinese,
-                        file_path=file_path,
-                        file_size=file_size,
-                        file_date=file_date,
-                        status="completed",
-                        scraped_at=datetime.now(),
-                    )
-                    session.add(movie)
-                    await session.flush()
-
-                movie_id = movie.id
-
-                # 保存演员
-                for actor_info in result.actors:
-                    existing_actor = await session.execute(
-                        select(Actor).where(Actor.name == actor_info.name)
-                    )
-                    actor = existing_actor.scalar_one_or_none()
-
-                    if not actor:
-                        actor = Actor(
-                            name=actor_info.name,
-                            name_jp=actor_info.japanese_name,
-                            avatar_url=actor_info.avatar_url,
-                        )
-                        session.add(actor)
-                        await session.flush()
-
-                    existing_link = await session.execute(
-                        select(MovieActor).where(
-                            MovieActor.movie_id == movie_id,
-                            MovieActor.actor_id == actor.id,
-                        )
-                    )
-                    if not existing_link.scalar_one_or_none():
-                        link = MovieActor(movie_id=movie_id, actor_id=actor.id)
-                        session.add(link)
-
-                # 保存标签关联
-                if result.genres:
-                    from app.db.models import Tag, MovieTag
-
-                    for genre_name in result.genres:
-                        genre_name = genre_name.strip()
-                        if not genre_name:
-                            continue
-                        existing_tag = await session.execute(
-                            select(Tag).where(Tag.name == genre_name)
-                        )
-                        tag = existing_tag.scalar_one_or_none()
-                        if not tag:
-                            tag = Tag(name=genre_name, movie_count=0)
-                            session.add(tag)
-                            await session.flush()
-
-                        existing_mt = await session.execute(
-                            select(MovieTag).where(
-                                MovieTag.movie_id == movie_id,
-                                MovieTag.tag_id == tag.id,
-                            )
-                        )
-                        if not existing_mt.scalar_one_or_none():
-                            link = MovieTag(movie_id=movie_id, tag_id=tag.id)
-                            session.add(link)
-                            tag.movie_count = (tag.movie_count or 0) + 1
-
-                # 更新 Studio/Series 的 movie_count
-                if studio_id:
-                    studio_obj = await session.get(Studio, studio_id)
-                    if studio_obj:
-                        count = await session.scalar(
-                            select(func.count()).select_from(
-                                select(Movie.id).where(Movie.studio_id == studio_id).subquery()
-                            )
-                        )
-                        studio_obj.movie_count = count or 0
-
-                if series_id:
-                    series_obj = await session.get(Series, series_id)
-                    if series_obj:
-                        count = await session.scalar(
-                            select(func.count()).select_from(
-                                select(Movie.id).where(Movie.series_id == series_id).subquery()
-                            )
-                        )
-                        series_obj.movie_count = count or 0
-
-                await session.commit()
-
-        logger.info(f"已保存到数据库: {result.code}")
+        logger.info(f"已保存到模块数据库 [{module}]: {result.code}")
 
         # 推送刮削结果到 Emby（如果配置了）
         await self._push_to_emby(result, movie_dir)

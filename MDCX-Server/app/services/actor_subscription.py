@@ -22,11 +22,19 @@ from typing import Optional
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import (
-    Actor, MovieActor, Movie, ActorSubscription,
-)
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
+
+
+def _get_subs_models(module: str):
+    """获取演员订阅所需的模块模型"""
+    return {
+        "Actor": get_module_model(module, "actor"),
+        "ActorSubscription": get_module_model(module, "actor_subscription"),
+        "MovieActor": get_module_model(module, "movie_actor"),
+        "Movie": get_module_model(module, "movie"),
+    }
 
 
 # ===== 订阅 CRUD =====
@@ -34,8 +42,12 @@ logger = logging.getLogger(__name__)
 async def list_subscriptions(
     user_id: Optional[int],
     session: AsyncSession,
+    module: str = "jav",
 ) -> list[dict]:
     """列出用户的所有订阅（含演员信息 + 新片数）"""
+    Actor = get_module_model(module, "actor")
+    ActorSubscription = get_module_model(module, "actor_subscription")
+    MovieActor = get_module_model(module, "movie_actor")
     stmt = (
         select(
             ActorSubscription,
@@ -77,8 +89,11 @@ async def subscribe(
     actor_id: int,
     notify_new_movie: bool,
     session: AsyncSession,
+    module: str = "jav",
 ) -> dict:
     """订阅演员（如已订阅则更新配置）"""
+    ActorSubscription = get_module_model(module, "actor_subscription")
+    MovieActor = get_module_model(module, "movie_actor")
     # 查询是否已存在（user_id 为 NULL 时用 is_(None)）
     if user_id is None:
         stmt = select(ActorSubscription).where(
@@ -127,8 +142,10 @@ async def unsubscribe(
     user_id: Optional[int],
     actor_id: int,
     session: AsyncSession,
+    module: str = "jav",
 ) -> bool:
     """取消订阅"""
+    ActorSubscription = get_module_model(module, "actor_subscription")
     if user_id is None:
         stmt = select(ActorSubscription).where(
             and_(
@@ -155,8 +172,10 @@ async def is_subscribed(
     user_id: Optional[int],
     actor_id: int,
     session: AsyncSession,
+    module: str = "jav",
 ) -> bool:
     """检查是否已订阅"""
+    ActorSubscription = get_module_model(module, "actor_subscription")
     if user_id is None:
         stmt = select(ActorSubscription.id).where(
             and_(

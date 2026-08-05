@@ -22,7 +22,7 @@ import xml.etree.ElementTree as ET
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Actor, Movie, MovieActor, MovieTag, Tag
+from app.utils.module_helper import get_module_model
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +446,7 @@ def scan_directory(dir_path: str, recursive: bool = True) -> list[dict]:
     return results
 
 
-async def import_to_db(nfo_data: dict, session: AsyncSession) -> dict:
+async def import_to_db(nfo_data: dict, session: AsyncSession, module: str = "jav") -> dict:
     """将解析后的 NFO 数据导入数据库
 
     - 若影片已存在（按番号匹配），仅补全缺失字段
@@ -455,7 +455,8 @@ async def import_to_db(nfo_data: dict, session: AsyncSession) -> dict:
 
     Args:
         nfo_data: parse_nfo 的返回 dict
-        session: 异步数据库会话
+        session: 异步数据库会话（对应模块的 session）
+        module: 模块名 jav/fc2/uncensored/chinese/western/pornhub
 
     Returns:
         dict:
@@ -464,6 +465,12 @@ async def import_to_db(nfo_data: dict, session: AsyncSession) -> dict:
         - created: 是否新建
         - updated_fields: 更新的字段名列表
     """
+    Movie = get_module_model(module, "movie")
+    Actor = get_module_model(module, "actor")
+    MovieActor = get_module_model(module, "movie_actor")
+    Tag = get_module_model(module, "tag")
+    MovieTag = get_module_model(module, "movie_tag")
+
     code = nfo_data.get("code")
     if not code:
         raise ValueError("NFO 数据缺少番号 code，无法导入")

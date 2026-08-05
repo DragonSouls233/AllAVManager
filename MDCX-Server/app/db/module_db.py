@@ -1,8 +1,7 @@
 """
-模块数据库管理器
-支持各模块使用独立的 SQLite 数据库文件
+模块数据库管理器 v2.0
+每个模块使用独立的 DeclarativeBase，允许各模块使用相同表名（如 movies/actors）而不冲突。
 """
-
 from pathlib import Path
 
 from sqlalchemy import event, text
@@ -15,30 +14,39 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+# 保留共享基类（向后兼容），但各模块应使用自己的 Base
 class ModuleBase(DeclarativeBase):
-    """模块数据库 SQLAlchemy 基类"""
+    """模块数据库 SQLAlchemy 基类（向后兼容，新代码请使用 per-module Base）"""
     pass
 
 
 class ModuleDatabase:
-    """模块数据库管理器
+    """模块数据库管理器 v2.0
 
-    每个模块（chinese/uncensored/fc2/pornhub）使用独立的 .db 文件
-    共享数据库基类 ModuleBase，但使用不同的引擎和会话
+    每个模块使用独立的 DeclarativeBase，允许重用表名如 movies/actors/studios 等。
+    每个模块只需要导入自己的模型文件，不与其他模块冲突。
     """
 
     _instances: dict[str, "ModuleDatabase"] = {}
 
-    def __init__(self, module_name: str, db_path: str | None = None) -> None:
+    def __init__(
+        self,
+        module_name: str,
+        db_path: str | None = None,
+        base_class: type[DeclarativeBase] | None = None,
+    ) -> None:
         self.module_name = module_name
+        self.base_class = base_class or ModuleBase
 
         if db_path:
             self.db_path = db_path
         else:
             config = get_config()
-            base_dir = Path(config.database.url.split("///")[0] if "///" in config.database.url else "data/database")
-            if "sqlite" in config.database.url:
-                base_dir = Path(config.database.url.split("///")[-1]).parent
+            db_url = config.database.url
+            if "///" in db_url:
+                base_dir = Path(db_url.split("///")[-1]).parent
+            else:
+                base_dir = Path("data/database")
             self.db_path = str(base_dir / f"{module_name}.db")
 
         db_url = f"sqlite+aiosqlite:///{self.db_path}"
@@ -73,7 +81,7 @@ class ModuleDatabase:
                 cursor.close()
 
     async def init(self) -> None:
-        """初始化数据库：创建目录 + 创建表"""
+        """初始化数据库：创建目录 + 用模块自己的 Base 创建表"""
         if self._initialized:
             return
 
@@ -82,9 +90,10 @@ class ModuleDatabase:
 
         async with self.engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
-            await conn.run_sync(ModuleBase.metadata.create_all)
+            await conn.run_sync(self.base_class.metadata.create_all)
 
         self._initialized = True
+        logger.info(f"模块数据库 [{self.module_name}] 初始化完成，表: {list(self.base_class.metadata.tables.keys())}")
 
     async def get_session(self) -> AsyncSession:
         if not self._initialized:
@@ -96,43 +105,48 @@ class ModuleDatabase:
         self._initialized = False
 
     @classmethod
-    def get_instance(cls, module_name: str, db_path: str | None = None) -> "ModuleDatabase":
+    def get_instance(
+        cls,
+        module_name: str,
+        db_path: str | None = None,
+        base_class: type[DeclarativeBase] | None = None,
+    ) -> "ModuleDatabase":
+        """获取模块数据库实例（单例）。
+
+        首次调用时必须传入 base_class 以注册表结构。
+        """
         if module_name not in cls._instances:
-            cls._instances[module_name] = cls(module_name, db_path)
+            if base_class is None:
+                raise ValueError(f"模块 '{module_name}' 首次初始化必须提供 base_class")
+            cls._instances[module_name] = cls(module_name, db_path, base_class)
         return cls._instances[module_name]
 
     @classmethod
     async def init_all(cls) -> dict[str, "ModuleDatabase"]:
-        """初始化所有模块数据库
+        """初始化所有模块数据库"""
+        # 延迟导入：每个模块模型文件定义自己的 Base 类
+        from app.db.jav_models import JAV_BASE
+        from app.db.fc2_models import FC2_BASE
+        from app.db.uncensored_models import UNCENSORED_BASE
+        from app.db.chinese_models import CHINESE_BASE
+        from app.db.western_models import WESTERN_BASE
+        from app.db.pornhub_models import PORNHUB_BASE
 
-        需显式导入各模块的模型文件，确保 SQLAlchemy Metadata 有完整的表注册。
-        """
-        # 显式导入所有模块模型以确保表被创建
-        import app.db.jav_models  # noqa: F401
-        import app.db.chinese_models  # noqa: F401
-        import app.db.uncensored_models  # noqa: F401
-        import app.db.fc2_models  # noqa: F401
-        import app.db.pornhub_models  # noqa: F401
-        import app.db.western_models  # noqa: F401
+        module_configs = [
+            ("jav", JAV_BASE),
+            ("fc2", FC2_BASE),
+            ("uncensored", UNCENSORED_BASE),
+            ("chinese", CHINESE_BASE),
+            ("western", WESTERN_BASE),
+            ("pornhub", PORNHUB_BASE),
+        ]
 
         instances = {}
-        for name in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western"]:
-            db = cls.get_instance(name)
+        for name, base in module_configs:
+            db = cls.get_instance(name, base_class=base)
             await db.init()
-            # 每个数据库引擎单独创建表
-            async with db.engine.begin() as conn:
-                await conn.execute(text("PRAGMA journal_mode=WAL"))
-                await conn.run_sync(ModuleBase.metadata.create_all)
-
-            # 兼容已有数据库：补全模型新增但表中缺失的字段
-            try:
-                async with db.engine.begin() as conn:
-                    await conn.execute(text("ALTER TABLE pornhub_actors ADD COLUMN nationality VARCHAR(50)"))
-                    logger.info(f"模块 [{name}] 已补全字段: pornhub_actors.nationality")
-            except Exception:
-                pass  # 列已存在则忽略
-
             instances[name] = db
+
         return instances
 
     @classmethod

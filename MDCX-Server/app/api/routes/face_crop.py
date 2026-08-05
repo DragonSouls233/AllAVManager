@@ -7,14 +7,12 @@
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config, get_config_manager
-from app.db.database import get_session
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 from app.services.face_crop import get_face_cropper, crop_movie_poster
 from app.services.websocket import emit_log
 
@@ -94,12 +92,11 @@ async def initialize_face_cropper():
 
 
 @router.post("/crop")
-async def crop_poster(
-    req: CropRequest,
-    session: AsyncSession = Depends(get_session),
-):
+async def crop_poster(req: CropRequest, module: str = "jav"):
     """为单个影片裁剪海报"""
-    movie = await session.get(Movie, req.movie_id)
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    movie = await session.get(MovieModel, req.movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
 
@@ -147,13 +144,13 @@ async def crop_poster(
 
 
 @router.post("/batch-crop")
-async def batch_crop(
-    req: BatchCropRequest,
-    session: AsyncSession = Depends(get_session),
-):
+async def batch_crop(req: BatchCropRequest, module: str = "jav"):
     """批量裁剪海报"""
     if not req.movie_ids:
         raise HTTPException(status_code=400, detail="影片 ID 列表不能为空")
+
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
 
     task_id = "face-crop-batch"
     total = len(req.movie_ids)
@@ -164,7 +161,7 @@ async def batch_crop(
     await emit_log("INFO", f"开始批量裁剪 {total} 部影片", task_id=task_id, module="face-crop")
 
     for idx, movie_id in enumerate(req.movie_ids, 1):
-        movie = await session.get(Movie, movie_id)
+        movie = await session.get(MovieModel, movie_id)
         if not movie:
             skipped += 1
             continue

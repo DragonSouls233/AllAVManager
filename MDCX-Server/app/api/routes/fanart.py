@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crawlers.fanart import FanartCrawler
 from app.db.database import get_session
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model, get_module_session
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ async def search_fanarts(tmdb_id: str):
 async def get_movie_fanarts(
     movie_id: int,
     session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """获取指定影片的 fanart 资源（按影片的 tmdb_id 查询）"""
     crawler = FanartCrawler()
@@ -68,7 +69,7 @@ async def get_movie_fanarts(
             detail="fanart.tv 集成未启用或 API key 未配置",
         )
     try:
-        result = await crawler.get_fanarts_for_movie(movie_id, session)
+        result = await crawler.get_fanarts_for_movie(movie_id, session, module=module)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
@@ -79,6 +80,7 @@ async def download_movie_fanart(
     movie_id: int,
     payload: DownloadRequest,
     session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """下载 fanart 背景图并应用到影片
 
@@ -97,6 +99,7 @@ async def download_movie_fanart(
             movie_id,
             session,
             image_url=payload.image_url,
+            module=module,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -108,8 +111,10 @@ async def update_movie_tmdb_id(
     movie_id: int,
     payload: UpdateTmdbIdRequest,
     session: AsyncSession = Depends(get_session),
+    module: str = "jav",
 ):
     """设置影片的 TMDB ID（用于后续 fanart 查询）"""
+    Movie = get_module_model(module, "movie")
     result = await session.execute(select(Movie).where(Movie.id == movie_id))
     movie = result.scalar_one_or_none()
     if movie is None:

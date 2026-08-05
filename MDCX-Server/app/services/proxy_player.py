@@ -16,7 +16,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Movie
+from app.utils.module_helper import get_module_model
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,16 +25,18 @@ logger = get_logger(__name__)
 class ProxyPlayerService:
     """302 反代播放服务"""
 
-    async def get_play_url(self, movie_id: int, session: AsyncSession) -> Optional[str]:
+    async def get_play_url(self, movie_id: int, session: AsyncSession, module: str = "jav") -> Optional[str]:
         """获取影片播放 URL(用于 302 重定向)
 
         Args:
             movie_id: 影片 ID
             session: 数据库会话
+            module: 模块名 jav/fc2/uncensored/chinese/western/pornhub
 
         Returns:
             可重定向的播放 URL;本地文件或无可用源时返回 None
         """
+        Movie = get_module_model(module, "movie")
         movie = await session.get(Movie, movie_id)
         if not movie:
             return None

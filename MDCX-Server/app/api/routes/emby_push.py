@@ -23,7 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
 from app.db.database import get_session
-from app.db.models import Movie, Actor, MovieActor
+# Module-specific models now accessed via get_module_model()
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@
 
 设计要点：
 - 复用 downloader_manager 与 actor_subscription / series_subscription 的检测逻辑
-- 全异步；后台任务用 get_session_context 获取会话
+- 全异步；后台任务用 get_module_session 获取会话
 - 服务在 app.main lifespan 中启动/停止
 """
 
@@ -21,11 +21,9 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config
-from app.db.database import get_session_context
-from app.db.models import Movie, MovieActor, ActorSubscription, SeriesSubscription
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
@@ -84,45 +82,51 @@ class SubscriptionDownloaderService:
 
     # ============== 对外接口 ==============
 
-    async def check_all_subscriptions(self):
+    async def check_all_subscriptions(self, module: str = "jav"):
         """检查所有订阅（演员 + 系列），并处理自动下载"""
-        async with get_session_context() as session:
-            # 检查演员订阅新片
-            try:
-                from app.services.actor_subscription import check_all_subscriptions
-                await check_all_subscriptions(session)
-            except Exception as e:
-                logger.error(f"演员订阅检测失败: {e}", exc_info=True)
+        session = await get_module_session(module)
 
-            # 检查系列订阅新片
-            try:
-                from app.services.series_subscription import check_all_series_subscriptions
-                await check_all_series_subscriptions(session)
-            except Exception as e:
-                logger.error(f"系列订阅检测失败: {e}", exc_info=True)
+        # 检查演员订阅新片
+        try:
+            from app.services.actor_subscription import check_all_subscriptions
+            await check_all_subscriptions(module=module)
+        except Exception as e:
+            logger.error(f"演员订阅检测失败: {e}", exc_info=True)
 
-            # 处理自动下载
-            try:
-                await self._process_auto_downloads(session)
-            except Exception as e:
-                logger.error(f"自动下载处理失败: {e}", exc_info=True)
+        # 检查系列订阅新片
+        try:
+            from app.services.series_subscription import check_all_series_subscriptions
+            await check_all_series_subscriptions(module=module)
+        except Exception as e:
+            logger.error(f"系列订阅检测失败: {e}", exc_info=True)
 
-    async def _process_auto_downloads(self, session: AsyncSession):
+        # 处理自动下载
+        try:
+            await self._process_auto_downloads(module=module)
+        except Exception as e:
+            logger.error(f"自动下载处理失败: {e}", exc_info=True)
+
+    async def _process_auto_downloads(self, module: str = "jav"):
         """处理启用了 auto_download 的订阅：搜索并下载最新影片"""
         now = datetime.utcnow()
+        session = await get_module_session(module)
+        MovieModel = get_module_model(module, "movie")
+        MovieActorModel = get_module_model(module, "movie_actor")
+        ActorSubscriptionModel = get_module_model(module, "actor_subscription")
+        SeriesSubscriptionModel = get_module_model(module, "series_subscription")
 
         # ---- 演员订阅 ----
         actor_subs = await session.execute(
-            select(ActorSubscription).where(ActorSubscription.auto_download == True)  # noqa: E712
+            select(ActorSubscriptionModel).where(ActorSubscriptionModel.auto_download == True)  # noqa: E712
         )
         for sub in actor_subs.scalars():
             try:
                 # 获取该演员最新影片（按创建时间倒序，取一部）
                 movies_stmt = (
-                    select(Movie)
-                    .join(MovieActor, Movie.id == MovieActor.movie_id)
-                    .where(MovieActor.actor_id == sub.actor_id)
-                    .order_by(Movie.created_at.desc())
+                    select(MovieModel)
+                    .join(MovieActorModel, MovieModel.id == MovieActorModel.movie_id)
+                    .where(MovieActorModel.actor_id == sub.actor_id)
+                    .order_by(MovieModel.created_at.desc())
                     .limit(1)
                 )
                 movie = (await session.execute(movies_stmt)).scalars().first()
@@ -140,14 +144,14 @@ class SubscriptionDownloaderService:
 
         # ---- 系列订阅 ----
         series_subs = await session.execute(
-            select(SeriesSubscription).where(SeriesSubscription.auto_download == True)  # noqa: E712
+            select(SeriesSubscriptionModel).where(SeriesSubscriptionModel.auto_download == True)  # noqa: E712
         )
         for sub in series_subs.scalars():
             try:
                 movies_stmt = (
-                    select(Movie)
-                    .where(Movie.series_id == sub.series_id)
-                    .order_by(Movie.created_at.desc())
+                    select(MovieModel)
+                    .where(MovieModel.series_id == sub.series_id)
+                    .order_by(MovieModel.created_at.desc())
                     .limit(1)
                 )
                 movie = (await session.execute(movies_stmt)).scalars().first()
