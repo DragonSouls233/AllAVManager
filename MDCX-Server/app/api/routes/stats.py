@@ -51,8 +51,7 @@ async def get_dashboard_stats(
     for mod_name in ALL_MODULES:
         try:
             mod_db = ModuleDatabase.get_instance(mod_name)
-            mod_session = await mod_db.get_session()
-            try:
+            async with mod_db.session_scope() as mod_session:
                 mc = await mod_session.scalar(text("SELECT COUNT(*) FROM movies")) or 0
                 mp = await mod_session.scalar(
                     text("SELECT COUNT(*) FROM movies WHERE status = 'pending'")
@@ -64,15 +63,13 @@ async def get_dashboard_stats(
                     text("SELECT COUNT(*) FROM movies WHERE status = 'failed'")
                 ) or 0
                 ac = await mod_session.scalar(text("SELECT COUNT(*) FROM actors")) or 0
-                
+
                 movie_total += mc
                 movie_pending += mp
                 movie_completed += mok
                 movie_failed += mf
                 actor_total += ac
                 module_stats[mod_name] = {"movies": mc, "actors": ac}
-            finally:
-                await mod_session.close()
         except Exception as e:
             logger.warning(f"仪表盘: 模块 [{mod_name}] 统计失败: {e}")
             module_stats[mod_name] = {"movies": 0, "actors": 0}

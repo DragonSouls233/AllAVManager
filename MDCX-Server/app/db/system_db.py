@@ -77,14 +77,30 @@ class SystemDatabase:
         async with self.engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.run_sync(SystemBase.metadata.create_all)
+            await self._migrate_schema(conn)
 
         self._initialized = True
         logger.info("系统数据库初始化完成")
 
+    async def _migrate_schema(self, conn) -> None:
+        """幂等补齐历史遗留表的缺失列。
+
+        具体逻辑与需要补的列声明统一在 app.db.schema_migrations 中，
+        与 app.db.database.Database 共用同一份实现，避免两处各写一套
+        导致「迁移写在没被调用的类里」而完全失效。
+        """
+        from app.db.schema_migrations import apply_required_columns
+
+        await apply_required_columns(conn, db_label=str(self.db_path))
+
     async def get_session(self) -> AsyncSession:
         if not self._initialized:
             await self.init()
-        return self.session_factory()
+        session = self.session_factory()
+        # 登记到请求级回收注册表，避免调用方忘记 close 导致连接池泄漏（GC 警告）
+        from app.db.session_registry import register_session
+        register_session(session)
+        return session
 
     async def close(self) -> None:
         await self.engine.dispose()

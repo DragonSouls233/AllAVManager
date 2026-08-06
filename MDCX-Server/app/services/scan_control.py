@@ -161,6 +161,7 @@ class ScanControlService:
         status: str,
         total_files: int | None = None,
         added_files: int | None = None,
+        removed_files: int | None = None,
         error_message: str | None = None,
     ) -> None:
         """更新扫描记录为完成状态
@@ -170,6 +171,7 @@ class ScanControlService:
             status: completed / failed / timeout
             total_files: 发现的文件总数
             added_files: 新增的记录数
+            removed_files: 删除的记录数（磁盘文件已消失）
             error_message: 错误信息
         """
         db = get_database()
@@ -185,12 +187,13 @@ class ScanControlService:
                         record.status = status
                         record.total_files = total_files
                         record.added_files = added_files
+                        record.removed_files = removed_files
                         record.error_message = error_message
                         record.completed_at = datetime.now()
                         await session.commit()
                         logger.info(
                             f"扫描控制: 更新记录 id={record_id}, status={status}, "
-                            f"total={total_files}, added={added_files}"
+                            f"total={total_files}, added={added_files}, removed={removed_files}"
                         )
                     else:
                         logger.warning(f"扫描控制: 记录 id={record_id} 不存在")
@@ -313,6 +316,7 @@ class ScanControlService:
 
         total_all = 0
         added_all = 0
+        removed_all = 0
         errors = []
 
         for mod_name, (mod_path, cls_name) in module_scanner_map.items():
@@ -328,10 +332,18 @@ class ScanControlService:
                         result = await asyncio.wait_for(scanner.scan(), timeout=600)
                         added = result.get("movies_added", 0)
                         total = result.get("total", 0)
+                        # 2026-08-05 修复: 同步文件删除事件
+                        removed = 0
+                        try:
+                            removed = await scanner.cleanup_orphans()
+                        except Exception as ce:
+                            logger.warning(f"手动扫描 [{mod_name}] 孤儿清理失败: {ce}")
                         total_all += total
                         added_all += added
+                        removed_all += removed
                         logger.info(
-                            f"手动扫描 [{mod_name}]: 共发现 {total} 个文件，新增 {added} 条记录"
+                            f"手动扫描 [{mod_name}]: 共发现 {total} 个文件，"
+                            f"新增 {added}，删除 {removed}，净增 {added - removed}"
                         )
                     except asyncio.TimeoutError:
                         errors.append(f"{mod_name}: 超时")
@@ -346,6 +358,10 @@ class ScanControlService:
             status=status,
             total_files=total_all,
             added_files=added_all,
+            removed_files=removed_all,
             error_message="; ".join(errors) if errors else None,
         )
-        logger.info(f"手动扫描完成: 共 {total_all} 文件，新增 {added_all}，状态={status}")
+        logger.info(
+            f"手动扫描完成: 共 {total_all} 文件，新增 {added_all}，删除 {removed_all}，"
+            f"净增 {added_all - removed_all}，状态={status}"
+        )

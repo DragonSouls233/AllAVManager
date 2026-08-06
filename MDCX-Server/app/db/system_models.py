@@ -127,6 +127,7 @@ class ScanRecord(SystemBase):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     total_files: Mapped[int | None] = mapped_column(Integer)
     added_files: Mapped[int | None] = mapped_column(Integer)
+    removed_files: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)

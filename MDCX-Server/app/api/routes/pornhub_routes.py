@@ -13,6 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 from pathlib import Path as _Path
+from typing import Optional
 
 import os as _os
 

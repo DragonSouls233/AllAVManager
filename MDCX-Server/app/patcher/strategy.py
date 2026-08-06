@@ -67,6 +67,18 @@ def _detail_referer(source: Optional[str], code: Optional[str]) -> Optional[str]
     return f"{base}/{code}"
 
 
+def _is_downloadable_url(url: Optional[str]) -> bool:
+    """判断是否是可下载的远程 URL。
+
+    防线：本地文件路径（如 E:\\data\\movies\\jav\\ABC-123\\poster.jpg）
+    绝不能进下载器——curl 会把 "E:" 解析成协议、冒号后的内容当端口，
+    报 "URL rejected: Port number was not a decimal number between 0 and 65535"。
+    """
+    if not url or not isinstance(url, str):
+        return False
+    return url.startswith(("http://", "https://"))
+
+
 def _complete_url(url: str, source: Optional[str] = None) -> str:
     """补全相对路径图片 URL 为完整 URL
 
@@ -427,6 +439,7 @@ class PatchEngine:
                     plan.fields_to_patch,
                     sources=effective_sources,
                     missing_info=missing_info,
+                    need_images=plan.need_download_images,
                 )
                 
                 if scraped_data:
@@ -534,18 +547,28 @@ class PatchEngine:
         fields: list[FieldType],
         sources: Optional[list[str]] = None,
         missing_info: Optional[MissingInfo] = None,
+        need_images: bool = False,
     ) -> Optional[dict]:
         """刮削缺失字段
 
         优先从已存在的 NFO 文件读取（如果输出目录下有 movie.nfo 就不走网络爬虫）。
+
+        重要：NFO 里**只有本地图片路径，没有远程图片 URL**。
+        因此当本次补刮需要下载图片时，NFO 缓存不足以完成任务，
+        必须继续走网络爬虫拿真实图片 URL；网络失败再回退到 NFO 字段。
+        （历史 bug：曾把本地 poster.jpg 绝对路径塞进 cover_url/poster_url，
+        导致 curl 把 "E:" 当协议、"\\MDCX-Server\\..." 当端口，
+        报 "URL rejected: Port number was not a decimal number"，图片 100% 失败。）
 
         Args:
             code: 番号
             fields: 需要补的字段（用于判断是否需要重新刮削）
             sources: 指定刮削来源站点列表；None 表示自动选择
             missing_info: 缺失信息（用于获取输出目录以读取 NFO）
+            need_images: 本次补刮是否需要下载图片
         """
         # ---- 优先从 NFO 缓存读取 ----
+        nfo_cached: Optional[dict] = None
         if missing_info and missing_info.output_dir:
             nfo_path = Path(missing_info.output_dir) / "movie.nfo"
             if nfo_path.exists():
@@ -554,17 +577,10 @@ class PatchEngine:
                     parser = NFOParser()
                     imported = parser.parse(str(nfo_path))
                     if imported:
-                        logger.info(f"NFO 缓存命中: {code} (跳过网络爬虫)")
                         actors = []
                         if imported.actors:
                             actors = [{"name": a} for a in imported.actors]
-                        cover_url = None
-                        for n in ["poster", "cover", "fanart", "thumb"]:
-                            p = Path(missing_info.output_dir) / f"{n}.jpg"
-                            if p.exists():
-                                cover_url = str(p)
-                                break
-                        return {
+                        nfo_cached = {
                             "code": imported.code or code,
                             "title": imported.title,
                             "original_title": imported.original_title,
@@ -587,8 +603,10 @@ class PatchEngine:
                             "genres": imported.genres,
                             "tags": [],
                             "actors": actors,
-                            "cover_url": cover_url,
-                            "poster_url": cover_url,
+                            # NFO 内没有远程图片 URL，这里必须为 None。
+                            # 绝不能填本地文件路径——下载器会当成 URL 去 curl。
+                            "cover_url": None,
+                            "poster_url": None,
                             "thumb_url": None,
                             "fanart_url": None,
                             "trailer_url": None,
@@ -604,6 +622,17 @@ class PatchEngine:
                         }
                 except Exception as e:
                     logger.warning(f"NFO 解析失败: {nfo_path}: {e}")
+
+        # 仅补字段时，NFO 缓存已足够，跳过网络爬虫（快速路径）
+        if nfo_cached and not need_images:
+            logger.info(f"NFO 缓存命中: {code} (仅补字段，跳过网络爬虫)")
+            return nfo_cached
+
+        if nfo_cached:
+            logger.info(
+                f"NFO 缓存命中但需下载图片: {code} "
+                f"(NFO 无远程图片 URL，改走网络爬虫获取图片地址)"
+            )
 
         # ---- 走网络爬虫 ----
         try:
@@ -655,7 +684,12 @@ class PatchEngine:
         
         except Exception as e:
             logger.error(f"刮削失败: {code}: {e}")
-        
+
+        # 网络爬虫失败：回退到 NFO 缓存（至少字段能补上，图片本轮补不了）
+        if nfo_cached:
+            logger.info(f"网络刮削失败，回退 NFO 缓存字段: {code}")
+            return nfo_cached
+
         return None
     
     async def _download_missing_images(
@@ -684,8 +718,15 @@ class PatchEngine:
                         samples = (scraped_data or {}).get("sample_images") or []
                         if not samples:
                             continue
-                        # 补全相对路径 URL
+                        # 补全相对路径 URL，并过滤掉非法/本地路径
                         samples = [_complete_url(s, source) for s in samples]
+                        samples = [s for s in samples if _is_downloadable_url(s)]
+                        if not samples:
+                            logger.debug(
+                                f"跳过 extrafanart：无合法远程 URL "
+                                f"({missing_info.movie_code})"
+                            )
+                            continue
                         referer = _detail_referer(source, missing_info.movie_code) or _origin_of(
                             samples[0]
                         ) if samples else None
@@ -711,6 +752,15 @@ class PatchEngine:
 
                     # 补全相对路径 URL（兜底保护）
                     url = _complete_url(url, source)
+
+                    # 防线：非 http(s) 的一律不下载（本地路径/脏数据），
+                    # 否则 curl 会报 "URL rejected: Port number..." 刷屏
+                    if not _is_downloadable_url(url):
+                        logger.debug(
+                            f"跳过非法图片 URL ({image_type.value}): "
+                            f"{missing_info.movie_code} -> {url!r}"
+                        )
+                        continue
 
                     # 优先用"来源详情页"作 Referer（javbus 防盗链要求），
                     # 否则退回到图片 URL 自身的源站；避免误报 403 为已补刮。

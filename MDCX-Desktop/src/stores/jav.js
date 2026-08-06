@@ -10,6 +10,7 @@ export const useJavStore = defineStore('jav', () => {
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
+  const statusFilter = ref('')
   const pendingCount = ref(0)
   const scraping = ref(false)
   const scrapingStatus = ref('')
@@ -17,7 +18,12 @@ export const useJavStore = defineStore('jav', () => {
   async function loadMovies(params = {}) {
     loading.value = true
     try {
-      const res = await getJavMovies({ skip: (page.value - 1) * pageSize.value, limit: pageSize.value, ...params })
+      const res = await getJavMovies({
+      skip: (page.value - 1) * pageSize.value,
+      limit: pageSize.value,
+      status: statusFilter.value || undefined,
+      ...params
+    })
       movies.value = res.items || []
       total.value = res.total || 0
       pendingCount.value = res.pending_count || 0
@@ -70,7 +76,7 @@ export const useJavStore = defineStore('jav', () => {
   }
 
   return {
-    movies, total, actors, loading, page, pageSize, pendingCount,
+    movies, total, actors, loading, page, pageSize, statusFilter, pendingCount,
     scraping, scrapingStatus,
     loadMovies, loadMovieDetail, loadActors, loadActorDetail,
     triggerScan, triggerScrapeAll, triggerImportNfo,

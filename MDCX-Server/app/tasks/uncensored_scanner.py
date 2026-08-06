@@ -92,6 +92,11 @@ class UncensoredScanner(BaseScanner):
         db = ModuleDatabase.get_instance("uncensored")
         session = await db.get_session()
         try:
+            # 性能修复：一次性载入已存在番号，避免每文件一次 SELECT 的 N+1 查询
+            existing_codes: set[str] = set(
+                (await session.execute(select(UncensoredMovie.code))).scalars().all()
+            )
+
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
             for root, dirs, files in walk_entries:
                 for file_name in files:
@@ -110,10 +115,10 @@ class UncensoredScanner(BaseScanner):
                     code = info["code"]
                     platform = info.get("platform")
 
-                    # 检查是否已存在
-                    existing = await session.execute(select(UncensoredMovie).where(UncensoredMovie.code == code))
-                    if existing.scalar_one_or_none():
+                    # 检查是否已存在（内存判重，避免 N+1 查询）
+                    if code in existing_codes:
                         continue
+                    existing_codes.add(code)
 
                     # 提取演员
                     folder_actors = self._get_folder_actors(file_path, media_dir)

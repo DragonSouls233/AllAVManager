@@ -198,6 +198,7 @@ async def is_subscribed(
 async def check_new_movies_for_actor(
     actor_id: int,
     session: AsyncSession,
+    module: str = "jav",
 ) -> list[Movie]:
     """
     检查某演员的新片（自上次检查以来增加的影片）
@@ -205,6 +206,10 @@ async def check_new_movies_for_actor(
     会更新 last_checked_at 和 last_movie_count。
     返回新片列表（最近添加的 N 部，N = current - last）。
     """
+    Actor = get_module_model(module, "actor")
+    ActorSubscription = get_module_model(module, "actor_subscription")
+    MovieActor = get_module_model(module, "movie_actor")
+    Movie = get_module_model(module, "movie")
     # 找到该演员的所有订阅（任意用户 + 全局）
     stmt = select(ActorSubscription).where(ActorSubscription.actor_id == actor_id)
     subs = (await session.execute(stmt)).scalars().all()
@@ -241,13 +246,17 @@ async def check_new_movies_for_actor(
     return new_movies
 
 
-async def check_all_subscriptions(session: AsyncSession) -> dict:
+async def check_all_subscriptions(session: AsyncSession, module: str = "jav") -> dict:
     """
     检测所有订阅演员的新片，触发 Webhook 通知
 
     Returns:
         统计信息 {checked, with_new, total_new, notified}
     """
+    Actor = get_module_model(module, "actor")
+    ActorSubscription = get_module_model(module, "actor_subscription")
+    MovieActor = get_module_model(module, "movie_actor")
+    Movie = get_module_model(module, "movie")
     # 找到所有订阅过的演员
     stmt = select(ActorSubscription.actor_id).distinct()
     actor_ids = (await session.execute(stmt)).scalars().all()
@@ -308,6 +317,7 @@ async def list_new_movies_for_subscription(
     user_id: Optional[int],
     session: AsyncSession,
     limit: int = 50,
+    module: str = "jav",
 ) -> list[dict]:
     """
     列出用户订阅演员的新片（按 release_date 倒序）
@@ -315,6 +325,10 @@ async def list_new_movies_for_subscription(
     Returns:
         新片列表（含演员信息）
     """
+    Actor = get_module_model(module, "actor")
+    ActorSubscription = get_module_model(module, "actor_subscription")
+    MovieActor = get_module_model(module, "movie_actor")
+    Movie = get_module_model(module, "movie")
     # 找到用户订阅的演员
     if user_id is None:
         stmt = select(ActorSubscription.actor_id).distinct()

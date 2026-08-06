@@ -8,6 +8,7 @@
 """
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -548,9 +549,9 @@ class MigrationManager:
                 logger.info(f"Migration {migration.version} applied successfully")
 
             except Exception as e:
-                error_str = str(e)
+                error_str = str(e).lower()
                 # 忽略"字段已存在"和"表已存在"错误，标记为已应用
-                if "duplicate column" in error_str.lower() or "already exists" in error_str.lower():
+                if "duplicate column" in error_str or "already exists" in error_str:
                     logger.warning(
                         f"Migration {migration.version} skipped (already applied): {e}"
                     )
@@ -571,6 +572,39 @@ class MigrationManager:
                     except Exception:
                         pass
                     applied_migrations.append(migration.version)
+                # 模块级表（movies / patch_records / import_records）已迁移到各模块库，
+                # 不在 system.db。迁移执行器只跑 system.db，自然会出现
+                # "no such table: main.movies" 之类错误。此类错误不应中断整个迁移流程，
+                # 跳过并标记为已应用即可（模块库 schema 由各自 create_all 负责）。
+                elif "no such table" in error_str or "no such object" in error_str:
+                    m = re.search(r"no such table: (?:main\.)?(\w+)", str(e))
+                    tbl = m.group(1) if m else ""
+                    if tbl in {"movies", "patch_records", "import_records", "tags", "actor_tags", "actors"}:
+                        logger.warning(
+                            f"Migration {migration.version} skipped: 表 {tbl} 不在 system.db"
+                            f"（已迁移至模块库），视为已应用"
+                        )
+                        try:
+                            async with self.db.session() as session:
+                                await session.execute(
+                                    sa_text("""
+                                    INSERT OR IGNORE INTO migrations (version, description, applied_at)
+                                    VALUES (:version, :description, :applied_at)
+                                    """),
+                                    {
+                                        "version": migration.version,
+                                        "description": migration.description,
+                                        "applied_at": datetime.now().isoformat(),
+                                    },
+                                )
+                        except Exception:
+                            pass
+                        applied_migrations.append(migration.version)
+                    else:
+                        logger.error(
+                            f"Migration {migration.version} failed: {e}"
+                        )
+                        raise
                 else:
                     logger.error(
                         f"Migration {migration.version} failed: {e}"

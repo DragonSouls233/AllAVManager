@@ -4,7 +4,7 @@ API 路由模块
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses
+from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates
 
 api_router = APIRouter()
 
@@ -55,6 +55,7 @@ api_router.include_router(telegram_bot.router, prefix="/telegram-bot", tags=["Te
 api_router.include_router(view_status.router, prefix="/view-status", tags=["三态视频标记"])
 api_router.include_router(file_organize.router, prefix="/file-organize", tags=["文件整理"])
 api_router.include_router(cookiecloud.router, prefix="/cookiecloud", tags=["CookieCloud同步"])
+api_router.include_router(cookies.router, prefix="/cookies", tags=["站点Cookie管理"])
 api_router.include_router(gfriends.router, prefix="/gfriends", tags=["Gfriends头像库"])
 api_router.include_router(unrecognized.router, prefix="/unrecognized", tags=["未识别文件处理"])
 api_router.include_router(cloud_drive2.router, prefix="/cloud-drive2", tags=["CloudDrive2网盘"])
@@ -90,3 +91,4 @@ api_router.include_router(western_enhanced.router, prefix="/western-enhanced", t
 api_router.include_router(stash_api.router, prefix="/stash", tags=["Stash兼容"])
 api_router.include_router(read_only.router, prefix="/read-only", tags=["唯读来源"])
 api_router.include_router(actresses.router, prefix="/actresses", tags=["女优收藏"])
+api_router.include_router(duplicates.router, prefix="/duplicates", tags=["重复番号扫描"])

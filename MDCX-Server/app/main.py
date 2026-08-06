@@ -50,8 +50,18 @@ async def _run_module_scan(module_name: str, scanner) -> dict:
         result = await asyncio.wait_for(scanner.scan(), timeout=SCAN_TIMEOUT)
         added = result.get("movies_added", 0)
         total = result.get("total", 0)
-        logger.info(f"模块 [{module_name}] 扫描完成: 共发现 {total} 个文件，新增 {added} 条记录")
-        return {"movies_added": added, "total": total}
+        # 2026-08-05 修复: 同步"文件删除"事件，使统计反映真实净变化
+        removed = 0
+        try:
+            removed = await scanner.cleanup_orphans()
+        except Exception as ce:
+            logger.warning(f"模块 [{module_name}] 孤儿清理失败: {ce}")
+        net = added - removed
+        logger.info(
+            f"模块 [{module_name}] 扫描完成: 共发现 {total} 个文件，"
+            f"新增 {added}，删除 {removed}，净增 {net}"
+        )
+        return {"movies_added": added, "total": total, "removed": removed}
     except asyncio.TimeoutError:
         logger.warning(f"模块 [{module_name}] 扫描超时 ({SCAN_TIMEOUT}s)，已跳过")
         return {"movies_added": 0, "total": 0, "error": "timeout"}
@@ -133,8 +143,8 @@ async def _watch_config_and_rescan(poll_interval: int = 5) -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
+async def _lifespan_impl(app: FastAPI):
+    """应用生命周期管理（实现体；异常兜底见下方 lifespan 包装器）"""
     # 全局声明必须在函数开头(在 startup/shutdown 中都会用到)
     global _auto_organize_scheduler
 
@@ -144,16 +154,28 @@ async def lifespan(app: FastAPI):
 
     # 设置日志
     log_file = None
+    error_log_file = None
     if config.log.file_enabled:
         log_file = manager.computed.logs_dir / "app.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        # 2026-08-05: 错误单独成文件，排查启动失败时只看这一个文件即可
+        error_log_file = manager.computed.logs_dir / "error.log"
 
     setup_logging(
         level=config.log.level,
         log_format=config.log.format,
         log_file=log_file,
         console=config.log.console_enabled,
+        error_log_file=error_log_file,
     )
+
+    # 给当前事件循环挂上异常处理器，未处理的 asyncio 异常也会写入 crash.log
+    try:
+        from app.utils.crash_logger import attach_asyncio_handler
+
+        attach_asyncio_handler()
+    except Exception:
+        pass
 
     logger.info(f"启动 {config.app_name}")
     logger.info(f"监听 {config.server.host}:{config.server.port}")
@@ -220,11 +242,13 @@ async def lifespan(app: FastAPI):
                     if _scan_record_id:
                         total_all = sum(r.get("total", 0) for r in _scan_results.values())
                         added_all = sum(r.get("added_files", 0) or r.get("movies_added", 0) for r in _scan_results.values())
+                        removed_all = sum(r.get("removed", 0) for r in _scan_results.values())
                         errors = [r.get("error") for r in _scan_results.values() if r.get("error")]
                         s = "failed" if errors else "running"
                         await _scan_ctrl.complete_scan_record(
                             _scan_record_id, status=s,
                             total_files=total_all, added_files=added_all,
+                            removed_files=removed_all,
                             error_message="; ".join(errors) if errors else None,
                         )
 
@@ -403,21 +427,34 @@ async def lifespan(app: FastAPI):
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.interval import IntervalTrigger
-        from app.db.database import get_session_context
         from app.services.file_organize import auto_organize_watched
+        from app.utils.module_helper import get_module_session
 
         _auto_organize_scheduler = AsyncIOScheduler()
 
         async def _auto_organize_job():
-            """定时执行自动整理检查"""
+            """定时执行自动整理检查（jav 模块库）
+
+            注意：auto_organize_watched 内部查询的 AutoOrganizeRule / Movie /
+            PlayHistory 均为「模块库」模型（挂 JAV_BASE 等），必须用模块会话，
+            不能用 system.db 会话——否则会在 system.db 上执行 SELECT ... FROM
+            auto_organize_rules 而报 no such table。
+            """
             try:
-                async with get_session_context() as session:
-                    summary = await auto_organize_watched(session)
+                session = await get_module_session("jav")
+                try:
+                    summary = await auto_organize_watched(session, module="jav")
+                    await session.commit()
                     if summary.get("processed"):
                         logger.info(
                             f"自动整理定时任务完成：处理 {summary['processed']} 部，"
                             f"移动 {summary['moved']}，复制 {summary['copied']}"
                         )
+                except Exception as exc:
+                    await session.rollback()
+                    logger.error(f"自动整理定时任务异常: {exc}")
+                finally:
+                    await session.close()
             except Exception as exc:
                 logger.error(f"自动整理定时任务异常: {exc}")
 
@@ -604,6 +641,53 @@ async def lifespan(app: FastAPI):
         logger.warning(f"模块数据库关闭失败: {e}")
 
     logger.info("应用关闭")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """生命周期外层包装：确保启动/关闭阶段的异常一定被记录下来。
+
+    2026-08-05 新增。此前 lifespan 内任何异常都会直接冒泡给 uvicorn，
+    uvicorn 打印 "Application startup failed. Exiting." 后调用 sys.exit(3)，
+    控制台窗口一关，完整 traceback 就永久丢失了。
+    这里在异常冒泡前先把现场写进 crash.log，并在控制台给出明确的排查指引。
+    """
+    try:
+        async with _lifespan_impl(app):
+            yield
+    except Exception as e:
+        try:
+            from app.utils.crash_logger import get_log_dir, log_crash
+
+            crash_path = log_crash(type(e), e, e.__traceback__, context="应用启动/关闭失败")
+            log_dir = get_log_dir()
+        except Exception:
+            crash_path = None
+            log_dir = None
+
+        # logger 可能尚未配置完成，双通道输出确保信息不丢
+        banner = (
+            "\n" + "!" * 78 + "\n"
+            f"  应用启动失败: {type(e).__name__}: {e}\n"
+        )
+        if crash_path:
+            banner += f"  完整堆栈已写入: {crash_path}\n"
+        if log_dir:
+            banner += f"  错误日志: {log_dir / 'error.log'}\n"
+        banner += "!" * 78 + "\n"
+
+        try:
+            sys.__stderr__.write(banner)
+            sys.__stderr__.flush()
+        except Exception:
+            pass
+
+        try:
+            logger.exception("应用启动失败，完整堆栈如下")
+        except Exception:
+            pass
+
+        raise
 
 
 def create_app() -> FastAPI:
@@ -896,6 +980,14 @@ def create_app() -> FastAPI:
     logger.info("="*50)
     
     logger.info("✅ 应用创建完成！")
+
+    # 请求级数据库会话回收中间件（最内层）
+    # 根治 ModuleDatabase / SystemDatabase 裸 session 泄漏：大量路由用
+    # `session = await db.get_session()` 但忘记 close，连接最终靠 GC 回收并触发
+    # SAWarning "non-checked-in connection"。该中间件在响应送出后统一关闭所有
+    # 在 get_session() 中登记的 session，彻底消除泄漏（已 async with 管理的重复 close 幂等）。
+    from app.db.session_registry import session_cleanup_middleware
+    app.middleware("http")(session_cleanup_middleware)
 
     # 认证中间件（保护所有 API）- ASGI 方式（兼容 app.mount）
     from app.api.auth_middleware import AuthMiddleware

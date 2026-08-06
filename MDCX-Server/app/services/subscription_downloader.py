@@ -89,7 +89,7 @@ class SubscriptionDownloaderService:
         # 检查演员订阅新片
         try:
             from app.services.actor_subscription import check_all_subscriptions
-            await check_all_subscriptions(module=module)
+            await check_all_subscriptions(session, module=module)
         except Exception as e:
             logger.error(f"演员订阅检测失败: {e}", exc_info=True)
 

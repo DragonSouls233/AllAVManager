@@ -68,6 +68,11 @@ class Fc2Scanner(BaseScanner):
             from app.db.fc2_models import Fc2Movie
             from sqlalchemy import select
 
+            # 性能修复：一次性载入已存在番号，避免每文件一次 SELECT 的 N+1 查询
+            existing_codes: set[str] = set(
+                (await session.execute(select(Fc2Movie.code))).scalars().all()
+            )
+
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
             for root, dirs, files in walk_entries:
                 for file_name in files:
@@ -83,10 +88,10 @@ class Fc2Scanner(BaseScanner):
                         continue
                     result["matched"] += 1
 
-                    # 检查是否已存在
-                    existing = await session.execute(select(Fc2Movie).where(Fc2Movie.code == code))
-                    if existing.scalar_one_or_none():
+                    # 检查是否已存在（内存判重，避免 N+1 查询）
+                    if code in existing_codes:
                         continue
+                    existing_codes.add(code)
 
                     # 写入新影片记录
                     new_movie = Fc2Movie(

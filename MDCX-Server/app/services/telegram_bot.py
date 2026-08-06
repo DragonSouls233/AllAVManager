@@ -308,7 +308,10 @@ class TelegramBotService:
             actor = (await session.execute(stmt)).scalar_one_or_none()
             if actor is None:
                 return await self.send_message(chat_id, f"❌ 未找到演员: {actor_name}")
-            await subscribe(user_id=None, actor_id=actor.id, notify_new_movie=True, module=module)
+            await subscribe(
+                user_id=None, actor_id=actor.id, notify_new_movie=True,
+                session=session, module=module,
+            )
             return await self.send_message(
                 chat_id, f"✅ 已订阅演员: *{actor_name}*\n新片发布时会自动通知。"
             )
@@ -320,7 +323,7 @@ class TelegramBotService:
         module = "jav"
         try:
             from app.services.actor_subscription import list_subscriptions
-            subs = await list_subscriptions(user_id=None, module=module)
+            subs = await list_subscriptions(user_id=None, session=session, module=module)
             if not subs:
                 return await self.send_message(chat_id, "📭 暂无订阅")
             lines = ["📋 订阅列表：\n"]

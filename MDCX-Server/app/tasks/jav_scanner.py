@@ -98,6 +98,12 @@ class JavScanner(BaseScanner):
         db = ModuleDatabase.get_instance("jav")
         session = await db.get_session()
         try:
+            # 性能修复：一次性载入已存在番号，避免"每个视频文件一次 SELECT"的 N+1 查询。
+            # 旧写法在 8000+ 文件的库上要跑 8000 次 await 查询，
+            # 极易触发 scan_control 的 600s 超时 → 扫描失败 → 新增文件永远扫不进来。
+            existing_codes: set[str] = set(
+                (await session.execute(select(JavMovie.code))).scalars().all()
+            )
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
             for root, dirs, files in walk_entries:
                 # 收集当前目录的演员信息
@@ -117,10 +123,10 @@ class JavScanner(BaseScanner):
                         continue
                     result["matched"] += 1
 
-                    # 检查是否已存在
-                    existing = await session.execute(select(JavMovie).where(JavMovie.code == code))
-                    if existing.scalar_one_or_none():
+                    # 检查是否已存在（内存判重，含本批次已新增的番号）
+                    if code in existing_codes:
                         continue
+                    existing_codes.add(code)
 
                     # 提取演员
                     folder_actors = self._get_folder_actors(file_path, media_dir)

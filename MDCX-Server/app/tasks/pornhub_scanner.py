@@ -231,6 +231,11 @@ class PornhubScanner(BaseScanner):
             from app.db.pornhub_models import PornhubMovie, PornhubActor
             from sqlalchemy import select
 
+            # 性能修复：一次性载入已存在番号，避免每文件一次 SELECT 的 N+1 查询
+            existing_codes: set[str] = set(
+                (await session.execute(select(PornhubMovie.code))).scalars().all()
+            )
+
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
             for root, dirs, files in walk_entries:
                 # 提取当前目录的演员名和国籍（跳过根目录）
@@ -251,10 +256,10 @@ class PornhubScanner(BaseScanner):
                         continue
                     result["matched"] += 1
 
-                    # 检查是否已存在
-                    existing = await session.execute(select(PornhubMovie).where(PornhubMovie.code == code))
-                    if existing.scalar_one_or_none():
+                    # 检查是否已存在（内存判重，避免 N+1 查询）
+                    if code in existing_codes:
                         continue
+                    existing_codes.add(code)
 
                     # 写入新影片记录
                     new_movie = PornhubMovie(

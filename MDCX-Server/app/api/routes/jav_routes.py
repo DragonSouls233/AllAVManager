@@ -24,6 +24,21 @@ def get_jav_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("jav")
 
 
+# 空头像占位图（与 modules.py 保持一致，避免前端 @error 裂图差异）
+_SVG_EMPTY_AVATAR = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" '
+    'viewBox="0 0 120 120"><rect width="120" height="120" rx="60" fill="#374151"/>'
+    '<text x="60" y="74" text-anchor="middle" font-size="48" font-family="Arial" '
+    'fill="#9ca3af">?</text></svg>'
+)
+
+
+def _avatar_placeholder():
+    from fastapi.responses import Response
+    return Response(content=_SVG_EMPTY_AVATAR, media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-cache"})
+
+
 # ========== 演员合并 ==========
 
 
@@ -286,23 +301,34 @@ async def get_actor_avatar_file(actor_id: int):
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
-        # 优先返回规范目录头像
+        # 优先返回规范目录头像（真实文件路径）
         avatar_path = _Path(getattr(actor, "avatar_path", "") or "")
         if avatar_path and avatar_path.exists():
             return FileResponse(str(avatar_path), media_type="image/jpeg",
                                 headers={"Cache-Control": "public, max-age=86400"})
 
-        # 本地头像文件回退
-        if actor.avatar_url:
-            av = actor.avatar_url
+        # 优先读取约定文件 DATA/avatars/actor_{id}.jpg
+        try:
+            from app.utils.config_manager import get_config_manager
+            avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / f"actor_{actor_id}.jpg"
+            if avatar_file.exists():
+                return FileResponse(str(avatar_file), media_type="image/jpeg",
+                                    headers={"Cache-Control": "public, max-age=86400"})
+        except Exception:
+            pass
+
+        # 回退: avatar_url 为真实本地绝对路径时直接返回（gfriends 导入写入的正是此路径）
+        avatar_url_field = getattr(actor, "avatar_url", None)
+        if avatar_url_field:
+            av = str(avatar_url_field).strip()
             if av.startswith(("http://", "https://")):
-                raise HTTPException(status_code=404, detail="演员头像为远程URL，请通过 Gfriends 导入")
-            av_path = _Path(av)
-            if av_path.exists():
-                return FileResponse(str(av_path), media_type="image/jpeg",
+                # 远程 URL 需前端代理，本端点仅服务本地文件，回退占位图
+                pass
+            elif _Path(av).is_absolute() and _Path(av).exists():
+                return FileResponse(av, media_type="image/jpeg",
                                     headers={"Cache-Control": "public, max-age=86400"})
 
-        raise HTTPException(status_code=404, detail="演员头像不存在")
+        return _avatar_placeholder()
     finally:
         await session.close()
 

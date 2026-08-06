@@ -424,13 +424,13 @@ class GfriendsImporter:
 
                     for (actor, url), success in zip(online_matched, results):
                         if success is True:
-                            self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
+                            await self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
                             progress["downloaded"] += 1
                         else:
                             progress["failed"] += 1
 
                 for actor in local_matched:
-                    self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
+                    await self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
                     progress["downloaded"] += 1
 
                 self._jobs[job_id]["status"] = "completed"
@@ -456,11 +456,17 @@ class GfriendsImporter:
         return [{"job_id": k, **v} for k, v in self._jobs.items()]
 
     async def _set_actor_avatar(self, actor, module_name: Optional[str], avatars_dir):
-        """设置演员头像 URL（写入模块数据库）"""
+        """设置演员头像 URL（写入模块数据库）
+
+        头像文件由 _download_one 落在 avatars_dir/actor_{id}.jpg。
+        这里把 avatar_url 写成真实本地文件路径（而非路由字符串），
+        这样前端详情页 getActorAvatar 可经 files/proxy 正确加载，
+        列表页则经 modules 头像端点直接读取该文件。
+        """
         actor_id = getattr(actor, "id", None)
         if not actor_id:
             return
-        avatar_url = f"/api/v1/{module_name or 'jav'}/actors/{actor_id}/avatar/file"
+        avatar_url = str(avatars_dir / f"actor_{actor_id}.jpg")
 
         if module_name:
             from app.db.module_db import ModuleDatabase

@@ -13,7 +13,7 @@ API Key 从 AppConfig.mnamer 自动读取(§B4)。
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field

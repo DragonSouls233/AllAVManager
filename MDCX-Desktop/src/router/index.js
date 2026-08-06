@@ -67,6 +67,12 @@ const routes = [
         component: () => import('@/views/Fingerprint.vue')
       },
       {
+        path: 'duplicates',
+        name: 'Duplicates',
+        component: () => import('@/views/Duplicates.vue'),
+        meta: { title: '重复番号扫描' }
+      },
+      {
         path: 'patch',
         name: 'Patch',
         component: () => import('@/views/Patch.vue')

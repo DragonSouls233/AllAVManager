@@ -83,6 +83,10 @@ class AsyncHttpClient:
         self._domain_lock = asyncio.Lock()
         # 上一次使用的指纹 ID（用于排除连续重复）
         self._last_fingerprint_id: str = ""
+        # curl_cffi 在本环境（Python3.14 + 预编译 native 库）下可能整体不可用
+        # （报 "initializer for ctype 'void *' must be a cdata pointer, not NoneType"）。
+        # 一旦探测到该致命错误，置此标志，后续请求全部降级到 httpx，避免反复重试浪费时间。
+        self._curl_failed: bool = False
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """上下文管理器入口"""
@@ -95,15 +99,21 @@ class AsyncHttpClient:
 
     async def init_session(self) -> None:
         """初始化会话（使用 Chrome 136 作为默认 TLS 指纹）"""
-        if self._session is None:
-            self._session = AsyncSession(
-                max_clients=200,
-                verify=False,
-                max_redirects=20,
-                timeout=self.timeout,
-                impersonate=_SESSION_DEFAULT_IMPERSONATE,
-                proxy=self.proxy,
-            )
+        if self._session is None and not self._curl_failed:
+            try:
+                self._session = AsyncSession(
+                    max_clients=200,
+                    verify=False,
+                    max_redirects=20,
+                    timeout=self.timeout,
+                    impersonate=_SESSION_DEFAULT_IMPERSONATE,
+                    proxy=self.proxy,
+                )
+            except Exception as e:
+                self._curl_failed = True
+                logger.warning(
+                    f"curl_cffi 会话初始化失败（{e}），后续请求将降级到 httpx"
+                )
 
     def _select_fingerprint_for_request(
         self,
@@ -171,6 +181,53 @@ class AsyncHttpClient:
         if self._session:
             await self._session.close()
             self._session = None
+
+    async def _httpx_request(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[dict],
+        cookies: Optional[dict],
+        kwargs: dict,
+    ):
+        """curl_cffi 不可用时的降级实现（使用 httpx）。
+
+        返回 httpx.Response，接口与 curl_cffi Response 兼容
+        （.status_code / .text / .content / .headers / .url / .json() / .encoding / .cookies），
+        因此调用方无需感知底层切换。httpx 在项目中被广泛验证稳定可用。
+        """
+        import httpx
+
+        # httpx 不认识 curl_cffi 的 impersonate 指纹参数，剔除避免 TypeError
+        params = kwargs.get("params")
+        data = kwargs.get("data")
+        json_body = kwargs.get("json")
+
+        async with httpx.AsyncClient(
+            proxy=self.proxy or None,
+            timeout=self.timeout,
+            verify=False,
+            follow_redirects=True,
+        ) as client:
+            if method == "POST":
+                resp = await client.post(
+                    url,
+                    headers=headers,
+                    cookies=cookies or {},
+                    data=data,
+                    json=json_body,
+                    params=params,
+                )
+            else:
+                resp = await client.get(
+                    url,
+                    headers=headers,
+                    cookies=cookies or {},
+                    params=params,
+                )
+            # 提前把响应体读入内存，避免退出 async with 后连接关闭导致 .content/.json() 失败
+            await resp.aread()
+            return resp
     
     async def _wait_for_rate_limit(self, url: str = "") -> None:
         """等待以遵守速率限制（支持全局和域名级）"""
@@ -238,32 +295,37 @@ class AsyncHttpClient:
         req_headers = self._build_request_headers(url, fingerprint, headers, req_purpose)
 
         # 重试逻辑
-        last_error: Optional[Exception] = None
+        if not self._curl_failed and self._session is not None:
+            for attempt in range(self.max_retries):
+                try:
+                    # 传入 per-request impersonate 覆盖会话默认值
+                    request_kwargs = dict(kwargs)
+                    if fingerprint is not None and "impersonate" not in request_kwargs:
+                        request_kwargs["impersonate"] = fingerprint.impersonate
 
-        for attempt in range(self.max_retries):
-            try:
-                # 传入 per-request impersonate 覆盖会话默认值
-                request_kwargs = dict(kwargs)
-                if fingerprint is not None and "impersonate" not in request_kwargs:
-                    request_kwargs["impersonate"] = fingerprint.impersonate
+                    response = await self._session.get(  # type: ignore
+                        url,
+                        headers=req_headers,
+                        cookies=cookies,
+                        **request_kwargs,
+                    )
+                    # 检查响应状态码
+                    if response.status_code and 400 <= response.status_code < 600:
+                        raise Exception(f"HTTP {response.status_code}")
+                    return response
 
-                response = await self._session.get(  # type: ignore
-                    url,
-                    headers=req_headers,
-                    cookies=cookies,
-                    **request_kwargs,
-                )
-                # 检查响应状态码
-                if response.status_code and 400 <= response.status_code < 600:
-                    raise Exception(f"HTTP {response.status_code}")
-                return response
+                except Exception as e:
+                    # 致命的 curl_cffi C 层错误（Python3.14 下 native 库损坏）：
+                    # 直接禁用 curl_cffi，后续请求全部走 httpx 降级。
+                    if "void *" in str(e) or "cdata" in str(e) or type(e).__name__.startswith("Curl"):
+                        self._curl_failed = True
+                        logger.warning(f"curl_cffi 不可用（{e}），后续请求将降级到 httpx")
+                        break
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(1.0 * (attempt + 1))
 
-            except Exception as e:
-                last_error = e
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-
-        raise last_error or Exception(f"Failed to fetch {url}")
+        # curl_cffi 不可用或本次失败 → 降级到 httpx（接口兼容 Response）
+        return await self._httpx_request("GET", url, req_headers, cookies, dict(kwargs))
     
     async def get_text(
         self,
@@ -370,30 +432,37 @@ class AsyncHttpClient:
         )
         req_headers = self._build_request_headers(url, fingerprint, headers, inferred_purpose)
 
-        last_error: Optional[Exception] = None
+        if not self._curl_failed and self._session is not None:
+            for attempt in range(self.max_retries):
+                try:
+                    request_kwargs = dict(kwargs)
+                    if fingerprint is not None and "impersonate" not in request_kwargs:
+                        request_kwargs["impersonate"] = fingerprint.impersonate
 
-        for attempt in range(self.max_retries):
-            try:
-                request_kwargs = dict(kwargs)
-                if fingerprint is not None and "impersonate" not in request_kwargs:
-                    request_kwargs["impersonate"] = fingerprint.impersonate
+                    response = await self._session.post(  # type: ignore
+                        url,
+                        data=data,
+                        json=json,
+                        headers=req_headers,
+                        cookies=cookies,
+                        **request_kwargs,
+                    )
+                    return response
 
-                response = await self._session.post(  # type: ignore
-                    url,
-                    data=data,
-                    json=json,
-                    headers=req_headers,
-                    cookies=cookies,
-                    **request_kwargs,
-                )
-                return response
+                except Exception as e:
+                    # 致命的 curl_cffi C 层错误：禁用 curl_cffi，降级 httpx
+                    if "void *" in str(e) or "cdata" in str(e) or type(e).__name__.startswith("Curl"):
+                        self._curl_failed = True
+                        logger.warning(f"curl_cffi 不可用（{e}），后续请求将降级到 httpx")
+                        break
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(1.0 * (attempt + 1))
 
-            except Exception as e:
-                last_error = e
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-
-        raise last_error or Exception(f"Failed to post {url}")
+        # curl_cffi 不可用或本次失败 → 降级到 httpx
+        return await self._httpx_request(
+            "POST", url, req_headers, cookies,
+            {"data": data, "json": json, **kwargs},
+        )
 
     # ============================================
     # HTML 解析辅助方法(移植自 JavSP web/base.py)

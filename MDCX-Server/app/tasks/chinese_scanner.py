@@ -101,6 +101,11 @@ class ChineseScanner(BaseScanner):
             from app.db.chinese_models import ChineseMovie, ChineseActor
             from sqlalchemy import select
 
+            # 性能修复：一次性载入已存在番号，避免每文件一次 SELECT 的 N+1 查询
+            existing_codes: set[str] = set(
+                (await session.execute(select(ChineseMovie.code))).scalars().all()
+            )
+
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
             for root, dirs, files in walk_entries:
                 for file_name in files:
@@ -118,10 +123,10 @@ class ChineseScanner(BaseScanner):
                     # 生成番号
                     code = extract_code_from_filename(file_name) or generate_chinese_code(file_path, folder_actors)
 
-                    # 检查是否已存在
-                    existing = await session.execute(select(ChineseMovie).where(ChineseMovie.code == code))
-                    if existing.scalar_one_or_none():
+                    # 检查是否已存在（内存判重，避免 N+1 查询）
+                    if code in existing_codes:
                         continue  # 已存在，跳过
+                    existing_codes.add(code)
 
                     # 写出新影片记录
                     new_movie = ChineseMovie(

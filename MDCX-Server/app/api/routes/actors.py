@@ -610,10 +610,12 @@ async def get_actor_timeline(
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
+        # 扫描器将演员名以逗号分隔存于 movie.actor 字段，并不维护
+        # MovieActor 关联表（关联表始终为空），故不能用 join 关联表查询，
+        # 改用 actor 字段的模糊匹配（与 jav_routes 的 timeline 一致）。
         query = (
             select(movie_cls)
-            .join(MovieActor, movie_cls.id == MovieActor.movie_id)
-            .where(MovieActor.actor_id == actor_id)
+            .where(movie_cls.actor.like(f"%{actor.name}%"))
             .order_by(movie_cls.release_date.asc())
         )
         result = await sess.execute(query)

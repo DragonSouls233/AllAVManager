@@ -194,7 +194,17 @@ async def _delayed_module_scan(module_name: str, media_dirs: list[str]) -> None:
         result = await scanner.scan()
         added = result.get("movies_added", 0)
         total = result.get("total", 0)
-        logger.info(f"模块 [{module_name}] 自动扫描完成: 共发现 {total} 个文件，新增 {added} 条记录")
+        # 2026-08-05 修复: 同步"文件删除"事件，使统计反映真实净变化
+        removed = 0
+        try:
+            removed = await scanner.cleanup_orphans()
+        except Exception as ce:
+            logger.warning(f"模块 [{module_name}] 孤儿清理失败: {ce}")
+        net = added - removed
+        logger.info(
+            f"模块 [{module_name}] 自动扫描完成: 共发现 {total} 个文件，"
+            f"新增 {added}，删除 {removed}，净增 {net}"
+        )
     except Exception as e:
         logger.warning(f"模块 [{module_name}] 自动扫描失败: {e}")
 
@@ -424,23 +434,39 @@ async def get_module_actor_avatar_file(module_name: str, actor_id: int):
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
         
-        avatar_url = actor.avatar_url
-        if not avatar_url:
-            return _avatar_placeholder()
+        # 优先直接读取约定文件 DATA/avatars/actor_{id}.jpg
+        try:
+            from pathlib import Path as _P
+            from app.utils.config_manager import get_config_manager
+            data_dir = _P(get_config_manager().computed.data_dir)
+            avatar_file = data_dir / "avatars" / f"actor_{actor_id}.jpg"
+            if avatar_file.exists():
+                return Response(
+                    content=avatar_file.read_bytes(),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+        except Exception:
+            pass
 
-        # 如果 avatar_url 是远程 URL，忽略（封面显示不走外网）
-        if avatar_url.startswith(("http://", "https://")):
-            return _avatar_placeholder()
-
-        # 本地文件
-        from pathlib import Path
-        avatar_path = Path(avatar_url)
-        if avatar_path.exists():
-            return Response(
-                content=avatar_path.read_bytes(),
-                media_type="image/jpeg",
-                headers={"Cache-Control": "public, max-age=86400"},
-            )
+        # 回退: avatar_url 为真实本地绝对路径时直接返回（gfriends 导入写入的正是此路径）
+        avatar_url_field = getattr(actor, "avatar_url", None)
+        if avatar_url_field:
+            av = str(avatar_url_field).strip()
+            if av.startswith(("http://", "https://")) or av.startswith("/"):
+                # 远程 URL 或路由字符串(/api/...)需前端代理，本端点仅服务本地文件
+                pass
+            else:
+                from pathlib import Path as _P2
+                if _P2(av).is_absolute() and _P2(av).exists():
+                    try:
+                        return Response(
+                            content=_P2(av).read_bytes(),
+                            media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=86400"},
+                        )
+                    except Exception:
+                        pass
 
         return _avatar_placeholder()
     finally:

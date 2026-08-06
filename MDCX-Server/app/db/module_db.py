@@ -2,7 +2,9 @@
 模块数据库管理器 v2.0
 每个模块使用独立的 DeclarativeBase，允许各模块使用相同表名（如 movies/actors）而不冲突。
 """
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncGenerator
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -92,14 +94,93 @@ class ModuleDatabase:
         async with self.engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.run_sync(self.base_class.metadata.create_all)
+            # 旧表补齐缺失列（create_all 只建表、不加列，见 _migrate_schema 说明）
+            await self._migrate_schema(conn)
 
         self._initialized = True
         logger.info(f"模块数据库 [{self.module_name}] 初始化完成，表: {list(self.base_class.metadata.tables.keys())}")
 
+    async def _migrate_schema(self, conn) -> None:
+        """补齐已存在旧表缺失的列（幂等）。
+
+        ``metadata.create_all`` 只会创建缺失的【表】，不会给已存在的旧表追加新列。
+        若服务器上的 ``*.db`` 是在模型新增列（如 ``title_jp`` / ``plot_short`` /
+        ``studio_id`` 等）之前创建的，旧表缺列，扫描器 INSERT 带上新列会触发
+        SQLite ``no such column``，导致整批 ``commit`` 回滚——而扫描计数已乐观 +1，
+        于是出现“扫描报新增 N、库里却没增加”的假计数。
+
+        此处遍历模型元数据，对旧表缺失的列执行 ``ALTER TABLE ADD COLUMN``。
+        当前所有可能因版本迭代新增的列均为 Optional 或有默认值，迁移安全。
+        """
+        from sqlalchemy import inspect as sa_inspect
+
+        def _collect(sync_conn):
+            insp = sa_inspect(sync_conn)
+            schema: dict[str, set[str]] = {}
+            for tname in insp.get_table_names():
+                schema[tname] = {c["name"] for c in insp.get_columns(tname)}
+            return schema
+
+        db_schema = await conn.run_sync(_collect)
+
+        for table_name, table in self.base_class.metadata.tables.items():
+            if table_name not in db_schema:
+                continue
+            existing_cols = db_schema[table_name]
+            for col in table.columns:
+                if col.name in existing_cols:
+                    continue
+                col_type = str(col.type)
+                sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{col.name}" {col_type}'
+                # SQLite 不允许给“已有数据且 NOT NULL 且无默认值”的表加列
+                if not col.nullable:
+                    if col.server_default is not None:
+                        sql += f" DEFAULT {col.server_default.arg}"
+                    elif getattr(col.default, "is_scalar", False) and col.default.arg is not None:
+                        lit = col.default.arg
+                        sql += f" DEFAULT {repr(lit) if isinstance(lit, str) else lit}"
+                    else:
+                        sql += " DEFAULT NULL"
+                try:
+                    await conn.execute(text(sql))
+                    logger.info(
+                        f"模块 [{self.module_name}] 表 {table_name} 补齐缺失列 "
+                        f"{col.name} ({col_type})"
+                    )
+                except Exception as e:  # 单列出错不影响其它列
+                    logger.warning(
+                        f"模块 [{self.module_name}] 补齐列 {col.name} 失败: {e}"
+                    )
+
     async def get_session(self) -> AsyncSession:
         if not self._initialized:
             await self.init()
-        return self.session_factory()
+        session = self.session_factory()
+        # 登记到请求级回收注册表，避免调用方忘记 close 导致连接池泄漏（GC 警告）
+        from app.db.session_registry import register_session
+        register_session(session)
+        return session
+
+    @asynccontextmanager
+    async def session_scope(self) -> AsyncGenerator[AsyncSession, None]:
+        """获取模块数据库会话上下文管理器（推荐替代 get_session）
+
+        用法::
+
+            async with mod_db.session_scope() as session:
+                ...
+
+        async with 退出时自动 close 归还连接池；异常时自动 rollback。
+        已自管理连接，无需依赖 session_registry 兜底。
+        """
+        if not self._initialized:
+            await self.init()
+        async with self.session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
 
     async def close(self) -> None:
         await self.engine.dispose()

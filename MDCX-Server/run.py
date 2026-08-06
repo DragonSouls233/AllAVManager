@@ -15,8 +15,40 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
+
+# =============================================================================
+# 启动引导日志（必须在导入任何 app.* 模块之前执行）
+# =============================================================================
+# 2026-08-05: 此前日志初始化写在 app/main.py 的 lifespan 内部，进程跑到那一行
+# 之前的所有崩溃（import 失败、配置解析失败、uvicorn 自身启动失败）全都不落盘，
+# 控制台窗口一关就彻底查不到原因。这里在进程最早期就把文件日志和崩溃钩子拉起来。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from app.utils.crash_logger import (
+        get_crash_log_path,
+        get_log_dir,
+        init_early_logging,
+        log_crash,
+    )
+
+    LOG_FILE = init_early_logging()
+    LOG_DIR = get_log_dir()
+    _EARLY_LOG_OK = True
+except Exception as _boot_err:  # pragma: no cover - 引导失败不能阻止服务启动
+    LOG_FILE = None
+    LOG_DIR = None
+    _EARLY_LOG_OK = False
+    print(f"[警告] 启动日志初始化失败（不影响运行，但崩溃将无法追溯）: {_boot_err}")
+
+    def log_crash(*_args, **_kwargs):  # type: ignore[misc]
+        return None
+
+    def get_crash_log_path():  # type: ignore[misc]
+        return None
 
 
 class Style:
@@ -185,6 +217,55 @@ def _err(msg):
 
 
 # =============================================================================
+# 崩溃现场保留（防止控制台窗口一闪而过）
+# =============================================================================
+def _pause_on_crash(no_pause: bool = False) -> None:
+    """服务异常退出后暂停，让用户能看清错误信息。
+
+    双击运行时窗口会随进程退出立即关闭，错误信息根本来不及看。
+    以下场景自动跳过暂停（避免无人值守时卡住）:
+      - 显式传入 --no-pause
+      - 环境变量 MDCX_NO_PAUSE=1
+      - 非交互式终端（服务模式 / 重定向输出）
+    """
+    if no_pause or os.environ.get("MDCX_NO_PAUSE", "").strip() == "1":
+        return
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+    except Exception:
+        return
+    try:
+        print(f"\n  {Style.YELLOW}{Style.BOLD}按 Enter 键退出...{Style.RESET}")
+        input()
+    except Exception:
+        pass
+
+
+def _report_fatal(exc: BaseException, context: str, no_pause: bool = False) -> None:
+    """统一的致命错误处理：控制台打印 + 完整堆栈落盘 + 暂停"""
+    tb_text = traceback.format_exc()
+
+    _err(f"{context}: {type(exc).__name__}: {exc}")
+    print(f"{Style.DIM}{tb_text}{Style.RESET}")
+
+    crash_path = None
+    try:
+        crash_path = log_crash(type(exc), exc, exc.__traceback__, context=context)
+    except Exception:
+        pass
+
+    print(f"  {Style.BOLD}{Style.YELLOW}排查提示：{Style.RESET}")
+    if crash_path:
+        print(f"    完整堆栈已写入 {Style.CYAN}{crash_path}{Style.RESET}")
+    if LOG_DIR:
+        print(f"    错误日志       {Style.CYAN}{Path(LOG_DIR) / 'error.log'}{Style.RESET}")
+        print(f"    完整运行日志   {Style.CYAN}{Path(LOG_DIR) / 'app.log'}{Style.RESET}")
+
+    _pause_on_crash(no_pause)
+
+
+# =============================================================================
 # 参数解析
 # =============================================================================
 def _parse_args():
@@ -207,6 +288,11 @@ def _parse_args():
     p.add_argument("--no-tray", action="store_true", help="纯控制台模式（无系统托盘）")
     p.add_argument("--no-cleanup", action="store_true", help="跳过启动前端口清理")
     p.add_argument("--debug", action="store_true", help="Debug 模式（自动重载）")
+    p.add_argument(
+        "--no-pause",
+        action="store_true",
+        help="崩溃后不暂停（无人值守/服务模式使用）",
+    )
     return p.parse_args()
 
 
@@ -348,6 +434,10 @@ def main():
     _p("Debug 模式", "开" if args.debug else "关", Style.WHITE)
     _p("系统托盘", "开" if not args.no_tray else "关", Style.WHITE)
     _p("自动打开浏览器", "否" if args.no_browser else "是", Style.WHITE)
+    if _EARLY_LOG_OK and LOG_DIR:
+        _p("日志目录", str(LOG_DIR), Style.MAGENTA)
+    else:
+        _warn("启动日志未就绪，崩溃将无法追溯")
 
     # ===== 启动系统托盘 =====
     if not args.no_tray:
@@ -382,15 +472,40 @@ def main():
     print(f"  {Style.DIM}按 Ctrl+C 停止服务 | 系统托盘图标管理窗口可见性{Style.RESET}\n")
 
     # ===== 启动服务（直接内嵌） =====
+    # 2026-08-05 关键修复: uvicorn 在应用启动失败时打印
+    # "Application startup failed. Exiting." 后会调用 sys.exit(3)，
+    # 抛出的是 SystemExit（继承自 BaseException），原先的 `except Exception`
+    # 根本捕获不到 —— 于是进程直接退出、控制台窗口关闭，用户什么都看不到。
+    # 这里显式捕获 SystemExit 并保留崩溃现场。
     try:
         _start_server(host, port, workers, args.debug)
     except KeyboardInterrupt:
         print(f"\n  {Style.YELLOW}服务已通过键盘中断关闭{Style.RESET}")
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        if code not in (0, None):
+            _err(f"服务启动失败并退出（退出码 {code}）")
+            print(f"  {Style.BOLD}{Style.YELLOW}排查提示：{Style.RESET}")
+            print(f"    多数情况是应用启动阶段抛异常（数据库迁移 / 配置 / 端口占用）。")
+            if LOG_DIR:
+                print(f"    错误日志     {Style.CYAN}{Path(LOG_DIR) / 'error.log'}{Style.RESET}")
+                print(f"    崩溃堆栈     {Style.CYAN}{Path(LOG_DIR) / 'crash.log'}{Style.RESET}")
+                print(f"    启动输出     {Style.CYAN}{Path(LOG_DIR) / 'startup.log'}{Style.RESET}")
+            _pause_on_crash(args.no_pause)
     except Exception as e:
-        _err(f"服务异常退出: {e}")
+        _report_fatal(e, "服务异常退出", args.no_pause)
     finally:
         _info("服务进程已结束")
 
 
 if __name__ == "__main__":
-    main()
+    # 兜住 main() 自身的崩溃（配置加载、端口清理、托盘初始化等阶段）
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n  {Style.YELLOW}已通过键盘中断退出{Style.RESET}")
+    except SystemExit:
+        raise
+    except BaseException as _fatal:
+        _report_fatal(_fatal, "启动器致命错误")
+        sys.exit(1)

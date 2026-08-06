@@ -265,6 +265,10 @@
             <el-icon><CopyDocument /></el-icon>
             <template #title>指纹去重</template>
           </el-menu-item>
+          <el-menu-item index="/duplicates">
+            <el-icon><Files /></el-icon>
+            <template #title>重复番号扫描</template>
+          </el-menu-item>
           <el-menu-item index="/view-status">
             <el-icon><CircleCheck /></el-icon>
             <template #title>三态标记</template>
@@ -319,6 +323,10 @@
           <el-menu-item index="/gfriends">
             <el-icon><Avatar /></el-icon>
             <template #title>Gfriends 头像库</template>
+          </el-menu-item>
+          <el-menu-item index="/cookie-manager">
+            <el-icon><Key /></el-icon>
+            <template #title>Cookie 管理器</template>
           </el-menu-item>
           <el-menu-item index="/plugins">
             <el-icon><Box /></el-icon>
@@ -1263,6 +1271,7 @@ const pageTitle = computed(() => {
     '/face-crop': 'AI 人脸裁剪',
     '/poster-enhance': '海报增强',
     '/fingerprint': '视频指纹去重',
+    '/duplicates': '重复番号扫描',
     '/view-status': '三态视频标记',
     '/tasks': '任务中心',
     '/viewing-report': 'AI 观影报告',

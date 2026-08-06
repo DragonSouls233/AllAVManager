@@ -89,9 +89,15 @@ class Database:
                 await conn.execute(text("PRAGMA page_size=16384"))
 
         # 使用 SystemBase 创建系统表（非旧的 scraper.db 表）
+        from app.db.schema_migrations import apply_required_columns
         from app.db.system_models import SystemBase
         async with self.engine.begin() as conn:
             await conn.run_sync(SystemBase.metadata.create_all)
+            # create_all 只建新表, 不会修改已存在的旧表, 历史库缺列必须在这里补齐。
+            # 注意: 启动流程 (main.py -> init_database) 走的是本类而非
+            # SystemDatabase, 迁移只写在那边曾导致 scan_records 缺 removed_files,
+            # 直到 INSERT 时才报 "no column named removed_files"。
+            await apply_required_columns(conn, db_label=self.database_url)
 
         # 标记为已初始化
         self._initialized = True

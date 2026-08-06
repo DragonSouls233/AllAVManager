@@ -198,7 +198,7 @@ async def detect_missing(
     directories: Optional[list[str]] = Query(None, description="按目录范围检测（匹配 output_dir/file_path）"),
     fields: Optional[list[str]] = Query(None, description="仅报告指定字段类型的缺失（如 title,cover,actors）"),
     check_critical_only: bool = Query(False, description="仅检查关键字段"),
-    module: Optional[str] = Query(None, description="模块名（jav/fc2/uncensored/chinese/western/pornhub），不传=中心数据库"),
+    module: Optional[str] = Query(None, description="模块名（jav/fc2/uncensored/chinese/western/pornhub），不传=遍历所有模块库聚合检测"),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -210,8 +210,21 @@ async def detect_missing(
     - 传 status：按状态过滤
     - 传 directories：仅检测该目录范围内的电影（支持演员文件夹定向补刮）
     - 传 fields：仅报告指定字段类型的缺失
-    - 传 module：指定模块数据库（jav/fc2/...），不传则用中心数据库 scraper.db.movies
+    - 传 module：指定模块数据库（jav/fc2/...）；不传则遍历所有模块库聚合检测（已废弃的中心数据库 scraper.db 不再使用）
     """
+    # 未传 module 时遍历所有模块库聚合检测（不再依赖已废弃的中心数据库 scraper.db）
+    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+
+    async def _detect_across_modules(method: str, **kwargs) -> list:
+        infos: list = []
+        for m in ALL_MODULES:
+            try:
+                det = MissingDetector(check_critical_only=check_critical_only, module_name=m)
+                infos.extend(await getattr(det, method)(**kwargs))
+            except Exception as e:
+                logger.warning(f"补刮检测模块 {m} 失败: {e}")
+        return infos
+
     detector = MissingDetector(check_critical_only=check_critical_only, module_name=module)
 
     missing_infos = []
@@ -225,17 +238,34 @@ async def detect_missing(
         if info:
             missing_infos = [info]
     elif status:
-        missing_infos = await detector.detect_batch(status=status)
+        # 按状态过滤：指定模块查该模块，未指定则跨所有模块
+        if module:
+            missing_infos = await detector.detect_batch(status=status)
+        else:
+            missing_infos = await _detect_across_modules("detect_batch", status=status)
     elif directories:
         if module:
             # 传了 module 时不支持按目录过滤，直接全量检测
             missing_infos = await detector.detect_all()
         else:
-            ids = await _find_movie_ids_in_directories(directories, session)
-            if ids:
-                missing_infos = await detector.detect_batch(movie_ids=ids)
+            # 未传 module：逐模块按目录找 id 后聚合检测
+            mod_ids: list[int] = []
+            for m in ALL_MODULES:
+                try:
+                    det = MissingDetector(check_critical_only=check_critical_only, module_name=m)
+                    async with det._get_session() as s:
+                        ids = await _find_movie_ids_in_directories(directories, s)
+                        mod_ids.extend(ids)
+                except Exception as e:
+                    logger.warning(f"补刮目录扫描模块 {m} 失败: {e}")
+            if mod_ids:
+                missing_infos = await _detect_across_modules("detect_batch", movie_ids=mod_ids)
     else:
-        missing_infos = await detector.detect_all()
+        # 全量检测：指定模块查该模块，未指定则跨所有模块
+        if module:
+            missing_infos = await detector.detect_all()
+        else:
+            missing_infos = await _detect_across_modules("detect_all")
 
     # 按指定字段类型过滤报告（不影响实际补刮，仅让检测结果与勾选一致）
     if fields:
@@ -426,37 +456,42 @@ async def get_patch_report(job_id: str):
 async def get_patch_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(get_session),
+    module: str = Query("jav", description="模块名（jav/fc2/uncensored/chinese/western/pornhub），不传默认 jav"),
 ):
     """
     获取补刮历史记录
-    
-    从数据库 patch_records 表查询
+
+    从指定模块的 patch_records 表查询（patch_records 为每模块独立表，不再存于中心库 system.db）
     """
-    query = select(PatchRecord).order_by(PatchRecord.patched_at.desc())
-    
-    # 计算总数
-    count_query = select(func.count()).select_from(query.subquery())
-    total = await session.scalar(count_query)
-    
-    # 分页
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    result = await session.execute(query)
-    records = result.scalars().all()
-    
-    return {
-        "total": total or 0,
-        "items": [
-            {
-                "id": r.id,
-                "movie_id": r.movie_id,
-                "patch_type": r.patch_type,
-                "status": r.status,
-                "patched_at": r.patched_at.isoformat() if r.patched_at else None,
-            }
-            for r in records
-        ],
-    }
+    PatchRecord = get_module_model(module, "patch_record")
+    session = await get_module_session(module)
+    try:
+        query = select(PatchRecord).order_by(PatchRecord.patched_at.desc())
+
+        # 计算总数
+        count_query = select(func.count()).select_from(query.subquery())
+        total = await session.scalar(count_query)
+
+        # 分页
+        query = query.offset((page - 1) * page_size).limit(page_size)
+        result = await session.execute(query)
+        records = result.scalars().all()
+
+        return {
+            "total": total or 0,
+            "items": [
+                {
+                    "id": r.id,
+                    "movie_id": r.movie_id,
+                    "patch_type": r.patch_type,
+                    "status": r.status,
+                    "patched_at": r.patched_at.isoformat() if r.patched_at else None,
+                }
+                for r in records
+            ],
+        }
+    finally:
+        await session.close()
 
 
 # ===== Background Task =====
@@ -498,8 +533,8 @@ async def _run_patch_background(job_id: str, options: PatchOptions):
             f"失败 {result.total_failed})"
         )
 
-        # 保存到数据库
-        await _save_patch_records(result)
+        # 保存到数据库（按当前补刮模块落库；未指定模块默认 jav）
+        await _save_patch_records(result, module=options.module or "jav")
 
     except Exception as e:
         logger.error(f"后台补刮任务 {job_id} 异常崩溃: {e}", exc_info=True)
@@ -511,13 +546,14 @@ async def _run_patch_background(job_id: str, options: PatchOptions):
             })
 
 
-async def _save_patch_records(result: PatchJobResult):
-    """保存补刮记录到数据库"""
-    from app.db.database import get_db
-    
-    db = get_db()
-    
-    async with db.session() as session:
+async def _save_patch_records(result: PatchJobResult, module: str = "jav"):
+    """保存补刮记录到指定模块的数据库（patch_records 为每模块独立表）"""
+    from app.db.module_db import ModuleDatabase
+
+    PatchRecord = get_module_model(module, "patch_record")
+    mod_db = ModuleDatabase.get_instance(module)
+    session = await mod_db.get_session()
+    try:
         for pr in result.results:
             record = PatchRecord(
                 movie_id=pr.movie_id,
@@ -529,5 +565,10 @@ async def _save_patch_records(result: PatchJobResult):
                 patched_at=pr.finished_at or datetime.now(),
             )
             session.add(record)
-        
+
         await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()

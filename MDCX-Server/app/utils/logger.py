@@ -80,7 +80,13 @@ def setup_logging(
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     # 清除现有处理器(避免重复)
+    # 2026-08-05 修复: 保留 crash_logger.bootstrap_logging() 挂上的引导 handler。
+    # 此前无条件 clear() 会把进程最早期建立的文件日志一并清掉，导致
+    # "启动阶段有日志、进入 lifespan 后反而断档"的诡异现象。
+    _preserved = [h for h in root_logger.handlers if getattr(h, "_mdcx_bootstrap", False)]
     root_logger.handlers.clear()
+    for _h in _preserved:
+        root_logger.addHandler(_h)
 
     # 控制台处理器(彩色)
     if console:

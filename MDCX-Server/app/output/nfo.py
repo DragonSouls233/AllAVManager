@@ -216,6 +216,42 @@ class NFOGenerator:
             return None
 
     @staticmethod
+    def _normalize_date(value):
+        """把 release_date / last_played_at 统一成 date/datetime。
+
+        scraped_data 里的日期字段可能是字符串(如 NFO 缓存的 .isoformat(),
+        或 scraper 直接塞的 str),而 NFO 生成器内部用 .strftime()。这里做容错转换,
+        避免 'str' object has no attribute 'strftime'。
+        """
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None
+            # 完整字符串优先(可能含时间), 再退化为前 19 / 10 位; datetime 格式优先于纯日期
+            candidates = [s, s[:19], s[:10]]
+            fmts = [
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y-%m-%d",
+                "%Y/%m/%d",
+            ]
+            for c in candidates:
+                for fmt in fmts:
+                    try:
+                        return datetime.strptime(c, fmt)
+                    except Exception:
+                        continue
+            return None
+        return None
+
+    @staticmethod
     def _parse_json_field(v) -> list:
         """Movie ORM 上 genre/tag/sample_images 是 JSON 字符串."""
         if v is None or v == "":
@@ -240,6 +276,14 @@ class NFOGenerator:
         字段对齐 JavInfo 真实样例(SSIS-018.nfo),覆盖 40+ 字段。
         """
         root = ET.Element("movie")
+
+        # 兼容 release_date / last_played_at 可能为字符串的情况：
+        # - scraper 的 ScrapeResult.release_date 实际常是 str（dataclass 不强制类型）
+        # - NFO 缓存命中时 strategy.py 用 .isoformat() 存成字符串
+        # _build_xml 内部对这两个字段调 .strftime(), 这里统一转换为 date/datetime,
+        # 避免 'str' object has no attribute 'strftime'。
+        release_date = self._normalize_date(getattr(result, "release_date", None))
+        last_played = self._normalize_date(getattr(result, "last_played_at", None))
 
         # === 标题信息 ===
         self._add_element(root, "title", result.title)
@@ -266,18 +310,18 @@ class NFOGenerator:
             self._add_cdata_element(root, "originalplot", original_plot)
 
         # tagline: 宣传语(用发行日期或 plot_short)
-        if result.release_date:
-            self._add_cdata_element(root, "tagline", f"发行日期 {result.release_date.strftime('%Y-%m-%d')}")
+        if release_date:
+            self._add_cdata_element(root, "tagline", f"发行日期 {release_date.strftime('%Y-%m-%d')}")
         elif getattr(result, "plot_short", None):
             self._add_cdata_element(root, "tagline", result.plot_short)
 
         # === 日期 ===
-        if result.release_date:
-            date_str = result.release_date.strftime("%Y-%m-%d")
+        if release_date:
+            date_str = release_date.strftime("%Y-%m-%d")
             self._add_element(root, "premiered", date_str)
             self._add_element(root, "releasedate", date_str)
             self._add_element(root, "release", date_str)
-            self._add_element(root, "year", str(result.release_date.year))
+            self._add_element(root, "year", str(release_date.year))
 
         # === 时长 ===
         if result.duration:
@@ -388,21 +432,24 @@ class NFOGenerator:
     def _add_kodi_extras(self, root: ET.Element, result: ScrapeResult) -> None:
         """添加 Kodi 兼容的额外字段
 
-        Kodi NFO 规范参考：https://kodi.wiki/view/NFO_files/Movies
-        主要补充以下字段（与 Emby/Jellyfin 共有部分会去重）：
-        - <uniqueId>：唯一标识（番号 + 来源）
-        - <ratings>：评分聚合（含 max/votes/default 属性）
-        - <userrating>：用户评分（1-10）
-        - <country>：出品国家（默认 Japan）
-        - <code>：番号（Kodi 专用字段）
-        - <aired>：播出日期（Kodi 使用此字段而非 premiered）
-        - <tagline>：副标题/宣传语
-        - <dateadded>：入库时间（ISO 8601）
-        - <playcount>：播放次数
-        - <lastplayed>：最后播放时间
-        - <art>：艺术图块（poster/fanart/thumb/landscape/banner/clearart/clearlogo）
-        - <fileinfo><streamdetails>：视频/音频/字幕流信息（如有）
+        release_date 可能为字符串(同 _build_xml 的容错说明), 这里统一归一化。
         """
+        release_date = self._normalize_date(getattr(result, "release_date", None))
+
+        # Kodi NFO 规范参考：https://kodi.wiki/view/NFO_files/Movies
+        # 主要补充以下字段（与 Emby/Jellyfin 共有部分会去重）：
+        # - <uniqueId>：唯一标识（番号 + 来源）
+        # - <ratings>：评分聚合（含 max/votes/default 属性）
+        # - <userrating>：用户评分（1-10）
+        # - <country>：出品国家（默认 Japan）
+        # - <code>：番号（Kodi 专用字段）
+        # - <aired>：播出日期（Kodi 使用此字段而非 premiered）
+        # - <tagline>：副标题/宣传语
+        # - <dateadded>：入库时间（ISO 8601）
+        # - <playcount>：播放次数
+        # - <lastplayed>：最后播放时间
+        # - <art>：艺术图块（poster/fanart/thumb/landscape/banner/clearart/clearlogo）
+        # - <fileinfo><streamdetails>：视频/音频/字幕流信息（如有）
         # uniqueId：番号作为唯一标识
         unique_id = ET.SubElement(root, "uniqueId")
         unique_id.text = result.code
@@ -428,8 +475,8 @@ class NFOGenerator:
         self._add_element(root, "country", "Japan")
 
         # aired（Kodi 使用此字段识别播出日期）
-        if result.release_date:
-            self._add_element(root, "aired", result.release_date.strftime("%Y-%m-%d"))
+        if release_date:
+            self._add_element(root, "aired", release_date.strftime("%Y-%m-%d"))
 
         # tagline（如有 plot_short 则用之，否则省略）
         plot_short = getattr(result, "plot_short", None)
@@ -444,7 +491,7 @@ class NFOGenerator:
         if play_count:
             self._add_element(root, "playcount", str(play_count))
 
-        last_played = getattr(result, "last_played_at", None)
+        last_played = self._normalize_date(getattr(result, "last_played_at", None))
         if last_played:
             self._add_element(root, "lastplayed", last_played.strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -519,13 +566,15 @@ class NFOGenerator:
         type_elem = ET.SubElement(actor_elem, "type")
         type_elem.text = "Actor"
 
-        if actor.japanese_name:
+        jp_name = getattr(actor, "japanese_name", None)
+        if jp_name:
             jp_name_elem = ET.SubElement(actor_elem, "alt_name")
-            jp_name_elem.text = actor.japanese_name
+            jp_name_elem.text = jp_name
 
-        if actor.avatar_url:
+        avatar = getattr(actor, "avatar_url", None)
+        if avatar:
             thumb_elem = ET.SubElement(actor_elem, "thumb")
-            thumb_elem.text = actor.avatar_url
+            thumb_elem.text = avatar
 
     def _build_streamdetails(self, file_path: str) -> Optional[ET.Element]:
         """通过 ffprobe 解析视频流信息，构建 <streamdetails> 元素
@@ -679,11 +728,13 @@ class ActorNFOGenerator:
             
             self._add_element(root, "name", actor.name)
             
-            if actor.japanese_name:
-                self._add_element(root, "alt_name", actor.japanese_name)
+            jp_name2 = getattr(actor, "japanese_name", None)
+            if jp_name2:
+                self._add_element(root, "alt_name", jp_name2)
             
-            if actor.avatar_url:
-                self._add_element(root, "thumb", actor.avatar_url)
+            avatar2 = getattr(actor, "avatar_url", None)
+            if avatar2:
+                self._add_element(root, "thumb", avatar2)
             
             # 写入文件
             xml_str = self._prettify(root)
