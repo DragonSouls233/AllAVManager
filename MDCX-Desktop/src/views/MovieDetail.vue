@@ -107,15 +107,24 @@
       </div>
     </div>
 
-    <!-- 预览图 -->
-    <section class="preview-section" v-if="movie && sampleImages.length">
-      <h3 class="sec-title">预览图</h3>
-      <div class="preview-grid">
-        <div v-for="(src, idx) in gallery" :key="idx" class="preview-item">
-          <el-image :src="src" fit="cover" :preview-src-list="gallery" :initial-index="idx" loading="lazy" hide-on-click-modal>
-            <template #error><div class="preview-error"><el-icon><PictureFilled /></el-icon></div></template>
-            <template #placeholder><div class="preview-loading"><el-icon class="is-loading"><Loading /></el-icon></div></template>
-          </el-image>
+    <!-- 封面 + 预览一行 -->
+    <section class="media-section" v-if="movie">
+      <h3 class="sec-title">媒体</h3>
+      <div class="media-row">
+        <div class="media-cover">
+          <img :src="coverUrl" :alt="movie.code" @error="onCoverError" />
+          <div class="cover-label" v-if="coverError">无封面</div>
+        </div>
+        <div class="media-gallery" v-if="sampleImages.length">
+          <div v-for="(src, idx) in gallery" :key="idx" class="gallery-item">
+            <el-image :src="src" fit="cover" :preview-src-list="gallery" :initial-index="idx" loading="lazy" hide-on-click-modal>
+              <template #error><div class="preview-error"><el-icon><PictureFilled /></el-icon></div></template>
+            </el-image>
+          </div>
+        </div>
+        <div v-else class="media-empty">
+          <el-icon :size="32"><PictureFilled /></el-icon>
+          <p>暂无预览图，请先刮削影片补充封面和截屏</p>
         </div>
       </div>
     </section>

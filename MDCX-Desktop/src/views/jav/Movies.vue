@@ -14,6 +14,7 @@
         <el-option :value="24" label="24" />
         <el-option :value="48" label="48" />
         <el-option :value="96" label="96" />
+        <el-option :value="192" label="192" />
       </el-select>
       <el-button type="primary" @click="search">搜索</el-button>
       <el-button @click="resetFilters">重置</el-button>
@@ -66,7 +67,7 @@
       <el-pagination
         v-model:current-page="store.page"
         v-model:page-size="store.pageSize"
-        :page-sizes="[12, 24, 48, 96]"
+        :page-sizes="[12, 24, 48, 96, 192]"
         :total="store.total"
         layout="total, sizes, prev, pager, next"
         @current-change="loadMovies"
