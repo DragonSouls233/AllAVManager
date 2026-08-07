@@ -56,7 +56,7 @@ class Database:
             def _set_sqlite_pragmas(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.execute("PRAGMA busy_timeout=120000")  # 120s 容忍度高并发写入
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.execute("PRAGMA cache_size=-512000")   # 512MB（32GB内存）

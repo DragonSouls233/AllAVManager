@@ -92,7 +92,7 @@ class ImageProcessor:
     def __init__(
         self,
         output_dir: str,
-        max_concurrent: int = 5,
+        max_concurrent: int = 12,
         timeout: int = 30,
     ):
         """

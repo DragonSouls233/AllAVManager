@@ -50,3 +50,19 @@
 - 用户要求：直接修改 G 盘源码并给出部署命令，**不要让用户手动改代码或自己贴代码片段**。
 - 服务器部署因共享只读，只能由用户在服务器侧执行复制 + 重启。
 - 回复语言：简体中文。
+
+## 认证中间件白名单（重要，媒体端点必读）
+
+- `app/api/auth_middleware.py` 的 `AuthMiddleware` 是全局 ASGI 中间件，对所有 `/api/` 请求校验 Bearer token。
+- 浏览器**不会**给 `<img>` / `<video>` 资源请求带 `Authorization` 头。因此任何「经 `<img>`/`<video>` 直连加载的图片/视频字节端点」**必须在 `AuthMiddleware` 白名单放行**，否则一律 401 → 裂图/裂视频。
+- 已白名单的：`/api/v1/actors/.../avatar/file`、`/api/v1/movies/.../{cover,poster,thumb}/file`、模块 `/{mod}/.../cover/file` 与 `/{mod}/.../avatar/file`、`/{mod}/.../play/file`、HLS、`/api/v1/player/...` 静态资源、`/api/v1/previews/.../file`。
+- **新增媒体文件代理端点时，第一反应就是去 `auth_middleware.py` 加白名单**，别只在路由层考虑鉴权。
+- 反面案例：详情页预览图(previews.py)上线后全裂图，根因就是漏了 `/api/v1/previews/.../file` 白名单（见 `2026-08-07.md`）。
+
+## 用户偏好：本地优先（重要架构取向）
+
+- 用户**明确偏好本地方案**而非远程外链：刮削时把站点 URL 数据下载到 `MOVIES/{模块}/{番号}/`，下载后除非重刮/删除否则不变更。
+- 详情页/前端**只读本地文件**，通过后端代理端点（`/previews/…`）暴露本地图，彻底绕过 DMM/javbus 的 Referer 防盗链（直连外链会 403 裂图）。
+- 落盘结构：`{data_base}/movies/{module}/{code}/` 下 `poster/fanart/thumb/cover.jpg + movie.nfo + extrafanart/01~NN.jpg`。
+- 设计规范（详情页）：左封面右信息 → 下面简介 → 下面预览区，**第一张是封面，后续是预览图**。
+- 已落地实现见 `2026-08-07.md`（previews.py 通用路由 + MovieDetail.vue 改读本地接口）。

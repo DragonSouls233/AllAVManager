@@ -56,10 +56,10 @@ class ModuleDatabase:
         self.engine = create_async_engine(
             db_url,
             echo=False,
-            pool_size=10,
-            max_overflow=20,
+            pool_size=20,
+            max_overflow=30,
             pool_pre_ping=True,
-            pool_recycle=300,
+            pool_recycle=600,
             connect_args={"check_same_thread": False},
         )
 
@@ -76,11 +76,13 @@ class ModuleDatabase:
             def _set_sqlite_pragmas(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.execute("PRAGMA busy_timeout=120000")  # 120s, 12并发补刮时避免锁冲突
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.execute("PRAGMA synchronous=NORMAL")
-                cursor.execute("PRAGMA cache_size=-64000")
+                cursor.execute("PRAGMA cache_size=-256000")  # 256MB, 32GB内存充裕
                 cursor.execute("PRAGMA temp_store=MEMORY")
+                cursor.execute("PRAGMA mmap_size=2147483648")  # mmap 2GB 加速只读查询
+                cursor.execute("PRAGMA page_size=16384")       # 16KB 页减少I/O次数
                 cursor.close()
 
     async def init(self) -> None:

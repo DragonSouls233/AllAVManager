@@ -135,6 +135,12 @@ class AuthMiddleware:
             if path.endswith("/avatar/file"):
                 await self.app(scope, receive, send)
                 return
+        # 本地预览图（extrafanart）端点放行（浏览器 <img> 标签无法携带 Bearer token）
+        # 与 cover/file / avatar/file 同理：本地图片资源，供详情页预览区直接 <img> 加载，
+        # 否则所有预览图请求都被中间件拦截成 401 → 详情页预览区全裂图。
+        if path.startswith("/api/v1/previews/") and path.endswith("/file"):
+            await self.app(scope, receive, send)
+            return
         # 视频流端点放行（浏览器 <video> 标签无法携带 Bearer token）
         if path.startswith("/api/v1/movies/") and path.endswith("/play/file"):
             await self.app(scope, receive, send)

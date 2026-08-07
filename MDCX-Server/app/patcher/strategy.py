@@ -970,6 +970,12 @@ class PatchEngine:
                         query = f"UPDATE {movie_table} SET {', '.join(updates)} WHERE id = :id"
                         await session.execute(text(query), params)
 
+                    # 标记刮削完成，这样影片库的"已刮削/待刮削"筛选项才能正确区分
+                    await session.execute(
+                        text(f"UPDATE {movie_table} SET status = 'scraped' WHERE id = :id"),
+                        {"id": mod_movie_id},
+                    )
+
                     await session.commit()
 
             return True

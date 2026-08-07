@@ -5,6 +5,7 @@
 
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Optional, Set
@@ -422,6 +423,127 @@ def get_movie_fanart_path(module_name: str, code: str) -> Path:
 def get_movie_thumb_path(module_name: str, code: str) -> Path:
     """获取缩略图的本地路径"""
     return get_movie_local_dir(module_name, code) / "thumb.jpg"
+
+
+# ========== 本地预览图（extrafanart）支持 ==========
+
+# 预览图可识别的扩展名
+PREVIEW_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".avif")
+
+# 系统垃圾文件（Windows/macOS 会在共享目录里自动生成，必须排除）
+_JUNK_FILENAMES = {"thumbs.db", ".ds_store", "desktop.ini"}
+
+# 单图最小体积，低于此值视为下载失败的残留文件
+_MIN_IMAGE_BYTES = 1024
+
+
+def get_movie_extrafanart_dir(module_name: str, code: str) -> Path:
+    """获取预览图（剧照）目录的本地路径
+
+    格式: {data_base}/movies/{module}/{code}/extrafanart/
+    例如: L:/data/movies/jav/CJOD-507/extrafanart/
+    """
+    return get_movie_local_dir(module_name, code) / "extrafanart"
+
+
+def _natural_sort_key(name: str) -> list:
+    """自然排序键：让 2.jpg 排在 10.jpg 前面"""
+    return [
+        int(token) if token.isdigit() else token.lower()
+        for token in re.split(r"(\d+)", name)
+    ]
+
+
+def _list_images_in_dir(directory: Path, limit: int = 200) -> list[str]:
+    """列出目录内的有效图片文件（自然排序，已过滤垃圾文件与残缺文件）"""
+    try:
+        if not directory.exists() or not directory.is_dir():
+            return []
+    except (OSError, PermissionError):
+        return []
+
+    picked: list[Path] = []
+    try:
+        for entry in directory.iterdir():
+            try:
+                if entry.name.lower() in _JUNK_FILENAMES:
+                    continue
+                if entry.suffix.lower() not in PREVIEW_IMAGE_EXTS:
+                    continue
+                stat = entry.stat()
+                if not entry.is_file() or stat.st_size < _MIN_IMAGE_BYTES:
+                    continue
+                picked.append(entry)
+            except (OSError, PermissionError):
+                continue
+    except (OSError, PermissionError):
+        return []
+
+    picked.sort(key=lambda p: _natural_sort_key(p.name))
+    return [str(p) for p in picked[:limit]]
+
+
+def list_movie_preview_files(
+    module_name: str,
+    code: Optional[str],
+    file_path: Optional[str] = None,
+    limit: int = 200,
+) -> list[str]:
+    """列出某部影片本地已下载的预览图（extrafanart）绝对路径
+
+    查找优先级（命中即返回，不做合并去重）：
+    1. {data_base}/movies/{module}/{code}/extrafanart/   ← 刮削器标准落盘目录
+    2. {视频所在目录}/extrafanart/                        ← 影片同级目录
+    3. {视频所在目录}/{code}/extrafanart/                 ← 影片同级番号子目录
+
+    Args:
+        module_name: 模块名（jav/fc2/uncensored/chinese/pornhub/western）
+        code: 番号
+        file_path: 视频文件绝对路径（可选，用于回退查找）
+        limit: 最多返回多少张
+
+    Returns:
+        图片绝对路径列表，自然排序；无本地图时返回空列表
+    """
+    candidates: list[Path] = []
+
+    if code:
+        candidates.append(get_movie_extrafanart_dir(module_name, code))
+
+    if file_path:
+        try:
+            video_dir = Path(file_path).parent
+            candidates.append(video_dir / "extrafanart")
+            if code:
+                candidates.append(video_dir / code / "extrafanart")
+        except (OSError, ValueError):
+            pass
+
+    for directory in candidates:
+        images = _list_images_in_dir(directory, limit)
+        if images:
+            return images
+    return []
+
+
+def get_movie_main_image_path(module_name: str, code: Optional[str]) -> Optional[str]:
+    """获取影片主图（横版大图优先）的本地路径
+
+    优先级: fanart.jpg → thumb.jpg → cover.jpg → poster.jpg
+    用于详情页「预览」区第一张展示的封面大图。
+    """
+    if not code:
+        return None
+    base = get_movie_local_dir(module_name, code)
+    for name in ("fanart.jpg", "thumb.jpg", "cover.jpg", "poster.jpg",
+                 "fanart.png", "cover.png", "poster.png"):
+        candidate = base / name
+        try:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+        except (OSError, PermissionError):
+            continue
+    return None
 
 
 def get_actor_avatar_path(actor_name: str) -> Path:

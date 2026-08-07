@@ -4,7 +4,7 @@ API 路由模块
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates
+from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates, previews
 
 api_router = APIRouter()
 
@@ -92,3 +92,4 @@ api_router.include_router(stash_api.router, prefix="/stash", tags=["Stash兼容"
 api_router.include_router(read_only.router, prefix="/read-only", tags=["唯读来源"])
 api_router.include_router(actresses.router, prefix="/actresses", tags=["女优收藏"])
 api_router.include_router(duplicates.router, prefix="/duplicates", tags=["重复番号扫描"])
+api_router.include_router(previews.router, prefix="/previews", tags=["本地预览图"])

@@ -107,32 +107,58 @@
       </div>
     </div>
 
-    <!-- 封面 + 预览一行 -->
-    <section class="media-section" v-if="movie">
-      <h3 class="sec-title">媒体</h3>
-      <div class="media-row">
-        <div class="media-cover">
-          <img :src="coverUrl" :alt="movie.code" @error="onCoverError" />
-          <div class="cover-label" v-if="coverError">无封面</div>
-        </div>
-        <div class="media-gallery" v-if="sampleImages.length">
-          <div v-for="(src, idx) in gallery" :key="idx" class="gallery-item">
-            <el-image :src="src" fit="cover" :preview-src-list="gallery" :initial-index="idx" loading="lazy" hide-on-click-modal>
-              <template #error><div class="preview-error"><el-icon><PictureFilled /></el-icon></div></template>
-            </el-image>
-          </div>
-        </div>
-        <div v-else class="media-empty">
-          <el-icon :size="32"><PictureFilled /></el-icon>
-          <p>暂无预览图，请先刮削影片补充封面和截屏</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- 简介 -->
+    <!-- 内容简介 -->
     <section class="plot-section" v-if="movie && movie.plot">
       <h3 class="sec-title">简介</h3>
       <div class="plot-text">{{ movie.plot }}</div>
+    </section>
+
+    <!-- 预览：第一张为封面，后续为本地剧照 -->
+    <section class="preview-section" v-if="movie">
+      <h3 class="sec-title">
+        <span>预览</span>
+        <span class="sec-meta" v-if="previewMeta">{{ previewMeta }}</span>
+        <el-button class="sec-action" text size="small" :loading="previewLoading" @click="loadPreviews(true)">
+          <el-icon><Refresh /></el-icon> 重新扫描
+        </el-button>
+      </h3>
+
+      <div v-if="previewLoading && !gallery.length" class="preview-skeleton">
+        <div v-for="n in 6" :key="n" class="skeleton-item" />
+      </div>
+
+      <div v-else-if="gallery.length" class="preview-grid">
+        <div
+          v-for="(item, idx) in gallery"
+          :key="item.src"
+          class="preview-item"
+          :class="{ 'is-cover': item.isCover }"
+        >
+          <el-image
+            :src="item.src"
+            fit="cover"
+            :preview-src-list="previewSrcList"
+            :initial-index="idx"
+            loading="lazy"
+            hide-on-click-modal
+            preview-teleported
+          >
+            <template #error>
+              <div class="preview-error"><el-icon><PictureFilled /></el-icon></div>
+            </template>
+            <template #placeholder>
+              <div class="preview-loading"><el-icon class="is-loading"><Loading /></el-icon></div>
+            </template>
+          </el-image>
+          <span v-if="item.isCover" class="preview-badge">封面</span>
+        </div>
+      </div>
+
+      <div v-else class="media-empty">
+        <el-icon :size="32"><PictureFilled /></el-icon>
+        <p v-if="previewSource === 'remote'">仅有远程外链预览图（易被防盗链拦截），建议重新刮削下载到本地</p>
+        <p v-else>本地暂无预览图，请刮削该影片以下载封面与剧照</p>
+      </div>
     </section>
 
     <!-- 操作栏 -->
@@ -225,14 +251,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, shallowRef } from 'vue'
+import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ArrowLeft, VideoPlay, Star, StarFilled, MagicStick,
-  PictureFilled, Loading, Edit, DocumentCopy
+  PictureFilled, Loading, Edit, DocumentCopy, Refresh
 } from '@element-plus/icons-vue'
-import { getMovieCoverUrl, defaultCover, getFileProxyUrl } from '@/utils/media'
+import { getMovieCoverUrl, defaultCover, getFileProxyUrl, getServerBaseUrl } from '@/utils/media'
+import http from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -371,17 +398,80 @@ const coverUrl = computed(() => {
   if (sampleImages.value.length) return toDisplayUrl(sampleImages.value[0])
   return defaultCover(movie.value?.code)
 })
+const onCoverError = () => { coverError.value = true }
+
+// ---------- 预览图（本地优先） ----------
+// 后端 /api/v1/previews/{module}/{id} 会扫描
+//   {data_base}/movies/{module}/{code}/extrafanart/
+// 并把本地文件通过代理端点暴露出来，彻底绕开 DMM/javbus 的防盗链。
+const previewLoading = ref(false)
+const previewSource = ref('none')   // local | remote | none
+const previewImages = ref([])       // 后端返回的图片 URL 列表
+const previewCoverUrl = ref('')     // 本地主封面大图（fanart 优先）
+
+const absUrl = (u) => {
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u) || u.startsWith('data:')) return u
+  return `${getServerBaseUrl()}${u}`
+}
+
+const loadPreviews = async (refresh = false) => {
+  const mod = moduleType.value
+  const id = movieId.value
+  if (!mod || !id) return
+  previewLoading.value = true
+  try {
+    const res = await http.get(`/previews/${mod}/${id}`, {
+      params: refresh ? { refresh: true } : undefined,
+    })
+    previewSource.value = res?.source || 'none'
+    previewImages.value = Array.isArray(res?.images) ? res.images : []
+    previewCoverUrl.value = res?.cover || ''
+    if (refresh) {
+      ElMessage.success(
+        previewSource.value === 'local'
+          ? `已扫描到 ${previewImages.value.length} 张本地预览图`
+          : '本地未找到预览图'
+      )
+    }
+  } catch {
+    // 接口不可用时回退到 DB 中的 sample_images
+    previewSource.value = sampleImages.value.length ? 'remote' : 'none'
+    previewImages.value = sampleImages.value.map(toDisplayUrl).filter(Boolean)
+    previewCoverUrl.value = ''
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// 画廊：第一张固定为封面，后续为预览图
 const gallery = computed(() => {
   const list = []
-  if (hasDbCover.value) list.push(getMovieCoverUrl(movie.value))
-  for (const s of sampleImages.value) {
-    const u = toDisplayUrl(s)
-    if (u && !list.includes(u)) list.push(u)
+  const seen = new Set()
+
+  const push = (src, isCover = false) => {
+    if (!src || seen.has(src)) return
+    seen.add(src)
+    list.push({ src, isCover })
   }
-  if (!list.length) list.push(coverUrl.value)
+
+  // 1) 封面：优先本地主封面大图，否则退回模块封面端点
+  if (previewCoverUrl.value) push(absUrl(previewCoverUrl.value), true)
+  else if (hasDbCover.value) push(getMovieCoverUrl(movie.value), true)
+
+  // 2) 预览图
+  for (const u of previewImages.value) push(absUrl(u))
+
   return list
 })
-const onCoverError = () => { coverError.value = true }
+
+const previewSrcList = computed(() => gallery.value.map(i => i.src))
+
+const previewMeta = computed(() => {
+  const n = previewImages.value.length
+  if (!n) return ''
+  return previewSource.value === 'local' ? `本地 ${n} 张` : `远程外链 ${n} 张`
+})
 
 const displayGenres = computed(() => {
   const g = movie.value?.genre
@@ -405,6 +495,9 @@ const displayTags = computed(() => {
 const load = async () => {
   loading.value = true
   coverError.value = false
+  previewSource.value = 'none'
+  previewImages.value = []
+  previewCoverUrl.value = ''
   try {
     if (!apiRef.value) await loadApi()
     const api = apiRef.value
@@ -412,6 +505,8 @@ const load = async () => {
     const res = await api.get(movieId.value)
     movie.value = res
     checkFav()
+    // 加载本地预览图（不阻塞主流程）
+    loadPreviews()
     // 加载相关推荐：模块影片走模块自身的 /related 端点，主库走通用 /related
     try {
       const mod = moduleType.value
@@ -609,6 +704,11 @@ const saveEdit = async () => {
   } finally { saving.value = false }
 }
 
+// 路由参数变化时重新加载（Vue Router 复用了同一组件实例）
+watch(movieId, () => { load() })
+// 模块切换时重置 API 缓存，确保 loadApi 加载正确的模块接口
+watch(moduleType, () => { apiRef.value = null })
+
 onMounted(() => { load() })
 </script>
 
@@ -647,11 +747,37 @@ onMounted(() => { load() })
 .play-box:hover { opacity: .85; }
 .play-icon { font-size: 22px; }
 .preview-section, .plot-section, .related-section { margin-bottom: 24px; }
-.sec-title { font-size: 18px; font-weight: 700; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid var(--el-color-primary); color: var(--el-text-color-primary); }
-.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-.preview-item { border-radius: 6px; overflow: hidden; aspect-ratio: 16/10; background: var(--el-bg-color-page); }
-.preview-item :deep(.el-image) { width: 100%; height: 100%; }
+.sec-title { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid var(--el-color-primary); color: var(--el-text-color-primary); }
+.sec-meta { font-size: 12px; font-weight: 500; color: var(--el-text-color-secondary); padding: 2px 8px; border-radius: 10px; background: var(--el-fill-color-light); }
+.sec-action { margin-left: auto; font-weight: 500; }
+
+/* 预览网格：第一张封面跨两列突出显示 */
+.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.preview-item {
+  position: relative; border-radius: 8px; overflow: hidden; aspect-ratio: 16/10;
+  background: var(--el-fill-color-light); cursor: zoom-in;
+  transition: transform .3s cubic-bezier(.16,1,.3,1), box-shadow .3s cubic-bezier(.16,1,.3,1);
+}
+.preview-item:hover { transform: translateY(-3px) scale(1.015); box-shadow: 0 10px 24px rgba(0,0,0,.18); z-index: 2; }
+.preview-item.is-cover { grid-column: span 2; grid-row: span 2; aspect-ratio: 16/10; outline: 2px solid var(--el-color-primary); outline-offset: -2px; }
+.preview-item :deep(.el-image) { width: 100%; height: 100%; display: block; }
+.preview-item :deep(.el-image__inner) { transition: transform .4s cubic-bezier(.16,1,.3,1); }
+.preview-item:hover :deep(.el-image__inner) { transform: scale(1.04); }
+.preview-badge {
+  position: absolute; left: 8px; top: 8px; z-index: 3;
+  padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: .5px;
+  color: #fff; background: var(--el-color-primary); box-shadow: 0 2px 6px rgba(0,0,0,.25);
+}
 .preview-error, .preview-loading { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--el-text-color-disabled); }
+
+/* 骨架屏 */
+.preview-skeleton { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.skeleton-item { aspect-ratio: 16/10; border-radius: 8px; background: linear-gradient(90deg, var(--el-fill-color-light) 25%, var(--el-fill-color) 37%, var(--el-fill-color-light) 63%); background-size: 400% 100%; animation: sk 1.4s ease infinite; }
+@keyframes sk { 0% { background-position: 100% 50% } 100% { background-position: 0 50% } }
+
+/* 空状态 */
+.media-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 16px; border: 1px dashed var(--el-border-color); border-radius: 8px; color: var(--el-text-color-secondary); background: var(--el-fill-color-lighter); }
+.media-empty p { margin: 0; font-size: 13px; }
 .plot-text { font-size: 14px; line-height: 1.8; color: var(--el-text-color-regular); }
 .actions-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 24px; padding: 12px; background: var(--el-bg-color-page); border-radius: 8px; }
 .related-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
@@ -667,5 +793,8 @@ onMounted(() => { load() })
   .cover-col { flex: none; max-width: 240px; margin: 0 auto; }
   .hero-h1 { font-size: 18px; }
   .related-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .preview-grid, .preview-skeleton { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .preview-item.is-cover { grid-column: span 2; grid-row: auto; }
+  .preview-item:hover { transform: none; box-shadow: none; }
 }
 </style>

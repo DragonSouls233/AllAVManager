@@ -76,6 +76,7 @@ class AsyncHttpClient:
         self.rate_limit = rate_limit
 
         self._session: Optional[AsyncSession] = None
+        self._httpx_client: Optional[httpx.AsyncClient] = None  # httpx 持久客户端（复用连接）
         self._last_request_time: float = 0.0
         self._lock = asyncio.Lock()
         # 域名级速率限制（来自 Hazard804 MDCX）
@@ -102,7 +103,7 @@ class AsyncHttpClient:
         if self._session is None and not self._curl_failed:
             try:
                 self._session = AsyncSession(
-                    max_clients=200,
+                    max_clients=300,
                     verify=False,
                     max_redirects=20,
                     timeout=self.timeout,
@@ -177,10 +178,13 @@ class AsyncHttpClient:
         return merge_headers(fp_headers, None, explicit_headers)
     
     async def close_session(self) -> None:
-        """关闭会话"""
+        """关闭所有会话"""
         if self._session:
             await self._session.close()
             self._session = None
+        if self._httpx_client:
+            await self._httpx_client.aclose()
+            self._httpx_client = None
 
     async def _httpx_request(
         self,
@@ -190,42 +194,66 @@ class AsyncHttpClient:
         cookies: Optional[dict],
         kwargs: dict,
     ):
-        """curl_cffi 不可用时的降级实现（使用 httpx）。
+        """curl_cffi 不可用时的降级实现（使用 httpx 持久连接池）。
 
-        返回 httpx.Response，接口与 curl_cffi Response 兼容
-        （.status_code / .text / .content / .headers / .url / .json() / .encoding / .cookies），
-        因此调用方无需感知底层切换。httpx 在项目中被广泛验证稳定可用。
+        返回 httpx.Response，接口与 curl_cffi Response 兼容。
+        使用持久客户端复用 TCP 连接，避免每次创建/销毁的开销（尤其在高并发补刮时）。
         """
         import httpx
 
-        # httpx 不认识 curl_cffi 的 impersonate 指纹参数，剔除避免 TypeError
+        if self._httpx_client is None:
+            limits = httpx.Limits(max_connections=300, max_keepalive_connections=100)
+            transport = httpx.AsyncHTTPTransport(
+                limits=limits,
+                retries=1,  # httpx 内置重试（仅安全幂等方法）
+            )
+            self._httpx_client = httpx.AsyncClient(
+                proxy=self.proxy or None,
+                timeout=httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=10.0),
+                verify=False,
+                follow_redirects=True,
+                limits=limits,
+                transport=transport,
+            )
+
         params = kwargs.get("params")
         data = kwargs.get("data")
         json_body = kwargs.get("json")
 
-        async with httpx.AsyncClient(
-            proxy=self.proxy or None,
-            timeout=self.timeout,
-            verify=False,
-            follow_redirects=True,
-        ) as client:
+        try:
             if method == "POST":
-                resp = await client.post(
-                    url,
-                    headers=headers,
-                    cookies=cookies or {},
-                    data=data,
-                    json=json_body,
-                    params=params,
+                resp = await self._httpx_client.post(
+                    url, headers=headers, cookies=cookies or {},
+                    data=data, json=json_body, params=params,
                 )
             else:
-                resp = await client.get(
-                    url,
-                    headers=headers,
-                    cookies=cookies or {},
-                    params=params,
+                resp = await self._httpx_client.get(
+                    url, headers=headers, cookies=cookies or {}, params=params,
                 )
-            # 提前把响应体读入内存，避免退出 async with 后连接关闭导致 .content/.json() 失败
+            await resp.aread()
+            return resp
+        except Exception:
+            # 连接池可能因代理断开等原因损坏 / 半开连接，重建客户端再试一次
+            try:
+                await self._httpx_client.aclose()
+            except Exception:
+                pass
+            self._httpx_client = httpx.AsyncClient(
+                proxy=self.proxy or None,
+                timeout=httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=10.0),
+                verify=False,
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=300, max_keepalive_connections=100),
+            )
+            if method == "POST":
+                resp = await self._httpx_client.post(
+                    url, headers=headers, cookies=cookies or {},
+                    data=data, json=json_body, params=params,
+                )
+            else:
+                resp = await self._httpx_client.get(
+                    url, headers=headers, cookies=cookies or {}, params=params,
+                )
             await resp.aread()
             return resp
     

@@ -207,8 +207,8 @@ class PatchOptions:
     skip_verified: bool = True
     skip_complete: bool = True
     
-    # 并发控制
-    concurrency: int = 6
+    # 并发控制（针对 N150 4核 / 32G 优化：I/O 密集型任务，12 并发平衡吞吐与稳定性）
+    concurrency: int = 12
     
     # 报告选项
     generate_report: bool = True
@@ -649,7 +649,7 @@ async def run_patch_job(
     codes: Optional[list[str]] = None,
     directories: Optional[list[str]] = None,
     skip_recent_days: int = 7,
-    concurrency: int = 3,
+    concurrency: int = 8,
 ) -> PatchJobResult:
     """
     执行补刮任务的便捷函数
