@@ -42,6 +42,16 @@ const routes = [
         component: () => import('@/views/MovieDetail.vue')
       },
       {
+        path: 'anime',
+        name: 'AnimeMovies',
+        component: () => import('@/views/AnimeMovies.vue')
+      },
+      {
+        path: 'anime/series',
+        name: 'AnimeSeries',
+        component: () => import('@/views/AnimeSeries.vue')
+      },
+      {
         path: 'crawlers',
         name: 'Crawlers',
         component: () => import('@/views/Crawlers.vue')

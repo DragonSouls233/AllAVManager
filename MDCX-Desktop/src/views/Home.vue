@@ -53,6 +53,7 @@
         </div>
         <div class="module-actions" @click.stop>
           <el-button size="small" text @click="$router.push(mod.moviesRoute)">影片库</el-button>
+          <el-button size="small" text @click="$router.push(mod.seriesRoute)" v-if="mod.seriesRoute">系列</el-button>
           <el-button size="small" text @click="$router.push(mod.actorsRoute)">演员库</el-button>
           <el-button size="small" text @click="$router.push(mod.compareRoute)" v-if="mod.compareRoute">本地对比</el-button>
           <el-button size="small" text @click="$router.push(mod.patchRoute)" v-if="mod.patchRoute">补丁</el-button>
@@ -177,6 +178,9 @@ const modules = reactive([
   { key: 'western', label: '欧美', emoji: '🌍', color: 'linear-gradient(135deg,#b37feb,#d3adf7)',
     moviesRoute: '/western/movies', actorsRoute: '/western/actors', compareRoute: '/western/compare', patchRoute: '/western/patch',
     movies: 0, actors: 0, crawlers: 0, maturity: '★★☆☆☆' },
+  { key: 'anime', label: '日本里番', emoji: '📺', color: 'linear-gradient(135deg,#f06ec9,#b37feb)',
+    moviesRoute: '/anime', seriesRoute: '/anime/series', actorsRoute: null, compareRoute: null, patchRoute: null,
+    movies: 0, actors: 0, crawlers: 0, maturity: '★★★☆☆' },
 ])
 
 const handleCoverError = (event) => { event.target.src = defaultCover(event.target.alt) }

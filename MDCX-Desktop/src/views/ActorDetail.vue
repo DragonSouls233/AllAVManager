@@ -45,6 +45,9 @@
             <el-button text type="danger" size="small" @click="deleteAvatar" :loading="avatarDeleting">
               <el-icon><Delete /></el-icon> 删除头像
             </el-button>
+            <el-button text type="primary" size="small" @click="scrapeProfile" :loading="scrapingProfile">
+              <el-icon><MagicStick /></el-icon> 补充资料
+            </el-button>
             <el-tag v-if="newMovieCount > 0" type="danger" effect="dark" size="small">
               {{ newMovieCount }} 部新片
             </el-tag>
@@ -264,10 +267,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, shallowRef } from 'vue'
+import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete } from '@element-plus/icons-vue'
+import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete, MagicStick } from '@element-plus/icons-vue'
 import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl, getFileProxyUrl } from '@/utils/media'
 
 const route = useRoute()
@@ -304,7 +307,9 @@ async function getApi () {
   checkActorNewMovies = m[`check${prefix}ActorNewMovies`] || commonApi.checkActorNewMovies
   uploadActorAvatar = m[`upload${prefix}ActorAvatar`] || commonApi.uploadActorAvatar
   deleteActorAvatar = m[`delete${prefix}ActorAvatar`] || commonApi.deleteActorAvatar
-  apiRef.value = { getActor, getActorMovies, getActorTimeline, getActorTags, addActorTag, deleteActorTag, checkActorNewMovies, uploadActorAvatar, deleteActorAvatar }
+  // 模块级演员资料补充刮削端点（/modules/{module}/actors/{id}/scrape-profile）
+  scrapeActorProfile = m[`scrape${prefix}ActorProfile`] || (async (id) => commonApi.api.post(`/modules/${name}/actors/${id}/scrape-profile`))
+  apiRef.value = { getActor, getActorMovies, getActorTimeline, getActorTags, addActorTag, deleteActorTag, checkActorNewMovies, uploadActorAvatar, deleteActorAvatar, scrapeActorProfile }
   return apiRef.value
 }
 const loading = ref(false)
@@ -340,6 +345,28 @@ const subscribed = ref(false)
 const subscribing = ref(false)
 const checking = ref(false)
 const newMovieCount = ref(0)
+
+// 补充资料（演员专属资料刮削）
+const scrapingProfile = ref(false)
+const scrapeProfile = async () => {
+  if (!actor.value) return
+  scrapingProfile.value = true
+  try {
+    const api = await getApi()
+    const res = await api.scrapeActorProfile(actorId.value)
+    const data = res.data || res
+    if (data && data.status === 'not_found') {
+      ElMessage.warning(`未找到 ${actor.value.name} 的资料`)
+    } else {
+      ElMessage.success(`已补充 ${actor.value.name} 的资料`)
+      await loadActor()
+    }
+  } catch (e) {
+    ElMessage.error('补充资料失败：' + (e.response?.data?.detail || e.message))
+  } finally {
+    scrapingProfile.value = false
+  }
+}
 
 // 演员头像：有 avatar_url 直接加载/代理，无则走后端 API
 function getActorAvatar(actor) {
@@ -665,11 +692,39 @@ const handleTabChange = (name) => {
   }
 }
 
-onMounted(() => {
+// ===== 组件复用修复 =====
+// Vue Router 在同一路由层级切换参数（/jav/actors/322 → /jav/actors/123）时会复用组件实例，
+// onMounted 只触发一次，若不 watch 路由参数变化，点开新演员仍显示上一个演员的信息。
+const loadAll = () => {
+  // 先清空全部状态，避免残留上一个演员的数据（特别是 timeline 懒加载缓存）
+  actor.value = null
+  movies.value = []
+  movieTotal.value = 0
+  timeline.value = null
+  selectedYear.value = null
+  actorTags.value = []
+  subscribed.value = false
+  newMovieCount.value = 0
+  activeTab.value = 'list'
+  loading.value = true
   loadActor()
   loadMovies()
   loadTags()
   checkSubscribed()
+}
+
+// 演员 ID 变化 → 整体重新加载
+watch(actorId, () => {
+  loadAll()
+})
+
+// 跨模块跳转（jav → fc2 等）→ 清空 API 缓存，避免用错模块的接口
+watch(moduleType, () => {
+  apiRef.value = null
+})
+
+onMounted(() => {
+  loadAll()
 })
 </script>
 

@@ -976,6 +976,10 @@ class PatchEngine:
             return False
     
     # ---- 模块数据库字段映射（scraped key → DB column） ----
+    # 注意: 修复历史 bug —— "maker" 曾错误映射到 "studio" 列，导致 NFO/刮削结果里
+    # studio 与 maker 同时存在时生成重复列 SET studio=:studio, studio=:studio，
+    # SQLite 取最后值 → maker 值覆盖真正的 studio；director 则完全没有映射被丢弃。
+    # 现各归各列：studio→studio / maker→maker / director→director。
     _MODULE_COLUMN_MAP = {
         "title": "title",
         "original_title": "original_title",
@@ -993,7 +997,8 @@ class PatchEngine:
         "sample_images": "sample_images",
         "studio": "studio",
         "series": "series",
-        "maker": "studio",
+        "maker": "maker",
+        "director": "director",
     }
 
     async def _update_module_database(

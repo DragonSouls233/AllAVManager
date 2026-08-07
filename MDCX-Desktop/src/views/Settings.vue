@@ -336,7 +336,7 @@ const cookieLoginStatus = ref({ javdb: '', javbus: '' })
 // 各模块媒体目录配置（支持多目录）
 const moduleDirs = ref([])
 const savingModuleDir = ref('')
-const moduleLabelsMap = { jav: 'JAV 有码', chinese: '国产', uncensored: 'JAV 无码', fc2: 'FC2', pornhub: 'PORNHub', western: '欧美' }
+const moduleLabelsMap = { jav: 'JAV 有码', chinese: '国产', uncensored: 'JAV 无码', fc2: 'FC2', pornhub: 'PORNHub', western: '欧美', anime: '日本里番' }
 
 async function loadModuleDirs() {
   try {

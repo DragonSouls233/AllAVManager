@@ -1,7 +1,9 @@
 """
 JAV 无码扫描器
-番号格式：HEYZO-1234 / 111111-111 / RED0123 / Caribbeancom
-支持从目录名提取演员
+番号格式：HEYZO-1234 / 111111-111 / RED0123 / Caribbeancom / HEYDOUGA-xxx ...
+统一使用中央 number.py 引擎识别番号（兼容下划线/横线、各种无码前缀），
+并在扫描阶段把视频目录的 NFO + 封面 + 预览图归集到 data/movies/uncensored/{code}/，
+同时识别番号与演员（目录名 + NFO）。
 """
 
 import asyncio
@@ -10,35 +12,19 @@ import re
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, copy_video_assets_to_data_dir
+from app.scraper.number import (
+    extract_number_from_path,
+    is_uncensored,
+    normalize_number,
+)
+from app.tasks.base_scanner import (
+    BaseScanner,
+    copy_video_assets_to_data_dir,
+    find_local_cover,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-UNCENSORED_PREFIXES = [
-    "HEYZO", "1PONDO", "CARIB", "CARIBBEAN", "10MU", "MUM",
-    "TOKYO-HOT", "TOKYO HOT", "RED", "PACOPACOMAMA",
-    "KIND", "GACHINCO", "LADY", "XXX", "S2M", "BT",
-    "LAF", "SMD", "BURST", "MKD", "MUKD",
-]
-
-
-def extract_uncensored_code(filename: str) -> dict | None:
-    """从文件名提取无码番号"""
-    stem = Path(filename).stem.upper()
-    for prefix in UNCENSORED_PREFIXES:
-        pattern = rf'({prefix}[-_]?(\d{{2,6}}))'
-        match = re.search(pattern, stem)
-        if match:
-            code = match.group(1).replace("_", "-")
-            platform = prefix
-            return {"code": code, "platform": platform}
-    pattern = r'((\d{6})-(\d{3}))'
-    match = re.search(pattern, stem)
-    if match:
-        return {"code": match.group(1), "platform": "unkn"}
-
-    return None
 
 
 # 无码目录中常见的非演员文件夹名黑名单
@@ -46,6 +32,64 @@ ACTOR_BLACKLIST = {
     "JAV", "无码", "uncensored", "HD", "高清", "合集", "精选",
     "新建文件夹", "unknown", "Other", "others",
 }
+
+
+def _is_acceptable_code(code: str, stem: str) -> bool:
+    """仅接受真实番号：无码类型，或文件名中字母与数字间确有分隔符的标准番号。
+
+    避免把 gachig116 这类「字母+数字但无分隔符」的文件名误判为 GACHIG-116。
+    """
+    if not code:
+        return False
+    if is_uncensored(code):
+        return True
+    parts = code.split("-")
+    if len(parts) >= 2:
+        prefix, dig = parts[0], parts[1]
+        if re.search(re.escape(prefix) + r"[-_.]" + re.escape(dig), stem, re.I):
+            return True
+    return False
+
+
+def _extract_uncensored_code(file_path: Path) -> str | None:
+    """从视频文件（含父目录回退）提取无码番号，使用中央 number.py 引擎。"""
+    result = extract_number_from_path(str(file_path))
+    if not result or not result.number:
+        return None
+    code = normalize_number(result.number)
+    stem = Path(file_path.name).stem
+    if not _is_acceptable_code(code, stem):
+        return None
+    return code
+
+
+def _parse_nfo_metadata(nfo_path: Path) -> dict:
+    """从 movie.nfo 提取 title / actors / studio（正则容错，避免畸形 XML 崩溃）。"""
+    meta: dict = {"title": None, "actors": [], "studio": None}
+    try:
+        text = nfo_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return meta
+    # title
+    m = re.search(r"<title>\s*(.*?)\s*</title>", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        meta["title"] = m.group(1).strip()
+    # studio / maker
+    for tag in ("studio", "maker"):
+        m = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.DOTALL | re.IGNORECASE)
+        if m and m.group(1).strip():
+            meta["studio"] = m.group(1).strip()
+            break
+    # actors
+    seen: set[str] = set()
+    for block in re.finditer(r"<actor\b[^>]*>(.*?)</actor>", text, re.DOTALL | re.IGNORECASE):
+        nm = re.search(r"<name>\s*(.*?)\s*</name>", block.group(1), re.DOTALL | re.IGNORECASE)
+        if nm:
+            name = nm.group(1).strip()
+            if name and name not in seen:
+                seen.add(name)
+                meta["actors"].append(name)
+    return meta
 
 
 class UncensoredScanner(BaseScanner):
@@ -107,31 +151,50 @@ class UncensoredScanner(BaseScanner):
                     file_path = Path(root) / file_name
                     result["total"] += 1
 
-                    info = extract_uncensored_code(file_name)
-                    if not info:
+                    code = _extract_uncensored_code(file_path)
+                    if not code:
                         continue
                     result["matched"] += 1
-
-                    code = info["code"]
-                    platform = info.get("platform")
 
                     # 检查是否已存在（内存判重，避免 N+1 查询）
                     if code in existing_codes:
                         continue
                     existing_codes.add(code)
 
-                    # 提取演员
+                    # 提取演员：目录名 + NFO（合并去重）
                     folder_actors = self._get_folder_actors(file_path, media_dir)
-                    actor_str = ",".join(folder_actors) if folder_actors else None
-                    if folder_actors:
-                        result["actors"].update(folder_actors)
+                    actor_names = list(folder_actors)
+
+                    # 解析同目录 NFO（兼容 movie.nfo 与 {番号}.nfo 两种命名）
+                    video_dir = file_path.parent
+                    nfo_meta: dict = {"title": None, "actors": [], "studio": None}
+                    for nfo_candidate in (video_dir / "movie.nfo", video_dir / f"{file_path.stem}.nfo"):
+                        if nfo_candidate.exists():
+                            nfo_meta = _parse_nfo_metadata(nfo_candidate)
+                            break
+                    for a in nfo_meta.get("actors", []):
+                        if a not in actor_names:
+                            actor_names.append(a)
+
+                    actor_str = ",".join(actor_names) if actor_names else None
+                    if actor_names:
+                        result["actors"].update(actor_names)
+
+                    # 标题优先用 NFO 中的真实标题，否则回退文件名
+                    title = nfo_meta.get("title") or Path(file_name).stem
+                    studio = nfo_meta.get("studio")
+
+                    # 本地封面（通用名或 {番号}-poster.jpg 等），回填 cover_url
+                    cover_url = find_local_cover(file_path, code)
 
                     # 写入新影片记录
                     new_movie = UncensoredMovie(
                         code=code,
-                        title=Path(file_name).stem,
-                        source_platform=platform,
+                        title=title,
+                        source_platform="uncensored",
                         actor=actor_str,
+                        studio=studio,
+                        cover_url=cover_url,
                         file_path=str(file_path),
                         file_size=file_path.stat().st_size if file_path.exists() else 0,
                         status="pending",
@@ -139,6 +202,8 @@ class UncensoredScanner(BaseScanner):
                     session.add(new_movie)
                     result["movies_added"] += 1
                     result["scanned"] += 1
+
+                    # 将视频目录的 NFO + 封面 + 预览图复制到数据中心目录
                     if code:
                         asyncio.ensure_future(
                             copy_video_assets_to_data_dir(str(file_path), code, "uncensored")

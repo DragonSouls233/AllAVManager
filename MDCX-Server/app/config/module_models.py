@@ -62,12 +62,25 @@ class WesternModuleConfig(ModuleConfig):
     )
 
 
+class AnimeModuleConfig(ModuleConfig):
+    """日本里番模块配置"""
+    online_enrich: bool = Field(
+        default=True,
+        title="新番在线补充（getchu）"
+    )
+
+
 class ModulesConfig(BaseModel):
-    """6 模块统一配置"""
+    """7 模块统一配置"""
     jav: ModuleConfig = ModuleConfig(enabled=True)
     uncensored: ModuleConfig = ModuleConfig()
     fc2: ModuleConfig = ModuleConfig()
     chinese: ChineseModuleConfig = ChineseModuleConfig()
     pornhub: ModuleConfig = ModuleConfig()
     western: WesternModuleConfig = WesternModuleConfig()
+    anime: AnimeModuleConfig = AnimeModuleConfig(
+        enabled=True,
+        media_dirs=["J:\\动漫"],
+        online_enrich=True,
+    )
     scanner: ScannerConfig = ScannerConfig()

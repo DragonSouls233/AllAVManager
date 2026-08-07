@@ -215,6 +215,7 @@ class ModuleDatabase:
         from app.db.chinese_models import CHINESE_BASE
         from app.db.western_models import WESTERN_BASE
         from app.db.pornhub_models import PORNHUB_BASE
+        from app.db.anime_models import ANIME_BASE
 
         module_configs = [
             ("jav", JAV_BASE),
@@ -223,6 +224,7 @@ class ModuleDatabase:
             ("chinese", CHINESE_BASE),
             ("western", WESTERN_BASE),
             ("pornhub", PORNHUB_BASE),
+            ("anime", ANIME_BASE),
         ]
 
         instances = {}

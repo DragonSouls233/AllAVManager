@@ -4,6 +4,7 @@
 """
 
 import os
+import re
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -32,6 +33,84 @@ _VIDEO_DIR_ASSETS = {
 }
 
 _MIN_ASSET_BYTES = 1024  # 小于 1KB 的视为无效文件
+
+# 以番号命名的资源后缀 → 数据中心标准名
+# 例：012213_831-poster.jpg → poster.jpg；HEYZO-0407-fanart.png → fanart.jpg
+_CODE_QUALIFIER_MAP = {
+    "poster": "poster.jpg",
+    "cover": "cover.jpg",
+    "thumb": "thumb.jpg",
+    "fanart": "fanart.jpg",
+    "landscape": "cover.jpg",
+    "backdrop": "fanart.jpg",
+    "background": "fanart.jpg",
+    "folder": "poster.jpg",
+}
+
+
+def _resolve_asset_target(src_name: str, code: str) -> str | None:
+    """将视频目录中的资源文件名映射到数据中心标准名。
+
+    兼容两类命名：
+    1) 通用名：movie.nfo / poster.jpg / fanart.png / cover.jpg ...
+    2) 以番号命名的资源：{code}.nfo / {code}-poster.jpg / {code}_fanart.png ...
+       忽略番号中 - 与 _ 的差异（如 012213-831 与 012213_831 视为同一番号）。
+    """
+    src_name = (src_name or "").strip()
+    if not src_name:
+        return None
+    stem = Path(src_name).stem
+    suffix = Path(src_name).suffix.lower()
+    is_nfo = suffix == ".nfo"
+    is_img = suffix in (".jpg", ".jpeg", ".png", ".webp")
+
+    # 1) 通用名（保持原行为）
+    generic = _VIDEO_DIR_ASSETS.get(src_name.lower())
+    if generic is not None:
+        if is_nfo and not generic.endswith(".nfo"):
+            return None
+        if is_img and not generic.endswith((".jpg", ".png")):
+            return None
+        return generic
+
+    # 2) 以番号命名的资源（忽略 -/_ 差异）
+    code_key = re.sub(r"[-_]", "", code or "")
+    s_key = re.sub(r"[-_]", "", stem)
+    if not code_key:
+        return None
+    if s_key == code_key:
+        # 仅有番号：NFO → movie.nfo；图片 → 兜底为 poster.jpg
+        return "movie.nfo" if is_nfo else ("poster.jpg" if is_img else None)
+    if s_key.startswith(code_key):
+        rest = s_key[len(code_key):]
+        if is_nfo:
+            return "movie.nfo"
+        if is_img and rest in _CODE_QUALIFIER_MAP:
+            return _CODE_QUALIFIER_MAP[rest]
+    return None
+
+
+def find_local_cover(video_file_path: str | Path, code: str) -> str | None:
+    """在视频目录中查找本地封面，返回绝对路径（用于回填 cover_url）。
+
+    优先 poster.jpg，其次 cover.jpg / fanart.jpg；
+    同时兼容通用名与 {code}-poster.jpg 这类以番号命名的资源。
+    """
+    video_dir = Path(video_file_path).parent
+    if not video_dir.exists():
+        return None
+    priority = ["poster.jpg", "cover.jpg", "fanart.jpg"]
+    found: dict[str, str] = {}
+    for src in video_dir.iterdir():
+        if not src.is_file():
+            continue
+        dst_name = _resolve_asset_target(src.name, code)
+        if dst_name in priority and src.stat().st_size >= _MIN_ASSET_BYTES:
+            found.setdefault(dst_name, str(src))
+    for name in priority:
+        if name in found:
+            return found[name]
+    return None
 
 
 async def copy_video_assets_to_data_dir(
@@ -67,12 +146,15 @@ async def copy_video_assets_to_data_dir(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     copied = 0
-    for src_name, dst_name in _VIDEO_DIR_ASSETS.items():
-        src = video_dir / src_name
-        if not src.exists():
+    # 遍历视频目录中的真实文件，兼容通用名与 {code}-前缀命名
+    for src in sorted(video_dir.iterdir()):
+        if not src.is_file():
+            continue
+        dst_name = _resolve_asset_target(src.name, code)
+        if not dst_name:
             continue
         size = src.stat().st_size
-        if src_name.endswith(".nfo"):
+        if src.suffix.lower() == ".nfo":
             # NFO 是文本元数据，通常很小（几百字节~数 KB），只看是否有内容，
             # 不能用图片的最小体积阈值，否则会被误判为「残缺文件」跳过
             if size == 0:
@@ -84,10 +166,13 @@ async def copy_video_assets_to_data_dir(
                 logger.debug(f"跳过无效文件 (<1KB): {src}")
                 continue
         dst = target_dir / dst_name
+        # 已存在且完整则跳过，避免重复复制
+        if dst.exists() and dst.stat().st_size >= size:
+            continue
         try:
             shutil.copy2(src, dst)
             copied += 1
-            logger.info(f"[{module_name}] 复制视频资源: {src_name} → {dst}")
+            logger.info(f"[{module_name}] 复制视频资源: {src.name} → {dst}")
         except Exception as e:
             logger.debug(f"复制失败 {src} → {dst}: {e}")
 

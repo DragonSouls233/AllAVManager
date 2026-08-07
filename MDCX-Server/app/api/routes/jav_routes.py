@@ -337,14 +337,17 @@ async def get_actor_avatar_file(actor_id: int):
             raise HTTPException(status_code=404, detail="演员不存在")
 
         # 优先返回规范目录头像（真实文件路径）
-        avatar_path = _Path(getattr(actor, "avatar_path", "") or "")
-        if avatar_path and avatar_path.exists():
+        # 注意: 模块演员模型(JavActor 等)没有 avatar_path 列，getattr 默认 "" → _Path("") 等价
+        # Path(".")，其 exists() 为 True；若直接 FileResponse(".") 会抛
+        # RuntimeError: File at path . is not a file → HTTP 500。必须校验绝对路径 + is_file()。
+        avatar_path = getattr(actor, "avatar_path", "") or ""
+        if avatar_path and _Path(avatar_path).is_absolute() and _Path(avatar_path).is_file():
             return FileResponse(str(avatar_path), media_type="image/jpeg",
                                 headers={"Cache-Control": "public, max-age=86400"})
 
         # 优先读取约定文件 DATA/avatars/actor_{id}.jpg
         try:
-            from app.utils.config_manager import get_config_manager
+            from app.config.manager import get_config_manager
             avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / f"actor_{actor_id}.jpg"
             if avatar_file.exists():
                 return FileResponse(str(avatar_file), media_type="image/jpeg",

@@ -25,6 +25,7 @@ SCANNER_MAP = {
     "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
     "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
     "western": ("app.tasks.western_scanner", "WesternScanner"),
+    "anime": ("app.tasks.anime_scanner", "AnimeScanner"),
 }
 
 
@@ -67,13 +68,15 @@ async def list_modules():
          "media_dirs": getattr(config.modules.pornhub, "media_dirs", [])},
         {"name": "western", "enabled": getattr(config.modules.western, "enabled", False),
          "media_dirs": getattr(config.modules.western, "media_dirs", [])},
+        {"name": "anime", "enabled": getattr(config.modules.anime, "enabled", False),
+         "media_dirs": getattr(config.modules.anime, "media_dirs", [])},
     ]
 
 
 @router.get("/{module_name}/stats")
 async def get_module_stats(module_name: str):
     """获取模块统计信息"""
-    if module_name not in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western"]:
+    if module_name not in ["jav", "chinese", "uncensored", "fc2", "pornhub", "western", "anime"]:
         return {"name": module_name, "movie_count": 0, "actor_count": 0, "error": "未知模块"}
 
     db = ModuleDatabase.get_instance(module_name)
@@ -89,6 +92,7 @@ async def get_module_stats(module_name: str):
             "fc2": ("app.db.fc2_models", "Fc2Movie", "Fc2Actor"),
             "pornhub": ("app.db.pornhub_models", "PornhubMovie", "PornhubActor"),
             "western": ("app.db.western_models", "WesternMovie", "WesternActor"),
+            "anime": ("app.db.anime_models", "AnimeMovie", "AnimeActor"),
         }
         mod_path, movie_cls, actor_cls = model_map[module_name]
         mod = importlib.import_module(mod_path)
@@ -437,7 +441,7 @@ async def get_module_actor_avatar_file(module_name: str, actor_id: int):
         # 优先直接读取约定文件 DATA/avatars/actor_{id}.jpg
         try:
             from pathlib import Path as _P
-            from app.utils.config_manager import get_config_manager
+            from app.config.manager import get_config_manager
             data_dir = _P(get_config_manager().computed.data_dir)
             avatar_file = data_dir / "avatars" / f"actor_{actor_id}.jpg"
             if avatar_file.exists():
@@ -553,6 +557,121 @@ async def sync_module_actors(module_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================================
+# 演员资料刮削辅助函数
+# ==========================================================
+
+def _apply_actor_profile(db_actor, profile, module_name: str):
+    """把刮削到的 ActorProfile 应用到模块演员记录
+
+    只填充当前为空的字段，绝不覆盖已有数据（幂等、可重复调用）。
+    覆盖 ActorMixin 的全部资料字段，使 jav/fc2 等模块也能补全三围/星座/出道年份等。
+    """
+    import json as _json
+
+    if profile.name_jp and not db_actor.name_jp:
+        db_actor.name_jp = profile.name_jp
+    if profile.name_en and not db_actor.name_en:
+        db_actor.name_en = profile.name_en
+    if profile.alias and not db_actor.alias:
+        db_actor.alias = profile.alias
+    if profile.birth_date and not db_actor.birth_date:
+        db_actor.birth_date = profile.birth_date
+    if profile.age and not db_actor.age:
+        db_actor.age = profile.age
+    if profile.height and not db_actor.height:
+        db_actor.height = str(profile.height)
+    if profile.bust and not db_actor.bust:
+        db_actor.bust = profile.bust
+    if profile.waist and not db_actor.waist:
+        db_actor.waist = profile.waist
+    if profile.hip and not db_actor.hip:
+        db_actor.hip = profile.hip
+    if profile.cup and not db_actor.cup:
+        db_actor.cup = profile.cup
+    if profile.birthplace and not db_actor.birthplace:
+        db_actor.birthplace = profile.birthplace
+    if profile.hobby and not db_actor.hobby:
+        db_actor.hobby = profile.hobby
+    if profile.intro and not db_actor.intro:
+        db_actor.intro = profile.intro
+    if profile.zodiac and not db_actor.zodiac:
+        db_actor.zodiac = profile.zodiac
+    if profile.debut_year and not db_actor.debut_year:
+        db_actor.debut_year = profile.debut_year
+    if profile.social_links and not db_actor.social_links:
+        try:
+            db_actor.social_links = _json.dumps(profile.social_links, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+    if profile.avatar_url and not getattr(db_actor, "avatar_url", None):
+        db_actor.avatar_url = profile.avatar_url
+
+    db_actor.source = profile.source or db_actor.source
+    if profile.source_url and not db_actor.source_site:
+        db_actor.source_site = profile.source_url
+
+    # Western 模块特有字段（ActorProfile 当前不含这些属性，用 getattr 安全读取）
+    if module_name == "western":
+        if profile.birth_date and not getattr(db_actor, "birthdate", None):
+            db_actor.birthdate = profile.birth_date
+        if getattr(profile, "country", None) and not getattr(db_actor, "country", None):
+            db_actor.country = profile.country
+        if getattr(profile, "ethnicity", None) and not getattr(db_actor, "ethnicity", None):
+            db_actor.ethnicity = profile.ethnicity
+        if getattr(profile, "measurements", None) and not getattr(db_actor, "measurements", None):
+            db_actor.measurements = profile.measurements
+        if profile.height and not getattr(db_actor, "height", None):
+            db_actor.height = str(profile.height)
+        if getattr(profile, "weight", None) and not getattr(db_actor, "weight", None):
+            db_actor.weight = profile.weight
+        if getattr(profile, "gender", None) and not getattr(db_actor, "gender", None):
+            db_actor.gender = profile.gender
+        if getattr(profile, "twitter", None) and not getattr(db_actor, "twitter", None):
+            db_actor.twitter = profile.twitter
+        if getattr(profile, "instagram", None) and not getattr(db_actor, "instagram", None):
+            db_actor.instagram = profile.instagram
+
+    # PORNHub 模块：补充国籍
+    if module_name == "pornhub" and getattr(profile, "country", None) and not getattr(db_actor, "nationality", None):
+        db_actor.nationality = profile.country
+
+
+async def _download_module_actor_avatar(actor_id: int, url: str) -> bool:
+    """下载演员头像到 DATA/avatars/actor_{id}.jpg
+
+    与列表/详情页头像端点（get_module_actor_avatar_file）的约定文件完全一致，
+    下载成功后头像即可在列表与详情页显示。
+    """
+    from app.utils.http_client import AsyncHttpClient
+    import re as _re
+
+    try:
+        data_dir = Path(get_config_manager().computed.data_dir)
+        avatar_dir = data_dir / "avatars"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        output_path = (avatar_dir / f"actor_{actor_id}.jpg").resolve()
+
+        async with AsyncHttpClient(timeout=30) as client:
+            match = _re.match(r'https?://([^/]+)', url)
+            referer_domain = f"https://{match.group(1)}" if match else "https://www.dmm.co.jp"
+            headers = {
+                "Referer": f"{referer_domain}/",
+                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            }
+            content = await client.get_bytes(url, headers=headers)
+            if content and len(content) > 500:
+                with open(output_path, "wb") as f:
+                    f.write(content)
+                logger.info(f"演员头像已下载到本地: {output_path}")
+                return True
+    except Exception as e:
+        logger.debug(f"下载模块演员头像失败 {url}: {e}")
+
+    return False
+
+
 @router.post("/{module_name}/actors/{actor_id}/scrape-profile")
 async def scrape_module_actor_profile(module_name: str, actor_id: int):
     """刮削单个演员的个人资料"""
@@ -579,10 +698,10 @@ async def scrape_module_actor_profile(module_name: str, actor_id: int):
     finally:
         await session.close()
 
-    # 使用模块资料刮削器
-    from app.scraper.module_actor_profile import get_module_actor_profile_scraper
-    scraper = get_module_actor_profile_scraper(module_name)
-    profile = await scraper.get_profile(actor_name)
+    # 使用统一演员资料刮削器（多源：DMM/JavWiki/AVOpen/AVWikiDB/Wikidata/Wikipedia/Gfriends）
+    from app.scraper.actor_profile import get_actor_profile_scraper
+    scraper = get_actor_profile_scraper()
+    profile = await scraper.get_profile(actor_name, getattr(actor, "name_jp", None))
 
     if not profile:
         return {"status": "not_found", "message": f"未找到 {actor_name} 的个人资料"}
@@ -603,38 +722,13 @@ async def scrape_module_actor_profile(module_name: str, actor_id: int):
         if not db_actor:
             return {"status": "error", "message": "演员记录已不存在"}
 
-        # 更新字段
-        if profile.alias and not db_actor.alias:
-            db_actor.alias = profile.alias
-        if profile.avatar_url and not getattr(db_actor, "avatar_url", None):
-            db_actor.avatar_url = profile.avatar_url
+        # 应用全部资料字段（通用 + 模块特有），仅填充空字段
+        _apply_actor_profile(db_actor, profile, module_name)
 
-        # Western 模块特有字段
-        if module_name == "western":
-            if profile.birth_date:
-                db_actor.birthdate = profile.birth_date
-            if profile.country:
-                db_actor.country = profile.country
-            if profile.ethnicity:
-                db_actor.ethnicity = profile.ethnicity
-            if profile.measurements:
-                db_actor.measurements = profile.measurements
-            if profile.height:
-                db_actor.height = str(profile.height)
-            if profile.weight:
-                db_actor.weight = profile.weight
-            if profile.gender:
-                db_actor.gender = profile.gender
-            if profile.twitter:
-                db_actor.twitter = profile.twitter
-            if profile.instagram:
-                db_actor.instagram = profile.instagram
+        # 下载头像到本地约定文件，使列表/详情页头像端点能显示
+        if profile.avatar_url:
+            await _download_module_actor_avatar(actor_id, profile.avatar_url)
 
-        # PORNHub 模块：补充国籍
-        if module_name == "pornhub" and profile.country and not getattr(db_actor, "nationality", None):
-            db_actor.nationality = profile.country
-
-        db_actor.source = profile.source
         await session2.commit()
 
         return {
@@ -643,21 +737,24 @@ async def scrape_module_actor_profile(module_name: str, actor_id: int):
             "name": actor_name,
             "profile": {
                 "name": profile.name,
+                "name_jp": profile.name_jp,
+                "name_en": profile.name_en,
                 "alias": profile.alias,
                 "avatar_url": profile.avatar_url,
                 "birth_date": profile.birth_date,
+                "age": profile.age,
                 "height": profile.height,
                 "bust": profile.bust,
                 "waist": profile.waist,
                 "hip": profile.hip,
                 "cup": profile.cup,
                 "birthplace": profile.birthplace,
-                "country": profile.country,
-                "ethnicity": profile.ethnicity,
-                "measurements": profile.measurements,
-                "weight": profile.weight,
-                "gender": profile.gender,
+                "hobby": profile.hobby,
+                "intro": profile.intro,
+                "zodiac": profile.zodiac,
+                "debut_year": profile.debut_year,
                 "source": profile.source,
+                "source_url": profile.source_url,
             }
         }
     finally:
@@ -677,8 +774,8 @@ async def batch_scrape_module_actor_profiles(
 
     job_id = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
-    from app.scraper.module_actor_profile import get_module_actor_profile_scraper
-    scraper = get_module_actor_profile_scraper(module_name)
+    from app.scraper.actor_profile import get_actor_profile_scraper
+    scraper = get_actor_profile_scraper()
 
     db = ModuleDatabase.get_instance(module_name)
     session = await db.get_session()
@@ -719,20 +816,9 @@ async def batch_scrape_module_actor_profiles(
                         r = await s.execute(st)
                         a = r.scalar_one_or_none()
                         if a:
-                            if profile.alias and not a.alias:
-                                a.alias = profile.alias
-                            if profile.avatar_url and not getattr(a, "avatar_url", None):
-                                a.avatar_url = profile.avatar_url
-                            if module_name == "western":
-                                if profile.birth_date:
-                                    a.birthdate = profile.birth_date
-                                if profile.country:
-                                    a.country = profile.country
-                                if profile.measurements:
-                                    a.measurements = profile.measurements
-                                if profile.height:
-                                    a.height = str(profile.height)
-                            a.source = profile.source
+                            _apply_actor_profile(a, profile, module_name)
+                            if profile.avatar_url:
+                                await _download_module_actor_avatar(a.id, profile.avatar_url)
                             await s.commit()
                             success += 1
                     finally:
@@ -781,8 +867,8 @@ async def batch_scrape_module_actors(
 
         # Step 2: Scrape profiles
         logger.info(f"[{module_name}] 批量操作 Step 2/3: 刮削资料")
-        from app.scraper.module_actor_profile import get_module_actor_profile_scraper
-        scraper = get_module_actor_profile_scraper(module_name)
+        from app.scraper.actor_profile import get_actor_profile_scraper
+        scraper = get_actor_profile_scraper()
 
         db = ModuleDatabase.get_instance(module_name)
         session = await db.get_session()
@@ -812,16 +898,9 @@ async def batch_scrape_module_actors(
                         r = await s.execute(st)
                         a = r.scalar_one_or_none()
                         if a:
-                            if profile.avatar_url and not getattr(a, "avatar_url", None):
-                                a.avatar_url = profile.avatar_url
-                            if module_name == "western":
-                                if profile.birth_date:
-                                    a.birthdate = profile.birth_date
-                                if profile.country:
-                                    a.country = profile.country
-                                if profile.measurements:
-                                    a.measurements = profile.measurements
-                            a.source = profile.source
+                            _apply_actor_profile(a, profile, module_name)
+                            if profile.avatar_url:
+                                await _download_module_actor_avatar(a.id, profile.avatar_url)
                             await s.commit()
                             profile_success += 1
                     finally:

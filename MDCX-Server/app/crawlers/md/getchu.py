@@ -4,9 +4,12 @@ Getchu 爬虫 - 从 MDCX 迁移
 原始文件: getchu.py
 """
 
+import contextlib
 import logging
 import re
 import time
+import unicodedata
+import urllib.parse
 from typing import Optional
 
 from lxml import etree

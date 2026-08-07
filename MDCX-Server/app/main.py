@@ -229,6 +229,7 @@ async def _lifespan_impl(app: FastAPI):
                 "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
                 "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
                 "western": ("app.tasks.western_scanner", "WesternScanner"),
+                "anime": ("app.tasks.anime_scanner", "AnimeScanner"),
             }
             # 后台收集扫描结果，用于更新记录
             _scan_results = {}
@@ -330,7 +331,7 @@ async def _lifespan_impl(app: FastAPI):
                 from app.db.module_db import ModuleDatabase
                 total_scanned = 0
                 total_updated = 0
-                for mod_name in ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]:
+                for mod_name in ["jav", "fc2", "uncensored", "chinese", "western", "pornhub", "anime"]:
                     try:
                         mod_db = ModuleDatabase.get_instance(mod_name)
                         async with await mod_db.get_session() as s:

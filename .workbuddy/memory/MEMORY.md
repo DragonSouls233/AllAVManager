@@ -1,5 +1,26 @@
 # MDCX 项目长期笔记
 
+## 里番模块 · 自刮削架构与生态调研（2026-08-07 新增，重要）
+
+- **第7模块 anime**：独立 `anime.db`（ANIME_BASE），文件在 `J:\动漫\{1999..2025}\`，两种文件名格式：
+  老（2012–2024）`[制作商]标题[DVD番号].mkv`，NFO 已刮好（含 studio/set/premiered/runtime/genre）；新（2025）`[YYMMDD][制作商]标题[人员].cht.mp4` 瘦 NFO。
+- **刮削源 = 唯一 getchu.com**：www.getchu.com 按 DVD 番号搜索（`php/search.phtml?genre=all&search_keyword={番号}&gc=gc`，EUC-JP）。
+  老数据只读 NFO 不刮；只有无/瘦 NFO 的新增文件且 `online_enrich=True`（module_models 已默认开）才自刮削。
+- **自刮削器** `app/scraper/anime_getchu.py`（AnimeGetchuScraper）：
+  检索回退（番号→标题+制作商）→ 多候选评分（番号命中100 > 标题重合50 > 制作商20）→ 详情页（年龄墙すすむ）→ xpath 解析
+  → dl.getchu.com 桥接补全（见下）→ 落盘 `data/movies/anime/{code}/`（poster.jpg + movie.nfo + extrafanart/01~NN.jpg）。
+  公共链路 `scrape_anime_and_apply()` 供扫描器 `_self_scrape` 与手动端点共用；仅填空字段，幂等。
+- **方向A双站互补（2026-08-07 已实现）**：www.getchu 详情页含 `dl.getchu.com` 链接时，抓 DL 版页用
+  metatube-sdk-go 移植的结构化选择器补全：サークル=制作商 / 配信開始日 / 趣向=类型 / 作品内容=简介 /
+  预览图(`td[contains(@style,'background-color: #444444')]//a/@href`) / 封面(`td[@bgcolor='#ffffff']//img`)。
+- **手动刮削入口**：前端 AnimeMovies.vue 卡片「刮削」按钮（status=pending 显示）+「批量刮削未刮削」+ 弹窗预览图区；
+  后端 `POST /api/v1/anime/movies/{id}/scrape`、`POST /api/v1/anime/movies/scrape-pending`。
+- **网络注意**：开发机到 www.getchu.com 直连被墙/封锁（ConnectionReset），**验证必须在服务器 192.168.10.110 侧**；
+  dl.getchu.com 开发机可通。请求必须带浏览器指纹（项目 AsyncHttpClient=curl_cffi，裸 requests 会被重置）。
+- **生态调研结论**：Emby.JavScraper 无里番源；NASTool 仅 TMDB 不支持成人；MetaTube/AvBase 带 Getchu 但走 dl.getchu
+  商品 ID（GETCHU-数字）与 DVD 番号不匹配，只能当第二源兜底；metatube-sdk-go `provider/getchu/getchu.go`
+  是 GitHub 活跃维护的成熟 getchu 实现（方向A移植来源）。
+
 ## 环境拓扑（重要，排查前必读）
 
 | 位置 | 含义 | 可写性 |
@@ -86,3 +107,18 @@
 - NFO 不受图片最小体积阈值限制（文本通常 <1KB），复制时只对图片做 `>=1KB` 校验。
 - 资源名归一：`poster/folder.jpg→poster.jpg`、`fanart/background/backdrop.jpg→fanart.jpg`、`cover/landscape.jpg→cover.jpg`、png 同归 jpg。
 - 与补刮协同：补刮(`patcher/strategy.py`)只读数据中心 NFO + 仅下载 extrafanart 预览图，不再重复下载封面。
+
+## import 真相源 + 头像端点防护（2026-08-07 新增）
+
+- `get_config_manager` 唯一真相源：**`app/config/manager.py:474`**。
+  `app.utils.config_manager` 模块**不存在**——`modules.py:440` / `jav_routes.py:347` 曾引用它，
+  ImportError 被 `try/except pass` 吞掉后表现为**功能静默失效**（头像端点永远返回占位图）。
+  凡新增代码需拿配置管理器，一律 `from app.config.manager import get_config_manager`。
+- 模块演员模型（`db/_module_mixins.py::ActorMixin`）**只有 `avatar_url`，没有 `avatar_path` 列**。
+  头像端点写 `_Path(getattr(actor, "avatar_path", "") or "")` 会得到 `Path(".")`（`exists()`=True）
+  → `FileResponse(".")` → `RuntimeError: File at path . is not a file` → HTTP 500。
+  正确写法：`p = getattr(actor, "avatar_path", "") or ""; if p and _Path(p).is_absolute() and _Path(p).is_file(): FileResponse(p)`。
+- 头像约定文件：`{data_dir}/avatars/actor_{id}.jpg`（jav 演员 id 为 jav.db 主键）。
+  列表页头像走 `/api/v1/modules/{mod}/actors/{id}/avatar/file`（modules.py，通用 6 模块）；
+  详情页头像走 `/api/v1/actors/{id}/avatar/file?module=jav`（actors.py，四级查找：DATA/avatars → avatar_url → gfriends → media_dirs）。
+- 排查"列表页全占位图但磁盘有头像文件"类问题，第一反应检查：① 端点内 import 是否指向不存在的模块路径（被 except 吞）；② avatar_path 空值是否触发 FileResponse 500。
