@@ -73,6 +73,39 @@ _FIELD_NAME_TO_FIELD_TYPE: dict[str, FieldType] = {
     "thumb": FieldType.THUMB_URL,
 }
 
+# 字段重要性分级（与 MissingDetector 的 CRITICAL/IMPORTANT/OPTIONAL 保持一致）
+# critical: 缺少则影片数据不可用
+# normal:   缺少影响浏览体验，但影片仍可用
+# optional: 刮削源多数不提供，纯锦上添花
+_FIELD_IMPORTANCE: dict[str, str] = {
+    "title": "critical",
+    "release_date": "critical",
+    "plot": "normal",
+    "genre": "normal",
+    "genres": "normal",
+    "actor": "normal",
+    "actors": "normal",
+    "studio": "normal",
+    "cover": "normal",
+    "poster": "normal",
+    "cover_url": "normal",
+    "poster_url": "normal",
+    "maker": "optional",
+    "series": "optional",
+    "director": "optional",
+    "rating": "optional",
+    "duration": "optional",
+    "tag": "optional",
+    "tags": "optional",
+    "thumbnail": "optional",
+    "thumb": "optional",
+    "thumb_url": "optional",
+    "trailer_url": "optional",
+    "title_jp": "optional",
+    "plot_short": "optional",
+    "source": "optional",
+}
+
 _MODULE_MODEL_MAP: dict[str, type] = {}
 
 
@@ -136,10 +169,11 @@ async def _detect_module_missing_for_engine(
                     continue
                 val = getattr(movie, attr, None)
                 if val is None or (isinstance(val, str) and not val.strip()):
+                    importance = _FIELD_IMPORTANCE.get(f_name, "normal")
                     missing_fields.append(MissingField(
                         field_type=field_type,
                         current_value="",
-                        importance="critical",
+                        importance=importance,
                     ))
 
             # output_dir 优先级: DB 值 > 规范目录 {data_dir}/movies/{module}/{code}

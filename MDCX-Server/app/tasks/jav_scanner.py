@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -167,6 +167,12 @@ class JavScanner(BaseScanner):
                     session.add(new_movie)
                     result["movies_added"] += 1
                     result["scanned"] += 1
+
+                    # 将视频目录的 NFO + 封面复制到数据中心目录
+                    if code:
+                        asyncio.ensure_future(
+                            copy_video_assets_to_data_dir(str(file_path), code, "jav")
+                        )
 
             await session.commit()
         finally:

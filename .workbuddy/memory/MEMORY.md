@@ -59,6 +59,15 @@
 - **新增媒体文件代理端点时，第一反应就是去 `auth_middleware.py` 加白名单**，别只在路由层考虑鉴权。
 - 反面案例：详情页预览图(previews.py)上线后全裂图，根因就是漏了 `/api/v1/previews/.../file` 白名单（见 `2026-08-07.md`）。
 
+## 补丁刮削死循环陷阱（字段重要性分级）
+
+- `_detect_module_missing_for_engine` 对空字段**必须**按重要性分级（critical/normal/optional），绝不能全标 `critical`。
+- 不分局：rating=0% 填充、tag=0%、director=0% — 刮削源 (javbus/javdb) 根本不提供这些字段 → 每次检测全量查出 → 刮了白刮 → 下次又全量 → 死循环。
+- 正确做法：只有 title/release_date 是 critical；plot/genre/actor/cover/studio 是 normal；其余 optional。
+- 默认 `skip_complete=True` 时 Skipper 只放行 critical 缺失项，避免无意义的重新刮削。
+- 补刮成功后**必须更新 `scraped_at`**，否则 `skip_recent_days` 机制对成功项无效。
+- 见 `2026-08-07.md` 修复详情。
+
 ## 用户偏好：本地优先（重要架构取向）
 
 - 用户**明确偏好本地方案**而非远程外链：刮削时把站点 URL 数据下载到 `MOVIES/{模块}/{番号}/`，下载后除非重刮/删除否则不变更。
@@ -66,3 +75,14 @@
 - 落盘结构：`{data_base}/movies/{module}/{code}/` 下 `poster/fanart/thumb/cover.jpg + movie.nfo + extrafanart/01~NN.jpg`。
 - 设计规范（详情页）：左封面右信息 → 下面简介 → 下面预览区，**第一张是封面，后续是预览图**。
 - 已落地实现见 `2026-08-07.md`（previews.py 通用路由 + MovieDetail.vue 改读本地接口）。
+
+## 数据中心统一管理约定（扫描时归集资源）
+
+- 用户主张：每个番号视频目录下必有 `视频 + movie.nfo + 2张封面图(poster/fanart)`。为省网络/性能，
+  **扫描发现新视频时立即把 NFO + 封面从视频目录复制到数据中心** `data/movies/{module}/{code}/`，
+  之后所有读写只针对数据中心目录，视频目录不再作为第一数据源。
+- 入口：`app/tasks/base_scanner.py::copy_video_assets_to_data_dir()`；6 个 scanner 在 `session.add(new_movie)` 后
+  以 `asyncio.ensure_future(...)` 触发（fire-and-forget，不阻塞扫描事务）。
+- NFO 不受图片最小体积阈值限制（文本通常 <1KB），复制时只对图片做 `>=1KB` 校验。
+- 资源名归一：`poster/folder.jpg→poster.jpg`、`fanart/background/backdrop.jpg→fanart.jpg`、`cover/landscape.jpg→cover.jpg`、png 同归 jpg。
+- 与补刮协同：补刮(`patcher/strategy.py`)只读数据中心 NFO + 仅下载 extrafanart 预览图，不再重复下载封面。

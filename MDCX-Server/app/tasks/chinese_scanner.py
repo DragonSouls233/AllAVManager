@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -142,6 +142,10 @@ class ChineseScanner(BaseScanner):
                     session.add(new_movie)
                     result["movies_added"] += 1
                     result["scanned"] += 1
+                    if code:
+                        asyncio.ensure_future(
+                            copy_video_assets_to_data_dir(str(file_path), code, "chinese")
+                        )
 
             await session.commit()
 

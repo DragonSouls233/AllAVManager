@@ -213,9 +213,16 @@ async def get_actor_movies(
 
 @router.get("/actors/{actor_id}/timeline")
 async def get_actor_timeline(actor_id: int):
-    """获取演员作品时间线"""
+    """获取演员作品时间线
+
+    返回结构必须与前端 ActorDetail.vue 时间线视图严格对齐：
+    total / years / details / unknown / year_range / debut_year 缺一不可，
+    否则前端 v-if="timeline.total > 0" 直接判空，时间线永远显示"暂无作品"。
+    MovieActor 关联表恒为空，只能靠 movie.actor 字段模糊匹配（与 actors.py 一致）。
+    """
     from app.db.jav_models import JavActor, JavMovie
-    from sqlalchemy import select, func
+    from sqlalchemy import select
+    from collections import defaultdict
 
     db = get_jav_db()
     session = await db.get_session()
@@ -225,47 +232,75 @@ async def get_actor_timeline(actor_id: int):
             raise HTTPException(status_code=404, detail="演员不存在")
 
         name_part = f"%{actor.name}%"
-        rows = (await session.execute(
-            select(JavMovie.release_date, func.count(JavMovie.id))
-            .where(JavMovie.actor.like(name_part))
-            .where(JavMovie.release_date.isnot(None))
-            .group_by(JavMovie.release_date)
-            .order_by(JavMovie.release_date)
-        )).all()
-
-        year_map = {}
-        for dt, cnt in rows:
-            year = str(dt)[:4]
-            year_map[year] = year_map.get(year, 0) + cnt
-
-        years_list = [{"year": y, "count": c} for y, c in sorted(year_map.items(), reverse=True)]
-
-        # 详情页最近作品
-        recent = (await session.execute(
+        # 查该演员全部作品（含无日期），用于 total 与完整年份分组
+        movies = (await session.execute(
             select(JavMovie).where(JavMovie.actor.like(name_part))
-            .order_by(JavMovie.release_date.desc().nulls_last())
-            .limit(100)
         )).scalars().all()
 
+        total = len(movies)
+
+        year_map = defaultdict(list)
+        unknown_movies = []
+        for m in movies:
+            if m.release_date:
+                try:
+                    y = int(str(m.release_date)[:4])
+                except (ValueError, TypeError):
+                    y = None
+                if y:
+                    year_map[y].append(m)
+                else:
+                    unknown_movies.append(m)
+            else:
+                unknown_movies.append(m)
+
+        # 年份降序（与前端柱状图一致）
+        sorted_years = sorted(year_map.keys(), reverse=True)
+        years_data = [{"year": y, "count": len(year_map[y])} for y in sorted_years]
+
+        # 每年来源详情：按日期降序，避免详情与柱状图数量不一致
         details = []
-        for y, c in sorted(year_map.items(), reverse=True):
-            year_items = [m for m in recent if m.release_date and str(m.release_date)[:4] == y]
+        for y in sorted_years:
+            ms = sorted(
+                year_map[y],
+                key=lambda x: str(x.release_date) if x.release_date else "",
+                reverse=True,
+            )
             details.append({
-                "year": int(y),
-                "count": c,
+                "year": y,
+                "count": len(ms),
                 "movies": [{
                     "id": m.id, "code": m.code, "title": m.title,
                     "cover_url": m.cover_url,
-                    "release_date": str(m.release_date) if m.release_date else None,
+                    "release_date": m.release_date,
                     "module_type": "jav",
-                } for m in year_items[:12]],
+                } for m in ms],
             })
+
+        first_year = sorted_years[-1] if sorted_years else None
+        last_year = sorted_years[0] if sorted_years else None
+        debut_year = actor.debut_year or first_year
+
+        unknown_data = {
+            "year": None,
+            "count": len(unknown_movies),
+            "movies": [{
+                "id": m.id, "code": m.code, "title": m.title,
+                "cover_url": m.cover_url,
+                "release_date": m.release_date,
+                "module_type": "jav",
+            } for m in unknown_movies],
+        } if unknown_movies else None
 
         return {
             "actor_id": actor_id,
             "actor_name": actor.name,
-            "years": years_list,
+            "total": total,
+            "years": years_data,
             "details": details,
+            "unknown": unknown_data,
+            "year_range": [first_year, last_year],
+            "debut_year": debut_year,
             "module_type": "jav",
         }
     finally:

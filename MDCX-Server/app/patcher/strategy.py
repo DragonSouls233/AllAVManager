@@ -541,6 +541,152 @@ class PatchEngine:
                     return parts[i + 1]
         return None
 
+    async def _get_video_file_dir(self, missing_info: MissingInfo) -> Optional[Path]:
+        """从模块数据库查询 file_path，返回视频文件所在目录。
+
+        用于在补刮时复用视频目录下已有的 NFO / 封面 / poster 等资源。
+        """
+        module = self._detect_module(missing_info)
+        if not module or not missing_info.movie_code:
+            return None
+        try:
+            mod_db = ModuleDatabase.get_instance(module)
+            session = await mod_db.get_session()
+            try:
+                async with session:
+                    from sqlalchemy import text
+                    table_info = MODULE_TABLES.get(module)
+                    if not table_info:
+                        return None
+                    _, movie_table = table_info
+                    result = await session.execute(
+                        text(f"SELECT file_path FROM {movie_table} WHERE code = :code"),
+                        {"code": missing_info.movie_code},
+                    )
+                    row = result.fetchone()
+                    if row and row[0]:
+                        video_path = Path(row[0])
+                        if video_path.exists():
+                            return video_path.parent
+            finally:
+                await session.close()
+        except Exception:
+            pass
+        return None
+
+    async def _find_nearby_nfo(
+        self, missing_info: MissingInfo,
+    ) -> tuple[Optional[Path], Optional[dict]]:
+        """在 output_dir 和视频文件目录中查找 movie.nfo，返回 (nfo_path, parsed_dict)。
+
+        优先级：视频目录 > output_dir（视频目录的 NFO 通常是 Emby/Kodi 生成的权威版）
+        """
+        nfo_paths = []
+        if missing_info.output_dir:
+            nfo_paths.append(Path(missing_info.output_dir) / "movie.nfo")
+        video_dir = await self._get_video_file_dir(missing_info)
+        if video_dir:
+            nfo_paths.insert(0, video_dir / "movie.nfo")  # 视频目录优先
+
+        from app.importer.nfo_parser import NFOParser
+        parser = NFOParser()
+        for nfo_path in nfo_paths:
+            if not nfo_path.exists():
+                continue
+            try:
+                imported = parser.parse(str(nfo_path))
+                if imported and imported.is_valid():
+                    return nfo_path, self._nfo_to_scraped_dict(imported, missing_info.movie_code)
+            except Exception:
+                continue
+        return None, None
+
+    @staticmethod
+    def _nfo_to_scraped_dict(imported, code: str) -> dict:
+        """将 NFOParser.ImportedMovie 转为与刮削结果一致的 dict"""
+        actors = [{"name": a} for a in (imported.actors or [])] if imported.actors else []
+        return {
+            "code": imported.code or code,
+            "title": imported.title,
+            "original_title": imported.original_title,
+            "title_jp": None, "title_en": None,
+            "plot": imported.plot,
+            "plot_jp": None, "plot_en": None, "plot_short": None, "original_plot": None,
+            "release_date": imported.release_date.isoformat() if imported.release_date else None,
+            "duration": imported.duration,
+            "studio": imported.studio, "maker": imported.maker,
+            "publisher": None, "label": None,
+            "series": imported.series, "director": imported.director,
+            "genre": ",".join(imported.genres) if imported.genres else None,
+            "genres": imported.genres, "tags": [],
+            "actors": actors,
+            "cover_url": None, "poster_url": None, "thumb_url": None, "fanart_url": None,
+            "trailer_url": None, "sample_images": [],
+            "rating": None, "votes": None, "website": None, "source_url": None,
+            "javdb_id": None,
+            "source": "nfo_cache",
+            "is_uncensored": imported.is_uncensored,
+            "is_chinese": imported.is_chinese,
+        }
+
+    async def _copy_nearby_cover_images(
+        self, missing_info: MissingInfo, image_types: list[ImageType],
+    ) -> list[str]:
+        """从视频文件所在目录拷贝已有的封面/海报图片到 output_dir。
+
+        返回已成功拷贝的图片类型名称列表。
+        """
+        if not missing_info.output_dir:
+            return []
+        output = Path(missing_info.output_dir)
+        video_dir = await self._get_video_file_dir(missing_info)
+        if not video_dir:
+            return []
+
+        # 视频目录中常见的封面文件命名
+        COVER_CANDIDATES: dict[ImageType, list[str]] = {
+            ImageType.POSTER: ["poster.jpg", "poster.png", "cover.jpg", "cover.png", "folder.jpg"],
+            ImageType.FANART: ["fanart.jpg", "fanart.png", "backdrop.jpg", "background.jpg"],
+            ImageType.COVER:  ["cover.jpg", "cover.png", "landscape.jpg", "poster.jpg"],
+            ImageType.THUMB:  ["thumb.jpg", "thumb.png", "smallcover.jpg"],
+        }
+
+        import shutil
+        copied = []
+        for img_type in image_types:
+            candidates = COVER_CANDIDATES.get(img_type, [])
+            found = False
+            for candidate in candidates:
+                src = video_dir / candidate
+                if src.exists() and src.stat().st_size > 1024:
+                    # 拷贝到 output_dir，按标准命名（{type}.jpg）
+                    dst = output / f"{img_type.value}.jpg"
+                    try:
+                        shutil.copy2(src, dst)
+                        logger.info(f"从视频目录拷贝封面: {src} → {dst}")
+                        copied.append(img_type.value)
+                        found = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"拷贝封面失败: {src} → {dst}: {e}")
+                # 也尝试 png 后缀
+                src_png = video_dir / candidate
+                if not src_png.exists():
+                    src_png = video_dir / candidate.replace(".jpg", ".png")
+                if src_png.exists() and src_png.stat().st_size > 1024:
+                    dst = output / f"{img_type.value}.jpg"
+                    try:
+                        shutil.copy2(src_png, dst)
+                        logger.info(f"从视频目录拷贝封面: {src_png} → {dst}")
+                        copied.append(img_type.value)
+                        found = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"拷贝封面失败: {src_png} → {dst}: {e}")
+            if not found:
+                logger.debug(f"视频目录未找到 {img_type.value} 封面: {video_dir}")
+        return copied
+
     async def _scrape_missing(
         self,
         code: str,
@@ -569,59 +715,8 @@ class PatchEngine:
         """
         # ---- 优先从 NFO 缓存读取 ----
         nfo_cached: Optional[dict] = None
-        if missing_info and missing_info.output_dir:
-            nfo_path = Path(missing_info.output_dir) / "movie.nfo"
-            if nfo_path.exists():
-                try:
-                    from app.importer.nfo_parser import NFOParser
-                    parser = NFOParser()
-                    imported = parser.parse(str(nfo_path))
-                    if imported:
-                        actors = []
-                        if imported.actors:
-                            actors = [{"name": a} for a in imported.actors]
-                        nfo_cached = {
-                            "code": imported.code or code,
-                            "title": imported.title,
-                            "original_title": imported.original_title,
-                            "title_jp": None,
-                            "title_en": None,
-                            "plot": imported.plot,
-                            "plot_jp": None,
-                            "plot_en": None,
-                            "plot_short": None,
-                            "original_plot": None,
-                            "release_date": imported.release_date.isoformat() if imported.release_date else None,
-                            "duration": imported.duration,
-                            "studio": imported.studio,
-                            "maker": None,
-                            "publisher": None,
-                            "label": None,
-                            "series": imported.series,
-                            "director": None,
-                            "genre": ",".join(imported.genres) if imported.genres else None,
-                            "genres": imported.genres,
-                            "tags": [],
-                            "actors": actors,
-                            # NFO 内没有远程图片 URL，这里必须为 None。
-                            # 绝不能填本地文件路径——下载器会当成 URL 去 curl。
-                            "cover_url": None,
-                            "poster_url": None,
-                            "thumb_url": None,
-                            "fanart_url": None,
-                            "trailer_url": None,
-                            "sample_images": [],
-                            "rating": None,
-                            "votes": None,
-                            "website": None,
-                            "source_url": None,
-                            "javdb_id": None,
-                            "source": "nfo_cache",
-                            "is_uncensored": imported.is_uncensored,
-                            "is_chinese": imported.is_chinese,
-                        }
-                except Exception as e:
-                    logger.warning(f"NFO 解析失败: {nfo_path}: {e}")
+        if missing_info:
+            nfo_path, nfo_cached = await self._find_nearby_nfo(missing_info)
 
         # 仅补字段时，NFO 缓存已足够，跳过网络爬虫（快速路径）
         if nfo_cached and not need_images:
@@ -701,6 +796,9 @@ class PatchEngine:
         """下载缺失图片
 
         支持 poster/fanart/thumb/cover（单图）与 extrafanart（预览图，多图目录）。
+
+        优先从视频文件所在目录拷贝已有封面/海报（零网络开销），
+        拷贝不到的才走网络下载。
         """
         downloaded = []
 
@@ -708,17 +806,32 @@ class PatchEngine:
             logger.warning(f"无输出目录: {missing_info.movie_code}")
             return downloaded
 
-        # ImageProcessor 需通过异步上下文管理器初始化 HTTP 客户端
+        # ---- 1) 先尝试从视频目录拷贝本地封面 ----
+        nearby = await self._copy_nearby_cover_images(missing_info, image_types)
+        for img_type_val in nearby:
+            if img_type_val not in downloaded:
+                downloaded.append(img_type_val)
+                logger.info(
+                    f"本地封面命中: {missing_info.movie_code} {img_type_val} "
+                    f"(从视频目录拷贝，无需网络)"
+                )
+
+        # 过滤：已本地拷贝成功的不再走网络
+        remaining = [t for t in image_types if t.value not in downloaded]
+
+        # ---- 2) 网络下载剩余的 ----
+        if not remaining:
+            return downloaded
+
         async with self.image_processor as proc:
             source = (scraped_data or {}).get("source")
-            for image_type in image_types:
+            for image_type in remaining:
                 try:
                     # 预览图（extrafanart）：多图，写入 output_dir/extrafanart/
                     if image_type == ImageType.EXTRAFANART:
                         samples = (scraped_data or {}).get("sample_images") or []
                         if not samples:
                             continue
-                        # 补全相对路径 URL，并过滤掉非法/本地路径
                         samples = [_complete_url(s, source) for s in samples]
                         samples = [s for s in samples if _is_downloadable_url(s)]
                         if not samples:
@@ -743,18 +856,13 @@ class PatchEngine:
                     # 单图类型（poster/fanart/thumb/cover）：对应 <type>_url
                     url_key = f"{image_type.value}_url"
                     url = (scraped_data or {}).get(url_key)
-                    # 刮削失败时 scraped_data 无图片 URL，回退到数据库已有的 cover_url
                     if not url and missing_info.cover_url_fallback:
                         if image_type in (ImageType.POSTER, ImageType.COVER):
                             url = missing_info.cover_url_fallback
                     if not url:
                         continue
 
-                    # 补全相对路径 URL（兜底保护）
                     url = _complete_url(url, source)
-
-                    # 防线：非 http(s) 的一律不下载（本地路径/脏数据），
-                    # 否则 curl 会报 "URL rejected: Port number..." 刷屏
                     if not _is_downloadable_url(url):
                         logger.debug(
                             f"跳过非法图片 URL ({image_type.value}): "
@@ -762,8 +870,6 @@ class PatchEngine:
                         )
                         continue
 
-                    # 优先用"来源详情页"作 Referer（javbus 防盗链要求），
-                    # 否则退回到图片 URL 自身的源站；避免误报 403 为已补刮。
                     referer = _detail_referer(source, missing_info.movie_code) or _origin_of(url)
                     output_path = f"{missing_info.output_dir}/{image_type.value}.jpg"
                     saved = await proc.download_image(url, output_path, referer=referer)
@@ -970,10 +1076,10 @@ class PatchEngine:
                         query = f"UPDATE {movie_table} SET {', '.join(updates)} WHERE id = :id"
                         await session.execute(text(query), params)
 
-                    # 标记刮削完成，这样影片库的"已刮削/待刮削"筛选项才能正确区分
+                    # 标记刮削完成 + 更新 scraped_at，让 skip_recent_days 机制生效
                     await session.execute(
-                        text(f"UPDATE {movie_table} SET status = 'scraped' WHERE id = :id"),
-                        {"id": mod_movie_id},
+                        text(f"UPDATE {movie_table} SET status = 'scraped', scraped_at = :now WHERE id = :id"),
+                        {"id": mod_movie_id, "now": datetime.now().isoformat()},
                     )
 
                     await session.commit()
