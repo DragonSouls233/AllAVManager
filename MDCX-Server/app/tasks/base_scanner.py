@@ -48,6 +48,17 @@ _CODE_QUALIFIER_MAP = {
 }
 
 
+def _norm_key(s: str) -> str:
+    """归一化用于比对的键：每段数字去前导零，再去掉 -/_。
+
+    先在各数字段内去前导零（保留 -/_ 以便分段），再去除分隔符，
+    兼容番号中 - 与 _ 的差异，以及数字前导零差异
+    （如 012213-831 与 012213_831、HEYDOUGA-4169-24 与 HEYDOUGA-4169-024）。
+    """
+    s = re.sub(r"(\d+)", lambda m: m.group(1).lstrip("0") or "0", s.lower())
+    return re.sub(r"[-_]", "", s)
+
+
 def _resolve_asset_target(src_name: str, code: str) -> str | None:
     """将视频目录中的资源文件名映射到数据中心标准名。
 
@@ -73,9 +84,9 @@ def _resolve_asset_target(src_name: str, code: str) -> str | None:
             return None
         return generic
 
-    # 2) 以番号命名的资源（忽略 -/_ 差异）
-    code_key = re.sub(r"[-_]", "", code or "")
-    s_key = re.sub(r"[-_]", "", stem)
+    # 2) 以番号命名的资源（忽略 -/_ 与数字前导零差异）
+    code_key = _norm_key(code or "")
+    s_key = _norm_key(stem)
     if not code_key:
         return None
     if s_key == code_key:

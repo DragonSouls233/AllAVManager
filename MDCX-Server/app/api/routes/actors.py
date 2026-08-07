@@ -566,15 +566,17 @@ async def get_actor_movies(
         total = await sess.scalar(count_query)
 
         if total == 0:
-            # 回退到 actor 文本字段 LIKE
+            # 回退到 actor 文本字段 LIKE（folder_based_actors 仅 chinese 模块存在，需防御）
             name_part = f"%{actor.name}%"
-            count_query = select(func.count(movie_cls.id)).where(
-                or_(movie_cls.actor.like(name_part), movie_cls.folder_based_actors.like(name_part))
+            folder_col = getattr(movie_cls, "folder_based_actors", None)
+            cond = (
+                or_(movie_cls.actor.like(name_part), folder_col.like(name_part))
+                if folder_col is not None
+                else movie_cls.actor.like(name_part)
             )
+            count_query = select(func.count(movie_cls.id)).where(cond)
             total = await sess.scalar(count_query) or 0
-            query = select(movie_cls).where(
-                or_(movie_cls.actor.like(name_part), movie_cls.folder_based_actors.like(name_part))
-            ).order_by(movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc())
+            query = select(movie_cls).where(cond).order_by(movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc())
 
         query = query.offset((page - 1) * page_size).limit(page_size)
         if total > 0 and not str(query.whereclause).startswith("movies.actor"):
@@ -823,15 +825,18 @@ async def update_actor(
 AVATAR_DIR_NAME = "avatars"
 
 
-def _get_avatar_dir() -> Path:
-    """获取头像存储目录"""
+def _get_avatar_dir(module: str = None) -> Path:
+    """获取头像存储目录(可按模块隔离: avatars/{module})"""
     manager = get_config_manager()
-    return manager.computed.data_dir / AVATAR_DIR_NAME
+    base = manager.computed.data_dir / AVATAR_DIR_NAME
+    if module:
+        return base / module
+    return base
 
 
-def _get_avatar_path(actor_id: int) -> Path:
-    """获取演员头像文件路径(绝对, 不依赖 server 启动目录)"""
-    return _get_avatar_dir().resolve() / f"actor_{actor_id}.jpg"
+def _get_avatar_path(actor_id: int, module: str = "jav") -> Path:
+    """获取演员头像文件路径(绝对, 不依赖 server 启动目录, 按模块隔离)"""
+    return _get_avatar_dir(module).resolve() / f"actor_{actor_id}.jpg"
 
 
 @router.post("/{actor_id}/avatar")
@@ -853,7 +858,7 @@ async def upload_actor_avatar(
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="仅支持 JPG/PNG/WebP 格式的图片")
 
-    avatar_dir = _get_avatar_dir()
+    avatar_dir = _get_avatar_dir(module)
     avatar_dir.mkdir(parents=True, exist_ok=True)
 
     ext = file.filename.rsplit(".", 1)[-1] if file.filename else "jpg"
@@ -864,7 +869,7 @@ async def upload_actor_avatar(
             f.write(content)
 
         from app.utils.face_crop import get_face_cropper
-        output_path = _get_avatar_path(actor_id)
+        output_path = _get_avatar_path(actor_id, module)
         cropper = get_face_cropper()
         result = cropper.crop_face(str(temp_path), str(output_path))
 
@@ -912,10 +917,16 @@ async def get_actor_avatar_file(
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
-    # 1. 优先: DATA/avatars/actor_{id}.jpg
-    avatar_path = _get_avatar_path(actor_id)
+    # 1. 优先: DATA/avatars/{module}/actor_{id}.jpg（按模块隔离）
+    avatar_path = _get_avatar_path(actor_id, module)
     if avatar_path.exists() and avatar_path.is_file():
         return FileResponse(str(avatar_path), media_type="image/jpeg")
+
+    # 1.1 兼容旧约定: 仅 jav 模块回退到全局 avatars/actor_{id}.jpg
+    if module == "jav":
+        legacy_path = _get_avatar_dir() / f"actor_{actor_id}.jpg"
+        if legacy_path.exists() and legacy_path.is_file():
+            return FileResponse(str(legacy_path), media_type="image/jpeg")
 
     # 2. 数据库 avatar_url 字段
     if actor.avatar_url:
@@ -984,9 +995,14 @@ async def delete_actor_avatar(
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
-        avatar_path = _get_avatar_path(actor_id)
+        avatar_path = _get_avatar_path(actor_id, module)
         if avatar_path.exists():
             avatar_path.unlink()
+        # 同时清理 jav 历史全局头像
+        if module == "jav":
+            legacy_path = _get_avatar_dir() / f"actor_{actor_id}.jpg"
+            if legacy_path.exists():
+                legacy_path.unlink()
 
         actor.avatar_url = None
         await sess.commit()
@@ -1102,7 +1118,7 @@ async def batch_scrape_actor_profiles(
 
                 if body.include_avatar and profile.avatar_url and not getattr(actor, "avatar_url", None):
                     avatar_path = await _download_actor_avatar(
-                        actor.id, profile.avatar_url, actor.name
+                        actor.id, profile.avatar_url, actor.name, module
                     )
                     if avatar_path:
                         actor.avatar_url = str(avatar_path)
@@ -1143,13 +1159,15 @@ async def batch_scrape_actor_profiles(
 
 
 async def _download_actor_avatar(
-    actor_id: int, url: str, actor_name: str = ""
+    actor_id: int, url: str, actor_name: str = "", module: str = "jav"
 ) -> Optional[Path]:
-    """下载演员头像到本地"""
+    """下载演员头像到本地(按模块隔离: avatars/{module}/actor_{id}.jpg)"""
     from app.config.manager import get_config_manager
 
     manager = get_config_manager()
     avatar_dir = manager.computed.data_dir / "avatars"
+    if module:
+        avatar_dir = avatar_dir / module
     avatar_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = (avatar_dir / f"actor_{actor_id}.jpg").resolve()

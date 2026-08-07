@@ -438,13 +438,21 @@ async def get_module_actor_avatar_file(module_name: str, actor_id: int):
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
         
-        # 优先直接读取约定文件 DATA/avatars/actor_{id}.jpg
+        # 优先直接读取约定文件。
+        # 按模块隔离: DATA/avatars/{module_name}/actor_{id}.jpg，
+        # 避免各模块 actors 表 id 独立自增导致 actor_1.jpg 互相覆盖/串图。
         try:
             from pathlib import Path as _P
             from app.config.manager import get_config_manager
             data_dir = _P(get_config_manager().computed.data_dir)
-            avatar_file = data_dir / "avatars" / f"actor_{actor_id}.jpg"
-            if avatar_file.exists():
+            avatars_root = data_dir / "avatars"
+            # 1) 模块专属目录
+            avatar_file = avatars_root / module_name / f"actor_{actor_id}.jpg"
+            # 2) 兼容旧约定: 仅 jav 模块的历史头像存于全局 avatars/actor_{id}.jpg
+            #    (其余模块的历史文件实为 jav 的，禁止回退，否则会再次串图)
+            if not avatar_file.exists() and module_name == "jav":
+                avatar_file = avatars_root / f"actor_{actor_id}.jpg"
+            if avatar_file.exists() and avatar_file.is_file():
                 return Response(
                     content=avatar_file.read_bytes(),
                     media_type="image/jpeg",
@@ -637,11 +645,11 @@ def _apply_actor_profile(db_actor, profile, module_name: str):
         db_actor.nationality = profile.country
 
 
-async def _download_module_actor_avatar(actor_id: int, url: str) -> bool:
-    """下载演员头像到 DATA/avatars/actor_{id}.jpg
+async def _download_module_actor_avatar(actor_id: int, url: str, module_name: str = None) -> bool:
+    """下载演员头像到 DATA/avatars/{module_name}/actor_{id}.jpg
 
     与列表/详情页头像端点（get_module_actor_avatar_file）的约定文件完全一致，
-    下载成功后头像即可在列表与详情页显示。
+    按模块隔离存储，避免跨模块 id 串图。module_name 为空时回退到全局目录(兼容旧调用)。
     """
     from app.utils.http_client import AsyncHttpClient
     import re as _re
@@ -649,6 +657,8 @@ async def _download_module_actor_avatar(actor_id: int, url: str) -> bool:
     try:
         data_dir = Path(get_config_manager().computed.data_dir)
         avatar_dir = data_dir / "avatars"
+        if module_name:
+            avatar_dir = avatar_dir / module_name
         avatar_dir.mkdir(parents=True, exist_ok=True)
         output_path = (avatar_dir / f"actor_{actor_id}.jpg").resolve()
 
@@ -727,7 +737,7 @@ async def scrape_module_actor_profile(module_name: str, actor_id: int):
 
         # 下载头像到本地约定文件，使列表/详情页头像端点能显示
         if profile.avatar_url:
-            await _download_module_actor_avatar(actor_id, profile.avatar_url)
+            await _download_module_actor_avatar(actor_id, profile.avatar_url, module_name)
 
         await session2.commit()
 
@@ -818,7 +828,7 @@ async def batch_scrape_module_actor_profiles(
                         if a:
                             _apply_actor_profile(a, profile, module_name)
                             if profile.avatar_url:
-                                await _download_module_actor_avatar(a.id, profile.avatar_url)
+                                await _download_module_actor_avatar(a.id, profile.avatar_url, module_name)
                             await s.commit()
                             success += 1
                     finally:
@@ -900,7 +910,7 @@ async def batch_scrape_module_actors(
                         if a:
                             _apply_actor_profile(a, profile, module_name)
                             if profile.avatar_url:
-                                await _download_module_actor_avatar(a.id, profile.avatar_url)
+                                await _download_module_actor_avatar(a.id, profile.avatar_url, module_name)
                             await s.commit()
                             profile_success += 1
                     finally:

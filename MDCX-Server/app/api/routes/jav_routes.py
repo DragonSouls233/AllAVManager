@@ -345,10 +345,13 @@ async def get_actor_avatar_file(actor_id: int):
             return FileResponse(str(avatar_path), media_type="image/jpeg",
                                 headers={"Cache-Control": "public, max-age=86400"})
 
-        # 优先读取约定文件 DATA/avatars/actor_{id}.jpg
+        # 优先读取约定文件 DATA/avatars/jav/actor_{id}.jpg（按模块隔离）
         try:
             from app.config.manager import get_config_manager
-            avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / f"actor_{actor_id}.jpg"
+            avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / "jav" / f"actor_{actor_id}.jpg"
+            if not avatar_file.exists():
+                # 兼容旧约定: 全局 avatars/actor_{id}.jpg
+                avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / f"actor_{actor_id}.jpg"
             if avatar_file.exists():
                 return FileResponse(str(avatar_file), media_type="image/jpeg",
                                     headers={"Cache-Control": "public, max-age=86400"})

@@ -19,6 +19,7 @@ from typing import Optional
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import Movie
 from app.utils.module_helper import get_module_model
 
 logger = logging.getLogger(__name__)

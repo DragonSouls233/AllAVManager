@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse, FileResponse, Response as FastR
 from sqlalchemy import select
 
 from app.config.manager import get_config
+from app.db.models import Movie
 from app.utils.module_helper import get_module_model, get_module_session
 from app.utils.logger import get_logger
 

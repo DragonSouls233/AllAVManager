@@ -190,7 +190,7 @@ async def get_movie(movie_id: int):
             "module_type": "pornhub",
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "plot": movie.plot,
-            "tags": movie.tags, "source": movie.source, "source_url": movie.source_url,
+            "tags": getattr(movie, "tag", None), "source": movie.source, "source_url": movie.source_url,
             "file_path": movie.file_path, "file_size": movie.file_size,
             "play_count": movie.play_count, "view_status": movie.view_status,
             "status": movie.status, "created_at": str(movie.created_at),

@@ -227,14 +227,14 @@ class MissingDetector:
         FieldType.TRAILER_URL,
     ]
     
-    # 关键图片
+    # 关键图片（必须存在——缺失会导致整部影片被判"不完整"反复补刮）
     CRITICAL_IMAGES = [
         ImageType.POSTER,
-        ImageType.FANART,
     ]
     
     # 重要图片
     IMPORTANT_IMAGES = [
+        ImageType.FANART,
         ImageType.COVER,
         ImageType.THUMB,
     ]
@@ -517,10 +517,12 @@ class MissingDetector:
         missing = []
         
         # 字段名映射：FieldType 枚举值 → 实际 DB 列名
+        # actors 用 movies.actor 文本列（逗号分隔，扫描器/补刮都写它）。
+        # 历史坑：曾用 movie_actors 关联表计数，但扫描器从不填充该表（恒 0）→ actors 永远判缺失 → 补刮死循环。
         COLUMN_MAP = {
             "studio": "studio_id",    # FK → studios 表
             "series": "series_id",    # FK → series 表
-            "actors": "_actors_count", # 关联表，由 _detect_from_dict 预填
+            "actors": "actor",        # 文本列真相源（各模块 MovieMixin.actor）
         }
         
         def _get_value(field_type):

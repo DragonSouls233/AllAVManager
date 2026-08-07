@@ -28,6 +28,7 @@ import aiohttp
 from sqlalchemy import select, or_
 
 from app.config.manager import get_config, get_config_manager
+from app.db.models import Actor
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

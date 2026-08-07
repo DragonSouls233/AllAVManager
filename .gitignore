@@ -55,6 +55,7 @@ MDCX-Desktop/node_modules/
 MDCX-Server/static/assets/
 
 # 杂项
+.workbuddy
 _verify_data
 check_jav_db.py
 fix_*.py

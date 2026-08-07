@@ -200,7 +200,7 @@
         <!-- ===== 欧美 ===== -->
         <el-sub-menu index="western-module" v-if="moduleEnabled.western !== false">
           <template #title>
-            <el-icon><Globe /></el-icon>
+            <el-icon><Monitor /></el-icon>
             <span>🌍 欧美</span>
           </template>
           <el-menu-item index="/western/movies">

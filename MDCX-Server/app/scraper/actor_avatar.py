@@ -18,6 +18,7 @@ from lxml import etree
 
 from app.config.manager import get_config_manager
 from app.db.database import Database
+from app.db.models import Actor
 # Module-specific models now accessed via get_module_model()
 from app.utils.module_helper import get_module_model, get_module_session
 from app.utils.http_client import AsyncHttpClient

@@ -12,6 +12,7 @@ from typing import Optional
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.system_models import User, FavoriteItem, FavoriteGroup
+from app.db.models import Movie
 from app.utils.module_helper import get_module_model
 from app.config.manager import get_config
 

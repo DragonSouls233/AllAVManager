@@ -54,6 +54,7 @@ async def get_uncensored_cover_file(movie_id: int):
     db = get_uncensored_db()
     session = await db.get_session()
     try:
+        from app.db.uncensored_models import UncensoredMovie
         movie = await session.get(UncensoredMovie, movie_id)
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")

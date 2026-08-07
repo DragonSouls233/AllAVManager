@@ -705,6 +705,19 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
     )
 
+    # 全局未捕获异常处理器：把完整堆栈写进日志，避免 500 只返回 "Internal Server Error"
+    # 而无从排查（排查里番播放端点 500 时新增）。
+    from fastapi import Request as _Request
+    from fastapi.responses import JSONResponse as _JSONResponse
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request: _Request, exc: Exception):
+        logger.error("未捕获异常 %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        return _JSONResponse(
+            status_code=500,
+            content={"detail": f"{type(exc).__name__}: {exc}"},
+        )
+
     logger.info("="*50)
     logger.info("create_app() 开始创建应用")
     

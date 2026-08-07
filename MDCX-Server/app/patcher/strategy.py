@@ -577,16 +577,17 @@ class PatchEngine:
     async def _find_nearby_nfo(
         self, missing_info: MissingInfo,
     ) -> tuple[Optional[Path], Optional[dict]]:
-        """在 output_dir 和视频文件目录中查找 movie.nfo，返回 (nfo_path, parsed_dict)。
+        """在 output_dir（数据中心）和视频文件目录中查找 movie.nfo，返回 (nfo_path, parsed_dict)。
 
-        优先级：视频目录 > output_dir（视频目录的 NFO 通常是 Emby/Kodi 生成的权威版）
+        优先级：output_dir > 视频目录（output_dir 是扫描时归集的单一数据源，已含视频目录
+        复制来的 NFO + 后续刮削写入的本地 NFO；视频目录仅作兜底，避免读取到未刮削的瘦 NFO）
         """
         nfo_paths = []
-        if missing_info.output_dir:
-            nfo_paths.append(Path(missing_info.output_dir) / "movie.nfo")
         video_dir = await self._get_video_file_dir(missing_info)
         if video_dir:
-            nfo_paths.insert(0, video_dir / "movie.nfo")  # 视频目录优先
+            nfo_paths.append(video_dir / "movie.nfo")
+        if missing_info.output_dir:
+            nfo_paths.insert(0, Path(missing_info.output_dir) / "movie.nfo")  # 数据中心优先
 
         from app.importer.nfo_parser import NFOParser
         parser = NFOParser()

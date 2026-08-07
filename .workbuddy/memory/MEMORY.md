@@ -62,9 +62,17 @@
 - `JavMovie.actor` 是**逗号分隔的演员名文本**，扫描器只写这个字段。
 - `MovieActor` 关联表存在但**扫描器从不填充**（恒为空）——
   任何按演员查作品的逻辑都必须用 `movie.actor LIKE '%名字%'`，不能 join 关联表。
-- 演员头像真相源：`DATA/avatars/actor_{id}.jpg`（按 actor 主键 id，不是名字）。
+- 演员头像真相源（2026-08-07 改为按模块隔离）：`DATA/avatars/{module}/actor_{id}.jpg`，
+  **module ∈ jav/fc2/uncensored/chinese/western/pornhub**（各模块 actors 表 id 独立自增，必须用子目录隔离，否则串图）。
+  旧全局 `DATA/avatars/actor_{id}.jpg` 仅作 **jav 的历史兼容回退**（其余模块禁止回退，否则再次串图）。
+  读取端点：`modules.py get_module_actor_avatar_file`（带 module_type 的演员走这）、`actors.py get_actor_avatar_file`（jav，默认 module=jav）、`jav_routes.py`。
+  下载/落盘：`modules.py _download_module_actor_avatar(module_name=)`、`actors.py _download_actor_avatar(module=)`、`actors.py upload_actor_avatar`。
   `avatar_url` 字段应存**真实本地绝对路径**，不能存路由字符串
   （详情页会把它当文件路径经 `files/proxy` 加载）。
+- **头像跨模块 id 撞车陷阱（重要）**：6 模块 actors 表 id 各自从 1 自增，若头像存成单一全局 `actor_{id}.jpg`，
+  jav 的 id=1 小沢菜穂 会被 无码 id=1 ASUKA 等读取到 → 串图。新增头像读写一律带 module 子目录，
+  不要回退到全局（jav 除外）。`scraper/actor_avatar.py`、`gfriends_importer.py`、`importer/sync.py` 仍写全局，
+  因非 jav 模块已不读全局，故不会串图；jav 经 actors.py/jav_routes 全局回退仍正常。
 
 ## 协作约定
 

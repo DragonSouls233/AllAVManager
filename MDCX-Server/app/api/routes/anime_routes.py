@@ -59,6 +59,7 @@ def _movie_summary(m: AnimeMovie) -> dict:
         "release_date": m.release_date,
         "duration": m.duration,
         "cover": _cover_url(m.id),
+        "play_url": f"/api/v1/anime/movies/{m.id}/play/file",
         "has_file": bool(m.file_path and os.path.exists(m.file_path)),
         "status": m.status,
         "source": m.source,
@@ -310,12 +311,22 @@ async def play_anime_video_file(movie_id: int, request: Request):
                     break
                 yield data
 
+    # Content-Disposition 必须能被 latin-1 编码（HTTP 头限制）。
+    # 原始文件名常含日文/中文，直接放 header 会触发 UnicodeEncodeError → 500。
+    # 用 ASCII 的 code 作为 filename 兜底，再用 RFC 5987 的 filename* 传递真实 UTF-8 文件名。
+    from urllib.parse import quote
+    raw_name = os.path.basename(file_path)
+    ascii_name = f"{m.code or 'video'}{ext}"
+    content_disposition = (
+        f'inline; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(raw_name)}"
+    )
     return StreamingResponse(
         _iter_full(), media_type=media_type,
         headers={
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
-            "Content-Disposition": f'inline; filename="{os.path.basename(file_path)}"',
+            "Content-Disposition": content_disposition,
         },
     )
 

@@ -136,12 +136,9 @@
           <el-checkbox-group v-model="runForm.sources">
             <el-checkbox value="javbus">JavBus</el-checkbox>
             <el-checkbox value="javdb">JavDB</el-checkbox>
-            <el-checkbox value="avmoo">Avmoo</el-checkbox>
-            <el-checkbox value="dmm">DMM</el-checkbox>
-            <el-checkbox value="missav">MissAV</el-checkbox>
-            <el-checkbox value="javlibrary">JavLibrary</el-checkbox>
+            <el-checkbox value="javdatabase">JavDatabase</el-checkbox>
           </el-checkbox-group>
-          <span class="hint">指定优先使用的刮削站点（预览图/封面来自这些站点）</span>
+          <span class="hint">JAV 有码可用源（avmoo/avsox 的 API/搜索路径已失效，dmm 类型不支持 jav）</span>
         </el-form-item>
         <el-form-item label="仅补刮缺失">
           <el-switch v-model="runForm.only_missing" />
@@ -342,8 +339,8 @@ const runForm = ref({
   patch_type: 'smart',
   sources: ['javbus', 'javdb', 'avmoo'],
   only_missing: true,
-  skip_recent: false,
-  skip_recent_days: 0,
+  skip_recent: true,
+  skip_recent_days: 7,
   skip_verified: false,
   directories: []
 })

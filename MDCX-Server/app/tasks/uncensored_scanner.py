@@ -63,6 +63,15 @@ def _extract_uncensored_code(file_path: Path) -> str | None:
     return code
 
 
+def _clean_text(s: str) -> str:
+    """清洗 NFO 文本：去 CDATA 包裹与残留标签，折叠空白。"""
+    if not s:
+        return s
+    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"<[^>]+>", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _parse_nfo_metadata(nfo_path: Path) -> dict:
     """从 movie.nfo 提取 title / actors / studio（正则容错，避免畸形 XML 崩溃）。"""
     meta: dict = {"title": None, "actors": [], "studio": None}
@@ -73,19 +82,19 @@ def _parse_nfo_metadata(nfo_path: Path) -> dict:
     # title
     m = re.search(r"<title>\s*(.*?)\s*</title>", text, re.DOTALL | re.IGNORECASE)
     if m:
-        meta["title"] = m.group(1).strip()
+        meta["title"] = _clean_text(m.group(1))
     # studio / maker
     for tag in ("studio", "maker"):
         m = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.DOTALL | re.IGNORECASE)
         if m and m.group(1).strip():
-            meta["studio"] = m.group(1).strip()
+            meta["studio"] = _clean_text(m.group(1))
             break
     # actors
     seen: set[str] = set()
     for block in re.finditer(r"<actor\b[^>]*>(.*?)</actor>", text, re.DOTALL | re.IGNORECASE):
         nm = re.search(r"<name>\s*(.*?)\s*</name>", block.group(1), re.DOTALL | re.IGNORECASE)
         if nm:
-            name = nm.group(1).strip()
+            name = _clean_text(nm.group(1))
             if name and name not in seen:
                 seen.add(name)
                 meta["actors"].append(name)

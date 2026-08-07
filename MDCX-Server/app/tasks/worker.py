@@ -185,31 +185,48 @@ class TaskWorker:
         }
     
     async def _execute_patch(self, task: Task) -> dict:
-        """执行补刮"""
-        from app.patcher.engine import PatchEngine
+        """执行补刮（定时/队列任务）
 
-        mode = task.data.get("mode", "all")
-        patch_type = task.data.get("patch_type", "smart")
-        codes = task.data.get("codes", [])
-        directories = task.data.get("directories", [])
+        修复：旧代码调用了不存在的 PatchEngine.patch_all()，定时补刮一直崩溃。
+        改为走 PatchWorkflow.run（与 API 后台任务同一路径）。
+        默认跳过最近 7 天已刮削的 + 字段完整的，避免"待补数量不减少"死循环。
+        """
+        from app.patcher.engine import PatchMode, PatchOptions, PatchType, PatchWorkflow
 
-        engine = PatchEngine()
+        mode_str = task.data.get("mode", "all")
+        patch_type_str = task.data.get("patch_type", "smart")
+        codes = task.data.get("codes", []) or []
+        directories = task.data.get("directories", []) or []
 
-        if mode == "all":
-            result = await engine.patch_all(patch_type=patch_type)
-        elif mode == "selected" and codes:
-            result = await engine.patch_codes(codes, patch_type=patch_type)
-        elif mode == "directory" and directories:
-            result = await engine.patch_directories(directories, patch_type=patch_type)
-        else:
-            result = await engine.patch_all(patch_type=patch_type)
+        try:
+            mode = PatchMode(mode_str)
+        except ValueError:
+            mode = PatchMode.ALL
+        try:
+            patch_type = PatchType(patch_type_str)
+        except ValueError:
+            patch_type = PatchType.SMART
+
+        options = PatchOptions(
+            mode=mode,
+            patch_type=patch_type,
+            codes=codes,
+            directories=directories,
+            module=task.data.get("module"),
+        )
+        workflow = PatchWorkflow()
+        result = await workflow.run(options)
 
         return {
             "status": "completed",
-            "total_detected": result.total_detected if hasattr(result, 'total_detected') else 0,
-            "total_skipped": result.total_skipped if hasattr(result, 'total_skipped') else 0,
-            "total_success": result.total_success if hasattr(result, 'total_success') else 0,
-            "total_failed": result.total_failed if hasattr(result, 'total_failed') else 0,
+            "job_id": getattr(result, "job_id", None),
+            "total_detected": getattr(result, "total_detected", 0),
+            "total_skipped": getattr(result, "total_skipped", 0),
+            "total_to_patch": getattr(result, "total_to_patch", 0),
+            "total_patched": getattr(result, "total_patched", 0),
+            "total_success": getattr(result, "total_success", 0),
+            "total_partial": getattr(result, "total_partial", 0),
+            "total_failed": getattr(result, "total_failed", 0),
         }
 
 
