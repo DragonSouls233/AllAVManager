@@ -280,7 +280,8 @@ onBeforeUnmount(() => {
 
 // 工具方法
 const getActorAvatar = (actorId) => {
-  return getActorAvatarUrlById(actorId)
+  // 模块感知：用影片自身的 module_type 对齐后端 avatars/{module}/ 隔离存储
+  return getActorAvatarUrlById(actorId, props.movie?.module_type)
 }
 
 // 演员头像默认占位:基于演员名生成

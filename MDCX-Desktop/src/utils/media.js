@@ -17,9 +17,21 @@ export const defaultCover = (code = '') => {
   return `data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='450' viewBox='0 0 320 450'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%23111827'/%3E%3Cstop offset='1' stop-color='%23374151'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='320' height='450' fill='url(%23g)'/%3E%3Ctext x='160' y='215' text-anchor='middle' font-size='28' font-family='Arial' font-weight='700' fill='%23ffffff'%3EMDCX%3C/text%3E%3Ctext x='160' y='255' text-anchor='middle' font-size='18' font-family='Arial' fill='%239ca3af'%3E${text}%3C/text%3E%3C/svg%3E`
 }
 
-export const getActorAvatarUrl = (actor) => {
+export const getActorAvatarUrl = (actor, module) => {
   if (!actor?.id) {
     return defaultAvatar(actor?.name)
+  }
+  // 模块感知：优先用 actor.module_type（详情端点已返回）或显式传入的 module，
+  // 与后端 get_module_actor_avatar_file（读取 DATA/avatars/{module}/actor_{id}.jpg）严格对应。
+  // 这是修复"跨模块头像串图/裂图"的关键——6 个模块 actors 表 id 各自自增，
+  // 必须按模块隔离读取，绝不能回退到默认 jav 端点去读别的模块文件。
+  const mod = module || actor.module_type
+  if (mod) {
+    return `${getServerBaseUrl()}/api/v1/modules/${mod}/actors/${actor.id}/avatar/file`
+  }
+  if (actor.avatar_url) {
+    if (/^https?:\/\//i.test(actor.avatar_url)) return actor.avatar_url
+    return getFileProxyUrl(actor.avatar_url)
   }
   return `${getServerBaseUrl()}/api/v1/actors/${actor.id}/avatar/file`
 }
@@ -27,12 +39,18 @@ export const getActorAvatarUrl = (actor) => {
 /**
  * 按 actor_id 获取头像 URL(用于表格行中只有 actor_id 的场景)
  * @param {number|string} actorId - 演员 ID
+ * @param {string} [module] - 模块名(jav/uncensored/fc2/...)，模块感知以对齐后端隔离存储
  * @param {string} [version] - 缓存版本参数(可选,避免浏览器缓存)
  */
-export const getActorAvatarUrlById = (actorId, version) => {
+export const getActorAvatarUrlById = (actorId, module, version) => {
   if (!actorId) return defaultAvatar()
   const v = version ? `?t=${encodeURIComponent(version)}` : ''
-  return `${getServerBaseUrl()}/api/v1/actors/${actorId}/avatar/file${v}`
+  const base = `${getServerBaseUrl()}/api/v1`
+  // 模块感知：与后端 get_module_actor_avatar_file 对应；未指定 module 时回退到通用端点(默认 jav)
+  if (module) {
+    return `${base}/modules/${module}/actors/${actorId}/avatar/file${v}`
+  }
+  return `${base}/actors/${actorId}/avatar/file${v}`
 }
 
 /**

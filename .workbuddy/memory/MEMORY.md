@@ -62,17 +62,22 @@
 - `JavMovie.actor` 是**逗号分隔的演员名文本**，扫描器只写这个字段。
 - `MovieActor` 关联表存在但**扫描器从不填充**（恒为空）——
   任何按演员查作品的逻辑都必须用 `movie.actor LIKE '%名字%'`，不能 join 关联表。
-- 演员头像真相源（2026-08-07 改为按模块隔离）：`DATA/avatars/{module}/actor_{id}.jpg`，
-  **module ∈ jav/fc2/uncensored/chinese/western/pornhub**（各模块 actors 表 id 独立自增，必须用子目录隔离，否则串图）。
-  旧全局 `DATA/avatars/actor_{id}.jpg` 仅作 **jav 的历史兼容回退**（其余模块禁止回退，否则再次串图）。
+- 演员头像真相源（2026-08-07 起按模块隔离）：`DATA/avatars/{module}/actor_{id}.jpg`，
+  **module ∈ jav/fc2/uncensored/chinese/western/pornhub**（各模块 actors 表 id 独立自增，必须用子目录隔离，否则串图，**与 `movies/{module}/` 结构一致**）。
+  旧全局 `DATA/avatars/actor_{id}.jpg` **已于 2026-08-08 彻底弃用**：所有 6 个模块（含 jav）都不回退全局，只读 `avatars/{module}/`；历史扁平文件由 `scripts/migrate_avatars.py` 迁到 `avatars/jav/`。
   读取端点：`modules.py get_module_actor_avatar_file`（带 module_type 的演员走这）、`actors.py get_actor_avatar_file`（jav，默认 module=jav）、`jav_routes.py`。
-  下载/落盘：`modules.py _download_module_actor_avatar(module_name=)`、`actors.py _download_actor_avatar(module=)`、`actors.py upload_actor_avatar`。
+  写入/落盘（全部已按 module 隔离）：`modules.py _download_module_actor_avatar(module_name=)`、
+  `actors.py _download_actor_avatar(module=)` / `upload_actor_avatar` / `delete_actor_avatar`、
+  `actor_avatar.py ActorAvatarScraper` / `run_avatar_scrape_job(module=)`、
+  `scraper/module_actor_avatar.py ModuleActorAvatarScraper`（5 模块专用，写 `avatars/{module}/`，已重建修复写死路径+错误文件名）、
+  `gfriends_importer.py`（按 `actor_sources` 的 module 映射落盘）、`importer/sync.py _save_actor_avatar(module=)`、
+  `pornhub_actor_scraper.py`（本就用 `avatars/pornhub/`，一致）。
   `avatar_url` 字段应存**真实本地绝对路径**，不能存路由字符串
   （详情页会把它当文件路径经 `files/proxy` 加载）。
 - **头像跨模块 id 撞车陷阱（重要）**：6 模块 actors 表 id 各自从 1 自增，若头像存成单一全局 `actor_{id}.jpg`，
   jav 的 id=1 小沢菜穂 会被 无码 id=1 ASUKA 等读取到 → 串图。新增头像读写一律带 module 子目录，
-  不要回退到全局（jav 除外）。`scraper/actor_avatar.py`、`gfriends_importer.py`、`importer/sync.py` 仍写全局，
-  因非 jav 模块已不读全局，故不会串图；jav 经 actors.py/jav_routes 全局回退仍正常。
+  不要回退到全局。所有 writer 已于 2026-08-08 全链路改完；**6 个模块均不读取全局目录**（jav 的全局回退已于 2026-08-08 移除）。
+  迁移脚本 `scripts/migrate_avatars.py` 把历史扁平 `actor_*.jpg` 移入 `avatars/jav/` 后，结构完全对齐 `movies/{module}/`，彻底无串图。
 
 ## 协作约定
 
@@ -130,3 +135,9 @@
   列表页头像走 `/api/v1/modules/{mod}/actors/{id}/avatar/file`（modules.py，通用 6 模块）；
   详情页头像走 `/api/v1/actors/{id}/avatar/file?module=jav`（actors.py，四级查找：DATA/avatars → avatar_url → gfriends → media_dirs）。
 - 排查"列表页全占位图但磁盘有头像文件"类问题，第一反应检查：① 端点内 import 是否指向不存在的模块路径（被 except 吞）；② avatar_path 空值是否触发 FileResponse 500。
+
+## 非 ASCII 文件名 Content-Disposition（播放/下载端点必读）
+- 视频/文件原始名含中文/日文时，直接写进 `Content-Disposition` 头会因 latin-1 编码限制抛 `UnicodeEncodeError` → 播放/下载端点 **500 裂视频/裂图**。
+- 统一用 `app/utils/http_headers.py::safe_content_disposition(file_path, disposition_type="inline", fallback_base=None)`（ASCII 兜底 `video{ext}` + RFC 5987 `filename*` 传真实 UTF-8 名）。
+- 已落地：anime + jav/chinese/fc2/pornhub/western/uncensored 共 7 个播放端点；nfo.py 因只用 `movie.code`（ASCII）无需改。
+- 触发条件：仅含非 ASCII 文件名的视频；纯番号/英文文件名不触发（所以服务器历史纯英文文件一直没暴露）。

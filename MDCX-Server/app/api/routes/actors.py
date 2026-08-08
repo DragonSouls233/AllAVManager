@@ -164,6 +164,7 @@ class ActorMovieResponse(BaseModel):
     title: Optional[str] = None
     release_date: Optional[str] = None
     cover_url: Optional[str] = None
+    module_type: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -362,7 +363,7 @@ async def start_avatar_scrape(
     mod_db = ModuleDatabase.get_instance(module)
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
 
-    background_tasks.add_task(run_avatar_scrape_job, job_id, mod_db, min_movies, use_local_library)
+    background_tasks.add_task(run_avatar_scrape_job, job_id, mod_db, min_movies, use_local_library, module)
 
     return {
         "status": "started",
@@ -431,7 +432,7 @@ async def preview_avatar_scrape(
         result = await sess.execute(query)
         rows = result.fetchall()
 
-        filtered = [r for r in rows if actor_needs_avatar(r[0])]
+        filtered = [r for r in rows if actor_needs_avatar(r[0], module)]
         total = len(filtered)
 
         actors = [
@@ -532,6 +533,7 @@ async def get_actor(
                 id=m.id, code=m.code, title=m.title,
                 release_date=str(m.release_date) if getattr(m, "release_date", None) else None,
                 cover_url=getattr(m, "cover_url", None),
+                module_type=module,
             ))
 
         actor_resp = _build_actor_response(actor, movie_count)
@@ -591,6 +593,7 @@ async def get_actor_movies(
                 id=m.id, code=m.code, title=m.title,
                 release_date=str(m.release_date) if getattr(m, "release_date", None) else None,
                 cover_url=getattr(m, "cover_url", None),
+                module_type=module,
             ))
 
         return {"actor_id": actor_id, "actor_name": actor.name, "total": total or 0, "items": movie_items}
@@ -661,6 +664,7 @@ async def get_actor_timeline(
                 ActorMovieResponse(
                     id=m.id, code=m.code, title=m.title,
                     release_date=m.release_date, cover_url=m.cover_url,
+                    module_type=module,
                 )
                 for m in unknown_year_movies
             ],
@@ -922,11 +926,7 @@ async def get_actor_avatar_file(
     if avatar_path.exists() and avatar_path.is_file():
         return FileResponse(str(avatar_path), media_type="image/jpeg")
 
-    # 1.1 兼容旧约定: 仅 jav 模块回退到全局 avatars/actor_{id}.jpg
-    if module == "jav":
-        legacy_path = _get_avatar_dir() / f"actor_{actor_id}.jpg"
-        if legacy_path.exists() and legacy_path.is_file():
-            return FileResponse(str(legacy_path), media_type="image/jpeg")
+    # 1.1 严格按模块隔离: 仅读取 DATA/avatars/{module}/actor_{id}.jpg，不回退全局
 
     # 2. 数据库 avatar_url 字段
     if actor.avatar_url:
@@ -1415,3 +1415,137 @@ async def _scrape_javdb_actor_profile(actor) -> dict:
 
         logger.info(f"抓取到演员 {actor.name} 资料: {result}")
         return result
+
+
+# ===== 演员合并（参考 JavBoss MergeJavIdols + studio_merge_service） =====
+
+class ActorMergeRequest(BaseModel):
+    canonical_id: int = Body(..., description="目标演员 ID（合并后保留）")
+    source_ids: list[int] = Body(..., description="被合并演员 ID 列表")
+    module: str = Body("jav", description="模块名：jav/fc2/uncensored/chinese/western/pornhub")
+
+
+@router.post("/merge")
+async def merge_actors_api(req: ActorMergeRequest):
+    """合并演员：source 并入 canonical
+
+    - source.name 自动成为 canonical 的别名（其他名称）
+    - 所有影片 actor 字段中的 source.name 替换为 canonical.name
+    - canonical 无头像时继承 source 头像
+    """
+    from app.services.actor_merge_service import merge_actors
+
+    result = await merge_actors(req.canonical_id, req.source_ids, req.module)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/merge/search")
+async def search_similar_actors_api(
+    name: str = Query(..., description="演员名称"),
+    threshold: float = Query(0.6, ge=0, le=1),
+    module: str = Query("jav", description="模块名"),
+):
+    """搜索名称相似的演员（推荐合并候选）"""
+    from app.services.actor_merge_service import search_similar_actors
+
+    items = await search_similar_actors(name, threshold=threshold, module=module)
+    return {"items": items, "total": len(items)}
+
+
+class ActorAliasUpdateRequest(BaseModel):
+    alias: str = Body("", description="其他名称，逗号分隔")
+    module: str = Body("jav", description="模块名")
+
+
+@router.put("/{actor_id}/alias")
+async def update_actor_alias(actor_id: int, req: ActorAliasUpdateRequest):
+    """编辑演员其他名称（alias 字段，逗号分隔）"""
+    session = await get_module_session(req.module)
+    ActorModel = get_module_model(req.module, "actor")
+    try:
+        actor = await session.get(ActorModel, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        actor.alias = req.alias.strip()
+        await session.commit()
+        return {"status": "ok", "id": actor_id, "name": actor.name, "alias": actor.alias}
+    finally:
+        await session.close()
+
+
+@router.post("/{actor_id}/fetch-javdb-aliases")
+async def fetch_javdb_aliases_api(
+    actor_id: int,
+    module: str = Query("jav", description="模块名"),
+):
+    """从 JAVDB 抓取演员的其他名称（需有效 javdb cookie，CF 拦截则返回提示）"""
+    session = await get_module_session(module)
+    ActorModel = get_module_model(module, "actor")
+    try:
+        actor = await session.get(ActorModel, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        name = actor.name
+    finally:
+        await session.close()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="演员名称为空")
+
+    from app.utils.cookie_manager import get_cookie_headers
+    from app.utils.http_client import AsyncHttpClient
+
+    cookie_headers = get_cookie_headers("javdb")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    if cookie_headers:
+        headers["cookie"] = cookie_headers.get("cookie", "")
+
+    import urllib.parse
+    aliases: list[str] = []
+    async with AsyncHttpClient(timeout=20) as client:
+        # 1) 搜索演员
+        search_url = f"https://javdb.com/search?q={urllib.parse.quote(name)}&f=actress"
+        html_text = await client.get_text(search_url, headers=headers)
+        if not html_text:
+            return {"status": "error", "message": "JAVDB 请求失败（网络/被拦截）", "aliases": []}
+        low = html_text.lower()
+        if "<title>just a moment" in low or "<title>attention required" in low:
+            return {"status": "error", "message": "JAVDB 触发 Cloudflare 挑战，请更新 javdb cookie 后重试", "aliases": []}
+
+        from lxml import etree
+        try:
+            html = etree.fromstring(html_text, etree.HTMLParser())
+        except Exception:
+            return {"status": "error", "message": "JAVDB 响应解析失败", "aliases": []}
+
+        # 2) 取演员详情页 URL（搜索结果的演员卡片）
+        detail_hrefs = html.xpath("//a[contains(@href, '/actresses/')]/@href")
+        if not detail_hrefs:
+            return {"status": "error", "message": f"JAVDB 未找到演员「{name}」", "aliases": []}
+        detail_url = detail_hrefs[0]
+        if detail_url.startswith("/"):
+            detail_url = "https://javdb.com" + detail_url
+
+        # 3) 详情页提取"其他名称"（JAVDB 演员页的 other names 区域）
+        detail_text = await client.get_text(detail_url, headers=headers)
+        if detail_text:
+            try:
+                dhtml = etree.fromstring(detail_text, etree.HTMLParser())
+                # JAVDB 其他名称：常见结构 <div class="other-names"> 或 "其他名称" 行
+                for node in dhtml.xpath("//*[contains(@class,'other') or contains(@class,'alias')]//text()"):
+                    t = node.strip()
+                    if t and len(t) < 200 and not t.startswith(("http", "//", "javascript")):
+                        aliases.append(t)
+                if not aliases:
+                    # 兜底：抓全页所有超短文本行
+                    for node in dhtml.xpath("//td//text() | //div[contains(@class,'name')]//text()"):
+                        t = node.strip()
+                        if t and len(t) < 100 and t != name:
+                            aliases.append(t)
+            except Exception:
+                pass
+
+    aliases = list(dict.fromkeys(a for a in aliases if a))
+    return {"status": "ok" if aliases else "empty", "actor_id": actor_id, "name": name, "aliases": aliases[:20]}

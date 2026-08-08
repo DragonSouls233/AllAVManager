@@ -9,7 +9,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # 当前活动模块列表
-ACTIVE_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+ACTIVE_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub", "anime"]
 
 # 每个模块的模型类映射（模块名 -> (模型文件路径, Movie类名, Actor类名)）
 MODULE_MODELS: dict[str, tuple[str, str, str]] = {
@@ -19,6 +19,7 @@ MODULE_MODELS: dict[str, tuple[str, str, str]] = {
     "chinese": ("app.db.chinese_models", "ChineseMovie", "ChineseActor"),
     "western": ("app.db.western_models", "WesternMovie", "WesternActor"),
     "pornhub": ("app.db.pornhub_models", "PornhubMovie", "PornhubActor"),
+    "anime": ("app.db.anime_models", "AnimeMovie", "AnimeActor"),
 }
 
 # 每个模块的 Base 类导入路径
@@ -29,6 +30,7 @@ MODULE_BASES: dict[str, str] = {
     "chinese": "app.db.chinese_models:CHINESE_BASE",
     "western": "app.db.western_models:WESTERN_BASE",
     "pornhub": "app.db.pornhub_models:PORNHUB_BASE",
+    "anime": "app.db.anime_models:ANIME_BASE",
 }
 
 # 统一表名映射（所有模块使用相同的表名结构）
@@ -40,6 +42,7 @@ MODULE_TABLES: dict[str, tuple[str, str]] = {
     "chinese": ("actors", "movies"),
     "western": ("actors", "movies"),
     "pornhub": ("actors", "movies"),
+    "anime": ("actors", "movies"),
 }
 
 # 向后兼容：旧代码可能使用 jav_actors/jav_movies 等表名

@@ -143,7 +143,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, MagicStick, View, VideoPlay } from '@element-plus/icons-vue'
 import { getActors, previewAvatarScrape } from '@/api'
@@ -151,6 +151,7 @@ import { useAvatarScrapeStore } from '@/stores/avatarScrape'
 import { defaultAvatar, getActorAvatarUrl, getFileProxyUrl } from '@/utils/media'
 
 const router = useRouter()
+const route = useRoute()
 const avatarStore = useAvatarScrapeStore()
 const loading = ref(false)
 const actors = ref([])
@@ -162,13 +163,21 @@ const total = ref(0)
 const movieCountFilter = ref('multi')
 const minMoviesForFilter = ref(2)
 
-// 演员头像获取：有 avatar_url 直接加载/代理，无则走后端 API
+// 路由模块检测：演员列表端点(_build_actor_response)不返回 module_type，
+// 必须从路由推断模块，才能拼出正确的模块隔离头像端点(与后端 avatars/{module}/ 对齐)
+const MODULE_MAP = {
+  'jav': 'jav', 'fc2': 'fc2', 'uncensored': 'uncensored',
+  'western': 'western', 'pornhub': 'pornhub', 'chinese': 'chinese'
+}
+const moduleType = computed(() => MODULE_MAP[route.path.split('/')[1]] || 'jav')
+
+// 演员头像获取：有 avatar_url 直接加载/代理，无则走模块隔离端点
 function getActorAvatar(actor) {
   if (actor?.avatar_url) {
     if (/^https?:\/\//i.test(actor.avatar_url)) return actor.avatar_url
     return getFileProxyUrl(actor.avatar_url)
   }
-  return getActorAvatarUrl(actor)
+  return getActorAvatarUrl(actor, moduleType.value)
 }
 
 const handleAvatarError = (event) => {

@@ -35,7 +35,7 @@ async def get_dashboard_stats(
     from sqlalchemy import text
 
     # 汇总所有模块的影片和演员数
-    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub", "anime"]
     movie_total = 0
     movie_pending = 0
     movie_completed = 0

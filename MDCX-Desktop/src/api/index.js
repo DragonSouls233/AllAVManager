@@ -248,8 +248,13 @@ export const generateMovieThumbnails = (movieId, force = false) => api.post(`/mo
 // ============================================
 export const getActors = (params) => api.get('/actors', { params })
 export const getActor = (id) => api.get(`/actors/${id}`)
-export const getActorMovies = (id, params) => api.get(`/actors/${id}/movies`, { params })
-export const getActorTimeline = (id) => api.get(`/actors/${id}/timeline`)
+export const getActorMovies = (id, params = {}, module) => {
+  const p = { ...params }
+  if (module) p.module = module
+  return api.get(`/actors/${id}/movies`, { params: p })
+}
+export const getActorTimeline = (id, module) =>
+  api.get(`/actors/${id}/timeline`, { params: module ? { module } : {} })
 export const updateActor = (id, data) => api.patch(`/actors/${id}`, data)
 export const getActorStats = () => api.get('/actors/stats/overview')
 export const scrapeActorProfile = (id) => api.post(`/actors/${id}/scrape-profile`, null, { timeout: 120000 })
@@ -925,3 +930,9 @@ export const executeMnamerRename = (data) => api.post('/mnamer/rename', data)
 export const getMnamerConfig = () => api.get('/mnamer/config')
 // 更新 mnamer 配置
 export const updateMnamerConfig = (data) => api.put('/mnamer/config', data)
+
+// ===== 演员合并（其他名称/别名） =====
+export const mergeActors = (data) => api.post('/actors/merge', data)
+export const searchSimilarActors = (params) => api.get('/actors/merge/search', { params })
+export const updateActorAlias = (actorId, data) => api.put(`/actors/${actorId}/alias`, data)
+export const fetchJavdbAliases = (actorId, module) => api.post(`/actors/${actorId}/fetch-javdb-aliases`, null, { params: { module } })

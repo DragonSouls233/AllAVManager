@@ -28,22 +28,28 @@ from sqlalchemy import select, func
 logger = logging.getLogger(__name__)
 
 
-def _avatar_backing_path(actor_id: int) -> Path:
-    """返回演员头像的 backing 文件路径 (data/avatars/actor_{id}.jpg)。
+def _avatar_backing_path(actor_id: int, module: str = None) -> Path:
+    """返回演员头像的 backing 文件路径。
 
-    computed.data_dir 为相对路径 "data", 需相对 server 启动目录解析为绝对路径。
+    严格按模块隔离: DATA/avatars/{module}/actor_{id}.jpg，杜绝各模块 actors 表
+    id 独立自增导致的跨模块串图。不回退任何全局文件。
+    无 module 时回退全局(仅向后兼容极旧调用，正常流程均传入 module)。
     """
     try:
         from app.config.manager import get_config_manager
         data_dir = Path(get_config_manager().computed.data_dir)
         if not data_dir.is_absolute():
             data_dir = Path.cwd() / data_dir
-        return data_dir / "avatars" / f"actor_{actor_id}.jpg"
+        base = data_dir / "avatars"
     except Exception:
-        return Path.cwd() / "data" / "avatars" / f"actor_{actor_id}.jpg"
+        base = Path.cwd() / "data" / "avatars"
+
+    if module:
+        return base / module / f"actor_{actor_id}.jpg"
+    return base / f"actor_{actor_id}.jpg"
 
 
-def actor_needs_avatar(actor: "Actor") -> bool:
+def actor_needs_avatar(actor: "Actor", module: str = None) -> bool:
     """判断演员是否仍需要(重新)下载头像。
 
     旧逻辑仅以 avatar_url 是否为空来判定"已有头像"。但若某次刮削只把
@@ -67,9 +73,9 @@ def actor_needs_avatar(actor: "Actor") -> bool:
         return True
 
     # 本站内部服务 URL(如 /api/v1/actors/{id}/avatar/file): 背后文件即
-    # data/avatars/actor_{id}.jpg, 校验其是否存在即可
+    # DATA/avatars/{module}/actor_{id}.jpg, 校验其是否存在即可
     if u.startswith("/"):
-        backing = _avatar_backing_path(actor.id)
+        backing = _avatar_backing_path(actor.id, module)
         return not (backing and backing.exists())
 
     # 文件系统路径(绝对或相对)。computed.data_dir 为相对 "data",
@@ -98,10 +104,11 @@ class ActorAvatarScraper:
         "https://javdb.io",
     ]
 
-    def __init__(self, db: Database, min_movies: int = 2, use_local_library: bool = False):
+    def __init__(self, db: Database, min_movies: int = 2, use_local_library: bool = False, module: str = None):
         self.db = db
         self.min_movies = min_movies
         self.use_local_library = use_local_library
+        self.module = module
         self._progress = {
             "total": 0,
             "completed": 0,
@@ -196,7 +203,7 @@ class ActorAvatarScraper:
             actors = list(result.scalars().all())
 
         # 仅保留"无有效本地头像"的演员(空值 / 远程URL / 本地文件缺失)
-        return [a for a in actors if actor_needs_avatar(a)]
+        return [a for a in actors if actor_needs_avatar(a, self.module)]
 
     async def _scrape_one(self, actor: Actor) -> bool:
         """刮削单个演员的头像"""
@@ -209,7 +216,7 @@ class ActorAvatarScraper:
                 # 用 to_thread 卸载到线程池, 保持事件循环空闲并能被 /status 轮询。
                 local_path = await asyncio.to_thread(find_local_avatar, actor.name, actor.name_jp)
                 if local_path:
-                    ok = await self._import_local_avatar(actor, local_path)
+                    ok = await self._import_local_avatar(actor, local_path, self.module)
                     if ok:
                         return True
                     # 复制失败则继续走在线抓取
@@ -229,7 +236,7 @@ class ActorAvatarScraper:
             return False
 
         # 2. 下载头像（带人脸裁剪）
-        local_path = await self._download_avatar(actor.id, avatar_url, actor_name=actor.name)
+        local_path = await self._download_avatar(actor.id, avatar_url, actor_name=actor.name, module=self.module)
 
         if not local_path:
             return False
@@ -507,13 +514,15 @@ class ActorAvatarScraper:
             return None
 
     async def _download_avatar(
-        self, actor_id: int, url: str, actor_name: str = ""
+        self, actor_id: int, url: str, actor_name: str = "", module: str = None
     ) -> Optional[Path]:
-        """下载头像到本地（可选人脸裁剪）"""
+        """下载头像到本地（可选人脸裁剪），按模块隔离存储"""
         from app.config.manager import get_config_manager
 
         manager = get_config_manager()
         avatar_dir = manager.computed.data_dir / "avatars"
+        if module:
+            avatar_dir = avatar_dir / module
         avatar_dir.mkdir(parents=True, exist_ok=True)
 
         raw_path = avatar_dir / f"actor_{actor_id}_raw.jpg"
@@ -568,10 +577,12 @@ class ActorAvatarScraper:
                 logger.error(f"下载头像失败 {url}: {e}")
                 return None
 
-    async def _import_local_avatar(self, actor: Actor, src_path: Path) -> bool:
-        """将本地资料库的头像文件复制到演员头像目录（DATA/avatars/actor_{id}.jpg）"""
+    async def _import_local_avatar(self, actor: Actor, src_path: Path, module: str = None) -> bool:
+        """将本地资料库的头像文件复制到演员头像目录（DATA/avatars/{module}/actor_{id}.jpg）"""
         try:
             avatar_dir = (get_config_manager().computed.data_dir / "avatars").resolve()
+            if module:
+                avatar_dir = avatar_dir / module
             avatar_dir.mkdir(parents=True, exist_ok=True)
             output_path = avatar_dir / f"actor_{actor.id}.jpg"
             shutil.copy2(src_path, output_path)
@@ -600,9 +611,9 @@ class ActorAvatarScraper:
 _active_avatar_jobs: dict[str, dict] = {}
 
 
-async def run_avatar_scrape_job(job_id: str, db: Database, min_movies: int = 2, use_local_library: bool = False):
+async def run_avatar_scrape_job(job_id: str, db: Database, min_movies: int = 2, use_local_library: bool = False, module: str = None):
     """运行头像刮削后台任务"""
-    scraper = ActorAvatarScraper(db=db, min_movies=min_movies, use_local_library=use_local_library)
+    scraper = ActorAvatarScraper(db=db, min_movies=min_movies, use_local_library=use_local_library, module=module)
     _active_avatar_jobs[job_id] = {
         "scraper": scraper,
         "started_at": datetime.now(),

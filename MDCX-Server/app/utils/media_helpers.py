@@ -101,7 +101,7 @@ STANDARD_COVER_NAMES: tuple = ("poster.jpg", "cover.jpg", "fanart.jpg", "thumb.j
 AVATAR_SUB_DIRS: tuple = ("actors", "actor_avatars", "avatars", ".actors", ".avatars")
 
 # 所有模块名
-_ALL_MODULES: tuple = ("jav", "uncensored", "fc2", "chinese", "pornhub", "western")
+_ALL_MODULES: tuple = ("anime", "jav", "uncensored", "fc2", "chinese", "pornhub", "western")
 
 
 def collect_media_dirs(cfg) -> list[str]:

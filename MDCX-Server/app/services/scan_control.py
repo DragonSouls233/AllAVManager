@@ -312,6 +312,7 @@ class ScanControlService:
             "uncensored": ("app.tasks.uncensored_scanner", "UncensoredScanner"),
             "pornhub": ("app.tasks.pornhub_scanner", "PornhubScanner"),
             "western": ("app.tasks.western_scanner", "WesternScanner"),
+            "anime": ("app.tasks.anime_scanner", "AnimeScanner"),
         }
 
         total_all = 0

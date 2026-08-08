@@ -9,7 +9,7 @@ https://github.com/gfriends/gfriends
 本服务实现：
 1. 拉取 Filetree.json 索引
 2. 与本地 Actor 表匹配（按 name / name_jp）
-3. 批量下载头像到 data/avatars/actor_{id}.jpg
+3. 头像按模块落在 data/avatars/{module}/actor_{id}.jpg（避免跨模块 id 串图）
 4. 自动调用人脸裁剪（复用现有 FaceCropper）
 5. 更新 Actor.avatar_url
 
@@ -164,7 +164,7 @@ def find_local_avatar(name: str, name_jp: Optional[str] = None) -> Optional[Path
 
 
 def copy_local_avatar(actor_id: int, src_path: Path, avatars_dir: Path) -> Path:
-    """将本地头像文件复制到 DATA/avatars/actor_{id}.jpg"""
+    """将本地头像文件复制到 DATA/avatars/{module}/actor_{id}.jpg（module 由 avatars_dir 决定）"""
     target = avatars_dir / f"actor_{actor_id}.jpg"
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src_path, target)
@@ -372,8 +372,9 @@ class GfriendsImporter:
             logger.info(f"Gfriends 批量导入: 共 {len(actors)} 个演员待处理")
 
             # 3. 匹配 + 下载
-            avatars_dir = Path(get_config_manager().computed.data_dir) / "avatars"
-            avatars_dir.mkdir(parents=True, exist_ok=True)
+            # 按模块隔离: 每个演员的头像落在 DATA/avatars/{module}/actor_{id}.jpg
+            avatars_root = Path(get_config_manager().computed.data_dir) / "avatars"
+            avatars_root.mkdir(parents=True, exist_ok=True)
 
             proxy = None
             try:
@@ -394,6 +395,10 @@ class GfriendsImporter:
                     if not actor_name:
                         continue
                     actor_name_jp = getattr(actor, "name_jp", None) or ""
+
+                    # 按演员所属模块确定头像目录
+                    mod_name = actor_sources.get(getattr(actor, "id"), "jav")
+                    avatars_dir = avatars_root / mod_name
 
                     if use_local:
                         local_path = find_local_avatar(actor_name, actor_name_jp)
@@ -418,29 +423,39 @@ class GfriendsImporter:
 
                 if online_matched:
                     tasks = [
-                        self._download_one(http_session, actor, url, avatars_dir, semaphore)
+                        self._download_one(
+                            http_session, actor, url,
+                            avatars_root / actor_sources.get(getattr(actor, "id"), "jav"),
+                            semaphore,
+                        )
                         for actor, url in online_matched
                     ]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     for (actor, url), success in zip(online_matched, results):
                         if success is True:
-                            await self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
+                            await self._set_actor_avatar(
+                                actor, actor_sources.get(getattr(actor, "id")),
+                                avatars_root / actor_sources.get(getattr(actor, "id"), "jav"),
+                            )
                             progress["downloaded"] += 1
                         else:
                             progress["failed"] += 1
 
                 for actor in local_matched:
-                    await self._set_actor_avatar(actor, actor_sources.get(getattr(actor, "id")), avatars_dir)
+                    await self._set_actor_avatar(
+                        actor, actor_sources.get(getattr(actor, "id")),
+                        avatars_root / actor_sources.get(getattr(actor, "id"), "jav"),
+                    )
                     progress["downloaded"] += 1
 
-                self._jobs[job_id]["status"] = "completed"
-                self._jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
-                logger.info(
-                    f"Gfriends 批量导入完成: 总 {progress['total']}, 匹配 {progress['matched']}, "
-                    f"下载 {progress['downloaded']}, 跳过 {progress['skipped']}, 失败 {progress['failed']}"
-                )
-                return progress
+            self._jobs[job_id]["status"] = "completed"
+            self._jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+            logger.info(
+                f"Gfriends 批量导入完成: 总 {progress['total']}, 匹配 {progress['matched']}, "
+                f"下载 {progress['downloaded']}, 跳过 {progress['skipped']}, 失败 {progress['failed']}"
+            )
+            return progress
 
         except Exception as e:
             self._jobs[job_id]["status"] = "failed"

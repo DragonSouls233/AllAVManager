@@ -368,13 +368,13 @@ const scrapeProfile = async () => {
   }
 }
 
-// 演员头像：有 avatar_url 直接加载/代理，无则走后端 API
+// 演员头像：有 avatar_url 直接加载/代理，无则走模块隔离端点(与后端 avatars/{module}/ 严格对齐)
 function getActorAvatar(actor) {
   if (actor?.avatar_url) {
     if (/^https?:\/\//i.test(actor.avatar_url)) return actor.avatar_url
     return getFileProxyUrl(actor.avatar_url)
   }
-  return getActorAvatarUrl(actor)
+  return getActorAvatarUrl(actor, moduleType.value)
 }
 
 // 影片封面：有 cover_url 直接加载/代理，无则走后端 API
@@ -450,7 +450,7 @@ const loadMovies = async () => {
     const res = await api.getActorMovies(actorId.value, {
       page: page.value,
       page_size: pageSize.value
-    })
+    }, moduleType.value)
     movies.value = res.items || []
     movieTotal.value = res.total || movieTotal.value
   } catch (e) {
@@ -465,7 +465,7 @@ const loadTimeline = async () => {
   timelineLoading.value = true
   try {
     const api = await getApi()
-    const res = await api.getActorTimeline(actorId.value)
+    const res = await api.getActorTimeline(actorId.value, moduleType.value)
     timeline.value = res
     // 默认选中作品最多的年份
     if (res.years && res.years.length) {

@@ -472,13 +472,14 @@ async def play_western_video_file(movie_id: int, request: _Request):
                     break
                 yield data
 
+    from app.utils.http_headers import safe_content_disposition
     return StreamingResponse(
         _iter_full(),
         media_type=media_type,
         headers={
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
-            "Content-Disposition": f'inline; filename="{_os.path.basename(file_path)}"',
+            "Content-Disposition": safe_content_disposition(file_path),
         },
     )
 

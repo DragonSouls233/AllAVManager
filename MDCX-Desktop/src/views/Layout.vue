@@ -67,6 +67,10 @@
             <el-icon><UserFilled /></el-icon>
             <template #title>对比演员</template>
           </el-menu-item>
+          <el-menu-item index="/jav/actor-merge">
+            <el-icon><Connection /></el-icon>
+            <template #title>合并演员</template>
+          </el-menu-item>
           <el-menu-item index="/jav/patch">
             <el-icon><MagicStick /></el-icon>
             <template #title>补丁刮削</template>
@@ -74,10 +78,6 @@
           <el-menu-item index="/jav/play">
             <el-icon><VideoPlay /></el-icon>
             <template #title>播放工具</template>
-          </el-menu-item>
-          <el-menu-item index="/jav/actor-merge">
-            <el-icon><User /></el-icon>
-            <template #title>演员合并</template>
           </el-menu-item>
           <el-menu-item index="/jav/code-test">
             <el-icon><Search /></el-icon>
@@ -226,6 +226,22 @@
           <el-menu-item index="/western/config">
             <el-icon><Setting /></el-icon>
             <template #title>品牌管理</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <!-- ===== 里番 ===== -->
+        <el-sub-menu index="anime-module" v-if="moduleEnabled.anime !== false">
+          <template #title>
+            <el-icon><VideoCamera /></el-icon>
+            <span>🎬 里番</span>
+          </template>
+          <el-menu-item index="/anime">
+            <el-icon><Files /></el-icon>
+            <template #title>影片库</template>
+          </el-menu-item>
+          <el-menu-item index="/anime/series">
+            <el-icon><Collection /></el-icon>
+            <template #title>系列</template>
           </el-menu-item>
         </el-sub-menu>
 
@@ -824,7 +840,7 @@ const globalSearchInput = ref(null)
 const globalSearchResults = ref([])
 const globalSearchDone = ref(false)
 
-const moduleLabels = { chinese: '国产', uncensored: '无码', fc2: 'FC2', pornhub: 'PORNHub', jav: 'JAV', western: '欧美' }
+const moduleLabels = { chinese: '国产', uncensored: '无码', fc2: 'FC2', pornhub: 'PORNHub', jav: 'JAV', western: '欧美', anime: '里番' }
 
 const doGlobalSearch = async () => {
   const kw = globalSearchKeyword.value.trim()
@@ -963,7 +979,8 @@ const moduleEnabled = ref({
   fc2: true,
   chinese: true,
   pornhub: true,
-  western: true
+  western: true,
+  anime: true
 })
 
 async function loadModuleConfig() {
@@ -1294,9 +1311,9 @@ const pageTitle = computed(() => {
     '/jav/scrape': 'JAV 有码 - 刮削管理',
     '/jav/compare': 'JAV 有码 - 本地对比',
     '/jav/compare-actors': 'JAV 有码 - 对比演员',
+    '/jav/actor-merge': 'JAV 有码 - 合并演员',
     '/jav/patch': 'JAV 有码 - 补丁刮削',
     '/jav/play': 'JAV 有码 - 播放工具',
-    '/jav/actor-merge': 'JAV 有码 - 演员合并',
     '/jav/studio-merge': 'JAV 有码 - 片商合并',
     '/jav/code-test': 'JAV 有码 - 番号提取测试',
     // JAV 无码

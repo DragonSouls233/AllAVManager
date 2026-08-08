@@ -216,7 +216,7 @@ async def _delayed_module_scan(module_name: str, media_dirs: list[str]) -> None:
 @router.patch("/{module_name}/toggle")
 async def toggle_module(module_name: str, enabled: bool = True):
     """切换模块启用状态"""
-    if module_name not in ("jav", "uncensored", "fc2", "chinese", "pornhub", "western"):
+    if module_name not in ("anime", "jav", "uncensored", "fc2", "chinese", "pornhub", "western"):
         raise HTTPException(status_code=400, detail=f"未知模块: {module_name}")
 
     manager = get_config_manager()
@@ -446,12 +446,10 @@ async def get_module_actor_avatar_file(module_name: str, actor_id: int):
             from app.config.manager import get_config_manager
             data_dir = _P(get_config_manager().computed.data_dir)
             avatars_root = data_dir / "avatars"
-            # 1) 模块专属目录
+            # 模块专属目录: DATA/avatars/{module_name}/actor_{id}.jpg
+            # 各模块 actors 表 id 独立自增，必须严格按模块隔离，
+            # 不回退任何全局文件（否则会出现跨模块串图）
             avatar_file = avatars_root / module_name / f"actor_{actor_id}.jpg"
-            # 2) 兼容旧约定: 仅 jav 模块的历史头像存于全局 avatars/actor_{id}.jpg
-            #    (其余模块的历史文件实为 jav 的，禁止回退，否则会再次串图)
-            if not avatar_file.exists() and module_name == "jav":
-                avatar_file = avatars_root / f"actor_{actor_id}.jpg"
             if avatar_file.exists() and avatar_file.is_file():
                 return Response(
                     content=avatar_file.read_bytes(),
@@ -649,7 +647,8 @@ async def _download_module_actor_avatar(actor_id: int, url: str, module_name: st
     """下载演员头像到 DATA/avatars/{module_name}/actor_{id}.jpg
 
     与列表/详情页头像端点（get_module_actor_avatar_file）的约定文件完全一致，
-    按模块隔离存储，避免跨模块 id 串图。module_name 为空时回退到全局目录(兼容旧调用)。
+    按模块隔离存储，避免跨模块 id 串图。所有调用方均传入 module_name，
+    头像严格落在各自模块文件夹内，不回退任何全局目录。
     """
     from app.utils.http_client import AsyncHttpClient
     import re as _re

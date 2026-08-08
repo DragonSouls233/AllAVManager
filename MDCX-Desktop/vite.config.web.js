@@ -17,7 +17,7 @@ export default defineConfig({
   publicDir: false,
   build: {
     outDir: '../MDCX-Server/static',
-    emptyOutDir: true,
+    emptyOutDir: false,
     rollupOptions: {
       input: 'index.html'
     }

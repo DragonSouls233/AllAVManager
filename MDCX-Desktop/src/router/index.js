@@ -67,6 +67,11 @@ const routes = [
         component: () => import('@/views/CompareActors.vue')
       },
       {
+        path: 'actor-merge',
+        name: 'ActorMerge',
+        component: () => import('@/views/ActorMerge.vue')
+      },
+      {
         path: 'favorites',
         name: 'Favorites',
         component: () => import('@/views/Favorites.vue')
@@ -506,11 +511,6 @@ const routes = [
         path: 'jav/play',
         name: 'JavPlay',
         component: () => import('@/views/MpvSettings.vue')
-      },
-      {
-        path: 'jav/actor-merge',
-        name: 'JavActorMerge',
-        component: () => import('@/views/jav/ActorMerge.vue')
       },
       {
         path: 'jav/code-test',

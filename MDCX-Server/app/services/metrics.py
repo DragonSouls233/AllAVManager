@@ -263,7 +263,7 @@ async def collect_db_metrics():
 
         # === 模块数据库统计 ===
         # 每个模块使用统一的表名 movies/actors
-        _MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
+        _MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub", "anime"]
         _aggregate_movies: dict[str, int] = {}
         _aggregate_actors = 0
 

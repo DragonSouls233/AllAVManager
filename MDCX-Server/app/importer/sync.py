@@ -791,7 +791,7 @@ class ImportSync:
                 need_update_avatar = actor_name not in self._actors_with_avatar
 
             if need_update_avatar and actor_name in actor_images:
-                avatar_path = await self._save_actor_avatar(actor_id, actor_images[actor_name])
+                avatar_path = await self._save_actor_avatar(actor_id, actor_images[actor_name], module="jav")
                 if avatar_path:
                     from sqlalchemy import update as sa_update
                     avatar_updates.append(
@@ -815,15 +815,17 @@ class ImportSync:
 
         await session.commit()
     
-    async def _save_actor_avatar(self, actor_id: int, source_path: str) -> Optional[str]:
-        """将本地演员头像复制到项目数据目录"""
+    async def _save_actor_avatar(self, actor_id: int, source_path: str, module: str = "jav") -> Optional[str]:
+        """将本地演员头像复制到项目数据目录(按模块隔离: avatars/{module}/actor_{id}.jpg)"""
         import shutil
         try:
             from app.config.manager import get_config_manager
             manager = get_config_manager()
             avatar_dir = manager.computed.data_dir / "avatars"
+            if module:
+                avatar_dir = avatar_dir / module
             avatar_dir.mkdir(parents=True, exist_ok=True)
-            
+
             dest_path = avatar_dir / f"actor_{actor_id}.jpg"
             shutil.copy2(source_path, str(dest_path))
             return str(dest_path)

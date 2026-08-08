@@ -1,161 +1,182 @@
 """
-演员别名合并服务
+演员合并服务
 
-参考 JavBoss v1.9.0 MergeJavIdols 的核心事务逻辑，适配到 MDCX 的 SQLAlchemy ORM。
-核心流程：
-1. 验证 canonical_actor 存在
-2. 迁移 source_actor 的别名 → canonical_actor 的 alias
-3. 迁移 source_actor 的影片关联 → canonical_actor
-4. 迁移 source_actor 的收藏关联 → canonical_actor
-5. 继承 source_actor 的封面（如果 canonical 没有）
-6. 硬删除 source_actor
+参考 JavBoss MergeJavIdols 与 MDCX 片商合并（studio_merge_service）：
+1. 验证 canonical / source 演员存在
+2. 别名合并：source.name + source.alias → canonical.alias（逗号分隔去重，排除 canonical 自身名称）
+3. 影片迁移：movies.actor 文本列（逗号分隔）中的 source.name 替换为 canonical.name
+4. 头像继承：canonical 无头像时继承 source 的头像（avatars/{module}/actor_{id}.jpg）
+5. 硬删除 source 演员行
 """
 import logging
+import re
+import shutil
+from difflib import SequenceMatcher
+from pathlib import Path
 from typing import List, Optional
 
-from sqlalchemy import select, delete, exists
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-from app.db.jav_models import JavActor, JavMovie
+from app.config.manager import get_config_manager
+from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
 
 
+def _avatar_path(module: str, actor_id: int) -> Path:
+    """模块隔离的头像文件路径（与 modules.py 约定一致）"""
+    data_dir = get_config_manager().computed.data_dir
+    return Path(data_dir) / "avatars" / module / f"actor_{actor_id}.jpg"
+
+
+def _merge_alias(canonical_alias: Optional[str], canonical_name: str, source_names: List[str],
+                 source_aliases: List[str]) -> str:
+    """合并别名：现有别名 + canonical 名 + source 名 + source 别名（去重，逗号分隔）"""
+    seen = set()
+    out = []
+    for item in [canonical_alias, canonical_name, *source_names, *source_aliases]:
+        if not item:
+            continue
+        for part in item.split(","):
+            a = part.strip()
+            if not a:
+                continue
+            key = a.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(a)
+    return ",".join(out)
+
+
 async def merge_actors(
-    session: AsyncSession,
     canonical_id: int,
     source_ids: List[int],
+    module: str = "jav",
 ) -> dict:
-    """
-    合并演员（将 source_ids 中的演员合并到 canonical_id）
+    """合并演员（将 source_ids 合并到 canonical_id）
 
-    返回合并后的摘要信息
+    - source.name 自动成为 canonical 的别名（写入 alias 字段）
+    - 所有影片 actor 文本列中的 source.name 替换为 canonical.name
+    - canonical 无头像时继承 source 的头像
     """
+    session = await get_module_session(module)
+    ActorModel = get_module_model(module, "actor")
+    MovieModel = get_module_model(module, "movie")
+
     if canonical_id <= 0:
         return {"error": "canonical_id must be positive"}
 
-    # 去重+过滤
-    clean_ids = []
-    seen = set()
-    for sid in source_ids:
-        sid = int(sid)
-        if sid > 0 and sid != canonical_id and sid not in seen:
-            seen.add(sid)
-            clean_ids.append(sid)
-
+    clean_ids = list(dict.fromkeys(sid for sid in source_ids if sid > 0 and sid != canonical_id))
     if not clean_ids:
         return {"error": "merge_ids required"}
 
-    # 获取 canonical 演员
-    canonical = await session.get(JavActor, canonical_id)
+    canonical = await session.get(ActorModel, canonical_id)
     if not canonical:
         return {"error": f"目标演员 (id={canonical_id}) 不存在"}
 
-    # 获取 source 演员
     source_actors = []
     for sid in clean_ids:
-        actor = await session.get(JavActor, sid)
-        if actor:
-            source_actors.append(actor)
-
+        s = await session.get(ActorModel, sid)
+        if s:
+            source_actors.append(s)
     if not source_actors:
         return {"error": "所有 source 演员都不存在"}
 
-    # 收集已有的别名
-    existing_aliases = set()
-    if canonical.alias:
-        existing_aliases.update(a.strip() for a in canonical.alias.split(",") if a.strip())
-    existing_aliases.add(canonical.name)
+    # 1) 别名合并（JavBoss 风格：source.name 作为 canonical 别名）
+    canonical.alias = _merge_alias(
+        canonical.alias,
+        canonical.name,
+        [s.name for s in source_actors],
+        [s.alias for s in source_actors if s.alias],
+    )
 
-    # 合并别名
-    new_aliases = list(existing_aliases)
-    for source in source_actors:
-        if source.name and source.name not in existing_aliases:
-            new_aliases.append(source.name)
-            existing_aliases.add(source.name)
-        if source.alias:
-            for a in source.alias.split(","):
-                a = a.strip()
-                if a and a not in existing_aliases:
-                    new_aliases.append(a)
-                    existing_aliases.add(a)
-
-    canonical.alias = ",".join(new_aliases)
-
-    # 更新影片关联 - 将 source 名称替换为 canonical 名称
-    for source in source_actors:
-        # 所有关联了 source 名字的影片更新为 canonical 名字
-        stmt = select(JavMovie).where(JavMovie.actor.contains(source.name))
-        result = await session.execute(stmt)
+    # 2) 影片 actor 文本列迁移（逗号分隔精确替换）
+    all_names = [s.name for s in source_actors if s.name]
+    if all_names:
+        movies_stmt = select(MovieModel).where(
+            MovieModel.actor.in_(all_names)
+            | MovieModel.actor.like(f"%{all_names[0]}%")
+        )
+        result = await session.execute(movies_stmt)
         movies = result.scalars().all()
+        changed_count = 0
         for movie in movies:
-            if movie.actor:
-                names = movie.actor.split(",")
-                updated = []
-                changed = False
-                for n in names:
-                    n = n.strip()
-                    if n == source.name:
-                        updated.append(canonical.name)
-                        changed = True
-                    else:
-                        updated.append(n)
-                if changed:
-                    movie.actor = ",".join(updated)
+            actor_text = movie.actor or ""
+            new_text = actor_text
+            for name in all_names:
+                pattern = re.compile(rf"(^|,){re.escape(name)}(,|$)")
+                new_text = pattern.sub(lambda m: (m.group(1) + canonical.name + m.group(2)), new_text)
+            if new_text != actor_text:
+                movie.actor = new_text
+                changed_count += 1
 
-        # 更新 canonical 的 movie_count
-        current_count = len(movies)
-        canonical.movie_count += current_count
+    # 3) 头像继承：canonical 无头像则用 source 的（仅文件，DB 无头像路径列）
+    canonical_avatar = _avatar_path(module, canonical_id)
+    if not canonical_avatar.exists():
+        for src in source_actors:
+            src_avatar = _avatar_path(module, src.id)
+            if src_avatar.exists():
+                try:
+                    canonical_avatar.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_avatar, canonical_avatar)
+                    logger.info(f"[actor-merge] 头像继承: actor_{src.id}.jpg -> actor_{canonical_id}.jpg")
+                    break
+                except Exception as e:
+                    logger.debug(f"[actor-merge] 头像继承失败: {e}")
 
-    # 硬删除 source
-    for source in source_actors:
-        await session.delete(source)
+    # 4) 硬删除 source
+    for src in source_actors:
+        await session.delete(src)
 
     await session.commit()
 
     return {
         "canonical_id": canonical_id,
         "canonical_name": canonical.name,
-        "merged_ids": [a.id for a in source_actors],  # 注意：删除后 id 不再可用，这里存一下
-        "merged_names": [a.name for a in source_actors],
+        "merged_ids": [s.id for s in source_actors],
+        "merged_names": [s.name for s in source_actors],
         "aliases": canonical.alias,
-        "total_movies": canonical.movie_count,
+        "movies_updated": changed_count if all_names else 0,
     }
 
 
-async def search_similar_actors(session: AsyncSession, name: str, threshold: float = 0.8) -> List[dict]:
-    """搜索名字相似的演员，用于推荐合并"""
-    from difflib import SequenceMatcher
+async def search_similar_actors(name: str, threshold: float = 0.6, module: str = "jav") -> List[dict]:
+    """搜索名称相似的演员（推荐合并候选）"""
+    session = await get_module_session(module)
+    ActorModel = get_module_model(module, "actor")
 
-    stmt = select(JavActor).order_by(JavActor.movie_count.desc()).limit(200)
+    stmt = select(ActorModel).order_by(ActorModel.id)
     result = await session.execute(stmt)
     actors = result.scalars().all()
 
     similar = []
-    for actor in actors:
-        if actor.name == name:
+    for a in actors:
+        if a.name == name:
             continue
-        ratio = SequenceMatcher(None, name.lower(), actor.name.lower()).ratio()
+        ratio = SequenceMatcher(None, name.lower(), (a.name or "").lower()).ratio()
         if ratio >= threshold:
             similar.append({
-                "id": actor.id,
-                "name": actor.name,
-                "alias": actor.alias,
-                "movie_count": actor.movie_count,
+                "id": a.id,
+                "name": a.name,
+                "alias": a.alias,
+                "name_jp": a.name_jp,
+                "name_en": a.name_en,
                 "similarity": round(ratio, 3),
             })
-        elif actor.alias:
-            for a in actor.alias.split(","):
-                a = a.strip()
-                if a and SequenceMatcher(None, name.lower(), a.lower()).ratio() >= threshold:
+        elif a.alias:
+            for al in a.alias.split(","):
+                al = al.strip()
+                if al and SequenceMatcher(None, name.lower(), al.lower()).ratio() >= threshold:
                     similar.append({
-                        "id": actor.id,
-                        "name": actor.name,
-                        "alias": actor.alias,
-                        "movie_count": actor.movie_count,
-                        "similarity": round(SequenceMatcher(None, name.lower(), a.lower()).ratio(), 3),
+                        "id": a.id,
+                        "name": a.name,
+                        "alias": a.alias,
+                        "name_jp": a.name_jp,
+                        "name_en": a.name_en,
+                        "similarity": round(ratio, 3),
                     })
                     break
 
-    similar.sort(key=lambda x: (-x["similarity"], -x["movie_count"]))
+    similar.sort(key=lambda x: (-x["similarity"], x["id"]))
     return similar[:50]

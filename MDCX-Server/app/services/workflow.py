@@ -285,7 +285,7 @@ class MetadataScrapeWorkflow(BaseWorkflow):
             # 收集所有已启用模块的媒体目录
             media_dirs = []
             if hasattr(cfg, "modules") and cfg.modules:
-                for module_name in ["jav", "uncensored", "fc2", "chinese", "pornhub"]:
+                for module_name in ["anime", "jav", "uncensored", "fc2", "chinese", "pornhub", "western"]:
                     module_cfg = getattr(cfg.modules, module_name, None)
                     if module_cfg and getattr(module_cfg, "enabled", False):
                         dirs = getattr(module_cfg, "media_dirs", []) or []

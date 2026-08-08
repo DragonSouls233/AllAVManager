@@ -349,9 +349,6 @@ async def get_actor_avatar_file(actor_id: int):
         try:
             from app.config.manager import get_config_manager
             avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / "jav" / f"actor_{actor_id}.jpg"
-            if not avatar_file.exists():
-                # 兼容旧约定: 全局 avatars/actor_{id}.jpg
-                avatar_file = _Path(get_config_manager().computed.data_dir) / "avatars" / f"actor_{actor_id}.jpg"
             if avatar_file.exists():
                 return FileResponse(str(avatar_file), media_type="image/jpeg",
                                     headers={"Cache-Control": "public, max-age=86400"})
@@ -1298,13 +1295,14 @@ async def play_jav_video_file(movie_id: int, request: _Request):
                     break
                 yield data
 
+    from app.utils.http_headers import safe_content_disposition
     return StreamingResponse(
         _iter_full(),
         media_type=media_type,
         headers={
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
-            "Content-Disposition": f'inline; filename="{_os.path.basename(file_path)}"',
+            "Content-Disposition": safe_content_disposition(file_path),
         },
     )
 

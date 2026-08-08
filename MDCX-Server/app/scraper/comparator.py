@@ -219,11 +219,18 @@ class JavBusListCrawler:
             from app.utils.cookie_manager import get_cookie_headers
             cookie_headers = get_cookie_headers("javbus")
 
+        # 空 cookie 头反而可能触发 javbus 反爬（带 cookie: "" 的请求会被拒）→ 空则不带 cookie
+        headers = {}
+        if cookie_headers and cookie_headers.get("cookie"):
+            headers["cookie"] = cookie_headers["cookie"]
+        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
+        headers["Accept-Language"] = "zh-CN,zh;q=0.9"
+
         try:
             async with AsyncHttpClient() as client:
                 html = await asyncio.wait_for(
-                    client.get_text(url, headers=cookie_headers),
-                    timeout=30,
+                    client.get_text(url, headers=headers),
+                    timeout=15,
                 )
                 if not html:
                     return None
