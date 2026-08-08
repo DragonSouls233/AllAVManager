@@ -247,7 +247,7 @@ export const generateMovieThumbnails = (movieId, force = false) => api.post(`/mo
 // Actors 演员管理
 // ============================================
 export const getActors = (params) => api.get('/actors', { params })
-export const getActor = (id) => api.get(`/actors/${id}`)
+export const getActor = (id, module) => api.get(`/actors/${id}`, { params: module ? { module } : {} })
 export const getActorMovies = (id, params = {}, module) => {
   const p = { ...params }
   if (module) p.module = module

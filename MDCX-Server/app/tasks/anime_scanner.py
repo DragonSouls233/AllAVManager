@@ -28,7 +28,6 @@ from xml.etree import ElementTree as ET
 
 from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
 from app.utils.logger import get_logger
-from app.scraper.anime_getchu import scrape_anime_and_apply
 
 logger = get_logger(__name__)
 
@@ -271,15 +270,9 @@ class AnimeScanner(BaseScanner):
         super().__init__("anime", media_dirs)
         self.video_extensions = VIDEO_EXTS
         self.config = config or {}
-        self.online_enrich = bool(self.config.get("online_enrich", False))
-        # main.py 只传 media_dirs，不传 config；自行从模块配置读取 online_enrich
-        if "online_enrich" not in self.config:
-            try:
-                from app.config.manager import get_config_manager
-                cfg = get_config_manager().modules.anime
-                self.online_enrich = bool(getattr(cfg, "online_enrich", False))
-            except Exception:
-                pass
+        # 扫描只做本地入库：从 NFO/文件名解析元数据写库，绝不发起网络请求。
+        # 网络刮削（getchu）仅由用户显式触发的「指定目录刮削 / 单部刮削 / 批量刮削pending」执行，
+        # 详见 app/services/anime_scrape_service.py 与 app/api/routes/anime_routes.py。
 
     async def scan(self) -> dict:
         results = {"total": 0, "scanned": 0, "movies_added": 0,
@@ -415,13 +408,6 @@ class AnimeScanner(BaseScanner):
                     # 复制海报（同目录 -poster/-fanart）
                     asyncio.ensure_future(self._copy_poster(str(file_path), code))
 
-                    # 可选：getchu 自刮削（仅当本地无 NFO，或 NFO 偏瘦缺 plot/studio 时）
-                    needs_online = self.online_enrich and (
-                        not nfo or (not nfo.get("plot") and not nfo.get("studio"))
-                    )
-                    if needs_online:
-                        asyncio.ensure_future(self._self_scrape(code, parsed, file_path))
-
             await session.commit()
         finally:
             await session.close()
@@ -445,15 +431,3 @@ class AnimeScanner(BaseScanner):
             logger.info(f"[anime] 复制海报: {poster.name} → {dst}")
         except Exception as e:
             logger.debug(f"[anime] 海报复制失败（忽略）: {e}")
-
-    async def _self_scrape(self, code: str, parsed: dict, file_path: str) -> None:
-        """自刮削：用 getchu 补全无 NFO / 瘦 NFO 的新增里番。
-
-        复用 anime_getchu.scrape_anime_and_apply 完整链路（刮削→回填→封面→预览图→NFO）。
-        任何异常均忽略，不阻断主扫描。
-        """
-        await scrape_anime_and_apply(
-            code,
-            parsed.get("title") or Path(file_path).stem,
-            parsed.get("maker"),
-        )

@@ -63,10 +63,15 @@ class WesternModuleConfig(ModuleConfig):
 
 
 class AnimeModuleConfig(ModuleConfig):
-    """日本里番模块配置"""
+    """日本里番模块配置
+
+    online_enrich 默认关闭：扫描阶段只做本地 NFO/文件名解析与入库，
+    绝不发起任何网络请求（getchu 在线补充）。网络刮削仅由用户显式触发
+    （指定目录刮削 / 单部刮削 / 批量刮削 pending），避免扫描被网络拖慢或超时。
+    """
     online_enrich: bool = Field(
-        default=True,
-        title="新番在线补充（getchu）"
+        default=False,
+        title="新番在线补充（getchu，仅手动刮削时生效）"
     )
 
 
@@ -81,6 +86,5 @@ class ModulesConfig(BaseModel):
     anime: AnimeModuleConfig = AnimeModuleConfig(
         enabled=True,
         media_dirs=["J:\\动漫"],
-        online_enrich=True,
     )
     scanner: ScannerConfig = ScannerConfig()

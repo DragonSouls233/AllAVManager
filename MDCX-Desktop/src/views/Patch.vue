@@ -171,12 +171,12 @@
         <div class="job-info">
           <span>状态：{{ jobStatusText }}</span>
           <span v-if="currentJob.current_code">当前：{{ currentJob.current_code }}</span>
-          <span>待补：{{ currentJob.total_to_patch ?? 0 }}</span>
+          <span class="to-patch-num">待补：{{ currentJob.total_to_patch ?? 0 }} 部</span>
           <span>已处理：{{ currentJob.total_patched ?? 0 }}</span>
           <span>成功：{{ currentJob.total_success ?? 0 }}</span>
           <span>失败：{{ currentJob.total_failed ?? 0 }}</span>
-          <span v-if="currentJob.total_detected">检测：{{ currentJob.total_detected }}</span>
-          <span v-if="currentJob.total_skipped">跳过：{{ currentJob.total_skipped }}</span>
+          <span v-if="currentJob.total_skipped" class="muted-num">已跳过：{{ currentJob.total_skipped }} 部</span>
+          <span v-if="currentJob.total_detected" class="muted-num">（扫描 {{ currentJob.total_detected }} 部，其中大部分为可选字段缺失/近期已刮，自动跳过）</span>
         </div>
       </div>
     </el-card>
@@ -477,4 +477,6 @@ onMounted(() => {
 .result-label { color: #909399; font-size: 12px; margin-top: 4px; }
 .job-progress { margin-top: 16px; }
 .job-info { display: flex; gap: 16px; margin-top: 10px; color: #606266; font-size: 13px; }
+.to-patch-num { font-weight: 600; color: var(--el-color-primary, #409eff); }
+.muted-num { color: #909399; }
 </style>

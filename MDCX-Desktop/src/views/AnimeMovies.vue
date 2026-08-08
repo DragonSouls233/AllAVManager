@@ -15,6 +15,7 @@
         </el-select>
         <el-button @click="load">刷新</el-button>
         <el-button type="warning" plain :loading="batchScraping" @click="scrapeAll">批量刮削未刮削</el-button>
+        <el-button type="primary" plain @click="openDirScrape">指定目录刮削</el-button>
       </div>
     </div>
 
@@ -70,13 +71,65 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="dirScrapeVisible" title="指定目录刮削（getchu）" width="580px" @close="onDirDialogClose">
+      <div class="dir-scrape">
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom:14px"
+          title="仅对指定目录下的已扫描影片发起 getchu 刮削，不会重新刮削其它年份内容。"
+          description="目录必须是 anime 媒体目录（如 J:\动漫）或其子目录，例如 J:\动漫\2026。建议先确保该目录已扫描入库。" />
+        <el-form label-width="92px">
+          <el-form-item label="目标目录">
+            <el-input v-model="dirForm.directory" placeholder="例如 J:\动漫\2026"
+              :disabled="dirJob?.status === 'running' || dirJob?.status === 'starting'" />
+          </el-form-item>
+          <el-form-item label="刮削范围">
+            <el-checkbox v-model="dirForm.onlyMissing"
+              :disabled="dirJob?.status === 'running' || dirJob?.status === 'starting'">
+              仅刮削缺失项（跳过已完整刮削的影片）
+            </el-checkbox>
+          </el-form-item>
+        </el-form>
+
+        <div v-if="dirJob && dirJob.status && dirJob.status !== 'starting'" class="dir-progress">
+          <div class="dp-row">
+            <span>状态：</span>
+            <el-tag :type="dirJob.status === 'completed' ? 'success' : (dirJob.status === 'failed' ? 'danger' : 'warning')">
+              {{ dirJob.status === 'completed' ? '已完成' : (dirJob.status === 'failed' ? '失败' : '进行中') }}
+            </el-tag>
+          </div>
+          <div class="dp-row" v-if="dirJob.directory"><span>目录：</span><code>{{ dirJob.directory }}</code></div>
+          <el-progress v-if="dirJob.total"
+            :percentage="Math.round((dirJob.done || 0) / dirJob.total * 100)"
+            :status="dirJob.status === 'completed' ? 'success' : (dirJob.status === 'failed' ? 'exception' : '')" />
+          <div class="dp-stats">
+            <span>总计 {{ dirJob.total }}</span>
+            <span>已完成 {{ dirJob.done }}</span>
+            <span class="ok">成功 {{ dirJob.success }}</span>
+            <span class="fail">失败 {{ dirJob.failed }}</span>
+            <span class="skip">未扫描入库跳过 {{ dirJob.skipped_not_scanned }}</span>
+            <span class="skip" v-if="dirJob.skipped_complete">已完整跳过 {{ dirJob.skipped_complete }}</span>
+          </div>
+          <div class="dp-current" v-if="dirJob.status === 'running' && dirJob.current">正在刮削：{{ dirJob.current }}</div>
+          <div class="dp-errors" v-if="dirJob.errors && dirJob.errors.length">
+            <div>错误：</div>
+            <div v-for="(e, i) in dirJob.errors.slice(0, 5)" :key="i" class="err">{{ e }}</div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="dirScrapeVisible = false">关闭</el-button>
+        <el-button type="primary"
+          :disabled="dirJob?.status === 'running' || dirJob?.status === 'starting'"
+          @click="startDirScrape">开始刮削</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAnimeMovies, getAnimeMakers, getAnimeSeries, scrapeAnimeMovie, scrapeAnimePending, getAnimeMoviePreviews } from '@/api/anime'
+import { getAnimeMovies, getAnimeMakers, getAnimeSeries, scrapeAnimeMovie, scrapeAnimePending, getAnimeMoviePreviews, scrapeAnimeDir, getAnimeDirScrapeStatus } from '@/api/anime'
 
 const movies = ref([])
 const total = ref(0)
@@ -94,6 +147,58 @@ const current = ref(null)
 const previews = ref([])
 const scrapingId = ref(null)
 const batchScraping = ref(false)
+
+// ===== 指定目录刮削 =====
+const dirScrapeVisible = ref(false)
+const dirForm = ref({ directory: '', onlyMissing: true })
+const dirJob = ref(null)
+const dirPolling = ref(null)
+
+function openDirScrape() {
+  dirForm.value = { directory: '', onlyMissing: true }
+  dirJob.value = null
+  if (dirPolling.value) { clearInterval(dirPolling.value); dirPolling.value = null }
+  dirScrapeVisible.value = true
+}
+
+function onDirDialogClose() {
+  if (dirPolling.value) { clearInterval(dirPolling.value); dirPolling.value = null }
+}
+
+async function startDirScrape() {
+  const dir = (dirForm.value.directory || '').trim()
+  if (!dir) {
+    ElMessage.warning('请输入要刮削的目录，例如 J:\\动漫\\2026')
+    return
+  }
+  if (dirPolling.value) { clearInterval(dirPolling.value); dirPolling.value = null }
+  dirJob.value = { status: 'starting' }
+  try {
+    const res = await scrapeAnimeDir(dir, dirForm.value.onlyMissing)
+    const jobId = res.job_id
+    ElMessage.success('已启动后台刮削，可关闭对话框，任务继续在服务器执行')
+    dirJob.value = { job_id: jobId, status: 'running', total: 0, done: 0, success: 0, failed: 0, skipped_not_scanned: 0, skipped_complete: 0, errors: [] }
+    dirPolling.value = setInterval(async () => {
+      try {
+        const st = await getAnimeDirScrapeStatus(jobId)
+        dirJob.value = st
+        if (st.status === 'completed' || st.status === 'failed') {
+          clearInterval(dirPolling.value); dirPolling.value = null
+          if (st.status === 'completed') {
+            ElMessage.success(`刮削完成：成功 ${st.success}，失败 ${st.failed}`)
+          } else {
+            ElMessage.error('刮削任务失败，请查看服务器日志')
+          }
+        }
+      } catch (e) {
+        clearInterval(dirPolling.value); dirPolling.value = null
+      }
+    }, 1500)
+  } catch (e) {
+    ElMessage.error(`启动失败：${e?.message || e}`)
+    dirJob.value = null
+  }
+}
 
 let searchTimer = null
 function onSearch() {
@@ -192,6 +297,7 @@ async function scrapeAll() {
 }
 
 onMounted(() => { loadFilters(); load() })
+onUnmounted(() => { if (dirPolling.value) clearInterval(dirPolling.value) })
 </script>
 
 <style scoped>
@@ -221,6 +327,16 @@ onMounted(() => { loadFilters(); load() })
 .player-wrap { display: flex; flex-direction: column; gap: 12px; }
 .player-meta { display: flex; flex-wrap: wrap; gap: 8px; }
 .tag.pend { background: rgba(230,162,60,.18); color: #d48806; }
+.dir-scrape { font-size: 13px; }
+.dp-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.dp-row code { word-break: break-all; background: rgba(0,0,0,.05); padding: 2px 6px; border-radius: 6px; }
+.dp-stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; color: var(--el-text-color-secondary); }
+.dp-stats .ok { color: #67c23a; }
+.dp-stats .fail { color: #f56c6c; }
+.dp-stats .skip { color: #909399; }
+.dp-current { margin-top: 8px; color: #e6a23c; }
+.dp-errors { margin-top: 8px; color: #f56c6c; }
+.dp-errors .err { font-size: 12px; word-break: break-all; }
 .preview-sec { margin-top: 4px; }
 .preview-title { font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 8px; }
 .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }

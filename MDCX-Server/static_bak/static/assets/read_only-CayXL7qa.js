@@ -1,1 +1,0 @@
-import{bk as n}from"./index-B8c8AjPF.js";function o(e){return n({url:"/read-only/scan",method:"POST",params:e})}function t(){return n({url:"/read-only/index",method:"GET"})}export{t as getReadOnlyIndex,o as scanReadOnlyDirectory};

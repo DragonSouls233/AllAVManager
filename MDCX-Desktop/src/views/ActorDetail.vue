@@ -298,7 +298,8 @@ async function getApi () {
   let checkActorNewMovies, uploadActorAvatar, deleteActorAvatar
   // 适配各模块 API 函数名差异，未定义时fallback到通用API
   const prefix = name.charAt(0).toUpperCase() + name.slice(1)
-  getActor = m[`get${prefix}Actor`] || m.getActor || commonApi.getActor
+  // 单演员详情统一走通用端点 /actors/{id}?module={module}（actors.py 已支持全模块，避免各模块专属单 actor 端点缺失/不一致）
+  getActor = commonApi.getActor
   getActorMovies = m[`get${prefix}ActorMovies`] || m.getActorMovies || commonApi.getActorMovies
   getActorTimeline = m[`get${prefix}ActorTimeline`] || commonApi.getActorTimeline
   getActorTags = m[`get${prefix}ActorTags`] || commonApi.getActorTags
@@ -433,7 +434,7 @@ const loadActor = async () => {
   loading.value = true
   try {
     const api = await getApi()
-    const res = await api.getActor(actorId.value)
+    const res = await api.getActor(actorId.value, moduleType.value)
     actor.value = res.actor || res
     movieTotal.value = res.movie_count || 0
   } catch (e) {

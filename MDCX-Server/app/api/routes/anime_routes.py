@@ -12,6 +12,8 @@
 """
 import asyncio
 import os
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -389,3 +391,59 @@ async def scrape_anime_pending(limit: int = 20):
             failed += 1
         results.append({"id": m.id, "code": m.code, **r})
     return {"status": "done", "total": len(rows), "ok": ok, "failed": failed, "items": results}
+
+
+# ============================================================
+# 指定目录刮削（仅对指定目录下的影片发起 getchu 网络刮削）
+# ============================================================
+@router.post("/scrape-dir")
+async def scrape_anime_dir(directory: str, only_missing: bool = True):
+    """对指定目录下的里番发起 getchu 刮削（后台任务）。
+
+    目录必须是 anime 模块 media_dirs 之一或其子目录（防任意路径遍历）。
+    仅刮削已扫描入库的影片；only_missing=True 时跳过已完整刮削的影片。
+    天然不波及 1999~2025 全部内容——传入 J:\\动漫\\2026 即只刮 2026。
+    返回 job_id，进度用 GET /anime/scrape-dir/{job_id}/status 查询。
+    """
+    from app.config.manager import get_config
+
+    cfg = get_config()
+    media_dirs = list(getattr(cfg.modules.anime, "media_dirs", []) or [])
+    if not media_dirs:
+        raise HTTPException(status_code=400, detail="anime 模块未配置 media_dirs")
+
+    norm = os.path.normpath(directory)
+    if not any(
+        norm == os.path.normpath(d)
+        or norm.startswith(os.path.normpath(d) + os.sep)
+        for d in media_dirs
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="目录必须是 anime 媒体目录或其子目录（防止越权访问）",
+        )
+    if not os.path.isdir(norm):
+        raise HTTPException(status_code=400, detail="目录不存在或不可访问")
+
+    from app.services.anime_scrape_service import run_anime_dir_scrape
+
+    job_id = f"anime_dir_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
+    asyncio.create_task(run_anime_dir_scrape(job_id, norm, only_missing))
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "directory": norm,
+        "only_missing": only_missing,
+        "message": "指定目录刮削已启动（后台执行）",
+    }
+
+
+@router.get("/scrape-dir/{job_id}/status")
+async def scrape_anime_dir_status(job_id: str):
+    """查询指定目录刮削任务进度。"""
+    from app.services.anime_scrape_service import get_anime_dir_scrape_status
+
+    st = get_anime_dir_scrape_status(job_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return st
