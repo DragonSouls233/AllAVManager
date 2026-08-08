@@ -936,3 +936,10 @@ export const mergeActors = (data) => api.post('/actors/merge', data)
 export const searchSimilarActors = (params) => api.get('/actors/merge/search', { params })
 export const updateActorAlias = (actorId, data) => api.put(`/actors/${actorId}/alias`, data)
 export const fetchJavdbAliases = (actorId, module) => api.post(`/actors/${actorId}/fetch-javdb-aliases`, null, { params: { module } })
+
+// ===== 类别页（2026-08-08 新增·参考 DMMbus 类别页设计） =====
+// 获取某模块全部类别聚合（按影片数降序），兼容 genre 为 JSON 数组或逗号分隔字符串
+export const getModuleCategories = (module, params = {}) => api.get(`/modules/${module}/categories`, { params })
+// 按类别获取该模块作品（复用通用 movies API，module + genre 参数）
+export const getMoviesByCategory = (module, genre, params = {}) =>
+  api.get('/movies', { params: { module, genre, page: 1, page_size: 24, ...params } })

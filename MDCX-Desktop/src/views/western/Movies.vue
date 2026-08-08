@@ -16,6 +16,10 @@
         <el-icon><FolderOpened /></el-icon> 扫描目录
       </el-button>
       <el-tag v-if="store.total">共 {{ store.total }} 部</el-tag>
+      <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
+      <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
+      <el-tag v-if="route.query.genre" type="danger" closable @close="clearRouteFilter('genre')">类别：{{ route.query.genre }}</el-tag>
+      <el-tag v-if="route.query.code_prefix" type="info" closable @close="clearRouteFilter('code_prefix')">番号：{{ route.query.code_prefix }}</el-tag>
     </div>
 
     <div class="movies-grid" v-loading="store.loading">
@@ -51,19 +55,37 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useWesternStore } from '@/stores/western'
 import { ElMessage } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
 import { getCoverSrc } from '@/utils/media'
 
 const router = useRouter()
+const route = useRoute()
 const store = useWesternStore()
 const keyword = ref('')
 const siteFilter = ref('')
 const networkFilter = ref('')
 const scanning = ref(false)
+
+// 2026-08-08: 详情页跳转筛选（系列/片商/类别/番号前缀）
+function routeFilterParams() {
+  const q = route.query
+  const p = {}
+  if (q.series) p.series = String(q.series)
+  if (q.maker) p.maker = String(q.maker)
+  if (q.genre) p.genre = String(q.genre)
+  if (q.code_prefix) p.code_prefix = String(q.code_prefix)
+  return p
+}
+
+function clearRouteFilter(key) {
+  const q = { ...route.query }
+  delete q[key]
+  router.replace({ path: route.path, query: q })
+}
 
 const siteOptions = ['Brazzers', 'BangBros', 'Reality Kings', 'Vixen', 'Blacked', 'Tushy', 'Naughty America', 'MYLF', 'TeamSkeet']
 const networkOptions = ['Aylo', 'Vixen Network', 'Naughty America', 'TeamSkeet', 'Algolia']
@@ -78,12 +100,14 @@ function resetFilters() {
   siteFilter.value = ''
   networkFilter.value = ''
   store.page = 1
+  router.replace({ path: route.path, query: {} })
   loadMovies()
 }
 
 async function loadMovies() {
   const params = {}
   if (keyword.value) params.keyword = keyword.value
+  Object.assign(params, routeFilterParams())
   await store.loadMovies(params)
 }
 
@@ -109,6 +133,8 @@ function onCoverError(e) {
 }
 
 onMounted(loadMovies)
+// 路由 query 变化（详情页点系列/片商/类别跳转）时重新加载
+watch(() => route.query, () => { store.page = 1; loadMovies() }, { deep: true })
 </script>
 
 <style scoped>

@@ -12,6 +12,7 @@ v3.1 增强：
 
 import asyncio
 import logging
+import os
 import random
 import time
 from typing import Optional
@@ -101,6 +102,12 @@ class AsyncHttpClient:
     async def init_session(self) -> None:
         """初始化会话（使用 Chrome 136 作为默认 TLS 指纹）"""
         if self._session is None and not self._curl_failed:
+            # 允许通过环境变量强制禁用 curl_cffi（本环境 Python3.14 + 预编译 native
+            # 库损坏时会报 "initializer for ctype 'void *' must be a cdata pointer"）。
+            if os.environ.get("MDCX_DISABLE_CURL_CFFI", "").lower() in ("1", "true", "yes"):
+                self._curl_failed = True
+                logger.warning("curl_cffi 已通过 MDCX_DISABLE_CURL_CFFI 强制禁用，将使用 httpx 降级")
+                return
             try:
                 self._session = AsyncSession(
                     max_clients=300,
@@ -337,6 +344,14 @@ class AsyncHttpClient:
                         cookies=cookies,
                         **request_kwargs,
                     )
+                    # 关键修复：在受保护块内【立即读取响应体】。
+                    # curl_cffi 在 Python3.14 + 预编译 native 库损坏时，C 层错误
+                    # "initializer for ctype 'void *' must be a cdata pointer" 发生在
+                    # 读取响应体（response.content/.text）时，而该步骤在 get_text/
+                    # get_html 内、已离开本 try —— 导致降级逻辑永不触发、
+                    # _curl_failed 永远不置位，批量刮削整批失败。提前读体能确保该
+                    # 错误被本 try 捕获并切到 httpx 降级。
+                    _ = response.content
                     # 检查响应状态码
                     if response.status_code and 400 <= response.status_code < 600:
                         raise Exception(f"HTTP {response.status_code}")
@@ -475,6 +490,9 @@ class AsyncHttpClient:
                         cookies=cookies,
                         **request_kwargs,
                     )
+                    # 与 get() 同理：在受保护块内提前读取响应体，确保 curl_cffi
+                    # C 层错误能被捕获并降级到 httpx。
+                    _ = response.content
                     return response
 
                 except Exception as e:

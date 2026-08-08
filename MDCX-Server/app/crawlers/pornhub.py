@@ -741,3 +741,100 @@ class PornhubCrawler(BaseCrawler):
             await client.close_session()
 
         return results
+
+    # ===== 演员视频列表（对比查重用） =====
+
+    async def fetch_actress_videos(self, actress_url: str, max_pages: int = 5) -> list[dict]:
+        """获取演员主页下的视频列表（供对比查重使用）。
+
+        兼容 model / pornstar / channels 等演员主页 URL，逐页提取
+        viewkey + 标题 + 缩略图，返回与 compare 消费格式一致的 dict 列表。
+        """
+        results: list[dict] = []
+        if not actress_url:
+            return results
+
+        base = actress_url.strip()
+        if base.startswith("//"):
+            base = "https:" + base
+        elif base.startswith("/"):
+            base = self.base_url + base
+
+        client = AsyncHttpClient()
+        await client.init_session()
+        try:
+            pages = max(1, min(int(max_pages), 20))
+            for page in range(1, pages + 1):
+                url = f"{base}?page={page}" if page > 1 else base
+                html_text = await client.get_text(
+                    url,
+                    cookies=_PH_BASE_COOKIES,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Referer": "https://www.pornhub.com/",
+                    },
+                    timeout=30,
+                )
+                if not html_text or "Just a moment" in html_text or "cf-browser-verification" in html_text:
+                    break
+                cards = self._extract_actress_video_cards(html_text)
+                if not cards:
+                    break
+                results.extend(cards)
+                if len(results) >= 200:
+                    break
+        except Exception as e:
+            logger.error(f"PornHub 演员视频列表获取失败 [{actress_url}]: {e}")
+        finally:
+            await client.close_session()
+        return results
+
+    def _extract_actress_video_cards(self, html_text: str) -> list[dict]:
+        """从演员主页 HTML 提取视频卡片（viewkey + 标题 + 缩略图）。"""
+        cards: list[dict] = []
+        seen: set[str] = set()
+        for m in re.finditer(
+            r'viewkey=([a-f0-9]+)[^"]*".*?data-movie-title="([^"]+)"',
+            html_text,
+            re.DOTALL,
+        ):
+            vk = m.group(1)
+            if vk in seen:
+                continue
+            seen.add(vk)
+            title = m.group(2).strip()
+            seg_end = html_text.find(f"viewkey={vk}") + 3000
+            thumb_m = re.search(
+                rf'viewkey={vk}[^"]*".*?(?:data-src|src)="([^"]*phncdn[^"]+\.jpg)"',
+                html_text[:seg_end],
+                re.DOTALL,
+            )
+            cards.append({
+                "code": "ph" + vk,
+                "title": title,
+                "url": f"{self.base_url}/view_video.php?viewkey={vk}",
+                "cover_url": thumb_m.group(1) if thumb_m else "",
+                "source": "pornhub",
+            })
+            if len(cards) >= 60:
+                break
+
+        # 兜底：无 data-movie-title 时，从 viewkey 链接提取
+        if not cards:
+            for m in re.finditer(r'/view_video\.php\?viewkey=([a-f0-9]+)', html_text):
+                vk = m.group(1)
+                if vk in seen:
+                    continue
+                seen.add(vk)
+                cards.append({
+                    "code": "ph" + vk,
+                    "title": "",
+                    "url": f"{self.base_url}/view_video.php?viewkey={vk}",
+                    "cover_url": "",
+                    "source": "pornhub",
+                })
+                if len(cards) >= 60:
+                    break
+        return cards

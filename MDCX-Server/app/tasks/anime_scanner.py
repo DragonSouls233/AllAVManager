@@ -24,6 +24,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Optional
 from xml.etree import ElementTree as ET
 
 from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
@@ -67,6 +68,14 @@ def _clean_title(s: str) -> str:
     s = re.sub(r"\.(cht|chs|sc|tc|jap|eng|kor)$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+", " ", s).strip(" -_　")
     return s
+
+
+def _file_size(path: Path) -> int:
+    """网络盘上一次 stat 取大小（容错），避免 exists()+stat() 两次 IO"""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def parse_anime_filename(filename: str) -> dict:
@@ -242,24 +251,34 @@ def generate_anime_code(parsed: dict, stem: str) -> str:
 
 
 def _find_poster(video_path: Path) -> Path | None:
-    """查找同目录海报：{stem}-poster.* / {stem}-fanart.* / {stem}.{jpg,png}。"""
+    """查找同目录海报：{stem}-poster.* / {stem}-fanart.* / {stem}.{jpg,png}。
+
+    2026-08-08: 网络盘下逐 exists 探测最多 16 次 stat，改为一次 listdir 取目录列表内存匹配。
+    """
     stem = video_path.stem
     parent = video_path.parent
+    try:
+        entries = set(os.listdir(parent))
+    except OSError:
+        return None
     for suffix in ("-poster", "-fanart", "-cover", ""):
         for ext in (".jpg", ".jpeg", ".png", ".webp"):
-            p = parent / (stem + suffix + ext)
-            if p.exists():
-                return p
+            if stem + suffix + ext in entries:
+                return parent / (stem + suffix + ext)
     return None
 
 
 def _find_nfo(video_path: Path) -> Path | None:
+    """找同目录 NFO（一次 listdir 替代多次 stat）"""
     stem = video_path.stem
-    for cand in (video_path.with_suffix(".nfo"),
-                 Path(stem + ".cht.nfo"),
-                 Path(stem + ".nfo")):
-        if cand.exists():
-            return cand
+    parent = video_path.parent
+    try:
+        entries = set(os.listdir(parent))
+    except OSError:
+        return None
+    for cand in (stem + ".nfo", stem + ".cht.nfo"):
+        if cand in entries:
+            return parent / cand
     return None
 
 
@@ -302,6 +321,9 @@ class AnimeScanner(BaseScanner):
 
         db = ModuleDatabase.get_instance("anime")
         session = await db.get_session()
+        # 2026-08-08: studio/series 查询缓存——11.7 万文件目录下逐文件 DB 查询是超时主因之一
+        _studio_cache: dict[str, int] = {}
+        _series_cache: dict[str, int] = {}
         try:
             existing_codes: set[str] = set(
                 (await session.execute(select(AnimeMovie.code))).scalars().all()
@@ -311,6 +333,7 @@ class AnimeScanner(BaseScanner):
             )
 
             walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            batch_counter = 0  # 2026-08-08: 增量提交——每批 100 部 commit，超时也不丢已扫描部分
             for root, dirs, files in walk_entries:
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
@@ -343,20 +366,24 @@ class AnimeScanner(BaseScanner):
 
                     release_date = nfo.get("premiered") or parsed["date"]
 
-                    # 制作商 → Studio 记录
+                    # 制作商 → Studio 记录（缓存避免逐文件查询）
                     studio_id = None
                     if maker:
                         result["makers"].add(maker)
-                        studio_row = (await session.execute(
-                            select(AnimeStudio).where(AnimeStudio.name == maker)
-                        )).scalar_one_or_none()
-                        if not studio_row:
-                            studio_row = AnimeStudio(name=maker, movie_count=0)
-                            session.add(studio_row)
-                            await session.flush()
-                        studio_id = studio_row.id
+                        if maker in _studio_cache:
+                            studio_id = _studio_cache[maker]
+                        else:
+                            studio_row = (await session.execute(
+                                select(AnimeStudio).where(AnimeStudio.name == maker)
+                            )).scalar_one_or_none()
+                            if not studio_row:
+                                studio_row = AnimeStudio(name=maker, movie_count=0)
+                                session.add(studio_row)
+                                await session.flush()
+                            _studio_cache[maker] = studio_row.id
+                            studio_id = studio_row.id
 
-                    # 系列 → Series 记录
+                    # 系列 → Series 记录（缓存避免逐文件查询）
                     series_id = None
                     if series_name:
                         result["series"].add(series_name)
@@ -367,12 +394,17 @@ class AnimeScanner(BaseScanner):
                             session.add(srow)
                             await session.flush()
                             existing_series.add(series_name)
+                            _series_cache[series_name] = srow.id
                             series_id = srow.id
+                        elif series_name in _series_cache:
+                            series_id = _series_cache[series_name]
                         else:
                             srow = (await session.execute(
                                 select(AnimeSeries).where(AnimeSeries.name == series_name)
                             )).scalar_one_or_none()
                             series_id = srow.id if srow else None
+                            if series_id:
+                                _series_cache[series_name] = series_id
 
                     genres_json = json.dumps(nfo.get("genres", []), ensure_ascii=False) if nfo.get("genres") else None
 
@@ -393,7 +425,8 @@ class AnimeScanner(BaseScanner):
                         series_id=series_id,
                         episode=episode,
                         file_path=str(file_path),
-                        file_size=file_path.stat().st_size if file_path.exists() else 0,
+                        # 网络盘上一次 stat 即可（exists()+stat() 两次 IO 翻倍耗时）
+                        file_size=_file_size(file_path),
                         source="nfo" if nfo else "filename",
                         status="completed" if nfo else "pending",
                     )
@@ -401,18 +434,40 @@ class AnimeScanner(BaseScanner):
                     result["movies_added"] += 1
                     result["scanned"] += 1
 
-                    # 复制 NFO + 视频目录资源到数据中心
+                    # 复制 NFO + 视频目录资源到数据中心（限并发，防大目录下请求风暴拖垮扫描）
                     asyncio.ensure_future(
-                        copy_video_assets_to_data_dir(str(file_path), code, "anime")
+                        self._copy_limited(
+                            copy_video_assets_to_data_dir(str(file_path), code, "anime")
+                        )
                     )
                     # 复制海报（同目录 -poster/-fanart）
-                    asyncio.ensure_future(self._copy_poster(str(file_path), code))
+                    asyncio.ensure_future(self._copy_limited(self._copy_poster(str(file_path), code)))
+
+                    # 增量提交：每 100 部 commit 一次——即使后续超时，已扫描部分也已入库，
+                    # 下次扫描通过 existing_codes 跳过（幂等续扫）
+                    batch_counter += 1
+                    if batch_counter % 100 == 0:
+                        await session.commit()
+                        logger.info(f"[anime] 增量提交: 已入库 {result['movies_added']} 部")
 
             await session.commit()
         finally:
             await session.close()
 
         return result
+
+    # 2026-08-08: copy 任务并发限制——无限制 ensure_future 会淹没事件循环拖垮扫描主流程（600s 超时根因）
+    _COPY_SEM: Optional[asyncio.Semaphore] = None
+
+    async def _copy_limited(self, coro):
+        """并发受限地执行复制任务"""
+        if AnimeScanner._COPY_SEM is None:
+            AnimeScanner._COPY_SEM = asyncio.Semaphore(5)
+        try:
+            async with AnimeScanner._COPY_SEM:
+                await asyncio.wait_for(coro, timeout=60)
+        except Exception:
+            pass  # 复制失败不影响扫描主流程
 
     async def _copy_poster(self, video_path: str, code: str) -> None:
         try:

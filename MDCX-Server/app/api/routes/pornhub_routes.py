@@ -11,6 +11,7 @@ PORNHub 模块 API 路由
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from pathlib import Path as _Path
 from typing import Optional
@@ -29,6 +30,48 @@ router = APIRouter(prefix="/pornhub", tags=["PORNHub模块"])
 
 def get_pornhub_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("pornhub")
+
+
+async def _store_pornhub_actor_avatar(actor, profile_avatar_url: "str | None", actor_name: str) -> "str | None":
+    """下载头像到本地，并落盘为约定文件 DATA/avatars/pornhub/actor_{id}.jpg。
+
+    修复：原逻辑只把远程 URL 写进 actor.avatar_url，而模块头像端点
+    (get_module_actor_avatar_file) 对远程 URL 不服务（仅服务本地文件），
+    导致刮削后头像仍显示占位图。现统一按模块端点优先读取的命名
+    (actor_{id}.jpg) 落盘，使头像真正显示；avatar_url 同时指向本地文件作为兜底。
+    """
+    if not profile_avatar_url or not str(profile_avatar_url).startswith("http"):
+        return None
+    try:
+        from app.scraper.pornhub_actor_scraper import download_actor_avatar
+        from app.config.manager import DATA_DIR
+        import shutil
+
+        local = await download_actor_avatar(actor_name, profile_avatar_url)
+        if local:
+            dst_dir = DATA_DIR / "avatars" / "pornhub"
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(local, dst_dir / f"actor_{actor.id}.jpg")
+            actor.avatar_url = local
+            return local
+    except Exception as e:
+        logger.debug(f"头像落盘失败 [{actor_name}]: {e}")
+    # 下载失败，保留远程地址（前端兜底不服务，但记录来源供排查）
+    actor.avatar_url = profile_avatar_url
+    return None
+
+
+async def _recount_actor_movie_count(session, actor_name: str) -> int:
+    """按 movie.actor LIKE '%name%' 重算该演员作品数，与扫描口径一致，避免重复刮削累加。"""
+    from app.db.pornhub_models import PornhubMovie
+    from sqlalchemy import select, func
+
+    return (await session.scalar(
+        select(func.count()).select_from(PornhubMovie).where(
+            PornhubMovie.actor.like(f"%{actor_name}%")
+        )
+    )) or 0
+
 
 
 # ========== 对比查重 ==========
@@ -128,19 +171,32 @@ async def get_actor(actor_id: int):
 
 @router.get("/movies")
 async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Query(False, description="仅列出未刮削的影片"),
-    actor: Optional[str] = Query(None, description="按演员名过滤")):
+    actor: Optional[str] = Query(None, description="按演员名过滤"),
+    # 2026-08-08 新增: 详情页跳转筛选参数
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤")):
     """列出 PORNHub 模块影片列表"""
     db = get_pornhub_db()
     session = await db.get_session()
     try:
         from app.db.pornhub_models import PornhubMovie
-        from sqlalchemy import select, func
+        from sqlalchemy import select, func, or_
 
         filters = []
         if unscraped_only:
             filters.append(PornhubMovie.status == "pending")
         if actor:
             filters.append(PornhubMovie.actor.like(f"%{actor}%"))
+        if series:
+            filters.append(PornhubMovie.series == series)
+        if maker:
+            filters.append(or_(PornhubMovie.maker == maker, PornhubMovie.studio == maker))
+        if genre:
+            filters.append(PornhubMovie.genre.contains(genre))
+        if code_prefix:
+            filters.append(PornhubMovie.code.startswith(code_prefix))
 
         total_stmt = select(func.count(PornhubMovie.id))
         if filters:
@@ -247,7 +303,7 @@ async def scrape_pornhub_movie(movie_id: int):
         if scrape_result.genres:
             movie.categories = ",".join(scrape_result.genres)
         if scrape_result.tags:
-            movie.tags = ",".join(scrape_result.tags)
+            movie.tag = ",".join(scrape_result.tags)
         if scrape_result.plot:
             movie.plot = scrape_result.plot
 
@@ -261,7 +317,8 @@ async def scrape_pornhub_movie(movie_id: int):
                 )
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
-                    db_actor.movie_count += 1
+                    # 按 movie.actor LIKE 重算，与扫描口径一致，避免重复刮削累加
+                    db_actor.movie_count = await _recount_actor_movie_count(session, actor_info.name)
                 else:
                     session.add(PornhubActor(
                         name=actor_info.name,
@@ -338,13 +395,16 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
                             if result.genres:
                                 mv.categories = ",".join(result.genres)
                             if result.tags:
-                                mv.tags = ",".join(result.tags)
+                                mv.tag = ",".join(result.tags)
                             if result.actors:
                                 mv.actor = ",".join(a.name for a in result.actors)
                                 for ai in result.actors:
                                     ex = await s.execute(select(PornhubActor).where(PornhubActor.name == ai.name))
                                     a = ex.scalar_one_or_none()
-                                    if not a:
+                                    if a:
+                                        # 按 movie.actor LIKE 重算，与扫描/单部刮削口径一致
+                                        a.movie_count = await _recount_actor_movie_count(s, ai.name)
+                                    else:
                                         s.add(PornhubActor(name=ai.name, source="scraper", movie_count=1))
                             mv.status = "scraped"
                             mv.source = "pornhub"
@@ -386,21 +446,19 @@ async def scrape_pornhub_actor_profile(actor_id: int):
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
-        from app.scraper.module_actor_profile import ModuleActorProfileScraper
-        scraper = ModuleActorProfileScraper(module_name="pornhub")
-        profile = await scraper.get_profile(actor.name)
+        from app.scraper.pornhub_actor_scraper import scrape_actor_profile
+        profile = await scrape_actor_profile(actor.name, actor.nationality)
 
         if not profile:
-            # 通过 JavDB 搜索获取头像
+            # 通过 JavDB 搜索获取头像并落盘
             avatar_url = await _scrape_avatar_from_javdb(actor.name)
-            if avatar_url:
-                actor.avatar_url = avatar_url
+            await _store_pornhub_actor_avatar(actor, avatar_url, actor.name)
             await session.commit()
             return {"status": "partial", "message": f"未找到演员 {actor.name} 的详细资料，已尝试获取头像"}
 
         actor.alias = profile.alias or actor.alias
-        if profile.avatar_url:
-            actor.avatar_url = profile.avatar_url
+        # 头像：下载到本地并落盘 actor_{id}.jpg（与模块端点读取一致）
+        await _store_pornhub_actor_avatar(actor, profile.avatar_url, actor.name)
         # 国籍：优先用文件夹提取的，如果 profile 有 country 且数据库为空则补充
         if profile.country and not actor.nationality:
             actor.nationality = profile.country
@@ -451,15 +509,14 @@ async def scrape_all_pornhub_actor_profiles(background_tasks: BackgroundTasks):
 
     async def _run():
         from app.db.pornhub_models import PornhubActor
-        from app.scraper.module_actor_profile import ModuleActorProfileScraper
+        from app.scraper.pornhub_actor_scraper import scrape_actor_profile
         from sqlalchemy import select
 
-        scraper = ModuleActorProfileScraper(module_name="pornhub")
         success = 0
         failed = 0
         for a in actors:
             try:
-                profile = await scraper.get_profile(a.name)
+                profile = await scrape_actor_profile(a.name, a.nationality)
                 s = await db.get_session()
                 try:
                     st = select(PornhubActor).where(PornhubActor.id == a.id)
@@ -469,14 +526,12 @@ async def scrape_all_pornhub_actor_profiles(background_tasks: BackgroundTasks):
                         if profile:
                             if profile.alias:
                                 act.alias = profile.alias
-                            if profile.avatar_url:
-                                act.avatar_url = profile.avatar_url
+                            await _store_pornhub_actor_avatar(act, profile.avatar_url, act.name)
                             if profile.country and not act.nationality:
                                 act.nationality = profile.country
                         else:
                             avatar_url = await _scrape_avatar_from_javdb(act.name)
-                            if avatar_url:
-                                act.avatar_url = avatar_url
+                            await _store_pornhub_actor_avatar(act, avatar_url, act.name)
                         await s.commit()
                         success += 1
                 finally:
@@ -805,9 +860,14 @@ async def generate_all_pornhub_covers_enhanced(background_tasks: BackgroundTasks
                 )
 
                 if result_data["status"] == "ok":
-                    mv.cover_url = result_data["cover_path"]
-                    mv.poster_url = result_data["cover_path"]
-                    mv.status = "scraped"
+                    # 重新从本会话取出受管实例，避免操作已关闭会话的游离对象导致写入丢失
+                    movie_row = (await s.execute(
+                        select(PornhubMovie).where(PornhubMovie.id == mv.id)
+                    )).scalar_one_or_none()
+                    if movie_row:
+                        movie_row.cover_url = result_data["cover_path"]
+                        movie_row.poster_url = result_data["cover_path"]
+                        movie_row.status = "scraped"
                     success += 1
                     logger.info("[%d/%d] 封面已生成: %s", i + 1, total, mv.code)
                 else:
@@ -863,19 +923,16 @@ async def scrape_actor_profile_enhanced(actor_id: int):
         if profile.alias:
             actor.alias = profile.alias
             updates["alias"] = profile.alias
-        if profile.avatar_url:
-            actor.avatar_url = profile.avatar_url
-            updates["avatar_url"] = profile.avatar_url
         if profile.country and not actor.nationality:
             actor.nationality = profile.country
             updates["nationality"] = profile.country
 
-        await session.commit()
+        # 头像：下载到本地并落盘 actor_{id}.jpg（与模块端点读取一致）
+        local_avatar = await _store_pornhub_actor_avatar(actor, profile.avatar_url, actor.name)
+        if local_avatar:
+            updates["avatar_url"] = local_avatar
 
-        # 下载头像到本地
-        local_avatar = None
-        if profile.avatar_url:
-            local_avatar = await download_actor_avatar(actor.name, profile.avatar_url)
+        await session.commit()
 
         completeness = check_profile_completeness(profile)
 
@@ -936,6 +993,7 @@ async def scrape_all_actor_profiles_enhanced(background_tasks: BackgroundTasks):
             scrape_actor_profile,
             download_actor_avatar,
             check_profile_completeness,
+            AVATAR_DIR,
         )
 
         db_inner = get_pornhub_db()
@@ -948,30 +1006,36 @@ async def scrape_all_actor_profiles_enhanced(background_tasks: BackgroundTasks):
 
         try:
             for i, actor_row in enumerate(actors):
-                # 去重校验：如果资料完整且已有头像本地文件，跳过
-                has_local = Path(AVATAR_DIR) / f"{re.sub(r'[\\/:*?\"<>|]', '_', actor_row.name)}.jpg"
-                if actor_row.avatar_url and actor_row.nationality and has_local.exists():
+                # 去重校验：如果资料完整且已有头像本地文件，跳过（按名或按 id 命名均可）
+                name_local = Path(AVATAR_DIR) / f"{re.sub(r'[\\/:*?\"<>|]', '_', actor_row.name)}.jpg"
+                id_local = Path(AVATAR_DIR) / f"actor_{actor_row.id}.jpg"
+                if actor_row.avatar_url and actor_row.nationality and (name_local.exists() or id_local.exists()):
                     skipped += 1
                     continue
 
                 try:
                     profile = await scrape_actor_profile(actor_row.name, actor_row.nationality)
+
+                    # 重新从本会话取出受管实例，避免操作已关闭会话的游离对象导致写入丢失
+                    act = (await s.execute(
+                        select(PornhubActor).where(PornhubActor.id == actor_row.id)
+                    )).scalar_one_or_none()
+                    if not act:
+                        failed += 1
+                        error_log.append({"name": actor_row.name, "error": "演员记录不存在"})
+                        continue
+
                     if profile:
                         if profile.alias:
-                            actor_row.alias = profile.alias
-                        if profile.avatar_url:
-                            actor_row.avatar_url = profile.avatar_url
-                        if profile.country and not actor_row.nationality:
-                            actor_row.nationality = profile.country
-
-                        # 下载头像到本地
-                        if profile.avatar_url:
-                            await download_actor_avatar(actor_row.name, profile.avatar_url)
+                            act.alias = profile.alias
+                        await _store_pornhub_actor_avatar(act, profile.avatar_url, act.name)
+                        if profile.country and not act.nationality:
+                            act.nationality = profile.country
 
                         completeness = check_profile_completeness(profile)
                         logger.info(
                             "[%d/%d] %s: 资料获取成功 (完整度 %d%%)",
-                            i + 1, total, actor_row.name, completeness["completeness"]
+                            i + 1, total, act.name, completeness["completeness"]
                         )
                         success += 1
                     else:
@@ -1043,16 +1107,12 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
                 try:
                     profile = await scrape_actor_profile(actor_row.name, actor_row.nationality)
                     if profile:
-                        if profile.avatar_url:
-                            actor_row.avatar_url = profile.avatar_url
-                            # 下载头像到本地
-                            await download_actor_avatar(actor_row.name, profile.avatar_url)
+                        await _store_pornhub_actor_avatar(actor_row, profile.avatar_url, actor_row.name)
                         if profile.country and not actor_row.nationality:
                             actor_row.nationality = profile.country
                     else:
                         avatar_url = await _scrape_avatar_from_javdb(actor_row.name)
-                        if avatar_url:
-                            actor_row.avatar_url = avatar_url
+                        await _store_pornhub_actor_avatar(actor_row, avatar_url, actor_row.name)
                     await s.commit()
                     logger.info(f"PORNHub 工作流：演员资料已获取 {actor_row.name}")
                 except Exception as e:

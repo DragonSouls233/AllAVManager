@@ -323,12 +323,16 @@ def _get_local_ips():
 # =============================================================================
 def _start_server(host, port, workers, debug):
     """启动服务器（使用 uvicorn.run 内嵌启动，中文日志）"""
-    # Python 3.14 在 Windows 上的 ProactorEventLoop 有断言 bug，强制用 SelectorEventLoop
+    # Python 3.14 在 Windows 上的 ProactorEventLoop 有断言 bug，且会在客户端握手前
+    # 断开时抛 OSError [WinError 64] 指定的网络名不再可用（asyncio 报
+    # "Task exception was never retrieved" / "Accept failed on a socket"）。
+    # 必须改用 SelectorEventLoop —— 但仅 set_event_loop(SelectorEventLoop()) 无效：
+    # uvicorn 内部 asyncio.run / new_event_loop 会忽略已设的 loop，改由默认 policy
+    # 重新创建 Proactor loop。只有 set_event_loop_policy() 才能真正让它生效。
     if sys.platform == "win32":
         import asyncio
         try:
-            loop = asyncio.SelectorEventLoop()
-            asyncio.set_event_loop(loop)
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except Exception:
             pass
 

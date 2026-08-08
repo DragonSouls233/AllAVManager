@@ -330,8 +330,16 @@ class ScanControlService:
                         scanner_mod = importlib.import_module(mod_path)
                         scanner_cls = getattr(scanner_mod, cls_name)
                         scanner = scanner_cls(valid_dirs)
-                        result = await asyncio.wait_for(scanner.scan(), timeout=600)
-                        added = result.get("movies_added", 0)
+                        if mod_name == "anime":
+                            # 断点续扫：目录级 checkpoint + 分批提交，安全长跑，
+                            # 不再被 1800s 硬上限掐断（详见 app/tasks/anime_resumable.py）。
+                            # 已处理目录直接跳过、被 kill 也靠 checkpoint 幂等续扫。
+                            from app.tasks.anime_resumable import ResumableAnimeScanner
+                            scanner = ResumableAnimeScanner(valid_dirs, batch_size=200)
+                            result = await scanner.scan()
+                        else:
+                            result = await asyncio.wait_for(scanner.scan(), timeout=600)
+                        added = result.get("movies_added", 0) or result.get("added", 0)
                         total = result.get("total", 0)
                         # 2026-08-05 修复: 同步文件删除事件
                         removed = 0

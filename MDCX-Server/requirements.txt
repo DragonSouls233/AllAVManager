@@ -76,3 +76,39 @@ guessit
 
 # DMM crawler 依赖 (app.crawlers.md 模块顶层 import, dmm crawler 启动时注册)
 patchright
+
+# ============================================================
+# 以下为原 requirements.txt 缺失、但 7 个模块代码实际 import 的第三方依赖
+# 扫描来源：app/ 全量 ast 解析第三方 import ∩ (不在 requirements.txt)
+# 版本策略：开发机已装的取精确版本；开发机缺失的取稳定版（标注风险）
+# ============================================================
+
+# --- 浏览器反爬 / stealth 抓取（javdb 爬虫、cookie 登录、stealth_fetcher 等 7 模块共用）---
+cloudscraper==1.2.71
+undetected-chromedriver==3.5.5
+scrapling==0.4.9
+playwright==1.60.0
+# ⚠️ playwright 装完后还需执行：playwright install chromium  下载浏览器内核
+
+# --- LLM 刮削（app.scraper.llm_scraper，多模块通用 enrich 路径）---
+openai==1.54.4
+aiolimiter==1.1.0
+
+# --- 人脸识别 / 封面处理（app.services.face_crop / utils.face_crop / watermark / mosaic）---
+# 以下三个为重量级依赖，仅在启用「人脸裁剪 / 水印 / 马赛克」功能时需要
+opencv-python==4.13.0.92
+mediapipe==0.10.14
+onnxruntime==1.19.2
+# ⚠️ mediapipe / onnxruntime 对 Python 3.14 轮子可能滞后，服务器若用 3.14 需确认有对应 wheel
+
+# --- 翻译工具（app.utils.translate）---
+googletrans==4.0.0rc1   # 预发布版，pip 安装需加 --pre
+
+# --- 去重 / 视频指纹（app.services.dedup / video_hash）---
+ImageHash==4.3.2
+
+# --- 演员头像抓取重试（app.scraper.module_actor_avatar）---
+tenacity==9.0.0
+
+# --- HTTP 客户端编码探测（app.utils.http_client 直接 import）---
+charset-normalizer==3.4.4

@@ -5,6 +5,7 @@
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <el-button type="primary" @click="loadActors">搜索</el-button>
+      <el-button :loading="batchScraping" @click="batchScrape">批量增强刮削</el-button>
     </div>
 
     <div class="actors-grid" v-loading="loading">
@@ -27,13 +28,16 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
+import { ElMessage } from 'element-plus'
 import defaultAvatar from '@/assets/default-avatar.png'
 import { getAvatarSrc } from '@/utils/media'
+import { scrapeAllPornhubActorProfilesEnhanced } from '@/api/pornhub'
 
 const router = useRouter()
 const store = usePornhubStore()
 const keyword = ref('')
 const loading = ref(false)
+const batchScraping = ref(false)
 const actors = ref([])
 
 async function loadActors() {
@@ -42,6 +46,18 @@ async function loadActors() {
     actors.value = await store.loadActors()
   } finally {
     loading.value = false
+  }
+}
+
+async function batchScrape() {
+  batchScraping.value = true
+  try {
+    await scrapeAllPornhubActorProfilesEnhanced()
+    ElMessage.success('已启动批量演员资料/头像刮削（后台进行）')
+  } catch (e) {
+    ElMessage.error('启动失败')
+  } finally {
+    batchScraping.value = false
   }
 }
 

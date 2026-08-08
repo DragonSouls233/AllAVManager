@@ -6,6 +6,13 @@
       </el-button>
     </div>
 
+    <!-- 加载失败提示（服务器繁忙/超时时不再白屏） -->
+    <el-result v-if="!movie && !loading" icon="warning" title="影片数据加载失败" sub-title="服务器繁忙或请求超时，请稍后重试">
+      <template #extra>
+        <el-button type="primary" @click="load()">重新加载</el-button>
+      </template>
+    </el-result>
+
     <!-- 标题置顶 -->
     <div class="hero-title" v-if="movie">
       <h1 class="hero-h1">
@@ -33,7 +40,7 @@
             <dt>番号</dt>
             <dd>
               <span class="code-parts">
-                <a class="link-val" @click="goFilteredList('search', codePrefix)">{{ codePrefix }}</a>
+                <a class="link-val" @click="goFilteredList('code_prefix', codePrefix)">{{ codePrefix }}</a>
                 <span v-if="codeSuffix">-{{ codeSuffix }}</span>
               </span>
             </dd>
@@ -79,7 +86,7 @@
           </dd>
 
           <dt>类别</dt><dd>
-            <a v-for="(g, idx) in displayGenres" :key="idx" class="link-tag genre-link" @click="goFilteredList('search', g)">{{ g }}</a>
+            <a v-for="(g, idx) in displayGenres" :key="idx" class="link-tag genre-link" @click="goFilteredList('genre', g)">{{ g }}</a>
             <span v-if="!displayGenres.length">-</span>
           </dd>
 
@@ -361,7 +368,12 @@ const actorList = computed(() => {
   if (Array.isArray(m.folder_based_actors)) return m.folder_based_actors
   // 其他返回 actor 逗号分隔字符串
   if (typeof m.actor === 'string' && m.actor.trim()) {
-    return m.actor.split(',').map(s => ({ name: s.trim(), id: s.trim() })).filter(a => a.name)
+    // 优先使用后端返回的 actor_ids（名字→数字 id），跳转演员详情用数字 id
+    const ids = (m.actor_ids && typeof m.actor_ids === 'object') ? m.actor_ids : {}
+    return m.actor.split(',').map(s => {
+      const n = s.trim()
+      return { name: n, id: ids[n] || n }
+    }).filter(a => a.name)
   }
   if (typeof m.actor === 'string' && m.actor.trim()) {
     return [{ name: m.actor, id: m.actor }]
@@ -493,6 +505,11 @@ const displayTags = computed(() => {
 
 // ---------- 加载 ----------
 const load = async () => {
+  // 2026-08-08: NaN 守卫——id 无效时不发请求（避免 GET /movies/NaN 422）
+  if (!Number.isFinite(movieId.value) || movieId.value <= 0) {
+    loading.value = false
+    return
+  }
   loading.value = true
   coverError.value = false
   previewSource.value = 'none'
@@ -557,7 +574,9 @@ const goFilteredList = (key, value) => {
   switch (key) {
     case 'maker': router.push(`${base}?maker=${encoded}`); break
     case 'series': router.push(`${base}?series=${encoded}`); break
+    case 'genre': router.push(`${base}?genre=${encoded}`); break
     case 'tag_id': router.push(`${base}?tag_ids=${value}`); break
+    case 'code_prefix': router.push(`${base}?code_prefix=${encoded}`); break
     case 'search': router.push(`${base}?search=${encoded}`); break
     default: router.push(`${base}?${key}=${encoded}`)
   }
@@ -705,7 +724,8 @@ const saveEdit = async () => {
 }
 
 // 路由参数变化时重新加载（Vue Router 复用了同一组件实例）
-watch(movieId, () => { load() })
+// 2026-08-08: 加 NaN 守卫——离开详情页跳列表时 route.params.id 变 undefined，Number()=NaN，避免触发 GET /movies/NaN
+watch(movieId, (val) => { if (Number.isFinite(val) && val > 0) load() })
 // 模块切换时重置 API 缓存，确保 loadApi 加载正确的模块接口
 watch(moduleType, () => { apiRef.value = null })
 

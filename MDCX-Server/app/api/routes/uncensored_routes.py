@@ -253,6 +253,11 @@ async def list_movies(
     limit: int = 20,
     keyword: Optional[str] = Query(None, description="搜索标题/番号"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
+    # 2026-08-08 新增: 详情页跳转筛选参数
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
 ):
     """列出无码模块影片列表"""
     db = get_uncensored_db()
@@ -267,6 +272,14 @@ async def list_movies(
             filters.append(or_(UncensoredMovie.title.like(kw), UncensoredMovie.code.like(kw)))
         if actor:
             filters.append(UncensoredMovie.actor.like(f"%{actor}%"))
+        if series:
+            filters.append(UncensoredMovie.series == series)
+        if maker:
+            filters.append(or_(UncensoredMovie.maker == maker, UncensoredMovie.studio == maker))
+        if genre:
+            filters.append(UncensoredMovie.genre.contains(genre))
+        if code_prefix:
+            filters.append(UncensoredMovie.code.startswith(code_prefix))
 
         total_stmt = select(func.count(UncensoredMovie.id))
         if filters:

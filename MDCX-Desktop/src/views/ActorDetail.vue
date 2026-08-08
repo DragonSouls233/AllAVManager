@@ -295,7 +295,7 @@ async function getApi () {
   const name = moduleType.value
   const m = await import(`@/api/${name}.js`)
   let getActor, getActorMovies, getActorTimeline, getActorTags, addActorTag, deleteActorTag
-  let checkActorNewMovies, uploadActorAvatar, deleteActorAvatar
+  let checkActorNewMovies, uploadActorAvatar, deleteActorAvatar, scrapeActorProfile
   // 适配各模块 API 函数名差异，未定义时fallback到通用API
   const prefix = name.charAt(0).toUpperCase() + name.slice(1)
   // 单演员详情统一走通用端点 /actors/{id}?module={module}（actors.py 已支持全模块，避免各模块专属单 actor 端点缺失/不一致）
@@ -308,8 +308,8 @@ async function getApi () {
   checkActorNewMovies = m[`check${prefix}ActorNewMovies`] || commonApi.checkActorNewMovies
   uploadActorAvatar = m[`upload${prefix}ActorAvatar`] || commonApi.uploadActorAvatar
   deleteActorAvatar = m[`delete${prefix}ActorAvatar`] || commonApi.deleteActorAvatar
-  // 模块级演员资料补充刮削端点（/modules/{module}/actors/{id}/scrape-profile）
-  scrapeActorProfile = m[`scrape${prefix}ActorProfile`] || (async (id) => commonApi.api.post(`/modules/${name}/actors/${id}/scrape-profile`))
+  // 模块级演员资料补充刮削端点（/modules/{module}/actors/{id}/scrape-profile）；通用端点兜底
+  scrapeActorProfile = m[`scrape${prefix}ActorProfile`] || commonApi.scrapeActorProfile || (async (id) => commonApi.api.post(`/modules/${name}/actors/${id}/scrape-profile`))
   apiRef.value = { getActor, getActorMovies, getActorTimeline, getActorTags, addActorTag, deleteActorTag, checkActorNewMovies, uploadActorAvatar, deleteActorAvatar, scrapeActorProfile }
   return apiRef.value
 }

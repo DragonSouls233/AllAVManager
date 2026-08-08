@@ -316,6 +316,8 @@ const maxRating = ref(null)
 const onlyFavorite = ref(false)
 const seriesFilter = ref('')
 const makerFilter = ref('')
+const codePrefixFilter = ref('')
+const genreFilter = ref('')
 const studioFilter = ref('')
 
 // 抽屉
@@ -355,6 +357,7 @@ const loadMovies = async (append = false) => {
       page: page.value,
       page_size: pageSize.value,
       search: keyword.value || undefined,
+      code_prefix: codePrefixFilter.value || undefined,
       tag_ids: selectedTags.value.length ? selectedTags.value.map(t => t.id).join(',') : undefined,
       tag_mode: selectedTags.value.length ? tagMode.value : undefined,
       letter: selectedLetter.value || undefined,
@@ -362,6 +365,7 @@ const loadMovies = async (append = false) => {
       series: seriesFilter.value || undefined,
       maker: makerFilter.value || undefined,
       studio: studioFilter.value || undefined,
+      genre: genreFilter.value || undefined,
       min_rating: minRating.value ?? undefined,
       max_rating: maxRating.value ?? undefined,
     }
@@ -680,12 +684,38 @@ onMounted(async () => {
   if (route.query.search) {
     keyword.value = String(route.query.search)
   }
+  if (route.query.code_prefix) {
+    codePrefixFilter.value = String(route.query.code_prefix)
+  }
+  if (route.query.genre) {
+    genreFilter.value = String(route.query.genre)
+  }
   if (route.query.tag_ids) {
     const ids = String(route.query.tag_ids).split(',').map(Number).filter(n => n > 0)
     selectedTags.value = ids.map(id => allTags.value.find(t => t.id === id)).filter(Boolean)
   }
   loadMovies()
   loadAlphabet()
+})
+
+// 详情页点击系列/番号前缀/片商等跳转时，URL query 变化触发重新筛选。
+// 关键：从 /jav/movies（已挂载）导航到 /jav/movies?series=xxx 是同一路由记录，
+// 组件实例被 Vue Router 复用，onMounted 不会重跑——必须 watch query，否则筛选不生效（显示全部/乱）。
+watch(() => route.query, (q) => {
+  seriesFilter.value = q.series ? String(q.series) : ''
+  makerFilter.value = q.maker ? String(q.maker) : ''
+  studioFilter.value = q.studio ? String(q.studio) : ''
+  keyword.value = q.search ? String(q.search) : ''
+  codePrefixFilter.value = q.code_prefix ? String(q.code_prefix) : ''
+  genreFilter.value = q.genre ? String(q.genre) : ''
+  if (q.tag_ids) {
+    const ids = String(q.tag_ids).split(',').map(Number).filter(n => n > 0)
+    selectedTags.value = ids.map(id => allTags.value.find(t => t.id === id)).filter(Boolean)
+  } else {
+    selectedTags.value = []
+  }
+  page.value = 1
+  loadMovies()
 })
 
 // 哨兵元素出现后设置 observer

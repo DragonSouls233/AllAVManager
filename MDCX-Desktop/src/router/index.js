@@ -67,7 +67,7 @@ const routes = [
         component: () => import('@/views/CompareActors.vue')
       },
       {
-        path: 'actor-merge',
+        path: 'jav/actor-merge',
         name: 'ActorMerge',
         component: () => import('@/views/ActorMerge.vue')
       },
@@ -418,6 +418,12 @@ const routes = [
         component: () => import('@/views/Crawlers.vue')
       },
       {
+        path: 'uncensored/categories',
+        name: 'UncensoredCategories',
+        component: () => import('@/views/Category.vue'),
+        meta: { title: 'JAV 无码 · 类别' }
+      },
+      {
         path: 'uncensored/movies',
         name: 'UncensoredMovies',
         component: () => import('@/views/uncensored/Movies.vue')
@@ -516,6 +522,12 @@ const routes = [
         path: 'jav/code-test',
         name: 'JavCodeTest',
         component: () => import('@/views/jav/CodeTest.vue')
+      },
+      {
+        path: 'jav/categories',
+        name: 'JavCategories',
+        component: () => import('@/views/Category.vue'),
+        meta: { title: 'JAV 有码 · 类别' }
       },
       {
         path: 'pornhub',

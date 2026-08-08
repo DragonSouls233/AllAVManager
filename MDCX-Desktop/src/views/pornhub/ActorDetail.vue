@@ -12,6 +12,9 @@
           <span>{{ actor.movie_count }} 部作品</span>
           <el-tag v-if="actor.source === 'scraper'" type="success" size="small">来自爬虫</el-tag>
         </div>
+        <el-button type="primary" size="small" :loading="scraping" @click="scrapeProfile" style="margin-top: 12px">
+          刮削资料/头像
+        </el-button>
       </div>
       <div class="movies-section">
         <h3>作品列表</h3>
@@ -31,9 +34,11 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
+import { ElMessage } from 'element-plus'
 import defaultAvatar from '@/assets/default-avatar.png'
 import defaultCover from '@/assets/default-cover.png'
 import { getAvatarSrc, getCoverSrc } from '@/utils/media'
+import { scrapePornhubActorProfile } from '@/api/pornhub'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,6 +46,7 @@ const store = usePornhubStore()
 const actor = ref(null)
 const movies = ref([])
 const loading = ref(true)
+const scraping = ref(false)
 
 function goBack() { router.push('/pornhub/actors') }
 function goMovieDetail(id) { router.push(`/pornhub/movies/${id}`) }
@@ -49,10 +55,23 @@ function handleAvatarError(e) {
   e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
+async function scrapeProfile() {
+  if (!actor.value?.id) return
+  scraping.value = true
+  try {
+    await scrapePornhubActorProfile(actor.value.id)
+    ElMessage.success('已触发演员资料/头像刮削（后台进行，稍后刷新可见）')
+    actor.value = await store.loadActorDetail(Number(route.params.id))
+  } catch (e) {
+    ElMessage.error('刮削触发失败')
+  } finally {
+    scraping.value = false
+  }
+}
+
 onMounted(async () => {
   try {
-    const actors = await store.loadActors()
-    actor.value = actors.find(a => a.id === Number(route.params.id))
+    actor.value = await store.loadActorDetail(Number(route.params.id))
     await store.loadMovies()
     movies.value = store.movies
   } finally {

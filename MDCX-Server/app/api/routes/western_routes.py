@@ -36,6 +36,11 @@ async def list_movies(
     limit: int = 20,
     keyword: Optional[str] = Query(None, description="搜索标题/演员"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
+    # 2026-08-08 新增: 详情页跳转筛选参数
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
 ):
     """列出欧美影片"""
     db = get_western_db()
@@ -50,6 +55,14 @@ async def list_movies(
             filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actors.like(kw), WesternMovie.site.like(kw)))
         if actor:
             filters.append(WesternMovie.actors.like(f"%{actor}%"))
+        if series:
+            filters.append(WesternMovie.series == series)
+        if maker:
+            filters.append(or_(WesternMovie.maker == maker, WesternMovie.studio == maker))
+        if genre:
+            filters.append(WesternMovie.genre.contains(genre))
+        if code_prefix:
+            filters.append(WesternMovie.code.startswith(code_prefix))
 
         total_stmt = select(func.count(WesternMovie.id))
         if filters:

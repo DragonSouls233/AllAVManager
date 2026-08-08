@@ -240,8 +240,8 @@ class PornhubComparator:
             # 使用爬虫的搜索/浏览功能获取视频列表
             videos = await crawler.fetch_actress_videos(actress_url, max_pages=max_pages)
             return videos
-        except ImportError:
-            logger.warning("PornhubCrawler 未找到，尝试备用方案")
+        except (ImportError, AttributeError):
+            logger.warning("PornhubCrawler 不可用，尝试备用方案")
             return await self._fetch_online_videos_fallback(actress_url, max_pages)
 
     async def _fetch_online_videos_fallback(self, actress_url: str, max_pages: int) -> List[Dict[str, Any]]:

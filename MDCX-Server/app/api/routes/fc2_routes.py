@@ -146,6 +146,11 @@ async def list_movies(
     limit: int = 20,
     keyword: Optional[str] = Query(None, description="搜索标题/番号"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
+    # 2026-08-08 新增: 详情页跳转筛选参数
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
 ):
     """列出 FC2 模块影片列表"""
     db = get_fc2_db()
@@ -160,6 +165,14 @@ async def list_movies(
             filters.append(or_(Fc2Movie.title.like(kw), Fc2Movie.code.like(kw)))
         if actor:
             filters.append(Fc2Movie.actor.like(f"%{actor}%"))
+        if series:
+            filters.append(Fc2Movie.series == series)
+        if maker:
+            filters.append(or_(Fc2Movie.maker == maker, Fc2Movie.studio == maker))
+        if genre:
+            filters.append(Fc2Movie.genre.contains(genre))
+        if code_prefix:
+            filters.append(Fc2Movie.code.startswith(code_prefix))
 
         total_stmt = select(func.count(Fc2Movie.id))
         if filters:

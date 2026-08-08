@@ -28,6 +28,16 @@ export async function reloadPornhubMovieNfo(id) {
   return api.post(`/pornhub/movies/${id}/reload-nfo`)
 }
 
+// ===== 演员资料/头像刮削 =====
+
+export async function scrapePornhubActorProfile(id) {
+  return api.post(`/pornhub/actors/${id}/scrape-profile`)
+}
+
+export async function scrapeAllPornhubActorProfilesEnhanced() {
+  return api.post('/pornhub/actors/scrape-all-profiles-enhanced')
+}
+
 // ===== 对比查重 =====
 
 export async function pornhubCompare(data) {

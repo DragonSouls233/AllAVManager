@@ -96,7 +96,12 @@ async def sync_folder_actors():
 @router.get("/movies")
 async def list_movies(skip: int = 0, limit: int = 20,
     keyword: Optional[str] = Query(None, description="搜索标题"),
-    actor: Optional[str] = Query(None, description="按演员名过滤")):
+    actor: Optional[str] = Query(None, description="按演员名过滤"),
+    # 2026-08-08 新增: 详情页跳转筛选参数
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤")):
     """列出国产模块影片列表"""
     db = get_chinese_db()
     try:
@@ -112,6 +117,14 @@ async def list_movies(skip: int = 0, limit: int = 20,
         if keyword:
             kw = f"%{keyword}%"
             filters.append(or_(ChineseMovie.title.like(kw), ChineseMovie.code.like(kw)))
+        if series:
+            filters.append(ChineseMovie.series == series)
+        if maker:
+            filters.append(or_(ChineseMovie.maker == maker, ChineseMovie.studio == maker))
+        if genre:
+            filters.append(ChineseMovie.genre.contains(genre))
+        if code_prefix:
+            filters.append(ChineseMovie.code.startswith(code_prefix))
 
         total_stmt = select(func.count(ChineseMovie.id))
         if filters:

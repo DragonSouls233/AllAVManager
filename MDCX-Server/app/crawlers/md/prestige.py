@@ -20,6 +20,28 @@ from app.utils.http_client import AsyncHttpClient
 
 logger = logging.getLogger(__name__)
 
+
+def _coerce_json(obj):
+    """将 get_json 可能返回的字符串 / 已解析对象规整为 dict；失败返回 None。
+
+    CompatAsyncClient.get_json 在 JSON 解析失败时会回退返回原始文本(str)，
+    直接传给期望 dict 的解析函数会触发 `string indices must be integers` 崩溃。
+    这里统一兜底：str -> json.loads -> dict；其余返回 None 以走"解析失败"分支。
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, str):
+        try:
+            import json as _json
+            parsed = _json.loads(obj)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
 # ===== MDCX 原始解析函数 =====
 
 def get_actor(page_data):
@@ -99,9 +121,12 @@ async def main(
                 "Origin": "https://www.prestige-av.com",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
             }
-            html_search, error = await manager.computed.async_client.get_json(search_url, headers=_search_headers)
+            raw_search, error = await manager.computed.async_client.get_json(search_url, headers=_search_headers)
+            html_search = _coerce_json(raw_search)
             if html_search is None:
-                debug_info = f"网络请求错误: {error} "
+                if isinstance(raw_search, str):
+                    LogBuffer.info().write("  搜索响应非 JSON(前200): " + raw_search[:200])
+                debug_info = f"搜索结果解析失败: {error or '响应非合法 JSON'}"
                 LogBuffer.info().write(web_info + debug_info)
                 raise Exception(debug_info)
 
@@ -122,9 +147,12 @@ async def main(
                 "Origin": "https://www.prestige-av.com",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
             }
-            page_data, error = await manager.computed.async_client.get_json(real_url, headers=_detail_headers)
+            raw_detail, error = await manager.computed.async_client.get_json(real_url, headers=_detail_headers)
+            page_data = _coerce_json(raw_detail)
             if page_data is None:
-                debug_info = f"网络请求错误: {error} "
+                if isinstance(raw_detail, str):
+                    LogBuffer.info().write("  详情响应非 JSON(前200): " + raw_detail[:200])
+                debug_info = f"详情解析失败: {error or '响应非合法 JSON'}"
                 LogBuffer.info().write(web_info + debug_info)
                 raise Exception(debug_info)
 

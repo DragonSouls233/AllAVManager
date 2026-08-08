@@ -186,9 +186,11 @@ async def list_movies(
     page_size: int = Query(20, ge=1, le=100),
     status: Optional[str] = None,
     search: Optional[str] = None,
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确筛选（详情页点番号前缀用，只匹配该前缀开头的番号）"),
     maker: Optional[str] = None,
     studio: Optional[str] = None,
     series: Optional[str] = None,
+    genre: Optional[str] = Query(None, description="类别筛选（详情页点类别标签，匹配 genre JSON 字段）"),
     tag_id: Optional[int] = None,
     tag_ids: Optional[str] = Query(None, description="多个标签ID，逗号分隔，如 '1,2,3'"),
     tag_mode: str = Query("OR", description="标签筛选模式: OR（任一匹配）/ AND（全部匹配）"),
@@ -258,16 +260,26 @@ async def list_movies(
             MovieModel.code.startswith(search) | MovieModel.title.contains(search)
         )
 
+    if code_prefix:
+        # 番号前缀精确筛选（详情页点番号前缀：只匹配该前缀开头的番号，不混入标题匹配）
+        query = query.where(MovieModel.code.startswith(code_prefix))
+
     if maker:
-        query = query.where(MovieModel.maker == maker)
+        # 2026-08-08 修复: jav 的 maker 列存品牌（如"山と空ショート"），studio 列存完整片商（如"山と空/妄想族"）
+        # 详情页显示 maker||studio 并点击跳转——两列都匹配，避免"点了片商却筛不到"
+        query = query.where(or_(MovieModel.maker == maker, MovieModel.studio == maker))
 
     if studio:
-        # 通过 Studio FK 关联筛选
-        query = query.join(Studio, MovieModel.studio_id == Studio.id).where(Studio.name == studio)
+        # studio 参数：优先文本字段（多数模块无 studio FK 数据）
+        query = query.where(MovieModel.studio == studio)
 
     if series:
-        # 通过 Series FK 关联筛选
-        query = query.join(Series, MovieModel.series_id == Series.id).where(Series.name == series)
+        # 2026-08-08 修复: jav 的 series_id 全为 NULL，无法走 FK join——改用文本字段精确匹配
+        query = query.where(MovieModel.series == series)
+
+    if genre:
+        # 类别：匹配 genre JSON 字段（jav 存 ["放尿","苗條",...] 字符串）
+        query = query.where(MovieModel.genre.contains(genre))
 
     # 多标签 AND/OR 筛选
     if tag_id_list:

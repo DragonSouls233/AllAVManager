@@ -190,6 +190,17 @@ def extract_actor_and_nationality(folder_name: str) -> tuple[str | None, str | N
     return name, nationality
 
 
+def _split_actor_names(name: str) -> list[str]:
+    """把 'Anna + Sunny' / 'A & B' / 'A, B' 拆成独立演员名。
+
+    与影片刮削逐个建表（scrape_result.actors）的口径对齐，
+    避免扫描建出 'Anna + Sunny' 整段、刮削建出 'Anna'/'Sunny' 分裂导致的
+    movie_count 计数与展示不一致。movie.actor 仍保留原整段字符串用于 LIKE 计数。
+    """
+    parts = re.split(r"\s*[+&,/]\s*", name)
+    return [p.strip() for p in parts if p.strip()]
+
+
 class PornhubScanner(BaseScanner):
     """PORNHub 模块扫描器"""
 
@@ -279,7 +290,10 @@ class PornhubScanner(BaseScanner):
                         )
 
                     if actor_name:
-                        result["actors"][actor_name] = nationality
+                        # 多演员文件夹名（Anna + Sunny）按 + / & / , 拆分，逐个建表，
+                        # 与影片刮削口径对齐，避免 "Anna + Sunny" 与 "Anna" 分裂
+                        for single_name in _split_actor_names(actor_name):
+                            result["actors"].setdefault(single_name, nationality)
 
             # 同步演员表：新演员写入（正确记录每个演员的国籍）
             for actor_name, actor_nationality in result["actors"].items():

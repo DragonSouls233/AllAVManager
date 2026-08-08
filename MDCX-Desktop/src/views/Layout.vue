@@ -43,6 +43,10 @@
             <el-icon><Files /></el-icon>
             <template #title>影片库</template>
           </el-menu-item>
+          <el-menu-item index="/jav/categories">
+            <el-icon><Grid /></el-icon>
+            <template #title>类别</template>
+          </el-menu-item>
           <el-menu-item index="/jav/actors">
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
@@ -94,6 +98,10 @@
           <el-menu-item index="/uncensored/movies">
             <el-icon><Files /></el-icon>
             <template #title>影片库</template>
+          </el-menu-item>
+          <el-menu-item index="/uncensored/categories">
+            <el-icon><Grid /></el-icon>
+            <template #title>类别</template>
           </el-menu-item>
           <el-menu-item index="/uncensored/actors">
             <el-icon><User /></el-icon>
@@ -1316,8 +1324,10 @@ const pageTitle = computed(() => {
     '/jav/play': 'JAV 有码 - 播放工具',
     '/jav/studio-merge': 'JAV 有码 - 片商合并',
     '/jav/code-test': 'JAV 有码 - 番号提取测试',
+    '/jav/categories': 'JAV 有码 - 类别',
     // JAV 无码
     '/uncensored/movies': 'JAV 无码 - 影片库',
+    '/uncensored/categories': 'JAV 无码 - 类别',
     '/uncensored/actors': 'JAV 无码 - 演员库',
     '/uncensored/scrape': 'JAV 无码 - 刮削管理',
     '/uncensored/compare': 'JAV 无码 - 本地对比',

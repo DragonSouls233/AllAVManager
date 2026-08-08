@@ -378,6 +378,11 @@ async def list_movies(
     keyword: Optional[str] = Query(None, description="搜索标题/番号"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
     status_filter: Optional[str] = Query(None, alias="status", description="过滤状态 pending/scraped"),
+    # 2026-08-08 新增: 详情页跳转筛选参数（对齐通用 /api/v1/movies 端点）
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
 ):
     """列出有码模块影片列表"""
     db = get_jav_db()
@@ -395,6 +400,14 @@ async def list_movies(
             filters.append(JavMovie.actor.like(f"%{actor}%"))
         if status_filter:
             filters.append(JavMovie.status == status_filter)
+        if series:
+            filters.append(JavMovie.series == series)
+        if maker:
+            filters.append(or_(JavMovie.maker == maker, JavMovie.studio == maker))
+        if genre:
+            filters.append(JavMovie.genre.contains(genre))
+        if code_prefix:
+            filters.append(JavMovie.code.startswith(code_prefix))
 
         total_stmt = select(func.count(JavMovie.id))
         if filters:
@@ -456,6 +469,18 @@ async def get_movie(movie_id: int):
         movie = result.scalar_one_or_none()
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 2026-08-08: 演员名字 → id 映射（详情页点演员应跳数字 id，而非按名字）
+        actor_ids: dict = {}
+        if movie.actor:
+            from app.db.jav_models import JavActor
+            names = [n.strip() for n in movie.actor.split(",") if n.strip()]
+            if names:
+                rows = (await session.execute(
+                    select(JavActor.id, JavActor.name).where(JavActor.name.in_(names))
+                )).all()
+                actor_ids = {name: aid for aid, name in rows}
+
         return {
             "id": movie.id, "code": movie.code, "title": movie.title,
             "module_type": "jav",
@@ -464,7 +489,7 @@ async def get_movie(movie_id: int):
             "is_mosaic": movie.is_mosaic,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "thumb_url": movie.thumb_url, "sample_images": _parse_sample_images(movie.sample_images),
-            "actor": movie.actor, "studio": movie.studio,
+            "actor": movie.actor, "actor_ids": actor_ids, "studio": movie.studio,
             "series": movie.series, "label": movie.label,
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "plot": movie.plot,

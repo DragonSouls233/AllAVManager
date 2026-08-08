@@ -38,3 +38,24 @@
 - 用户偏好本地优先：刮削数据下载到 `MOVIES/{模块}/{番号}/`，前端只读本地文件经后端代理（`/previews/…`）绕过 Referer 防盗链。详情页：左封面右信息→简介→预览区（首张封面，后续预览图）。
 - **演员详情页（前端）**：单演员详情统一走通用端点 `commonApi.getActor(id, module)`（`/api/v1/actors/{id}?module={module}`，actors.py 已全模块支持且有 `actor LIKE` 回退）。切勿走各模块专属单 actor 端点（uncensored 等模块根本无该端点→404→全空）。
 - **部署务必同步前端构建**：服务器 `L:\static` 须复制开发机 `G:\MDCX\MDCX-Server\static` 最新产物，并硬刷新（Ctrl+Shift+R）清缓存旧 `index.html`，否则"修了还是老样子"。
+
+## 前端构建与部署规则（4 种构建方式，统一用「web 部署」）
+
+MDCX-Desktop 有 4 种"构建/运行"入口，**所有 agent 必须统一用第 2 种（web 部署）做服务器部署**，其余都不要用：
+
+| # | 方式 | 命令 | 产物 | 用途 | 是否服务器部署 |
+|---|------|------|------|------|----------------|
+| 1 | Electron 桌面 | `npm run build`（=`vite build && electron-builder --win portable`） | `dist-electron/` + exe | 打包桌面客户端 | ❌ 否 |
+| 2 | **Web 部署（正确）** | `vite build --config vite.config.web.js` | `../MDCX-Server/static/` | **服务器静态资源** | ✅ **是，唯一正确** |
+| 3 | Web 本地预览 | `vite build --config vite.config.web.mjs` | `dist/` | 本地验证产物 | ⚠️ 仅验证，不部署 |
+| 4 | Dev 热更新 | `npm run dev`（vite） | 内存 | 本地开发 | ❌ 否 |
+
+**强制规则：**
+1. **服务器部署只用 `vite.config.web.js`**（输出进 `G:\MDCX\MDCX-Server\static`），绝不用 `npm run build`（那是 electron exe，产物进 `dist-electron`，对服务器无效）。
+2. **构建前必须先重命名旧 static**：`mv static static_bak_<YYYYMMDD_HHMMSS>`。原因：`vite.config.web.js` 设 `emptyOutDir:false`，多次构建会在 static 累积多个 `index-*.js`，形成**脏目录**；直接复制脏目录到服务器会因旧 chunk 与新主 chunk 的 hash 不匹配导致白屏/异常。重命名后 build 产出的 static 才是单一批次干净目录（仅 1 个主 chunk + 1 个 Layout chunk + assets）。
+3. **构建命令（managed Node 22.22.2）**：在 `G:\MDCX\MDCX-Desktop` 下用 shell 执行 `./node_modules/.bin/vite build --config vite.config.web.js`。注意：`.bin/vite` 是 **shell 脚本**，不能用 `node` 直接跑（会 `SyntaxError`），必须由 shell 调用。
+4. **部署到服务器（SMB 只读，服务器侧操作）**：把 `G:\MDCX\MDCX-Server\static` **整目录**覆盖到 `L:\static`（= `E:\MDCX-Server\static`）。服务器旧 static 必须先**整目录删干净或改名**再覆盖——**不能只覆盖 `index.html`**（否则残留旧 `index-*.js`/旧 chunk 与新的主 chunk 不匹配）。
+5. **前端硬刷新**：部署后浏览器 `Ctrl+Shift+R` 清掉旧 `index.html` 缓存，否则看不到新构建。
+6. **路由坑（白屏根因）**：菜单 `index="/jav/actor-merge"` 必须与路由表 `path: 'jav/actor-merge'`（带 `jav/` 前缀）一致；缺前缀会从菜单点出 `#/jav/actor-merge` → 路由表无此路径 → `router-view` 空 → 整页白屏。改路由时务必同步菜单与 Layout 标题映射。
+
+**验证清单（build 后）**：`grep` 确认主 chunk（如 `index-*.js`）与 `Layout-*.js` 含目标路由路径；本地 `http.server` + `router.resolve` 端到端确认期望路径匹配、旧路径不再匹配。

@@ -65,3 +65,8 @@ gfriends_importer.py
 stats.py
 MDCX-Server/qa_interactive_report.txt
 MDCX-Server/qa_interactive.py
+DEPLOY_SERVER.md
+deploy_to_server.ps1
+pornhub_actor_analysis.md
+.gitignore
+pornhub_fix_overview.md

@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from collections import Counter
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
 from app.config.manager import get_config, get_config_manager
@@ -291,6 +292,82 @@ async def unified_list_movies(module_name: str = Query(None, description="按模
     all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     total = len(all_items)
     return {"total": total, "items": all_items[skip: skip + limit]}
+
+
+@router.get("/{module_name}/categories")
+async def get_module_categories(module_name: str,
+                                q: str = Query("", description="类别名模糊筛选"),
+                                limit: int = Query(500, ge=1, le=2000)):
+    """【2026-08-08 新增】模块类别聚合
+
+    解析该模块 movies 表的 genre 字段（JSON 数组或逗号分隔字符串），
+    按 count 降序返回 [{name, count}, ...]。
+    参考 DMMbus 类别页布局设计。
+
+    genre 字段兼容性说明：
+      - jav.db 实际存的是逗号分隔字符串（如「高畫質,4K,巨乳」）
+      - 部分模块可能存 JSON 数组（["巨乳", "美乳"]）
+      - 两种都按 _parse_genre_list 统一解析
+    """
+    import importlib
+
+    if module_name not in _MODEL_MAP:
+        raise HTTPException(status_code=404, detail=f"未知模块: {module_name}")
+
+    db = ModuleDatabase.get_instance(module_name)
+    session = await db.get_session()
+    try:
+        from sqlalchemy import select, distinct, func
+
+        model_path, model_class, _ = _MODEL_MAP[module_name]
+        model = getattr(importlib.import_module(model_path), model_class)
+
+        # 用 SQL 一次拉所有非空 genre 字段（短字段，全量返回无压力）
+        stmt = select(model.genre).where(
+            model.genre.isnot(None),
+            model.genre != ""
+        )
+        result = await session.execute(stmt)
+        genre_rows = [row[0] for row in result.fetchall() if row[0]]
+
+        total_movies = await session.execute(select(func.count(model.id)))
+        total_movies = total_movies.scalar() or 0
+    finally:
+        await session.close()
+
+    # 解析 + 计数（兼容 JSON 数组和逗号分隔字符串）
+    counter: Counter[str] = Counter()
+    for raw in genre_rows:
+        # 兼容 JSON 数组和逗号分隔
+        tags: list[str] = []
+        if raw.startswith("["):
+            try:
+                import json as _json
+                parsed = _json.loads(raw)
+                if isinstance(parsed, list):
+                    tags = [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception:
+                tags = [s.strip() for s in raw.split(",") if s.strip()]
+        else:
+            tags = [s.strip() for s in raw.split(",") if s.strip()]
+
+        for t in tags:
+            if t:
+                counter[t] += 1
+
+    # 排序 + 可选模糊筛选
+    items = [{"name": name, "count": cnt} for name, cnt in counter.most_common()]
+    if q:
+        ql = q.lower()
+        items = [it for it in items if ql in it["name"].lower()]
+    items = items[:limit]
+
+    return {
+        "module": module_name,
+        "total_movies": total_movies,
+        "total_categories": len(counter),
+        "items": items,
+    }
 
 
 @router.get("/unified/search")
