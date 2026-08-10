@@ -37,6 +37,7 @@ from app.crawlers import fc2_enhanced
 # 导入欧美刮削器（Vixen / NaughtyAmerica / AdultTime / AyloAPI / Aggregate / Stash）
 from app.crawlers.western import vixen_network, naughtyamerica, adulttime, aylo_api, theporndb
 from app.crawlers import western_aggregate
+from app.crawlers import pornhub
 from app.services import stash_scraper_bridge
 
 # 导入国产模块增强爬虫
@@ -100,4 +101,5 @@ __all__ = [
     "javdb_new",
     "missav",
     "theporndb_movies",
+    "pornhub",
 ]

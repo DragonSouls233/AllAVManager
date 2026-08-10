@@ -53,6 +53,20 @@ class MockSignal:
 signal = MockSignal()
 
 
+def _looks_like_html(text: str) -> bool:
+    """粗略判断响应体是否为 HTML（反爬/人机验证页通常是 HTML）。"""
+    if not text:
+        return False
+    head = text.lstrip()[:256].lower()
+    return (
+        head.startswith("<!doctype html")
+        or head.startswith("<html")
+        or "<html" in head
+        or "<head" in head
+        or "cloudflare" in head
+    )
+
+
 class CompatAsyncClient:
     """
     兼容 MDCX 的异步 HTTP 客户端
@@ -101,21 +115,47 @@ class CompatAsyncClient:
         """
         GET 请求并返回 JSON 解析结果。
         原 MDCX 返回 (json_obj, error) 元组。
+
+        健壮性增强（2026-08-10）：
+        通过 client.get() 显式取得 Response 并检查 HTTP 状态码，避免把
+        4xx/5xx 错误页、代理黑洞返回体、或 Cloudflare/反爬 HTML 挑战页
+        误当成 "JSON 解析失败" 而静默吞掉。任何失败都通过 error 字段带回
+        真实根因（状态码 / 异常 / 非 JSON 内容摘要），让调用方（如 prestige
+        爬虫）能正确暴露问题，而非误报 "响应非合法 JSON"。
         """
         import json as _json
+
         try:
             client = await self._get_client()
-            text = await client.get_text(url, **kwargs)
-            if text is None:
-                return None, "empty response"
-            try:
-                return _json.loads(text), None
-            except Exception:
-                # 有些站点 get_json 实际返回的是 HTML(prestige 用它去搜索)
-                # 为了兼容,返回原始文本
-                return text, None
+            resp = await client.get(url, **kwargs)
         except Exception as e:
-            return None, str(e)
+            return None, f"请求异常: {e}"
+
+        # 统一检查 HTTP 状态码：
+        # curl_cffi 路径遇 4xx/5xx 会抛异常（已由上方 except 捕获）；
+        # httpx 降级路径不抛异常，此处兜底，避免把错误页当 JSON 解析。
+        status = getattr(resp, "status_code", None)
+        if status is not None and status >= 400:
+            return None, f"HTTP {status}"
+
+        # 用统一编码兜底提取文本（抗日文/中文乱码），比直接 resp.text 更稳。
+        try:
+            text = AsyncHttpClient.resp_to_text(resp)
+        except Exception:
+            try:
+                text = resp.text
+            except Exception:
+                text = ""
+        if not text:
+            return None, "empty response"
+
+        try:
+            return _json.loads(text), None
+        except Exception:
+            snippet = text[:200].replace("\r", " ").replace("\n", " ")
+            if _looks_like_html(text):
+                return None, f"响应为HTML而非JSON(疑似反爬/人机验证页): {snippet}"
+            return None, f"响应非合法JSON: {snippet}"
 
     async def post_json(self, url: str, data=None, json=None, use_proxy: bool = True, **kwargs) -> tuple:
         """POST 请求并返回 JSON 解析结果。返回 (json_obj, error)。"""

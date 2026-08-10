@@ -43,6 +43,11 @@ RAW_BASE = f"https://raw.githubusercontent.com/{GFRIENDS_REPO}/{GFRIENDS_BRANCH}
 MAX_CONCURRENT_DOWNLOADS = 5  # 并发下载数
 DOWNLOAD_TIMEOUT = 30  # 单个头像下载超时
 
+# Gfriends 头像库适用模块（白名单）
+# 仅日本有码(jav)/无码(uncensored)/fc2 走 Gfriends 匹配;
+# chinese/pornhub/western 禁用 Gfriends,避免非 JAV 演员名字撞名错配成 JAV 头像
+GFRIENDS_MODULES = frozenset({"jav", "uncensored", "fc2"})
+
 
 # ===== 本地资料库（离线 Gfriends 副本）支持 =====
 # 当无法访问 GitHub（国内网络 / 代理缺失）时，可直接使用本地已下载的 Gfriends 资料库。
@@ -337,10 +342,17 @@ class GfriendsImporter:
             actors = []
             actor_sources = {}  # actor_id -> module_name
 
+            # 仅 Gfriends 适用模块(jav/fc2/uncensored)才遍历匹配;其余模块禁用,
+            # 避免 chinese/pornhub/western 演员名字撞名错配成 JAV 头像
+            if module and module not in GFRIENDS_MODULES:
+                logger.warning(f"模块 {module} 不在 Gfriends 适用范围内,跳过导入")
+                self._jobs[job_id]["status"] = "completed"
+                self._jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+                return {"total": 0, "matched": 0, "downloaded": 0, "skipped": 0, "failed": 0}
             if module:
                 all_modules = [module]
             else:
-                all_modules = list(MODULE_TABLE.keys())
+                all_modules = [m for m in MODULE_TABLE.keys() if m in GFRIENDS_MODULES]
 
             # 只从模块数据库收集演员（已废除中心库 scraper.db）
             from app.db.module_db import ModuleDatabase

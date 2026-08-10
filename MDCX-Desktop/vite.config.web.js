@@ -13,8 +13,8 @@ export default defineConfig({
       '@': resolve(__dirname, 'src')
     }
   },
-  // 禁用 public 目录扫描（favicon.svg 会手动保留）
-  publicDir: false,
+  // 启用 public 目录，使 favicon.svg 随 Web 构建自动输出到 static/（修复 /favicon.svg 404）
+  publicDir: 'public',
   build: {
     outDir: '../MDCX-Server/static',
     emptyOutDir: false,

@@ -72,6 +72,7 @@ class ItemResponse(BaseModel):
     entity_id: int
     entity_type: str
     sort_order: int
+    module: str = "jav"
     entity_name: Optional[str] = None
     entity_cover: Optional[str] = None
 
@@ -242,6 +243,7 @@ async def list_items(
             entity_id=item.entity_id,
             entity_type=item.entity_type,
             sort_order=item.sort_order,
+            module=mod,
             entity_name=info["name"],
             entity_cover=info["cover"],
         ))

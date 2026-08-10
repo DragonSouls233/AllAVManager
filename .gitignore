@@ -12,6 +12,7 @@ tmp/
 ms-playwright/
 browser_test.js
 qa_*.js
+qa_*.mjs
 qa_*.py
 qa_*.txt
 qa_*.log

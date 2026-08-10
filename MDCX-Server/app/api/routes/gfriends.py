@@ -75,9 +75,11 @@ async def preview_matches(use_local: bool = False, module: Optional[str] = None)
         except Exception as e:
             return {"error": f"加载 Gfriends 索引失败: {e}"}
 
-    # 收集所有模块的无头像演员
-    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
-    modules_to_check = [module] if module else ALL_MODULES
+    # 仅 Gfriends 适用模块参与匹配预览(chinese/pornhub/western 禁用 Gfriends)
+    from app.services.gfriends_importer import GFRIENDS_MODULES
+    if module and module not in GFRIENDS_MODULES:
+        return {"error": f"模块 {module} 不在 Gfriends 适用范围内（仅 jav/fc2/uncensored）"}
+    modules_to_check = [module] if module else list(GFRIENDS_MODULES)
 
     all_actors = []  # [(name, name_jp, movie_count, module)]
 

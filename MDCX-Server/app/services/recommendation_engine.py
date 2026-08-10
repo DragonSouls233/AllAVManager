@@ -41,27 +41,49 @@ class RecommendationEngine:
         session: AsyncSession = None,
         module: str = "jav",
     ) -> list[dict]:
-        """获取推荐列表"""
+        """获取推荐列表
+
+        2026-08-09 修复: 模型与 session 必须同属一个模块库。
+        若外部传入的是系统库 session,则内部改用模块库 session。
+        """
+        from app.utils.module_helper import get_module_session
         config = get_config()
         models = self._get_models(module)
+        # 2026-08-09 修复: 把模型存到 self,供所有方法使用(原只在局部赋值导致其它方法 NameError)
+        self._models = models
+        self._module = module
         Movie = models["Movie"]
 
+        # 若传入的 session 不是模块库 session,改用模块库 session(推荐查询走模块库)
+        try:
+            # 尝试探测 session 绑定的模型
+            test = await session.execute(select(Movie).limit(1))
+            test.close()
+            module_session = session
+            # 若 session 能查模块模型,则它既是模块库 session
+            self._system_session = None
+        except Exception:
+            module_session = await get_module_session(module)
+            self._module_session = module_session
+            # 传入的 session 是系统库(用于 FavoriteItem 等系统表)
+            self._system_session = session
+
         # 1. 提取用户偏好
-        preferences = await self._extract_preferences(user_id, session, module)
+        preferences = await self._extract_preferences(user_id, module_session, module)
         if not self._has_preferences(preferences):
             # 无偏好数据:返回热门影片
-            return await self._get_popular_movies(limit, session, module)
+            return await self._get_popular_movies(limit, module_session, module)
 
         # 2. 查询候选影片(排除已看过的)
-        watched_ids = await self._get_watched_ids(user_id, session, module)
+        watched_ids = await self._get_watched_ids(user_id, module_session, module)
 
         # 3. 计算每部候选影片的推荐分数
-        candidates = await self._get_candidates(watched_ids, session, module)
+        candidates = await self._get_candidates(watched_ids, module_session, module)
 
         # 批量加载候选影片的 actors/tags,避免在循环中 await
         candidate_ids = [m.id for m in candidates]
-        movie_actors = await self._batch_load_actors(candidate_ids, session, module)
-        movie_tags = await self._batch_load_tags(candidate_ids, session, module)
+        movie_actors = await self._batch_load_actors(candidate_ids, module_session, module)
+        movie_tags = await self._batch_load_tags(candidate_ids, module_session, module)
 
         scored = []
         for movie in candidates:
@@ -111,9 +133,10 @@ class RecommendationEngine:
         return result
 
     async def _batch_load_tags(
-        self, movie_ids: list[int], session: AsyncSession
+        self, movie_ids: list[int], session: AsyncSession, module: str = "jav"
     ) -> dict[int, set[int]]:
         """批量加载多个影片的 tag_id 集合"""
+        MovieTag = self._get_models(module)["MovieTag"]
         result: dict[int, set[int]] = {mid: set() for mid in movie_ids}
         if not movie_ids:
             return result
@@ -125,8 +148,11 @@ class RecommendationEngine:
             result.setdefault(movie_id, set()).add(tag_id)
         return result
 
-    async def _extract_preferences(self, user_id: Optional[int], session: AsyncSession) -> dict:
+    async def _extract_preferences(self, user_id: Optional[int], session: AsyncSession, module: str = "jav") -> dict:
         """提取用户偏好向量"""
+        models = self._get_models(module)
+        Movie = models["Movie"]
+        PlayHistory = models["PlayHistory"]
         prefs = {
             "actors": Counter(),
             "tags": Counter(),
@@ -154,8 +180,8 @@ class RecommendationEngine:
         history_ids = [m.id for m in history_movies]
 
         # 批量加载 actors/tags,避免在循环中 await
-        history_actors = await self._batch_load_actors(history_ids, session)
-        history_tags = await self._batch_load_tags(history_ids, session)
+        history_actors = await self._batch_load_actors(history_ids, session, module)
+        history_tags = await self._batch_load_tags(history_ids, session, module)
 
         for movie in history_movies:
             for actor_id in history_actors.get(movie.id, set()):
@@ -170,14 +196,33 @@ class RecommendationEngine:
                 prefs["ratings"][round(movie.rating)] += 1
 
         # 从收藏夹提取(权重更高)
+        # 2026-08-09 修复: FavoriteItem 在系统库, Movie 在模块库,无法跨库 join。
+        # 改为: 先用系统库 session 查收藏的 movie_id(仅当前模块可关联),再从模块库取影片。
         if user_id:
-            favorites = await session.execute(
-                select(Movie).join(FavoriteItem, FavoriteItem.entity_id == Movie.id)
-                .where(FavoriteItem.entity_type == "movie")
-            )
-            fav_movies = favorites.scalars().all()
+            fav_ids_ordered: list[int] = []
+            try:
+                sys_session = self._system_session or session
+                fav_rows = await sys_session.execute(
+                    select(FavoriteItem.entity_id)
+                    .where(FavoriteItem.entity_type == "movie",
+                           FavoriteItem.user_id == user_id)
+                    .order_by(FavoriteItem.created_at.desc())
+                )
+                fav_ids_ordered = [r[0] for r in fav_rows.all() if r[0]]
+            except Exception:
+                fav_ids_ordered = []
+
+            fav_movies = []
+            if fav_ids_ordered:
+                rows = await session.execute(
+                    select(Movie).where(Movie.id.in_(fav_ids_ordered))
+                )
+                # 保持收藏顺序
+                by_id = {m.id: m for m in rows.scalars().all()}
+                fav_movies = [by_id[i] for i in fav_ids_ordered if i in by_id]
+
             fav_ids = [m.id for m in fav_movies]
-            fav_actors = await self._batch_load_actors(fav_ids, session)
+            fav_actors = await self._batch_load_actors(fav_ids, session, module)
             for movie in fav_movies:
                 for actor_id in fav_actors.get(movie.id, set()):
                     prefs["actors"][actor_id] += 3  # 收藏权重 3x
@@ -188,8 +233,10 @@ class RecommendationEngine:
 
         return prefs
 
-    async def _get_watched_ids(self, user_id: Optional[int], session: AsyncSession) -> set[int]:
+    async def _get_watched_ids(self, user_id: Optional[int], session: AsyncSession, module: str = "jav") -> set[int]:
         """获取已观看影片 ID"""
+        models = self._get_models(module)
+        PlayHistory = models["PlayHistory"]
         if user_id:
             result = await session.execute(
                 select(PlayHistory.movie_id).where(PlayHistory.user_id == user_id)
@@ -198,8 +245,9 @@ class RecommendationEngine:
             result = await session.execute(select(PlayHistory.movie_id))
         return set(result.scalars().all())
 
-    async def _get_candidates(self, exclude_ids: set[int], session: AsyncSession) -> list[Movie]:
+    async def _get_candidates(self, exclude_ids: set[int], session: AsyncSession, module: str = "jav") -> list:
         """获取候选影片(排除已看)"""
+        Movie = self._get_models(module)["Movie"]
         stmt = select(Movie).where(
             Movie.id.notin_(exclude_ids) if exclude_ids else True,
             Movie.cover_url.isnot(None)
@@ -283,8 +331,9 @@ class RecommendationEngine:
             reasons.append("高分影片")
         return reasons
 
-    async def _get_popular_movies(self, limit: int, session: AsyncSession) -> list[dict]:
+    async def _get_popular_movies(self, limit: int, session: AsyncSession, module: str = "jav") -> list[dict]:
         """获取热门影片(无偏好数据时)"""
+        Movie = self._get_models(module)["Movie"]
         result = await session.execute(
             select(Movie).where(Movie.cover_url.isnot(None))
             .order_by(desc(Movie.play_count), desc(Movie.rating))
@@ -299,10 +348,11 @@ class RecommendationEngine:
             "reasons": ["热门影片"]
         } for m in movies]
 
-    async def dismiss_recommendation(self, user_id: Optional[int], movie_id: int, session: AsyncSession) -> bool:
+    async def dismiss_recommendation(self, user_id: Optional[int], movie_id: int, session: AsyncSession, module: str = "jav") -> bool:
         """忽略推荐"""
         from app.utils.module_helper import get_module_model
         UserRecommendation = get_module_model(module or 'jav', 'UserRecommendation')
+        Movie = self._get_models(module or 'jav')["Movie"]
         # 校验影片存在,避免外键约束失败
         movie = await session.get(Movie, movie_id)
         if not movie:
@@ -325,9 +375,9 @@ class RecommendationEngine:
         await session.commit()
         return True
 
-    async def refresh_recommendations(self, user_id: Optional[int], session: AsyncSession) -> dict:
+    async def refresh_recommendations(self, user_id: Optional[int], session: AsyncSession, module: str = "jav") -> dict:
         """刷新推荐"""
-        recs = await self.get_recommendations(user_id, 20, session)
+        recs = await self.get_recommendations(user_id, 20, session, module)
 
         # 保存到数据库
         from app.utils.module_helper import get_module_model

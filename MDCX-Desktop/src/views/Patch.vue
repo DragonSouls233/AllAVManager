@@ -134,11 +134,10 @@
         </el-form-item>
         <el-form-item label="补刮来源">
           <el-checkbox-group v-model="runForm.sources">
-            <el-checkbox value="javbus">JavBus</el-checkbox>
-            <el-checkbox value="javdb">JavDB</el-checkbox>
-            <el-checkbox value="javdatabase">JavDatabase</el-checkbox>
+            <el-checkbox v-for="o in sourceOptions" :key="o.value" :value="o.value" border size="small">{{ o.label }}</el-checkbox>
           </el-checkbox-group>
-          <span class="hint">JAV 有码可用源（avmoo/avsox 的 API/搜索路径已失效，dmm 类型不支持 jav）</span>
+          <span class="hint" v-if="sourceHint">{{ sourceHint }}</span>
+          <span class="hint" v-else>未指定模块，使用 JAV 可用源</span>
         </el-form-item>
         <el-form-item label="仅补刮缺失">
           <el-switch v-model="runForm.only_missing" />
@@ -242,7 +241,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, MagicStick, ArrowRight, Document } from '@element-plus/icons-vue'
-import { detectMissing, runPatch, getPatchStatus, getPatchReport, getPatchHistory, getConfig } from '@/api'
+import { detectMissing, runPatch, getPatchStatus, getPatchReport, getPatchHistory, getConfig, getCrawlers } from '@/api'
 
 const route = useRoute()
 
@@ -262,6 +261,31 @@ const MODULE_LABELS = {
 }
 const moduleLabel = computed(() => MODULE_LABELS[currentModule.value] || currentModule.value || '中心数据库')
 
+// 各模块对应的爬虫 supported_types（与「刮削管理」保持一致）
+const MODULE_TYPES = {
+  jav: ['jav', 'jav_uncensored', 'fc2'],
+  fc2: ['fc2'],
+  uncensored: ['jav_uncensored'],
+  western: ['western'],
+  pornhub: ['pornhub'],
+  chinese: ['chinese'],
+}
+// 未指定模块（中心数据库）/ jav 的回退源列表
+const JAV_FALLBACK_SOURCES = [
+  { value: 'javbus', label: 'JavBus' },
+  { value: 'javdb', label: 'JavDB' },
+  { value: 'javdatabase', label: 'JavDatabase' },
+  { value: 'avmoo', label: 'Avmoo' },
+]
+// 模块 → 补刮来源提示
+const SOURCE_HINTS = {
+  fc2: 'FC2 专用刮削源（与「刮削管理 - FC2」完全一致）',
+  uncensored: '无码专用刮削源',
+  western: '欧美专用刮削源',
+  pornhub: 'Pornhub 专用刮削源',
+  chinese: '国产专用刮削源',
+}
+
 const currentStep = ref(0)
 const detecting = ref(false)
 const running = ref(false)
@@ -276,6 +300,33 @@ let pollTimer = null
 const mediaDirOptions = ref([])
 const detectDirs = ref([])
 const runDirs = ref([])
+
+// 爬虫注册表（用于按模块动态生成「补刮来源」选项）
+const crawlers = ref([])
+
+// 当前模块可用的刮削源（从爬虫注册表按 supported_types 过滤，与「刮削管理」同源）
+const sourceOptions = computed(() => {
+  if (!currentModule.value || !MODULE_TYPES[currentModule.value]) {
+    return JAV_FALLBACK_SOURCES
+  }
+  const types = MODULE_TYPES[currentModule.value]
+  const opts = crawlers.value
+    .filter(c => (c.supported_types || []).some(t => types.includes(t)))
+    .map(c => ({ value: c.name, label: c.display_name || c.name }))
+  // 去重（同名可能注册多次）
+  const seen = new Set()
+  const uniq = []
+  for (const o of opts) {
+    if (!seen.has(o.value)) { seen.add(o.value); uniq.push(o) }
+  }
+  return uniq
+})
+
+const sourceHint = computed(() => {
+  const m = currentModule.value
+  if (!m || m === 'jav') return 'JAV 有码可用源（avmoo/avsox 的 API/搜索路径已失效，dmm 类型不支持 jav）'
+  return SOURCE_HINTS[m] || ''
+})
 
 const detectForm = ref({
   scope: 'incomplete',
@@ -353,6 +404,18 @@ const loadConfig = async () => {
   } catch (e) {
     console.error('加载配置失败', e)
   }
+}
+
+// 加载爬虫注册表，并按当前模块设置「补刮来源」默认值
+const loadCrawlers = async () => {
+  try {
+    const res = await getCrawlers()
+    crawlers.value = (res.items || res || [])
+  } catch (e) {
+    console.error('加载爬虫列表失败', e)
+  }
+  // 按模块设定默认勾选的刮削源（FC2 用 FC2 源，JAV/中心库用 JAV 源）
+  runForm.value.sources = sourceOptions.value.map(o => o.value)
 }
 
 const detectPercent = computed(() => {
@@ -458,6 +521,7 @@ const restart = () => {
 
 onMounted(() => {
   loadConfig()
+  loadCrawlers()
   loadHistory()
 })
 </script>

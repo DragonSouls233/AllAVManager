@@ -235,10 +235,12 @@ const removeItem = async (item) => {
 }
 
 const goToEntity = (item) => {
+  const mod = item.module || 'jav'
   if (item.entity_type === 'movie') {
-    router.push(`/movie/${item.entity_id}`)
+    // 带模块上下文跳转，避免详情页静默回退 jav 导致跨模块串片
+    router.push(`/${mod}/movies/${item.entity_id}`)
   } else if (item.entity_type === 'actor') {
-    router.push(`/actors/${item.entity_id}`)
+    router.push(`/${mod}/actors/${item.entity_id}`)
   }
 }
 

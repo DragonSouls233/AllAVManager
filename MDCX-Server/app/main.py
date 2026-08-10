@@ -25,7 +25,7 @@ mimetypes.add_type("text/css", ".css")
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse
 
 from app.config.manager import get_config, get_config_manager, CONFIG_FILE
 from app.utils.logger import get_logger, setup_logging
@@ -965,7 +965,9 @@ def create_app() -> FastAPI:
         async def serve_spa(full_path: str):
             # 排除 api、assets、webdav 等路径
             if any(full_path.startswith(p) for p in ("api/", "assets/", "webdav/", "emby/", "tvbox/")):
-                return {"detail": "Not Found"}
+                # 返回 404 而非裸 dict（裸 dict 会被 FastAPI 默认包成 200，
+                # 导致未注册的媒体端点如 /{mod}/movies/{id}/cover/file 返回 200+application/json 而裂图）
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
             # 静态资源直接返回文件（不经过 SPA）
             target = (static_dir / full_path).resolve()
             if target.exists() and target.is_file() and str(target).startswith(str(static_dir.resolve())):

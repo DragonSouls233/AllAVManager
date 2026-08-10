@@ -255,6 +255,93 @@ async def get_movie(movie_id: int):
         await session.close()
 
 
+# ========== 封面端点（纯本地查找，不连外网） ==========
+
+
+@router.get("/movies/{movie_id}/cover/file")
+async def get_pornhub_cover_file(movie_id: int):
+    """获取 PORNHub 影片封面图片文件"""
+    from fastapi.responses import FileResponse, HTMLResponse
+    from app.utils.media_helpers import (
+        fast_file_exists,
+        get_movie_cover_path,
+        get_movie_fanart_path,
+        get_movie_thumb_path,
+    )
+
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubMovie
+
+        movie = await session.get(PornhubMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 1) 规范目录：{data_base}/movies/pornhub/{code}/poster.jpg
+        if movie.code:
+            for get_path in (get_movie_cover_path, get_movie_fanart_path, get_movie_thumb_path):
+                p = get_path("pornhub", movie.code)
+                if fast_file_exists(str(p)):
+                    ext = _Path(str(p)).suffix.lower()
+                    mt = "image/jpeg"
+                    if ext == ".png":
+                        mt = "image/png"
+                    elif ext == ".webp":
+                        mt = "image/webp"
+                    return FileResponse(str(p), media_type=mt,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+
+        # 2) DB 中 cover_url/poster_url/thumb_url 的本地路径
+        for attr in ("cover_url", "poster_url", "thumb_url"):
+            url = getattr(movie, attr, None)
+            if not url:
+                continue
+            if not url.startswith(("http://", "https://", "/")):
+                if fast_file_exists(url):
+                    ext = _Path(url).suffix.lower()
+                    mt = "image/jpeg"
+                    if ext == ".png":
+                        mt = "image/png"
+                    elif ext == ".webp":
+                        mt = "image/webp"
+                    return FileResponse(url, media_type=mt,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+
+        # 3) 视频目录下
+        if movie.file_path:
+            try:
+                video_dir = _Path(movie.file_path).parent
+                for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg", "thumb.jpg"]:
+                    img_path = video_dir / img_name
+                    if await asyncio.wait_for(
+                        asyncio.to_thread(lambda p=img_path: p.exists() and p.is_file()),
+                        timeout=3.0,
+                    ):
+                        ext = _Path(str(img_path)).suffix.lower()
+                        mt = "image/jpeg"
+                        if ext == ".png":
+                            mt = "image/png"
+                        elif ext == ".webp":
+                            mt = "image/webp"
+                        return FileResponse(str(img_path), media_type=mt,
+                                            headers={"Cache-Control": "public, max-age=86400"})
+            except asyncio.TimeoutError:
+                pass
+
+        # 4) SVG 占位图
+        placeholder = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" '
+            'viewBox="0 0 240 360"><rect fill="#f0f0f0" width="240" height="360"/>'
+            '<text x="120" y="180" text-anchor="middle" fill="#bbb" '
+            'font-size="14">暂无封面</text></svg>'
+        )
+        return HTMLResponse(content=placeholder, media_type="image/svg+xml",
+                            headers={"Cache-Control": "no-cache"})
+    finally:
+        await session.close()
+
+
 # ========== 刮削 ==========
 
 

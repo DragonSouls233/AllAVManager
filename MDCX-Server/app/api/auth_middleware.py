@@ -135,6 +135,11 @@ class AuthMiddleware:
             if path.endswith("/avatar/file"):
                 await self.app(scope, receive, send)
                 return
+        # 本地文件代理端点放行（avatar_url 存服务器绝对路径，详情页 <img> 直接加载）
+        # 浏览器 <img> 不带 Authorization，必须白名单，否则 401 降级占位。
+        if path.startswith("/api/v1/files/proxy"):
+            await self.app(scope, receive, send)
+            return
         # 本地预览图（extrafanart）端点放行（浏览器 <img> 标签无法携带 Bearer token）
         # 与 cover/file / avatar/file 同理：本地图片资源，供详情页预览区直接 <img> 加载，
         # 否则所有预览图请求都被中间件拦截成 401 → 详情页预览区全裂图。

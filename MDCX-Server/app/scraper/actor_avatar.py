@@ -208,7 +208,10 @@ class ActorAvatarScraper:
     async def _scrape_one(self, actor: Actor) -> bool:
         """刮削单个演员的头像"""
         # 0. 优先使用本地资料库（离线 Gfriends 副本）
-        if self.use_local_library:
+        # 仅 Gfriends 适用模块(jav/fc2/uncensored)才允许用 Gfriends 匹配,
+        # 其余模块(chinese/pornhub/western)禁用,避免名字撞名错配成 JAV 头像
+        from app.services.gfriends_importer import GFRIENDS_MODULES
+        if self.use_local_library and self.module in GFRIENDS_MODULES:
             try:
                 from app.services.gfriends_importer import find_local_avatar
                 # 本地资料库扫描(51172 个文件)为同步 IO, 若直接在当前协程
@@ -222,6 +225,8 @@ class ActorAvatarScraper:
                     # 复制失败则继续走在线抓取
             except Exception as e:
                 logger.debug(f"本地资料库匹配失败 {actor.name}: {e}")
+        elif self.use_local_library:
+            logger.debug(f"模块 {self.module} 不在 Gfriends 适用范围,跳过本地资料库匹配,改走在线刮削")
 
         # 1. 首先尝试从 JavDB 搜索（更稳定）
         avatar_url = await self._search_javdb_avatar(actor.name, actor.name_jp)

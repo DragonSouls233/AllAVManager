@@ -96,10 +96,13 @@ aiolimiter==1.1.0
 
 # --- 人脸识别 / 封面处理（app.services.face_crop / utils.face_crop / watermark / mosaic）---
 # 以下三个为重量级依赖，仅在启用「人脸裁剪 / 水印 / 马赛克」功能时需要
+# ⚠️ 2026-08-09 修复: mediapipe==0.10.14 无对应 wheel，放宽为 >=0.10.30（服务器实测可选 0.10.30+）
+#   这些是 face_crop 函数内懒加载 import，非启动级依赖，装不上不影响主服务
 opencv-python==4.13.0.92
-mediapipe==0.10.14
-onnxruntime==1.19.2
+mediapipe>=0.10.30
+onnxruntime>=1.19.0
 # ⚠️ mediapipe / onnxruntime 对 Python 3.14 轮子可能滞后，服务器若用 3.14 需确认有对应 wheel
+#    若装不上，可用: pip install -r requirements.txt --no-deps 跳过重量级包，再单独装能装的
 
 # --- 翻译工具（app.utils.translate）---
 googletrans==4.0.0rc1   # 预发布版，pip 安装需加 --pre

@@ -116,49 +116,60 @@ async def get_movie_stats(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    获取电影统计
-    
+    获取电影统计（跨全部模块聚合）
+
     - 按状态分布
     - 按来源分布
     - 按日期刮削趋势
     """
-    # 按状态分布
-    status_query = (
-        select(Movie.status, func.count(Movie.id))
-        .group_by(Movie.status)
-    )
-    status_result = await session.execute(status_query)
-    status_dist = {row[0]: row[1] for row in status_result.fetchall()}
-    
-    # 按来源分布
-    source_query = (
-        select(Movie.source, func.count(Movie.id))
-        .where(Movie.source.isnot(None))
-        .group_by(Movie.source)
-        .order_by(func.count(Movie.id).desc())
-        .limit(10)
-    )
-    source_result = await session.execute(source_query)
-    source_dist = [{"source": row[0], "count": row[1]} for row in source_result.fetchall()]
-    
-    # 按日期刮削趋势
+    from app.db.module_db import ModuleDatabase
+    from sqlalchemy import text
+
+    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub", "anime"]
+    status_dist: dict = {}
+    source_counter: dict = {}
+    trend: dict = {}
+
     start_date = datetime.now() - timedelta(days=days)
-    date_query = (
-        select(
-            func.date(Movie.scraped_at).label("date"),
-            func.count(Movie.id).label("count")
-        )
-        .where(Movie.scraped_at >= start_date)
-        .group_by(func.date(Movie.scraped_at))
-        .order_by(func.date(Movie.scraped_at))
-    )
-    date_result = await session.execute(date_query)
-    trend = [{"date": str(row[0]), "count": row[1]} for row in date_result.fetchall()]
-    
+    for mod in ALL_MODULES:
+        try:
+            mod_db = ModuleDatabase.get_instance(mod)
+            async with mod_db.session_scope() as ms:
+                rows = (await ms.execute(
+                    text("SELECT status, COUNT(*) FROM movies GROUP BY status")
+                )).fetchall()
+                for status, cnt in rows:
+                    status_dist[status] = status_dist.get(status, 0) + cnt
+
+                rows = (await ms.execute(
+                    text("SELECT source, COUNT(*) FROM movies WHERE source IS NOT NULL GROUP BY source")
+                )).fetchall()
+                for src, cnt in rows:
+                    source_counter[src] = source_counter.get(src, 0) + cnt
+
+                rows = (await ms.execute(
+                    text(
+                        "SELECT date(scraped_at), COUNT(*) FROM movies "
+                        "WHERE scraped_at >= :sd GROUP BY date(scraped_at)"
+                    ),
+                    {"sd": start_date},
+                )).fetchall()
+                for d, cnt in rows:
+                    key = str(d)
+                    trend[key] = trend.get(key, 0) + cnt
+        except Exception as e:
+            logger.warning(f"stats/movies 模块[{mod}]统计失败: {e}")
+
+    source_dist = sorted(
+        [{"source": k, "count": v} for k, v in source_counter.items()],
+        key=lambda x: -x["count"],
+    )[:10]
+    trend_list = [{"date": k, "count": v} for k, v in sorted(trend.items())]
+
     return {
         "status_distribution": status_dist,
         "source_distribution": source_dist,
-        "scraping_trend": trend,
+        "scraping_trend": trend_list,
     }
 
 
@@ -216,33 +227,37 @@ async def get_storage_stats(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    获取存储统计
-    
+    获取存储统计（跨全部模块聚合）
+
     - 数据库大小
     - 图片数量
     - NFO 文件数量
     """
-    # 统计有封面的电影
-    with_cover = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.cover_url.isnot(None))
-    ) or 0
-    
-    # 统计有海报的电影
-    with_poster = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.poster_url.isnot(None))
-    ) or 0
-    
-    # 统计有简介的电影
-    with_plot = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.plot.isnot(None))
-    ) or 0
-    
-    # 统计有演员的电影
-    with_actors_query = (
-        select(func.count(func.distinct(MovieActor.movie_id)))
-    )
-    with_actors = await session.scalar(with_actors_query) or 0
-    
+    from app.db.module_db import ModuleDatabase
+    from sqlalchemy import text
+
+    ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub", "anime"]
+    with_cover = with_poster = with_plot = with_actors = 0
+    for mod in ALL_MODULES:
+        try:
+            mod_db = ModuleDatabase.get_instance(mod)
+            async with mod_db.session_scope() as ms:
+                with_cover += await ms.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE cover_url IS NOT NULL")
+                ) or 0
+                with_poster += await ms.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE poster_url IS NOT NULL")
+                ) or 0
+                with_plot += await ms.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE plot IS NOT NULL")
+                ) or 0
+                # movie_actors 关联表全模块为空，按 movies.actor 文本非空统计有演员的影片
+                with_actors += await ms.scalar(
+                    text("SELECT COUNT(*) FROM movies WHERE actor IS NOT NULL AND actor != ''")
+                ) or 0
+        except Exception as e:
+            logger.warning(f"stats/storage 模块[{mod}]统计失败: {e}")
+
     return {
         "images": {
             "with_cover": with_cover,

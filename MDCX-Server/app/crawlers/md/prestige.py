@@ -124,9 +124,9 @@ async def main(
             raw_search, error = await manager.computed.async_client.get_json(search_url, headers=_search_headers)
             html_search = _coerce_json(raw_search)
             if html_search is None:
-                if isinstance(raw_search, str):
-                    LogBuffer.info().write("  搜索响应非 JSON(前200): " + raw_search[:200])
-                debug_info = f"搜索结果解析失败: {error or '响应非合法 JSON'}"
+                # get_json 已在 error 中带回真实根因(HTTP状态/超时/反爬HTML),
+                # 直接暴露,不再误报"响应非合法 JSON"。
+                debug_info = f"搜索结果解析失败: {error or '响应为空或非JSON'}"
                 LogBuffer.info().write(web_info + debug_info)
                 raise Exception(debug_info)
 
@@ -150,9 +150,7 @@ async def main(
             raw_detail, error = await manager.computed.async_client.get_json(real_url, headers=_detail_headers)
             page_data = _coerce_json(raw_detail)
             if page_data is None:
-                if isinstance(raw_detail, str):
-                    LogBuffer.info().write("  详情响应非 JSON(前200): " + raw_detail[:200])
-                debug_info = f"详情解析失败: {error or '响应非合法 JSON'}"
+                debug_info = f"详情解析失败: {error or '响应为空或非JSON'}"
                 LogBuffer.info().write(web_info + debug_info)
                 raise Exception(debug_info)
 

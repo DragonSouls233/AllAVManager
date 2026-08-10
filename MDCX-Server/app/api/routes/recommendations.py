@@ -15,18 +15,27 @@ router = APIRouter()
 @router.get("")
 async def get_recommendations(
     limit: int = Query(20, ge=1, le=100),
+    module: str = Query("jav", description="推荐所依据的模块库"),
     session: AsyncSession = Depends(get_session),
     current_user: dict = Depends(require_user),
 ):
     """获取推荐列表"""
     user_id = current_user.get("id")
-    items = await recommendation_engine.get_recommendations(user_id, limit, session)
+    items = await recommendation_engine.get_recommendations(user_id, limit, session, module)
     # 计算用户统计（用于前端个性化说明：观影/收藏/评分次数）
-    total_viewed = await session.scalar(select(func.count(PlayHistory.id)))
+    # 2026-08-09 修复: PlayHistory/Movie 是模块库模型,用模块 session 统计
+    try:
+        mod_session = await get_module_session(module)
+        PlayHistory = get_module_model(module, "play_history")
+        Movie = get_module_model(module, "movie")
+        total_viewed = await mod_session.scalar(select(func.count(PlayHistory.id)))
+        total_ratings = await mod_session.scalar(
+            select(func.count(Movie.id)).where(Movie.rating != None)
+        )
+    except Exception:
+        total_viewed = 0
+        total_ratings = 0
     total_favorites = await session.scalar(select(func.count(FavoriteItem.id)))
-    total_ratings = await session.scalar(
-        select(func.count(Movie.id)).where(Movie.rating != None)
-    )
     return {
         "items": items,
         "stats": {
@@ -38,14 +47,21 @@ async def get_recommendations(
 
 
 @router.post("/refresh")
-async def refresh(session: AsyncSession = Depends(get_session)):
+async def refresh(
+    module: str = Query("jav"),
+    session: AsyncSession = Depends(get_session),
+):
     """刷新推荐"""
-    result = await recommendation_engine.refresh_recommendations(None, session)
+    result = await recommendation_engine.refresh_recommendations(None, session, module)
     return result
 
 
 @router.post("/{movie_id}/dismiss")
-async def dismiss(movie_id: int, session: AsyncSession = Depends(get_session)):
+async def dismiss(
+    movie_id: int,
+    module: str = Query("jav"),
+    session: AsyncSession = Depends(get_session),
+):
     """忽略推荐"""
-    await recommendation_engine.dismiss_recommendation(None, movie_id, session)
+    await recommendation_engine.dismiss_recommendation(None, movie_id, session, module)
     return {"status": "ok"}
