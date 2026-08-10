@@ -169,6 +169,7 @@ class MovieResponse(BaseModel):
     status: str
     actors: list[ActorBrief] = []
     tags: list[TagBrief] = []  # 从 MovieTag 关联表查询的结构化标签列表
+    module_type: Optional[str] = None  # 所属模块类型，前端据此拼出模块专属封面/头像端点
 
     class Config:
         from_attributes = True
@@ -461,6 +462,7 @@ async def list_movies(
             status=m.status,
             actors=actor_map.get(m.id, []),
             tags=tag_map.get(m.id, []),
+            module_type=module,
         )
         items.append(item)
 
@@ -2595,6 +2597,7 @@ async def update_movie(
         sample_images=_parse_sample_images(movie.sample_images),
         status=movie.status,
         actors=actors,
+        module_type=module,
     )
 
     return {"status": "ok", "movie": resp, "nfo_sync": nfo_status}
@@ -2740,7 +2743,7 @@ async def reload_movie_from_nfo(
         is_mosaic=movie.is_mosaic, is_chinese=movie.is_chinese, is_uncensored=movie.is_uncensored,
         is_leak=movie.is_leak, file_path=movie.file_path, file_size=movie.file_size,
         sample_images=_parse_sample_images(movie.sample_images),
-        status=movie.status, actors=actors,
+        status=movie.status, actors=actors, module_type=module,
     )
     return {
         "status": "ok",
@@ -3309,6 +3312,7 @@ async def get_movie(
         status=movie.status,
         actors=actors,
         tags=tags,
+        module_type=module,
     )
     _cache.set(cache_key, resp)
     return resp

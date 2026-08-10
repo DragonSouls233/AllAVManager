@@ -47,6 +47,10 @@
             <el-icon><Grid /></el-icon>
             <template #title>类别</template>
           </el-menu-item>
+          <el-menu-item index="/jav/series">
+            <el-icon><Collection /></el-icon>
+            <template #title>系列</template>
+          </el-menu-item>
           <el-menu-item index="/jav/actors">
             <el-icon><User /></el-icon>
             <template #title>演员库</template>

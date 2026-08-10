@@ -123,6 +123,7 @@ class ScraperEngine:
         self,
         number: str,
         sources: Optional[list[str]] = None,
+        module: Optional[str] = None,
     ) -> Optional[ScrapeResult]:
         """
         刮削单个番号
@@ -130,20 +131,31 @@ class ScraperEngine:
         Args:
             number: 番号
             sources: 指定站点列表（None表示自动选择）
+            module: 模块名（jav/fc2/uncensored/chinese/western/pornhub）。
+                    传入时优先按模块维度选爬虫（与 sources 取交集），
+                    保证 western/pornhub 模块不会误用 JAV 有码爬虫。
 
         Returns:
             ScrapeResult 刮削结果
         """
         # 获取适用的爬虫（延迟导入避免循环引用）
-        from app.crawlers.provider import get_crawlers_for_number
-        crawlers = get_crawlers_for_number(number)
+        from app.crawlers.provider import get_crawlers_for_number, get_crawlers_for_module
 
-        if sources:
-            # 过滤指定站点
-            crawlers = [c for c in crawlers if c.name in sources]
+        if module:
+            # 模块优先：只在该模块的爬虫集合内选择，避免按番号格式
+            # 匹配不到时 fallback 到全部 enabled 爬虫（含 JAV）的历史 bug。
+            crawlers = get_crawlers_for_module(module)
+            if sources:
+                allowed = set(sources)
+                crawlers = [c for c in crawlers if c.name in allowed]
+        else:
+            crawlers = get_crawlers_for_number(number)
+            if sources:
+                # 过滤指定站点
+                crawlers = [c for c in crawlers if c.name in sources]
 
         if not crawlers:
-            logger.warning(f"未找到适用于番号 {number} 的爬虫")
+            logger.warning(f"未找到适用于番号 {number} 的爬虫（module={module}, sources={sources}）")
             return None
 
         # 创建单次刮削共享上下文（复用 HTTP session / cookies / proxy / 指纹）

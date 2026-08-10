@@ -390,6 +390,7 @@ class PatchEngine:
         custom_fields: Optional[list[FieldType]] = None,
         custom_images: Optional[list[ImageType]] = None,
         sources: Optional[list[str]] = None,
+        module: Optional[str] = None,
     ) -> PatchResult:
         """
         执行补刮
@@ -440,6 +441,7 @@ class PatchEngine:
                     sources=effective_sources,
                     missing_info=missing_info,
                     need_images=plan.need_download_images,
+                    module=module or self._detect_module(missing_info),
                 )
                 
                 if scraped_data:
@@ -695,6 +697,7 @@ class PatchEngine:
         sources: Optional[list[str]] = None,
         missing_info: Optional[MissingInfo] = None,
         need_images: bool = False,
+        module: Optional[str] = None,
     ) -> Optional[dict]:
         """刮削缺失字段
 
@@ -732,8 +735,16 @@ class PatchEngine:
 
         # ---- 走网络爬虫 ----
         try:
-            # 使用刮削引擎直接刮削番号（支持按来源站点过滤）
-            result = await self.scraper_engine.scrape_number(code, sources=sources)
+            # 模块维度选爬虫：从 missing_info.output_dir 推断模块
+            # （格式 .../data/movies/{module}/{code}/），保证 western/pornhub
+            # 模块只走各自专属爬虫，不误用 JAV 有码爬虫。
+            detected_module = module or (
+                self._detect_module(missing_info) if missing_info else None
+            )
+            # 使用刮削引擎直接刮削番号（支持按来源站点 / 模块过滤）
+            result = await self.scraper_engine.scrape_number(
+                code, sources=sources, module=detected_module
+            )
 
             if result:
                 # 转换为字典（全部用 getattr 容错，避免 ScrapeResult 字段缺失导致崩溃）

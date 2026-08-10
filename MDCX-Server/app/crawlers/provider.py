@@ -11,6 +11,20 @@ from app.scraper.number import NumberType, get_number_type
 logger = logging.getLogger(__name__)
 
 
+# 模块 → 爬虫 supported_types 映射
+# 与前端 Patch.vue 的 MODULE_TYPES 保持一致：补刮 / 模块级刮削时，
+# 确保 western 模块只用 western 爬虫、pornhub 模块只用 pornhub 爬虫，
+# 避免误用 JAV 有码爬虫（历史 bug：欧美/ pornhub 补刮内容全是 JAV）。
+MODULE_CRAWLER_TYPES: dict[str, list[str]] = {
+    "jav": ["jav", "jav_uncensored", "fc2"],
+    "fc2": ["fc2"],
+    "uncensored": ["jav_uncensored"],
+    "chinese": ["chinese"],
+    "western": ["western"],
+    "pornhub": ["pornhub"],
+}
+
+
 class CrawlerProvider:
     """
     刮削器注册中心
@@ -230,6 +244,29 @@ def get_crawler(name: str) -> Optional[BaseCrawler]:
 def get_crawlers_for_number(number: str) -> list[BaseCrawler]:
     """根据番号获取适用的刮削器列表"""
     return _provider.get_for_number(number)
+
+
+def get_crawlers_for_module(module: str) -> list[BaseCrawler]:
+    """根据模块获取适用的刮削器列表（按优先级排序）
+
+    用于补刮 / 模块级刮削：保证模块隔离，western 只用 western 爬虫、
+    pornhub 只用 pornhub 爬虫。模块名无效或无对应爬虫时返回空列表。
+    """
+    types = MODULE_CRAWLER_TYPES.get(module)
+    if not types:
+        return []
+    names: set[str] = set()
+    for t in types:
+        names.update(_provider._type_map.get(t, []))
+    crawlers = [
+        _provider._crawlers[name]
+        for name in names
+        if name in _provider._crawlers
+        and _provider._crawlers[name].status == CrawlerStatus.ENABLED
+    ]
+    # 按优先级排序（数字越小优先级越高）
+    crawlers.sort(key=lambda c: c.priority)
+    return crawlers
 
 
 def list_crawlers(status: Optional[CrawlerStatus] = None) -> list[CrawlerInfo]:

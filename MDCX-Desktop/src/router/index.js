@@ -530,6 +530,12 @@ const routes = [
         meta: { title: 'JAV 有码 · 类别' }
       },
       {
+        path: 'jav/series',
+        name: 'JavSeries',
+        component: () => import('@/views/jav/Series.vue'),
+        meta: { title: 'JAV 有码 · 系列' }
+      },
+      {
         path: 'pornhub',
         name: 'Pornhub',
         component: () => import('@/views/pornhub/Movies.vue')

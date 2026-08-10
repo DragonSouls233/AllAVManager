@@ -627,9 +627,13 @@ class PatchWorkflow:
                 t0 = __import__("time").time()
                 try:
                     # 单片超时：最多 120 秒，防止某个源挂起导致整个任务卡死
+                    # module 透传：确保 western/pornhub 模块走各自专属爬虫，
+                    # 即便 missing_info.output_dir 为空也不会回退到 JAV 有码爬虫。
                     pr = await asyncio.wait_for(
                         self.engine.patch(
-                            info, options.patch_type, sources=options.sources
+                            info, options.patch_type,
+                            sources=options.sources,
+                            module=options.module or (self.detector.module_name if self.detector else None),
                         ),
                         timeout=120,
                     )

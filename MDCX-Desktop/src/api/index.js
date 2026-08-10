@@ -943,3 +943,10 @@ export const getModuleCategories = (module, params = {}) => api.get(`/modules/${
 // 按类别获取该模块作品（复用通用 movies API，module + genre 参数）
 export const getMoviesByCategory = (module, genre, params = {}) =>
   api.get('/movies', { params: { module, genre, page: 1, page_size: 24, ...params } })
+
+// ===== JAV 有码 · 系列聚合（按 movies.series 文本字段聚合） =====
+// 系列列表：min_count 默认 2（聚合 2 部及以上系列）
+export const getJavSeries = (params = {}) => api.get('/jav/series', { params })
+// 某系列全部作品：seriesName 经 encodeURIComponent 编码，后端按 movies.series 精确匹配
+export const getJavSeriesMovies = (seriesName, params = {}) =>
+  api.get(`/jav/series/${encodeURIComponent(seriesName)}/movies`, { params })
