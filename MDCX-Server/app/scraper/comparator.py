@@ -34,6 +34,63 @@ VIDEO_EXTENSIONS = {
 CHINESE_SUB_KEYWORDS = ("中文字幕", "中字", "chinese subtitle", "字幕")
 
 
+def _norm_name(n: str) -> str:
+    """归一化姓名用于匹配：NFKC 归一 + 去空格/连字符 + 小写"""
+    import unicodedata
+    n = unicodedata.normalize("NFKC", n or "")
+    return n.lower().replace(" ", "").replace("　", "").replace("-", "").replace("_", "")
+
+
+# 女优页显示名常见后缀/修饰：有碼/無碼/中字/破解/（别名）等
+_ROLE_TAG_RE = re.compile(r"[（(].*?[)）]|有碼|無碼|无码|中字|中文字幕|破解|uncensored|chinese", re.IGNORECASE)
+
+
+def _strip_role_tags(n: str) -> str:
+    """剥离女优显示名里的角色修饰（有碼/無碼/别名括号），仅留纯名用于匹配。"""
+    return _ROLE_TAG_RE.sub("", n or "")
+
+
+def _best_star_match(target: str, candidates: list[tuple[str, str]]):
+    """从候选 (star_id, 显示名) 中选与 target 最匹配的女优页
+
+    匹配优先级（基于对「纯名」的判定，已剥离 有碼/無碼/别名括号）：
+      1. 精确相等（纯名 == target 纯名）
+      2. 互相包含
+      3. difflib 相似度 >= 0.6
+    在同档（精确/包含）内，优先选「纯名最短」的候选 —— 避免选中
+    「森沢かな（飯岡かなこ）有碼」而漏掉更干净的「森沢かな有碼」主名页。
+    """
+    import difflib
+    t = _norm_name(_strip_role_tags(target))
+    if not t:
+        return None
+    exact: list[tuple[str, str]] = []
+    contains: list[tuple[str, str]] = []
+    best_score = 0.0
+    best = None
+    for sid, name in candidates:
+        clean = _norm_name(_strip_role_tags(name))
+        if not clean:
+            continue
+        if clean == t:
+            exact.append((sid, name))
+        elif t in clean or clean in t:
+            contains.append((sid, name))
+        score = difflib.SequenceMatcher(None, t, clean).ratio()
+        if score > best_score:
+            best_score = score
+            best = (sid, name)
+    # 同档内选「原始显示名最短」的候选 —— 主名页（森沢かな有碼）会比
+    # 别名页（森沢かな（飯岡かなこ）有碼）更短，优先选主名页。
+    if exact:
+        return min(exact, key=lambda x: len(x[1]))
+    if contains:
+        return min(contains, key=lambda x: len(x[1]))
+    if best and best_score >= 0.6:
+        return best
+    return None
+
+
 @dataclass
 class LocalCode:
     """本地番号条目"""
@@ -152,11 +209,12 @@ class LocalScanner:
             return True
         return False
 
-    async def scan_database(self, session: AsyncSession) -> list[LocalCode]:
+    async def scan_database(self, session: AsyncSession, module: str = "jav") -> list[LocalCode]:
         """从数据库读取已有影片（含 is_chinese 标记）
 
         v3.0: 同步剥离分集/版本后缀
         """
+        Movie = get_module_model(module, "movie")
         result = await session.execute(select(Movie))
         movies = result.scalars().all()
 
@@ -556,6 +614,99 @@ class JavBusListCrawler:
         if page_links:
             return True
         return False
+
+    @staticmethod
+    def _parse_star_links(html: str) -> list[tuple[str, str]]:
+        """从页面 HTML 提取所有 /star/{id} 锚点及其显示文本（女优名）
+
+        兼容：搜索结果页的女优专区、影片卡片上的女优名链接、女优索引页等
+        """
+        from lxml import etree
+        try:
+            tree = etree.fromstring(html, etree.HTMLParser())
+        except Exception:
+            return []
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for a in tree.xpath('//a[contains(@href,"/star/")]'):
+            href = a.get("href") or ""
+            m = re.search(r"/star/([^/?#]+)", href)
+            if not m:
+                continue
+            sid = m.group(1)
+            if sid in seen:
+                continue
+            text = (a.xpath("string(.)") or "").strip()
+            seen.add(sid)
+            out.append((sid, text))
+        return out
+
+    @staticmethod
+    def _parse_movie_links(html: str) -> list[str]:
+        """从页面 HTML 提取影片详情链接（形如 /ABC-123），用于回退探测女优页"""
+        from lxml import etree
+        try:
+            tree = etree.fromstring(html, etree.HTMLParser())
+        except Exception:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for a in tree.xpath("//a"):
+            href = a.get("href") or ""
+            seg = href.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+            if re.match(r"^[A-Za-z]{2,6}[-_]?\d{2,5}$", seg):
+                if seg not in seen:
+                    seen.add(seg)
+                    out.append("/" + seg)
+        return out
+
+    async def detect_actress_star(self, actor_name: str) -> Optional[tuple[str, str]]:
+        """在 javbus 定位该演员的 /star/{id} 女优页
+
+        两级策略（基于实测 javbus 页面结构）：
+        1) 主路径：javbus 专门的女优搜索端点 /searchstar/{name}
+           该页直接列出匹配女优的 /star/{id} 链接与显示名，最干净。
+        2) 回退：普通 /search/{name}（返回影片卡，无 /star/ 链接）→
+           取首个影片详情页，从其女优链接中匹配。
+
+        Returns:
+            (star_url, star_id) 或 None（未探测到/被拦截）
+        """
+        import asyncio
+        from urllib.parse import quote_plus, urljoin
+
+        # 1) 主路径：女优搜索端点
+        star_search_url = f"{self.base_url}/searchstar/{quote_plus(actor_name)}"
+        logger.info(f"javbus 探测女优页(searchstar): {star_search_url}")
+        html = await self._fetch(star_search_url)
+        if html:
+            candidates = self._parse_star_links(html)
+            if candidates:
+                match = _best_star_match(actor_name, candidates)
+                if match:
+                    sid, _ = match
+                    return (f"{self.base_url}/star/{sid}", sid)
+
+        # 2) 回退：普通影片搜索 -> 首个影片详情页 -> 女优链接
+        search_url = f"{self.base_url}/search/{quote_plus(actor_name)}"
+        logger.info(f"javbus 探测女优页(回退 search): {search_url}")
+        html = await self._fetch(search_url)
+        if not html:
+            logger.warning(f"javbus 探测失败/被拦截: {actor_name}")
+            return None
+        for ml in self._parse_movie_links(html)[:3]:
+            mhtml = await self._fetch(urljoin(self.base_url, ml))
+            if not mhtml:
+                continue
+            mcands = self._parse_star_links(mhtml)
+            match = _best_star_match(actor_name, mcands)
+            if match:
+                sid, _ = match
+                return (f"{self.base_url}/star/{sid}", sid)
+            await asyncio.sleep(self.request_delay)
+
+        logger.info(f"javbus 未找到匹配女优页: {actor_name}")
+        return None
 
 
 class JavDBListCrawler:

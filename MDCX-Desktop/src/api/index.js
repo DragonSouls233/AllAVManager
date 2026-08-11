@@ -270,6 +270,12 @@ export const uploadActorAvatar = (id, file) => {
   return api.post(`/actors/${id}/avatar`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
 }
 export const deleteActorAvatar = (id) => api.delete(`/actors/${id}/avatar`)
+// 重算演员作品数：把合并进来的别名作品一起算上，修正列表页过时的 movie_count
+export const recalcActorMovieCount = (module = 'jav', onlyMerged = true) =>
+  api.post('/actors/recalc-movie-count', null, {
+    params: { module, only_merged: onlyMerged },
+    timeout: 300000,
+  })
 
 // ============================================
 // Tags 标签管理
@@ -337,6 +343,8 @@ export const saveActorCompareUrl = (actorId, data) => api.put(`/compare/actors/$
 export const scanAllCompareActors = (minMovies = 10) => api.post('/compare/actors/scan', null, { params: { min_movies: minMovies } })
 export const detectActorLocalDir = (actorId) => api.post(`/compare/actors/${actorId}/detect-dir`)
 export const browseDir = (path) => api.post('/compare/browse-dir', { path })
+export const detectActorCompareUrl = (actorId) => api.post(`/compare/actors/${actorId}/detect-url`)
+export const detectAllCompareUrls = (data = {}) => api.post('/compare/actors/detect-all', data)
 
 // ============================================
 // Favorites 收藏夹

@@ -83,7 +83,10 @@ class JavDBCrawler(BaseCrawler):
             self.mark_error()
             return None
 
-        if "cloudflare" in detail_text.lower() or "driver-verify" in detail_text.lower():
+        # 注意：不能用裸 ``"cloudflare" in detail_text`` 判断——javdb 正常详情页含
+        # ``static.cloudflareinsights.com`` 分析脚本（自带 "cloudflare" 字样），会误判为
+        # 拦截页导致刮削整批失败。改用 _is_cf_blocked（仅真 CF 挑战页/验证页才命中）。
+        if self._is_cf_blocked(detail_text) or "driver-verify" in detail_text.lower():
             logger.debug(f"JavDB 详情页 {code}: 验证拦截")
             self.mark_error()
             return None
@@ -155,8 +158,16 @@ class JavDBCrawler(BaseCrawler):
                     except Exception:
                         pass
 
+                # 带上 over18=1 年龄 cookie（get_cookie_headers 对 javdb 始终返回），
+                # 避免 cloudscraper 回退时撞年龄墙。
+                _cookie_str = ""
+                if cookie_headers and cookie_headers.get("cookie"):
+                    _cookie_str = cookie_headers["cookie"]
                 response = await asyncio.wait_for(
-                    asyncio.to_thread(self._cloudscraper.get, url, timeout=20),
+                    asyncio.to_thread(
+                        self._cloudscraper.get, url, timeout=20,
+                        cookies=_cookie_str or None,
+                    ),
                     timeout=25,
                 )
                 if response.status_code == 200:
@@ -304,7 +315,9 @@ class JavDBCrawler(BaseCrawler):
     def _extract_detail_url(self, html_text: str, code: str) -> Optional[str]:
         """从搜索结果 HTML 中提取详情页 URL"""
         html = Selector(html_text)
-        items = html.xpath("//a[@class='box']")
+        # 注意：javdb 搜索卡片 class 实际为 "box ..."（含额外 class），
+        # 必须用 contains() 兼容，精确 @class='box' 会匹配不到导致刮削失败。
+        items = html.xpath("//a[contains(@class,'box')]")
         if not items:
             return None
 
@@ -332,7 +345,7 @@ class JavDBCrawler(BaseCrawler):
             return []
 
         html = Selector(html_text)
-        items = html.xpath("//a[@class='box']")
+        items = html.xpath("//a[contains(@class,'box')]")
         results = []
 
         for item in items:
@@ -553,29 +566,30 @@ class JavDBCrawler(BaseCrawler):
         return actors
 
     def _get_all_actors(self, html: Selector) -> list[str]:
-        """获取所有演员（含男演员）- 参考 mdcx javdb_new.py all_actors"""
-        all_names = []
+        """获取所有演员（含男演员）- 参考 mdcx javdb_new.py all_actors
+
+        注意：不能使用 CSS `:has()` 伪类（lxml/parsel 仅支持 XPath 1.0，
+        `:has()` 会抛 ValueError 导致整个详情解析被 except 吞掉、刮削返回 None）。
+        女/男演员均通过 ``strong.female/male`` 符号的 preceding-sibling 链接提取，
+        覆盖 javdb 全部演员展示形式。
+        """
+        all_names: list[str] = []
         # 女演员
         female_names = html.xpath("//strong[contains(@class, 'female')]/preceding-sibling::a/text()").getall()
         # 男演员
         male_names = html.xpath("//strong[contains(@class, 'male')]/preceding-sibling::a/text()").getall()
-        # 通用演员链接（无性别标记）
-        all_links = html.xpath("//span:has(strong.female) | //span:has(strong.male)").xpath("a/text()").getall()
-        
-        seen = set()
-        for name in female_names + male_names:
+        # 通用演员链接（无性别标记时回退：演員面板下的 a 文本）
+        generic_names = html.xpath(
+            "//strong[contains(text(),'演員') or contains(text(),'演员')]/../span//a/text()"
+        ).getall()
+
+        seen: set[str] = set()
+        for name in female_names + male_names + generic_names:
             name = name.strip()
             if name and name not in seen:
                 seen.add(name)
                 all_names.append(name)
-        
-        if not all_names and all_links:
-            for name in all_links:
-                name = name.strip()
-                if name and name not in seen:
-                    seen.add(name)
-                    all_names.append(name)
-        
+
         return all_names
 
     def _get_directors(self, html: Selector) -> list[str]:

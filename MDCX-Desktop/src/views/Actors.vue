@@ -53,6 +53,14 @@
           <div class="actor-name">{{ actor.name }}</div>
           <div class="actor-name-jp" v-if="actor.name_jp">{{ actor.name_jp }}</div>
           <div class="actor-movies" v-if="actor.movie_count">{{ actor.movie_count }} 部作品</div>
+          <!-- 合并标记：显示该演员合并进来的旧名 -->
+          <el-tooltip
+            v-if="mergedOf(actor).length"
+            :content="'已合并：' + mergedOf(actor).join('、')"
+            placement="top"
+          >
+            <el-tag size="small" type="warning" effect="plain">已合并 {{ mergedOf(actor).length }} 名</el-tag>
+          </el-tooltip>
         </div>
       </div>
       <el-empty v-if="!loading && !actors.length" description="暂无数据" />
@@ -149,6 +157,18 @@ import { Search, MagicStick, View, VideoPlay } from '@element-plus/icons-vue'
 import { getActors, previewAvatarScrape } from '@/api'
 import { useAvatarScrapeStore } from '@/stores/avatarScrape'
 import { defaultAvatar, getActorAvatarUrl, getFileProxyUrl } from '@/utils/media'
+
+// 合并来源：后端 merged_from 优先，旧版只有 alias 时本地解析（剔除主名自身）
+function mergedOf(actor) {
+  if (!actor) return []
+  if (Array.isArray(actor.merged_from)) return actor.merged_from
+  if (!actor.alias) return []
+  const self = String(actor.name || '').trim().toLowerCase()
+  return String(actor.alias)
+    .split(/[,，、;；|/／]+/)
+    .map(s => s.trim())
+    .filter(s => s && s.toLowerCase() !== self)
+}
 
 const router = useRouter()
 const route = useRoute()

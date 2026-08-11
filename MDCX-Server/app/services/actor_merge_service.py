@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, or_, func
 
 from app.config.manager import get_config_manager
 from app.utils.module_helper import get_module_model, get_module_session
@@ -31,10 +31,14 @@ def _avatar_path(module: str, actor_id: int) -> Path:
 
 def _merge_alias(canonical_alias: Optional[str], canonical_name: str, source_names: List[str],
                  source_aliases: List[str]) -> str:
-    """合并别名：现有别名 + canonical 名 + source 名 + source 别名（去重，逗号分隔）"""
+    """合并别名：仅收集「被合并进来的旧名」（existing alias + source 名 + source 别名）
+
+    注意：不把 canonical_name 自身写进 alias——alias 的语义就是「这些名字合并到了我这里」，
+    canonical 主名无需冗余记录。这样前端 merged_from 直接展示 alias 即可得到纯净的合并来源列表。
+    """
     seen = set()
     out = []
-    for item in [canonical_alias, canonical_name, *source_names, *source_aliases]:
+    for item in [canonical_alias, *source_names, *source_aliases]:
         if not item:
             continue
         for part in item.split(","):
@@ -42,11 +46,23 @@ def _merge_alias(canonical_alias: Optional[str], canonical_name: str, source_nam
             if not a:
                 continue
             key = a.lower()
+            if key == canonical_name.lower():
+                continue  # 跳过主名自身
             if key in seen:
                 continue
             seen.add(key)
             out.append(a)
     return ",".join(out)
+
+
+def _actor_token_cond(col, name: str):
+    """精确匹配逗号分隔 actor 字段中的某个演员名（避免子串误命中）"""
+    return or_(
+        col == name,
+        col.like(f"{name},%"),
+        col.like(f"%,{name}"),
+        col.like(f"%,{name},%"),
+    )
 
 
 async def merge_actors(
@@ -91,25 +107,46 @@ async def merge_actors(
         [s.alias for s in source_actors if s.alias],
     )
 
-    # 2) 影片 actor 文本列迁移（逗号分隔精确替换）
+    # 2) 影片 actor 文本列迁移（逗号分隔精确替换 + 去重）
     all_names = [s.name for s in source_actors if s.name]
+    changed_count = 0
     if all_names:
-        movies_stmt = select(MovieModel).where(
-            MovieModel.actor.in_(all_names)
-            | MovieModel.actor.like(f"%{all_names[0]}%")
-        )
-        result = await session.execute(movies_stmt)
+        cond = _actor_token_cond(MovieModel.actor, all_names[0])
+        for nm in all_names[1:]:
+            cond = cond | _actor_token_cond(MovieModel.actor, nm)
+        result = await session.execute(select(MovieModel).where(cond))
         movies = result.scalars().all()
-        changed_count = 0
         for movie in movies:
             actor_text = movie.actor or ""
-            new_text = actor_text
-            for name in all_names:
-                pattern = re.compile(rf"(^|,){re.escape(name)}(,|$)")
-                new_text = pattern.sub(lambda m: (m.group(1) + canonical.name + m.group(2)), new_text)
-            if new_text != actor_text:
+            parts = [p.strip() for p in actor_text.split(",") if p.strip()]
+            new_parts: list[str] = []
+            changed = False
+            for p in parts:
+                if p in all_names:
+                    p = canonical.name
+                    changed = True
+                new_parts.append(p)
+            # 去重 canonical 名（同一影片可能同时含 source 与 canonical）
+            seen = set()
+            dedup: list[str] = []
+            for p in new_parts:
+                if p in seen:
+                    changed = True
+                    continue
+                seen.add(p)
+                dedup.append(p)
+            new_text = ",".join(dedup)
+            if changed and new_text != actor_text:
                 movie.actor = new_text
                 changed_count += 1
+
+    # 5) 重算 canonical 作品数：基于「主名 + 全部别名」的实际影片数。
+    #    - 不再简单累加 movie_count 字段（该字段来自刮削，常与实际关联数不符，累加会虚高）
+    #    - 也不能只按 canonical.name 统计：历史库里仍有影片保留旧名（token 形态异常、
+    #      或合并前入库未迁移），只按主名会漏算，表现为「合并了但作品数没变」。
+    #    这里与详情页/作品列表使用同一条件（app/utils/actor_alias），保证三处数字一致。
+    from app.utils.actor_alias import count_actor_movies
+    canonical.movie_count = await count_actor_movies(session, MovieModel, canonical)
 
     # 3) 头像继承：canonical 无头像则用 source 的（仅文件，DB 无头像路径列）
     canonical_avatar = _avatar_path(module, canonical_id)
@@ -138,11 +175,34 @@ async def merge_actors(
         "merged_names": [s.name for s in source_actors],
         "aliases": canonical.alias,
         "movies_updated": changed_count if all_names else 0,
+        "movie_count": canonical.movie_count,
     }
 
 
+def _actor_name_similarity(name: str, other: str) -> float:
+    """计算两个演员名的相似度（0~1）
+
+    - 完全相等 -> 1.0
+    - 一方包含另一方（如 '森沢かな' ⊂ '森沢かな（飯岡かなこ）'）-> 0.9
+    - 其余走 SequenceMatcher 模糊比
+    """
+    nl = (name or "").lower().strip()
+    ol = (other or "").lower().strip()
+    if not nl or not ol:
+        return 0.0
+    if nl == ol:
+        return 1.0
+    if nl in ol or ol in nl:
+        return 0.9
+    return SequenceMatcher(None, nl, ol).ratio()
+
+
 async def search_similar_actors(name: str, threshold: float = 0.6, module: str = "jav") -> List[dict]:
-    """搜索名称相似的演员（推荐合并候选）"""
+    """搜索名称相似的演员（推荐合并候选）
+
+    包含与查询名完全相等/互相包含的演员（可被选为目标或候选）；
+    不再跳过精确匹配。
+    """
     session = await get_module_session(module)
     ActorModel = get_module_model(module, "actor")
 
@@ -152,9 +212,15 @@ async def search_similar_actors(name: str, threshold: float = 0.6, module: str =
 
     similar = []
     for a in actors:
-        if a.name == name:
-            continue
-        ratio = SequenceMatcher(None, name.lower(), (a.name or "").lower()).ratio()
+        ratio = _actor_name_similarity(name, a.name)
+        if ratio < threshold and a.alias:
+            for al in a.alias.split(","):
+                al = al.strip()
+                if al:
+                    r2 = _actor_name_similarity(name, al)
+                    if r2 >= threshold:
+                        ratio = max(ratio, r2)
+                        break
         if ratio >= threshold:
             similar.append({
                 "id": a.id,
@@ -164,19 +230,6 @@ async def search_similar_actors(name: str, threshold: float = 0.6, module: str =
                 "name_en": a.name_en,
                 "similarity": round(ratio, 3),
             })
-        elif a.alias:
-            for al in a.alias.split(","):
-                al = al.strip()
-                if al and SequenceMatcher(None, name.lower(), al.lower()).ratio() >= threshold:
-                    similar.append({
-                        "id": a.id,
-                        "name": a.name,
-                        "alias": a.alias,
-                        "name_jp": a.name_jp,
-                        "name_en": a.name_en,
-                        "similarity": round(ratio, 3),
-                    })
-                    break
 
     similar.sort(key=lambda x: (-x["similarity"], x["id"]))
     return similar[:50]

@@ -3,6 +3,7 @@ test_screenshots/
 qa_screenshots/
 qa_screenshots_v2/
 screenshots/
+tmp_scancheck/
 tmp/
 *.png
 *.jpg
@@ -71,3 +72,5 @@ deploy_to_server.ps1
 pornhub_actor_analysis.md
 .gitignore
 pornhub_fix_overview.md
+JAV系列_参考学习报告.md
+pornhub_actor_count_fix.md

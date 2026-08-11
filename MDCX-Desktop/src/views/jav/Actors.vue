@@ -6,6 +6,9 @@
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <el-button type="primary" @click="search">搜索</el-button>
+      <el-tooltip content="把合并进来的别名作品一起算上，修正列表里过时的作品数" placement="top">
+        <el-button :loading="recalcing" @click="recalcCounts">重算作品数</el-button>
+      </el-tooltip>
     </div>
 
     <!-- 作品数分类 Tab -->
@@ -31,6 +34,16 @@
         <div class="actor-info">
           <div class="actor-name">{{ actor.name }}</div>
           <div class="actor-movies">{{ actor.movie_count }} 部作品</div>
+          <!-- 合并标记：显示这个演员合并进来的旧名，鼠标悬停看全部 -->
+          <el-tooltip
+            v-if="mergedOf(actor).length"
+            :content="'已合并：' + mergedOf(actor).join('、')"
+            placement="top"
+          >
+            <el-tag size="small" type="warning" effect="plain" class="merged-tag">
+              已合并 {{ mergedOf(actor).length }} 名
+            </el-tag>
+          </el-tooltip>
           <el-tag size="small" type="info" v-if="actor.source === 'scraper'">来自爬虫</el-tag>
         </div>
       </div>
@@ -53,6 +66,7 @@ import { Search } from '@element-plus/icons-vue'
 import defaultAvatar from '@/assets/default-avatar.png'
 import { getAvatarSrc } from '@/utils/media'
 import { getJavActors } from '@/api/jav'
+import { recalcActorMovieCount } from '@/api'
 
 const router = useRouter()
 const keyword = ref('')
@@ -65,6 +79,32 @@ const total = ref(0)
 // 作品数分类
 const movieCountFilter = ref('multi')
 const minMoviesForFilter = ref(2)
+
+// 合并来源：后端 merged_from 优先，旧版只有 alias 时本地解析（需剔除主名自身）
+const recalcing = ref(false)
+function mergedOf(actor) {
+  if (!actor) return []
+  if (Array.isArray(actor.merged_from)) return actor.merged_from
+  if (!actor.alias) return []
+  const self = String(actor.name || '').trim().toLowerCase()
+  return String(actor.alias)
+    .split(/[,，、;；|/／]+/)
+    .map(s => s.trim())
+    .filter(s => s && s.toLowerCase() !== self)
+}
+
+async function recalcCounts() {
+  recalcing.value = true
+  try {
+    const res = await recalcActorMovieCount('jav', true)
+    ElMessage.success(`已重算 ${res.scanned || 0} 位合并演员，更新 ${res.updated || 0} 条作品数`)
+    await loadActors()
+  } catch (e) {
+    ElMessage.error('重算失败: ' + (e.message || e))
+  } finally {
+    recalcing.value = false
+  }
+}
 
 async function loadActors() {
   loading.value = true

@@ -72,7 +72,8 @@ async function scrapeProfile() {
 onMounted(async () => {
   try {
     actor.value = await store.loadActorDetail(Number(route.params.id))
-    await store.loadMovies()
+    // 只拉取当前演员的作品（按 movie.actor LIKE 过滤），并取足量条数避免分页截断
+    await store.loadMovies({ actor: actor.value.name, limit: 1000 })
     movies.value = store.movies
   } finally {
     loading.value = false

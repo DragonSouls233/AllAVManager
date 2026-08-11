@@ -175,6 +175,7 @@ class ChineseVideoComparer:
     """
 
     def __init__(self, match_threshold: float = 0.90):
+        super().__init__()
         self.match_threshold = match_threshold
 
     def load_titles(self, path: str) -> list[str]:

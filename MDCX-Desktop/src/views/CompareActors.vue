@@ -34,6 +34,10 @@
           <el-icon><Refresh /></el-icon> 自动扫描
         </el-button>
 
+        <el-button type="warning" :loading="detectingAll" @click="handleDetectAll">
+          <el-icon><Aim /></el-icon> 批量探测女优页
+        </el-button>
+
         <span class="toolbar-hint" v-if="total">共 {{ total }} 个演员</span>
       </div>
     </el-card>
@@ -125,9 +129,17 @@
               </el-button>
               <el-button
                 size="small"
+                type="warning"
+                link
+                :loading="detectUrlId === row.id"
+                @click="detectUrl(row)"
+              >
+                <el-icon><Aim /></el-icon> 探测
+              </el-button>
+              <el-button
+                size="small"
                 type="success"
                 link
-                :disabled="!row.compare_config?.url"
                 :loading="comparingId === row.id"
                 @click="runCompare(row)"
               >
@@ -258,7 +270,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { UserFilled, Search, Refresh, Edit, Connection, Aim, FolderOpened, Folder } from '@element-plus/icons-vue'
 import {
   getCompareActors, saveActorCompareUrl, scanAllCompareActors,
-  detectActorLocalDir, compareOnlineByActor, scrapeByCode, browseDir
+  detectActorLocalDir, compareOnlineByActor, scrapeByCode, browseDir,
+  detectActorCompareUrl, detectAllCompareUrls
 } from '@/api'
 
 const searchText = ref('')
@@ -267,14 +280,16 @@ const items = ref([])
 const total = ref(0)
 const loading = ref(false)
 const scanning = ref(false)
+const detectingAll = ref(false)
 
 // 编辑状态
 const editingId = ref(null)
 const editUrl = ref('')
-const editSource = ref('javdb')
+const editSource = ref('javbus')
 const editDir = ref('')
 const savingId = ref(null)
 const detectingId = ref(null)
+const detectUrlId = ref(null)
 
 // 对比状态
 const comparingId = ref(null)
@@ -325,6 +340,50 @@ const handleScan = async () => {
     ElMessage.error('扫描失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     scanning.value = false
+  }
+}
+
+const handleDetectAll = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `将对「作品数≥${minMovies.value}」且「尚未配置对比URL」的演员，逐个去 javbus 自动探测女优页（约每 1 秒一个，可能耗时较久）。确定开始？`,
+      '批量探测女优页',
+      { confirmButtonText: '开始探测', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  detectingAll.value = true
+  try {
+    const res = await detectAllCompareUrls({ min_movies: minMovies.value, only_missing: true, delay: 1.0 })
+    const data = res.data || res
+    const ok = data.detected || 0
+    const nf = data.not_found || 0
+    const fail = data.failed || 0
+    ElMessage.success(`探测完成：成功 ${ok}，未找到 ${nf}，失败 ${fail}`)
+    await loadActors()
+  } catch (e) {
+    ElMessage.error('批量探测失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    detectingAll.value = false
+  }
+}
+
+const detectUrl = async (row) => {
+  detectUrlId.value = row.id
+  try {
+    const res = await detectActorCompareUrl(row.id)
+    const data = res.data || res
+    if (data.status === 'ok') {
+      ElMessage.success(`已探测并保存：${data.url}`)
+    } else {
+      ElMessage.warning(data.message || '未找到匹配的女优页')
+    }
+    await loadActors()
+  } catch (e) {
+    ElMessage.error('探测失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    detectUrlId.value = null
   }
 }
 

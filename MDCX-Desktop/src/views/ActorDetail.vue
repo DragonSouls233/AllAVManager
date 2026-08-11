@@ -24,8 +24,24 @@
         <div class="profile-info">
           <div class="profile-name" @dblclick="copyActorName" title="双击复制演员名">{{ actor.name }}</div>
           <div v-if="actor.name_jp" class="profile-subtitle">{{ actor.name_jp }}</div>
+          <!-- 合并来源：alias 去掉主名本身，逐个显示，让用户知道哪些演员被合并进来了 -->
+          <div v-if="mergedFrom.length" class="profile-alias">
+            <span class="alias-label">已合并 {{ mergedFrom.length }} 个别名：</span>
+            <el-tag
+              v-for="a in mergedFrom"
+              :key="a"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="alias-tag"
+            >{{ a }}</el-tag>
+            <el-tooltip content="这些旧名下的作品已与主名合并统计" placement="top">
+              <el-icon class="alias-hint"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </div>
           <div class="profile-meta">
             <el-tag type="primary">{{ movieTotal }} 部作品</el-tag>
+            <el-tag v-if="mergedFrom.length" type="warning" effect="dark">含合并</el-tag>
             <el-tag v-if="actor.cup" type="success">{{ actor.cup }} Cup</el-tag>
             <el-tag v-if="actor.height" type="info">{{ actor.height }} cm</el-tag>
             <el-tag v-if="actor.age" type="warning">{{ actor.age }} 岁</el-tag>
@@ -270,7 +286,7 @@
 import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete, MagicStick } from '@element-plus/icons-vue'
+import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete, MagicStick, InfoFilled } from '@element-plus/icons-vue'
 import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl, getFileProxyUrl } from '@/utils/media'
 
 const route = useRoute()
@@ -320,6 +336,20 @@ const movies = ref([])
 const movieTotal = ref(0)
 const page = ref(1)
 const pageSize = ref(24)
+
+// 合并来源：优先用后端返回的 merged_from；旧版后端只有 alias 时本地兜底解析
+// （alias 里含主名自身，必须剔除，否则会出现「合并了自己」的假提示）
+const mergedFrom = computed(() => {
+  const a = actor.value
+  if (!a) return []
+  if (Array.isArray(a.merged_from)) return a.merged_from
+  if (!a.alias) return []
+  const self = String(a.name || '').trim().toLowerCase()
+  return String(a.alias)
+    .split(/[,，、;；|/／]+/)
+    .map(s => s.trim())
+    .filter(s => s && s.toLowerCase() !== self)
+})
 
 // 视图切换
 const activeTab = ref('list')
@@ -806,6 +836,30 @@ onMounted(() => {
 .profile-subtitle {
   margin-top: 6px;
   color: #6b7280;
+}
+
+/* 合并来源别名 */
+.profile-alias {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.profile-alias .alias-label {
+  font-size: 14px;
+  color: #b45309;
+  font-weight: 600;
+}
+
+.profile-alias .alias-tag {
+  font-size: 13px;
+}
+
+.profile-alias .alias-hint {
+  color: #9ca3af;
+  cursor: help;
 }
 
 .profile-meta {

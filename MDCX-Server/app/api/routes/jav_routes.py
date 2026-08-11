@@ -137,8 +137,11 @@ async def list_actors():
         stmt = select(JavActor).order_by(JavActor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
+        # alias / merged_from：让列表页能直观标出「这个演员合并过哪些旧名」
+        from app.utils.actor_alias import merged_from_names
         return [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
                  "module_type": "jav",
+                 "alias": a.alias, "merged_from": merged_from_names(a),
                  "source": a.source, "avatar_url": a.avatar_url} for a in actors]
     finally:
         await session.close()
@@ -157,10 +160,16 @@ async def get_actor(actor_id: int):
         actor = result.scalar_one_or_none()
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
+        # 作品数实时统计（含 alias 合并进来的旧名），避免 movie_count 列过时
+        from app.db.jav_models import JavMovie
+        from app.utils.actor_alias import count_actor_movies, merged_from_names
+        real_count = await count_actor_movies(session, JavMovie, actor)
         return {"id": actor.id, "name": actor.name, "alias": actor.alias,
+                    "merged_from": merged_from_names(actor),
                     "module_type": "jav",
                     "avatar_url": actor.avatar_url, "source": actor.source,
-                    "source_site": actor.source_site, "movie_count": actor.movie_count,
+                    "source_site": actor.source_site,
+                    "movie_count": real_count or actor.movie_count,
                     "created_at": str(actor.created_at)}
     finally:
         await session.close()
@@ -184,12 +193,14 @@ async def get_actor_movies(
             raise HTTPException(status_code=404, detail="演员不存在")
 
         offset = (page - 1) * page_size
-        # 搜索含有演员名的影片
-        name_part = f"%{actor.name}%"
-        total_q = select(func.count(JavMovie.id)).where(JavMovie.actor.like(name_part))
+        # 搜索含有演员名的影片：主名 + alias 全部变体
+        # （演员合并后旧名仍残留在 movies.actor 里，只查主名会漏掉被合并演员的作品）
+        from app.utils.actor_alias import actor_movie_condition_for
+        cond = actor_movie_condition_for(JavMovie, actor)
+        total_q = select(func.count(JavMovie.id)).where(cond)
         total = (await session.execute(total_q)).scalar() or 0
 
-        stmt = select(JavMovie).where(JavMovie.actor.like(name_part)) \
+        stmt = select(JavMovie).where(cond) \
             .order_by(JavMovie.release_date.desc().nulls_last(), JavMovie.id.desc()) \
             .offset(offset).limit(page_size)
         rows = (await session.execute(stmt)).scalars().all()
@@ -231,10 +242,11 @@ async def get_actor_timeline(actor_id: int):
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
-        name_part = f"%{actor.name}%"
         # 查该演员全部作品（含无日期），用于 total 与完整年份分组
+        # 条件含 alias 全部变体，保证合并后的作品一并计入时间线
+        from app.utils.actor_alias import actor_movie_condition_for
         movies = (await session.execute(
-            select(JavMovie).where(JavMovie.actor.like(name_part))
+            select(JavMovie).where(actor_movie_condition_for(JavMovie, actor))
         )).scalars().all()
 
         total = len(movies)

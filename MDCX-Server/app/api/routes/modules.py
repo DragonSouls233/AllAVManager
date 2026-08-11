@@ -430,6 +430,7 @@ async def get_module_actors(
     module_name: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None, description="按名称/别名搜索"),
 ):
     """获取模块演员列表"""
     if module_name not in _MODEL_MAP:
@@ -446,9 +447,17 @@ async def get_module_actors(
         
         mod = importlib.import_module(model_path)
         actor_model = getattr(mod, actor_class)
-        
+
         from sqlalchemy import select, func
-        stmt = select(actor_model).order_by(actor_model.movie_count.desc())
+        stmt = select(actor_model)
+        # 按名称/别名搜索（合并后被合并演员的旧名仅存于 alias，需可检索）
+        if search:
+            alias_col = getattr(actor_model, "alias", None)
+            cond = actor_model.name.contains(search) | actor_model.name_jp.contains(search)
+            if alias_col is not None:
+                cond = cond | alias_col.contains(search)
+            stmt = stmt.where(cond)
+        stmt = stmt.order_by(actor_model.movie_count.desc())
         
         result = await session.execute(stmt)
         actors = result.scalars().all()
@@ -457,6 +466,7 @@ async def get_module_actors(
         skip = (page - 1) * page_size
         items = actors[skip:skip + page_size]
         
+        from app.utils.actor_alias import merged_from_names
         return {
             "total": total,
             "items": [
@@ -464,6 +474,8 @@ async def get_module_actors(
                     "id": a.id,
                     "name": a.name,
                     "alias": a.alias,
+                    # 合并进来的旧名（alias 去掉主名本身），前端据此显示「已合并」标记
+                    "merged_from": merged_from_names(a),
                     "avatar_url": a.avatar_url,
                     "source": a.source,
                     "movie_count": a.movie_count,

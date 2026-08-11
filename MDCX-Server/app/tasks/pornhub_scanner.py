@@ -264,7 +264,10 @@ class PornhubScanner(BaseScanner):
 
                     code = extract_pornhub_code(file_name)
                     if not code:
-                        continue
+                        # 文件名不含 PornHub viewkey 时，回退用文件名(去扩展名)作为 code。
+                        # 否则按演员/标题命名的影片会被整批丢弃，导致演员只关联 1~2 部。
+                        # viewkey 仅刮削阶段使用；无 viewkey 的影片刮削时会优雅跳过。
+                        code = re.sub(r"[^\w\-]", "_", Path(file_name).stem)
                     result["matched"] += 1
 
                     # 检查是否已存在（内存判重，避免 N+1 查询）

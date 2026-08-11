@@ -160,6 +160,13 @@ class BaseCrawler(ABC):
         self._status = CrawlerStatus.ENABLED
         self._error_count = 0
         self._success_count = 0
+        # 初始化代理配置，供 requires_proxy=True 的子类在 scrape 中使用 self._proxy
+        self._proxy = None
+        try:
+            from app.services.proxy_manager import get_effective_proxy_url
+            self._proxy = get_effective_proxy_url()
+        except Exception:
+            self._proxy = None
     
     @abstractmethod
     async def scrape(

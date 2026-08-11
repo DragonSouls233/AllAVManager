@@ -26,6 +26,12 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, or_
 
 from app.config.manager import get_config_manager
+from app.utils.actor_alias import (
+    actor_movie_condition_for,
+    actor_name_variants,
+    count_actor_movies,
+    merged_from_names,
+)
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -118,6 +124,8 @@ class ActorResponse(BaseModel):
     debut_year: Optional[int] = None
     social_links: Optional[dict] = None
     movie_count: Optional[int] = 0
+    # 合并进来的旧名（alias 去掉主名本身）——让前端能直观显示「哪些演员被合并了」
+    merged_from: list[str] = []
 
     class Config:
         from_attributes = True
@@ -154,6 +162,7 @@ def _build_actor_response(actor, movie_count: int = 0) -> ActorResponse:
         zodiac=getattr(actor, "zodiac", None), debut_year=getattr(actor, "debut_year", None),
         social_links=social_links,
         movie_count=movie_count,
+        merged_from=merged_from_names(actor),
     )
 
 
@@ -245,30 +254,27 @@ async def list_actors(
     """获取演员列表（带内存缓存，60秒 TTL）"""
     actor_cls = get_module_model(module, "actor")
     movie_cls = get_module_model(module, "movie")
-    MovieActor = _get_mod_cls(module, "MovieActor")
 
     sess = await get_module_session(module)
     async with sess:
-        # 作品数子查询
-        movie_count_subq = (
-            select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("mc"))
-            .group_by(MovieActor.actor_id)
-            .subquery()
-        )
-
-        # 主查询
-        query = select(actor_cls, func.coalesce(movie_count_subq.c.mc, 0).label("movie_cnt"))
-        query = query.outerjoin(movie_count_subq, actor_cls.id == movie_count_subq.c.actor_id)
+        # 作品数直接读 actors.movie_count 列（MovieActor 关联表在各模块均为空，
+        # 作品关系实际以 movies.actor 逗号分隔文本存储）
+        query = select(actor_cls)
 
         if search:
-            query = query.where(
-                actor_cls.name.contains(search) | actor_cls.name_jp.contains(search)
-            )
+            # 同时匹配别名(alias)，使合并后被合并演员的旧名仍可检索到
+            # （合并会把 source.name 写入 canonical.alias，source 行硬删除，
+            #   若不查 alias，按旧名搜索会“找不到”该演员）
+            alias_col = getattr(actor_cls, "alias", None)
+            cond = actor_cls.name.contains(search) | actor_cls.name_jp.contains(search)
+            if alias_col is not None:
+                cond = cond | alias_col.contains(search)
+            query = query.where(cond)
 
         if movie_count_filter == "multi":
-            query = query.where(func.coalesce(movie_count_subq.c.mc, 0) >= min_movies)
+            query = query.where(func.coalesce(actor_cls.movie_count, 0) >= min_movies)
         elif movie_count_filter == "single":
-            query = query.where(func.coalesce(movie_count_subq.c.mc, 0) < min_movies)
+            query = query.where(func.coalesce(actor_cls.movie_count, 0) < min_movies)
 
         if cup:
             query = query.where(actor_cls.cup == cup)
@@ -292,9 +298,9 @@ async def list_actors(
 
         if sort_by == "movie_count":
             if sort_order == "desc":
-                query = query.order_by(func.coalesce(movie_count_subq.c.mc, 0).desc())
+                query = query.order_by(func.coalesce(actor_cls.movie_count, 0).desc())
             else:
-                query = query.order_by(func.coalesce(movie_count_subq.c.mc, 0).asc())
+                query = query.order_by(func.coalesce(actor_cls.movie_count, 0).asc())
         else:
             if sort_order == "desc":
                 query = query.order_by(actor_cls.name.desc())
@@ -308,8 +314,7 @@ async def list_actors(
         items = []
         for row in rows:
             a = row[0]
-            mc = row[1]
-            items.append(_build_actor_response(a, mc or 0))
+            items.append(_build_actor_response(a, getattr(a, "movie_count", 0) or 0))
 
         return ActorListResponse(total=total or 0, items=items)
 
@@ -331,14 +336,13 @@ async def get_actor_stats(
         ) or 0
 
         top_query = (
-            select(actor_cls.name, func.count(MovieActor.movie_id).label("movie_count"))
-            .join(MovieActor, actor_cls.id == MovieActor.actor_id)
-            .group_by(actor_cls.id)
-            .order_by(func.count(MovieActor.movie_id).desc())
+            select(actor_cls.name, actor_cls.movie_count)
+            .where(func.coalesce(actor_cls.movie_count, 0) > 0)
+            .order_by(func.coalesce(actor_cls.movie_count, 0).desc())
             .limit(10)
         )
         result = await sess.execute(top_query)
-        top_actors = [{"name": row[0], "movie_count": row[1]} for row in result.fetchall()]
+        top_actors = [{"name": row[0], "movie_count": row[1] or 0} for row in result.fetchall()]
 
         return {
             "total": total,
@@ -408,26 +412,18 @@ async def preview_avatar_scrape(
     from app.scraper.actor_avatar import actor_needs_avatar
 
     actor_cls = get_module_model(module, "actor")
-    MovieActor = _get_mod_cls(module, "MovieActor")
 
     sess = await get_module_session(module)
     async with sess:
-        movie_count_subq = (
-            select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("mc"))
-            .group_by(MovieActor.actor_id)
-            .subquery()
-        )
-
         query = (
-            select(actor_cls, func.coalesce(movie_count_subq.c.mc, 0).label("movie_cnt"))
-            .outerjoin(movie_count_subq, actor_cls.id == movie_count_subq.c.actor_id)
+            select(actor_cls)
             .where(
-                func.coalesce(movie_count_subq.c.mc, 0) >= min_movies,
+                func.coalesce(actor_cls.movie_count, 0) >= min_movies,
                 actor_cls.name != "佚名",
                 actor_cls.name.isnot(None),
                 actor_cls.name != "",
             )
-            .order_by(func.coalesce(movie_count_subq.c.mc, 0).desc())
+            .order_by(func.coalesce(actor_cls.movie_count, 0).desc())
         )
         result = await sess.execute(query)
         rows = result.fetchall()
@@ -440,7 +436,7 @@ async def preview_avatar_scrape(
                 "id": row[0].id,
                 "name": row[0].name,
                 "name_jp": getattr(row[0], "name_jp", None),
-                "movie_count": row[1],
+                "movie_count": getattr(row[0], "movie_count", 0) or 0,
             }
             for row in filtered[:20]
         ]
@@ -457,6 +453,53 @@ async def avatar_scrape_library():
     """本地头像资料库状态（离线 Gfriends 副本，对应 O:/MDCX/GitHub-ZIP/P1-High）"""
     from app.services.gfriends_importer import get_local_library_status
     return get_local_library_status()
+
+
+@router.post("/recalc-movie-count")
+async def recalc_actor_movie_count(
+    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
+    only_merged: bool = Query(True, description="仅重算有别名（发生过合并）的演员，默认 True"),
+):
+    """重算 actors.movie_count（把合并进来的旧名作品一起算上）
+
+    演员列表页排序/展示读的是 actors.movie_count 列；历史合并写入的值可能过时，
+    导致「详情页已经聚合、列表页数字还是旧的」。本接口按「主名 + 全部别名」重算。
+
+    注意：必须放在 `/{actor_id}` 之前注册，否则会被动态路径吞掉。
+    """
+    actor_cls = get_module_model(module, "actor")
+    movie_cls = get_module_model(module, "movie")
+
+    sess = await get_module_session(module)
+    async with sess:
+        q = select(actor_cls)
+        alias_col = getattr(actor_cls, "alias", None)
+        if only_merged and alias_col is not None:
+            q = q.where(alias_col.isnot(None), alias_col != "")
+        actors = (await sess.execute(q)).scalars().all()
+
+        changed = []
+        for a in actors:
+            old = getattr(a, "movie_count", 0) or 0
+            new = await count_actor_movies(sess, movie_cls, a)
+            if new != old:
+                a.movie_count = new
+                changed.append({
+                    "id": a.id, "name": a.name,
+                    "old": old, "new": new,
+                    "merged_from": merged_from_names(a),
+                })
+        if changed:
+            await sess.commit()
+        _cache.invalidate("actors:")
+
+    return {
+        "status": "ok",
+        "module": module,
+        "scanned": len(actors),
+        "updated": len(changed),
+        "items": changed[:200],
+    }
 
 
 @router.post("/{actor_id}/scrape-profile", response_model=ActorScrapeResult)
@@ -515,13 +558,19 @@ async def get_actor(
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
-        movie_count = getattr(actor, "movie_count", None) or 0
+        # MovieActor 关联表在各模块均为空，改用 movies.actor 文本 LIKE 取作品；
+        # 且必须把 alias（合并进来的旧名）一起算进去，否则合并后作品数/作品列表不聚合。
+        cond = actor_movie_condition_for(movie_cls, actor)
+
+        # movie_count 列可能过时（合并前写入 / 刮削值），详情页以实时统计为准
+        movie_count = await count_actor_movies(sess, movie_cls, actor)
+        if not movie_count:
+            movie_count = getattr(actor, "movie_count", None) or 0
 
         recent_q = (
             select(movie_cls)
-            .join(MovieActor, movie_cls.id == MovieActor.movie_id)
-            .where(MovieActor.actor_id == actor_id)
-            .order_by(movie_cls.release_date.desc().nulls_last())
+            .where(cond)
+            .order_by(movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc())
             .limit(10)
         )
         result = await sess.execute(recent_q)
@@ -568,14 +617,9 @@ async def get_actor_movies(
         total = await sess.scalar(count_query)
 
         if total == 0:
-            # 回退到 actor 文本字段 LIKE（folder_based_actors 仅 chinese 模块存在，需防御）
-            name_part = f"%{actor.name}%"
-            folder_col = getattr(movie_cls, "folder_based_actors", None)
-            cond = (
-                or_(movie_cls.actor.like(name_part), folder_col.like(name_part))
-                if folder_col is not None
-                else movie_cls.actor.like(name_part)
-            )
+            # 回退到 actor 文本字段 LIKE（含 alias 全部变体，使合并后的作品聚合在一起；
+            # folder_based_actors 仅 chinese 模块存在，helper 内部已做防御）
+            cond = actor_movie_condition_for(movie_cls, actor)
             count_query = select(func.count(movie_cls.id)).where(cond)
             total = await sess.scalar(count_query) or 0
             query = select(movie_cls).where(cond).order_by(movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc())
@@ -596,7 +640,13 @@ async def get_actor_movies(
                 module_type=module,
             ))
 
-        return {"actor_id": actor_id, "actor_name": actor.name, "total": total or 0, "items": movie_items}
+        return {
+            "actor_id": actor_id,
+            "actor_name": actor.name,
+            "merged_from": merged_from_names(actor),
+            "total": total or 0,
+            "items": movie_items,
+        }
 
 
 @router.get("/{actor_id}/timeline")
@@ -617,10 +667,10 @@ async def get_actor_timeline(
 
         # 扫描器将演员名以逗号分隔存于 movie.actor 字段，并不维护
         # MovieActor 关联表（关联表始终为空），故不能用 join 关联表查询，
-        # 改用 actor 字段的模糊匹配（与 jav_routes 的 timeline 一致）。
+        # 改用 actor 字段的模糊匹配 + alias 全部变体（合并后的作品算在一起）。
         query = (
             select(movie_cls)
-            .where(movie_cls.actor.like(f"%{actor.name}%"))
+            .where(actor_movie_condition_for(movie_cls, actor))
             .order_by(movie_cls.release_date.asc())
         )
         result = await sess.execute(query)
@@ -1023,33 +1073,21 @@ async def batch_scrape_actor_profiles(
     from app.utils.http_client import AsyncHttpClient
 
     actor_cls = get_module_model(module, "actor")
-    MovieActor = _get_mod_cls(module, "MovieActor")
 
     sess = await get_module_session(module)
     async with sess:
-        movie_count_subq = (
-            select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("mc"))
-            .group_by(MovieActor.actor_id)
-            .subquery()
-        )
-
         if body.actor_ids:
-            query = (
-                select(actor_cls, func.coalesce(movie_count_subq.c.mc, 0).label("movie_cnt"))
-                .outerjoin(movie_count_subq, actor_cls.id == movie_count_subq.c.actor_id)
-                .where(actor_cls.id.in_(body.actor_ids))
-            )
+            query = select(actor_cls).where(actor_cls.id.in_(body.actor_ids))
         else:
             query = (
-                select(actor_cls, func.coalesce(movie_count_subq.c.mc, 0).label("movie_cnt"))
-                .outerjoin(movie_count_subq, actor_cls.id == movie_count_subq.c.actor_id)
+                select(actor_cls)
                 .where(
-                    func.coalesce(movie_count_subq.c.mc, 0) >= body.min_movies,
+                    func.coalesce(actor_cls.movie_count, 0) >= body.min_movies,
                     actor_cls.name != "佚名",
                     actor_cls.name.isnot(None),
                     actor_cls.name != "",
                 )
-                .order_by(func.coalesce(movie_count_subq.c.mc, 0).desc())
+                .order_by(func.coalesce(actor_cls.movie_count, 0).desc())
                 .limit(100)
             )
 
@@ -1065,7 +1103,7 @@ async def batch_scrape_actor_profiles(
 
     for row in actors_data:
         actor = row[0]
-        movie_cnt = row[1]
+        movie_cnt = getattr(actor, "movie_count", 0) or 0
 
         result_item = {
             "actor_id": actor.id,

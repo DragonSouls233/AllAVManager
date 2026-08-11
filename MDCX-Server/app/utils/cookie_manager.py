@@ -83,8 +83,21 @@ def get_cookie(site: str) -> Optional[str]:
 
 
 def get_cookie_headers(site: str) -> Optional[dict]:
-    """返回带 cookie 的 headers dict，供爬虫直接用"""
+    """返回带 cookie 的 headers dict，供爬虫直接用
+
+    关键修正（javdb）：JavDB 的搜索 / 女优页 / 影片详情页均为公开数据，
+    仅需 ``over18=1`` 年龄 cookie 即可通过年龄墙访问，登录 cookie 为**可选项**
+    （仅高频/受限端点才需要）。因此 javdb 始终附上 ``over18=1``：
+    - 已配置登录 cookie → 追加 ``; over18=1``（登录态 + 年龄墙）
+    - 未配置登录 cookie → 仅 ``over18=1``（公开访问，无需登录）
+
+    参考实现 JavBoss（Go）即以 ``Cookie: over18=1`` 无登录抓取 javdb。
+    """
     cookie = get_cookie(site)
+    if site == "javdb":
+        if cookie:
+            return {"cookie": f"{cookie}; over18=1", "User-Agent": "Mozilla/5.0"}
+        return {"cookie": "over18=1", "User-Agent": "Mozilla/5.0"}
     if cookie:
         return {"cookie": cookie, "User-Agent": "Mozilla/5.0"}
     return None
@@ -144,6 +157,14 @@ async def validate_cookie(site: str) -> dict:
 
     cookie = get_cookie(site)
     if not cookie:
+        # javdb 特殊：公开数据仅需 over18=1 即可访问，登录 cookie 为可选项。
+        # 未配置登录 cookie 时，视为「公开模式可用」，不再误报验证失败。
+        if site == "javdb":
+            return {
+                "valid": True,
+                "message": "JavDB 公开访问无需登录 Cookie（年龄验证 over18 已自动处理）；如需更高频访问可再配置登录 Cookie",
+                "public_mode": True,
+            }
         return {"valid": False, "message": "未配置 Cookie"}
 
     vtype = cfg["validate_type"]
