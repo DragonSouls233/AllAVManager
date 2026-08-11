@@ -1,15 +1,22 @@
 """
-JAV 有码 · 系列聚合路由
+系列聚合路由（模块通用）
 
 重要背景：
 - jav 模块的 `series` 表为空（series_id 全为 NULL），现有通用 /series 端点的 FK join
   对 jav 查不到任何作品。
-- jav 影片的系列信息实际存放在 `movies.series` 文本字段（已刮削填充，共 2329 部有值）。
+- 影片的系列信息实际存放在 `movies.series` 文本字段（jav 已刮削填充，共 2329 部有值）。
 - 因此本模块直接按 `movies.series` 文本字段聚合，不依赖 series 表 / series_id。
 
+复用说明（提取自 JavBoss `ListJavSeries` 聚合思路）：
+- `module` 参数决定查哪个模块的 DB / Movie 模型（jav / fc2 / uncensored / western ...）。
+- 所有模块的 `MovieMixin` 都带 `series` 文本列与 `cover_url` / `release_date`，逻辑完全通用。
+- 数据为空（fc2/uncensored/western 当前 series 文本均为 0 行）时列表返回空，属数据层问题，
+  需先经刮削填充 `movies.series` 文本后才有内容。
+
 API 端点：
-- GET /api/v1/jav/series              - 系列列表（按影片数聚合，可过滤 > min_count、可搜索）
-- GET /api/v1/jav/series/{name}/movies - 某系列全部作品（按上映日期倒序，分页）
+- GET /api/v1/jav/series                  - 系列列表（默认 jav）
+- GET /api/v1/jav/series/{name}/movies    - 某系列全部作品
+均支持 `?module=fc2|uncensored|western` 切换模块。
 """
 
 from typing import Optional
@@ -57,20 +64,22 @@ class JavSeriesMoviesResponse(BaseModel):
 
 @router.get("", response_model=JavSeriesListResponse)
 async def list_jav_series(
+    module: str = Query("jav", description="目标模块：jav / fc2 / uncensored / western ..."),
     search: Optional[str] = Query(None, description="系列名模糊搜索"),
     min_count: int = Query(2, ge=1, description="系列包含影片数下限（含），默认 2 即聚合 2 部及以上的系列"),
     page: int = Query(1, ge=1),
     page_size: int = Query(60, ge=1, le=200),
 ):
     """
-    按 movies.series 文本聚合 JAV 系列。
+    按 movies.series 文本聚合指定模块的系列（提取自 JavBoss `ListJavSeries` 聚合思路）。
 
     - 仅展示影片数 >= min_count 的系列（默认 2 部及以上）
     - 按影片数倒序、系列名升序排列
     - 支持系列名模糊搜索与分页
+    - 通过 `module` 参数切换模块，逻辑对所有模块通用
     """
-    session = await get_module_session("jav")
-    Movie = get_module_model("jav", "movie")
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
 
     # 聚合查询：series 文本 -> 计数
     query = (
@@ -101,6 +110,7 @@ async def list_jav_series(
 @router.get("/{series_name}/movies", response_model=JavSeriesMoviesResponse)
 async def get_jav_series_movies(
     series_name: str,
+    module: str = Query("jav", description="目标模块：jav / fc2 / uncensored / western ..."),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
 ):
@@ -109,8 +119,8 @@ async def get_jav_series_movies(
 
     series_name 为 URL 编码后的系列名（FastAPI 自动解码）。
     """
-    session = await get_module_session("jav")
-    Movie = get_module_model("jav", "movie")
+    session = await get_module_session(module)
+    Movie = get_module_model(module, "movie")
 
     # 总数
     total = await session.scalar(
@@ -147,7 +157,7 @@ async def get_jav_series_movies(
             title=m.title,
             release_date=m.release_date,
             cover_url=m.cover_url,
-            module_type="jav",
+            module_type=module,
         )
         for m in movies
     ]

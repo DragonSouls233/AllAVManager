@@ -420,14 +420,51 @@ class NFOGenerator:
             self._add_element(root, "website", source_url)
         # javdbid: JavDB 视频 ID(关键缺失字段)
         javdb_id = getattr(result, "javdb_id", None)
+        if not javdb_id:  # A1 匿名兜底把它放 raw_data 里
+            javdb_id = (result.raw_data or {}).get("javdb_id")
         if javdb_id:
             self._add_element(root, "javdbid", javdb_id)
+
+        # === 磁力链接（来自 raw_data["magnets"]，通常由 JavDB 匿名 App API 兜底拉取） ===
+        self._add_magnets(root, result)
 
         # === Kodi 兼容额外字段 ===
         if kodi_compatible:
             self._add_kodi_extras(root, result)
 
         return root
+
+    def _add_magnets(self, root: ET.Element, result: ScrapeResult) -> None:
+        """把 raw_data['magnets'] 写入 <magnet> 标签。
+
+        JavDB 匿名 App API 兜底（app.crawlers.javdb._scrape_via_app_api）会往
+        raw_data['magnets'] 写入磁力列表，每个元素形如：
+            {"name", "hash", "size", "cnsub", "hd", "magnet_uri"}
+        这里兼容两种数据源：带 magnet_uri 的 App API 磁力，以及 MagnetInfo.to_dict()。
+        """
+        raw = result.raw_data or {}
+        magnets = raw.get("magnets") or []
+        if not magnets:
+            return
+        for m in magnets:
+            if not isinstance(m, dict):
+                continue
+            uri = m.get("magnet_uri") or m.get("link") or m.get("url")
+            if not uri:
+                h = m.get("hash")
+                if h:
+                    uri = f"magnet:?xt=urn:btih:{h}"
+            if not uri:
+                continue
+            magnet_elem = ET.SubElement(root, "magnet")
+            magnet_elem.text = uri
+            magnet_elem.set("name", str(m.get("name") or ""))
+            if m.get("size"):
+                magnet_elem.set("size", str(m.get("size")))
+            if m.get("cnsub"):
+                magnet_elem.set("cnsub", "true")
+            if m.get("hd"):
+                magnet_elem.set("hd", "true")
 
     def _add_kodi_extras(self, root: ET.Element, result: ScrapeResult) -> None:
         """添加 Kodi 兼容的额外字段

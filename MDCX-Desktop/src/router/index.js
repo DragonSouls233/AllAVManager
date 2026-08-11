@@ -533,7 +533,29 @@ const routes = [
         path: 'jav/series',
         name: 'JavSeries',
         component: () => import('@/views/jav/Series.vue'),
+        props: { module: 'jav' },
         meta: { title: 'JAV 有码 · 系列' }
+      },
+      {
+        path: 'fc2/series',
+        name: 'Fc2Series',
+        component: () => import('@/views/jav/Series.vue'),
+        props: { module: 'fc2' },
+        meta: { title: 'FC2 · 系列' }
+      },
+      {
+        path: 'uncensored/series',
+        name: 'UncensoredSeries',
+        component: () => import('@/views/jav/Series.vue'),
+        props: { module: 'uncensored' },
+        meta: { title: 'JAV 无码 · 系列' }
+      },
+      {
+        path: 'western/series',
+        name: 'WesternSeries',
+        component: () => import('@/views/jav/Series.vue'),
+        props: { module: 'western' },
+        meta: { title: '欧美 · 系列' }
       },
       {
         path: 'pornhub',

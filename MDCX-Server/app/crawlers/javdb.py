@@ -55,41 +55,37 @@ class JavDBCrawler(BaseCrawler):
             ctx=ctx,
         )
         if not html_text:
-            self.mark_error()
-            return None
+            # HTML 全链失败（含 CF 拦截）→ 匿名 App API 兜底
+            return await self._scrape_via_app_api(code)
 
         # fix23c: 检查是否被重定向到登录页（Cookie 失效）
         if self._is_login_redirect(html_text):
             logger.warning(f"JavDB {code}: Cookie 已失效，被重定向到登录页。请重新登录获取 Cookie")
-            self.mark_error()
-            return None
+            # Cookie 失效同样不影响匿名 App API
+            return await self._scrape_via_app_api(code)
 
         # 检查拦截
         if self._is_cf_blocked(html_text):
-            logger.debug(f"JavDB {code}: Cloudflare 拦截")
-            self.mark_error()
-            return None
+            logger.debug(f"JavDB {code}: Cloudflare 拦截，走匿名 App API 兜底")
+            return await self._scrape_via_app_api(code)
 
         # 从搜索结果中提取详情页 URL
         detail_url = self._extract_detail_url(html_text, code)
         if not detail_url:
             logger.debug(f"JavDB {code}: 搜索结果中未找到详情页")
-            self.mark_error()
-            return None
+            return await self._scrape_via_app_api(code)
 
         # 获取详情页
         detail_text = await self._fetch_with_cloudscraper(detail_url, ctx=ctx)
         if not detail_text:
-            self.mark_error()
-            return None
+            return await self._scrape_via_app_api(code)
 
         # 注意：不能用裸 ``"cloudflare" in detail_text`` 判断——javdb 正常详情页含
         # ``static.cloudflareinsights.com`` 分析脚本（自带 "cloudflare" 字样），会误判为
         # 拦截页导致刮削整批失败。改用 _is_cf_blocked（仅真 CF 挑战页/验证页才命中）。
         if self._is_cf_blocked(detail_text) or "driver-verify" in detail_text.lower():
-            logger.debug(f"JavDB 详情页 {code}: 验证拦截")
-            self.mark_error()
-            return None
+            logger.debug(f"JavDB 详情页 {code}: 验证拦截，走匿名 App API 兜底")
+            return await self._scrape_via_app_api(code)
 
         html = Selector(detail_text)
         result = self._parse_detail_page(html, code, detail_url)
@@ -99,6 +95,82 @@ class JavDBCrawler(BaseCrawler):
         else:
             self.mark_error()
         return result
+
+    async def _scrape_via_app_api(self, code: str) -> Optional[ScrapeResult]:
+        """通过 JavDB 匿名 App JSON API 兜底刮削（免登录、绕过 Cloudflare）。
+
+        当 HTML 详情链全部失败（CF 拦截 / Cookie 失效 / 连接错误）时使用。
+        返回元数据 + 磁力列表（javdb.py 原本不抓磁力，这里一并补上）。
+        """
+        try:
+            from app.services.javdb_app_client import JavDBAppClient
+            client = JavDBAppClient()
+            try:
+                mv = await client.search_movie(code)
+                if not mv:
+                    logger.debug(f"JavDB App API {code}: 未找到")
+                    self.mark_error()
+                    return None
+                # 反向校验：App API 返回的 number 若与目标番号强不等价，判定为抓错片，拒绝入库防串号。
+                if mv.number:
+                    from app.utils.code_verify import reverse_code_check
+                    is_match, norm_e, norm_g = reverse_code_check(code, mv.number)
+                    if not is_match:
+                        logger.warning(
+                            f"JavDB App API 番号反向校验失败，拒绝入库: 期望={norm_e} 实际={norm_g} title={mv.title[:30]!r}"
+                        )
+                        self.mark_error()
+                        return None
+                # 取磁力（App API 特有，HTML 链路拿不到）
+                magnets = await client.get_magnets(mv.id)
+                result = ScrapeResult(
+                    code=mv.number or code,
+                    title=mv.title or mv.origin_title or code,
+                    original_title=mv.origin_title or "",
+                    source=self.name,
+                    release_date=self._parse_date(mv.release_date),
+                    duration=mv.duration or None,
+                    cover_url=mv.cover_url or mv.thumb_url or "",
+                    poster_url=mv.cover_url or "",
+                    raw_data={
+                        "javdb_id": mv.id,
+                        "source": "javdb_app_api",
+                        "magnets": [
+                            {
+                                "name": m.name,
+                                "hash": m.hash,
+                                "size": m.size,
+                                "cnsub": m.cnsub,
+                                "hd": m.hd,
+                                "magnet_uri": m.magnet_uri,
+                            }
+                            for m in magnets
+                        ],
+                    },
+                    confidence=0.9,
+                )
+                self.mark_success()
+                return result
+            finally:
+                await client.close()
+        except Exception as e:
+            logger.debug(f"JavDB App API 兜底失败 {code}: {e}")
+            self.mark_error()
+            return None
+
+    @staticmethod
+    def _parse_date(s: str) -> Optional[date]:
+        """解析 JavDB App API 的 release_date（'2021-05-09' 或 '05/09/2021'）。"""
+        from datetime import datetime
+        if not s:
+            return None
+        s = s.strip()
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
 
     async def _fetch_with_cloudscraper(self, url: str, ctx=None) -> Optional[str]:
         """访问 JavDB 抓取 HTML（异步主路径 + 快速 CF 放弃 + 重兜底限时下线程）

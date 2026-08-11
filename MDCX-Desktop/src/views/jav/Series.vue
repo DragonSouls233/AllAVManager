@@ -7,7 +7,7 @@
       </el-button>
       <el-breadcrumb separator="/" class="breadcrumb">
         <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
-        <el-breadcrumb-item>JAV 有码</el-breadcrumb-item>
+        <el-breadcrumb-item>{{ moduleLabel }}</el-breadcrumb-item>
         <el-breadcrumb-item v-if="!selected">系列</el-breadcrumb-item>
         <el-breadcrumb-item v-else>{{ selected.name }}</el-breadcrumb-item>
       </el-breadcrumb>
@@ -18,7 +18,7 @@
       <div class="module-header">
         <h2 class="page-title">
           <el-icon><Collection /></el-icon>
-          JAV 有码 · 系列
+          {{ moduleLabel }} · 系列
           <span v-if="summary" class="stat-badge">
             共 {{ summary.total }} 个系列（{{ summary.totalMovies }} 部影片）
           </span>
@@ -46,7 +46,7 @@
 
       <el-card v-loading="loading" shadow="never" class="grid-card">
         <div v-if="seriesList.length === 0 && !loading" class="empty-state">
-          <el-empty description="暂无系列数据，请先刮削 JAV 有码影片" />
+          <el-empty :description="`暂无系列数据，请先刮削 ${moduleLabel} 影片`" />
         </div>
         <div v-else class="series-grid">
           <div
@@ -129,7 +129,19 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Search, Refresh, Collection } from '@element-plus/icons-vue'
 import MovieCard from '@/components/MovieCard.vue'
-import { getJavSeries, getJavSeriesMovies } from '@/api'
+import { getModuleSeries, getModuleSeriesMovies } from '@/api'
+
+const props = defineProps({
+  module: { type: String, default: 'jav' },
+})
+
+const MODULE_LABELS = {
+  jav: 'JAV 有码',
+  fc2: 'FC2',
+  uncensored: 'JAV 无码',
+  western: '欧美',
+}
+const moduleLabel = computed(() => MODULE_LABELS[props.module] || props.module.toUpperCase())
 
 const router = useRouter()
 
@@ -174,7 +186,7 @@ function applyLocalSort() {
 async function load() {
   loading.value = true
   try {
-    const res = await getJavSeries({
+    const res = await getModuleSeries(props.module, {
       min_count: 2,
       page: page.value,
       page_size: pageSize.value,
@@ -206,7 +218,7 @@ async function loadMovies() {
   if (!selected.value) return
   loadingMovies.value = true
   try {
-    const res = await getJavSeriesMovies(selected.value.name, {
+    const res = await getModuleSeriesMovies(props.module, selected.value.name, {
       page: moviePage.value,
       page_size: moviePageSize.value,
     })
@@ -233,7 +245,7 @@ function goBack() {
   if (selected.value) {
     back()
   } else {
-    router.push('/jav/movies')
+    router.push(`/${props.module}/movies`)
   }
 }
 

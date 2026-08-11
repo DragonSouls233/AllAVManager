@@ -107,6 +107,10 @@
             <el-icon><Grid /></el-icon>
             <template #title>类别</template>
           </el-menu-item>
+          <el-menu-item index="/uncensored/series">
+            <el-icon><Collection /></el-icon>
+            <template #title>系列</template>
+          </el-menu-item>
           <el-menu-item index="/uncensored/actors">
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
@@ -138,6 +142,10 @@
           <el-menu-item index="/fc2/actors">
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/fc2/series">
+            <el-icon><Collection /></el-icon>
+            <template #title>系列</template>
           </el-menu-item>
           <el-menu-item index="/fc2/scrape">
             <el-icon><Connection /></el-icon>
@@ -222,6 +230,10 @@
           <el-menu-item index="/western/actors">
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/western/series">
+            <el-icon><Collection /></el-icon>
+            <template #title>系列</template>
           </el-menu-item>
           <el-menu-item index="/western/scrape">
             <el-icon><Connection /></el-icon>

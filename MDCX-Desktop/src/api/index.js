@@ -958,3 +958,10 @@ export const getJavSeries = (params = {}) => api.get('/jav/series', { params })
 // 某系列全部作品：seriesName 经 encodeURIComponent 编码，后端按 movies.series 精确匹配
 export const getJavSeriesMovies = (seriesName, params = {}) =>
   api.get(`/jav/series/${encodeURIComponent(seriesName)}/movies`, { params })
+
+// ===== 模块通用 · 系列聚合（提取自 JavBoss 系列思路，复用 /jav/series 端点 + module 参数） =====
+// 通过 module 参数切换 jav / fc2 / uncensored / western，逻辑后端通用
+export const getModuleSeries = (module, params = {}) =>
+  api.get('/jav/series', { params: { module, ...params } })
+export const getModuleSeriesMovies = (module, seriesName, params = {}) =>
+  api.get(`/jav/series/${encodeURIComponent(seriesName)}/movies`, { params: { module, ...params } })
