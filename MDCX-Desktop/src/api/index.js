@@ -329,6 +329,20 @@ export const setCrawlerPriority = (priorities) => api.post('/crawlers/priority',
 export const getCrawlerStats = () => api.get('/crawlers/stats')
 
 // ============================================
+// AVLeague 实时榜单 / 演员新作发现
+// ============================================
+export const getAvLeagueLeaderboard = (params) =>
+  api.get('/avleague/leaderboard', { params, timeout: 30000 })
+export const getAvLeagueActorWorks = (params) =>
+  api.get('/avleague/actor-works', { params, timeout: 120000 })
+
+// ============================================
+// 维基百科 日本AV女优 分类成员（演员发现）
+// ============================================
+export const getWikipediaActressCategory = (params) =>
+  api.get('/wikipedia/actress-category', { params, timeout: 40000 })
+
+// ============================================
 // Compare 本地在线对比
 // ============================================
 export const scanLocal = (directories = []) => api.post('/compare/scan-local', { directories })

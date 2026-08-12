@@ -524,6 +524,18 @@ const routes = [
         component: () => import('@/views/jav/CodeTest.vue')
       },
       {
+        path: 'jav/leaderboard',
+        name: 'JavLeaderboard',
+        component: () => import('@/views/jav/Leaderboard.vue'),
+        meta: { title: 'JAV 有码 · AV联盟榜单' }
+      },
+      {
+        path: 'jav/wikipedia',
+        name: 'JavWikipediaActresses',
+        component: () => import('@/views/jav/WikipediaActresses.vue'),
+        meta: { title: 'JAV 有码 · 维基女优' }
+      },
+      {
         path: 'jav/categories',
         name: 'JavCategories',
         component: () => import('@/views/Category.vue'),

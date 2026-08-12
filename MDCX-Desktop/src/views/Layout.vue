@@ -91,6 +91,14 @@
             <el-icon><Search /></el-icon>
             <template #title>番号提取测试</template>
           </el-menu-item>
+          <el-menu-item index="/jav/leaderboard">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>AV联盟榜单</template>
+          </el-menu-item>
+          <el-menu-item index="/jav/wikipedia">
+            <el-icon><Reading /></el-icon>
+            <template #title>维基女优</template>
+          </el-menu-item>
         </el-sub-menu>
 
         <!-- ===== JAV 无码 ===== -->
@@ -836,7 +844,7 @@ import {
   ChatLineRound, UserFilled, FolderOpened, CircleCheck, WarningFilled, Cloudy, Download, Grid,
   Film, Loading, RefreshLeft, RefreshRight, CircleCheckFilled, CloseBold,
   PictureFilled, Collection, Share, Promotion, SetUp,
-  Operation, OfficeBuilding, DataLine, Management, Key, Search
+  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading
 } from '@element-plus/icons-vue'
 import { getNsfwConfig, updateNsfwConfig, toggleNsfwMode } from '@/api'
 import { getSystemHealth, getDashboardStats, getTaskStats, getVersion, getTags } from '@/api'

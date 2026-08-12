@@ -12,6 +12,7 @@
 
 from app.scraper.actor_profile_scrapers import (
     ActorProfileScraper,
+    AvLeagueScraper,
     DMMActressScraper,
     JavWikiScraper,
     AVOpenScraper,
@@ -24,6 +25,7 @@ from app.scraper.wikipedia_scraper import WikidataScraper, WikipediaScraper
 
 __all__ = [
     "ActorProfileScraper",
+    "AvLeagueScraper",
     "DMMActressScraper",
     "JavWikiScraper",
     "AVOpenScraper",

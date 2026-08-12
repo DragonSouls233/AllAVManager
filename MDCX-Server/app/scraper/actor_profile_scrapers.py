@@ -885,6 +885,167 @@ class GfriendsScraper(BaseActorProfileScraper):
 
 
 # ==========================================
+# AVリーグ（AV联盟）刮削器
+# ==========================================
+
+class AvLeagueScraper(BaseActorProfileScraper):
+    """
+    AVリーグ（AV联盟）刮削器
+
+    日本 AV 女优人气排名站，新人资料更新快，三围/身高/生日/出身/出道/社交账号齐全。
+    搜索: https://www.av-league.com/search/search.php?k={name}
+    详情: https://www.av-league.com/actress/{id}.html
+    """
+
+    name = "avleague"
+    display_name = "AV联盟"
+    base_url = "https://www.av-league.com"
+
+    # 资料表字段标签：日文原文 -> 中文含义（解析统一按中文语义处理，不使用日文原文）
+    _TH_FIELD_MAP = {
+        "3サイズ": "三围",
+        "身長": "身高",
+        "血液型": "血型",
+        "生年月日": "出生日期",
+        "出身": "出生地",
+        "デビュー": "出道",
+        "Twitter": "推特",
+        "インスタ": "Instagram",
+    }
+
+    def _headers(self) -> dict:
+        return {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8",
+        }
+
+    async def search(self, name: str) -> Optional[str]:
+        """站内搜索：/search/search.php?k={name}，返回匹配演员的详情页 URL"""
+        encoded = quote(name)
+        search_url = f"{self.base_url}/search/search.php?k={encoded}"
+
+        async with AsyncHttpClient(timeout=20) as client:
+            try:
+                html_text = await client.get_text(search_url, headers=self._headers())
+                if not html_text:
+                    return None
+
+                html = etree.fromstring(html_text, etree.HTMLParser())
+
+                # 结果块: <div class="l-box"><div class="l-name"><a href="/actress/{id}.html">名字</a></div></div>
+                boxes = html.xpath('//div[contains(@class, "l-box")]')
+                for box in boxes:
+                    link = box.xpath('.//a[contains(@href, "/actress/")][1]')
+                    if not link:
+                        continue
+                    href = link[0].get("href", "")
+                    text = "".join(link[0].xpath(".//text()")).strip()
+                    if name.lower() in text.lower() or text.lower() in name.lower():
+                        return href if href.startswith("http") else f"{self.base_url}{href}"
+
+                # 无精确匹配时取第一个结果
+                if boxes:
+                    href = boxes[0].xpath('.//a[contains(@href, "/actress/")][1]/@href')
+                    if href:
+                        h = href[0]
+                        return h if h.startswith("http") else f"{self.base_url}{h}"
+
+            except Exception as e:
+                logger.debug(f"AV联盟 搜索失败 {name}: {e}")
+
+        return None
+
+    async def scrape_profile(self, url: str) -> Optional[ActorProfile]:
+        """抓取 AV联盟 演员详情页"""
+        async with AsyncHttpClient(timeout=20) as client:
+            try:
+                html_text = await client.get_text(url, headers=self._headers())
+                if not html_text:
+                    return None
+
+                html = etree.fromstring(html_text, etree.HTMLParser())
+
+                # 姓名与读音: <h1 id="j-prof">天神羽衣（あまがみうい）</h1>
+                h1_elems = html.xpath('//h1[@id="j-prof"]//text()')
+                if not h1_elems:
+                    h1_elems = html.xpath('//h1//text()')
+                raw_name = "".join(h1_elems).strip()
+                if not raw_name:
+                    return None
+
+                name = raw_name
+                reading = None
+                if match := re.search(r"^(.*?)[（(]([^）)]*)[）)]$", raw_name):
+                    name = match.group(1).strip()
+                    reading = match.group(2).strip()
+
+                profile = ActorProfile(name=name, source=self.name, source_url=url)
+                if reading:
+                    # 读音写入别名，便于按读音匹配；不覆盖 name_jp（保持日文名=汉字名，利于后续搜索）
+                    profile.alias = reading
+
+                # 头像：顔写真（-s.jpg 脸部小图）优先
+                avatar_elems = html.xpath('//img[contains(@alt, "顔写真")]/@src')
+                if not avatar_elems:
+                    avatar_elems = html.xpath('//img[contains(@src, "/image/act/")][1]/@src')
+                if avatar_elems:
+                    avatar = avatar_elems[0]
+                    if avatar.startswith("/"):
+                        avatar = f"{self.base_url}{avatar}"
+                    profile.avatar_url = avatar
+
+                # 资料表: <tr><th>日文标签</th><td>值</td></tr>
+                social_links = {}
+                for row in html.xpath('//tr[th]'):
+                    th = "".join(row.xpath(".//th//text()")).strip()
+                    td = "".join(row.xpath(".//td//text()")).strip()
+                    field_key = self._TH_FIELD_MAP.get(th, th)
+
+                    if field_key == "三围":
+                        # 格式: B:80（E） / W:56 / H:75
+                        if match := re.search(r"B[:：]?\s*(\d+)", td):
+                            profile.bust = int(match.group(1))
+                        if match := re.search(r"W[:：]?\s*(\d+)", td):
+                            profile.waist = int(match.group(1))
+                        if match := re.search(r"H[:：]?\s*(\d+)", td):
+                            profile.hip = int(match.group(1))
+                        if match := re.search(r"[（(]([A-Za-z])[）)]", td):
+                            profile.cup = match.group(1).upper()
+                    elif field_key == "身高":
+                        if match := re.search(r"(\d+)", td):
+                            profile.height = int(match.group(1))
+                    elif field_key == "出生日期":
+                        # 格式: 2004年9月1日（21歳）
+                        if match := re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", td):
+                            profile.birth_date = (
+                                f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+                            )
+                        if match := re.search(r"(\d{1,3})歳", td):
+                            profile.age = int(match.group(1))
+                    elif field_key == "出生地":
+                        if td and td != "不明":
+                            profile.birthplace = td
+                    elif field_key == "出道":
+                        if match := re.search(r"(\d{4})", td):
+                            profile.debut_year = int(match.group(1))
+                    elif field_key in ("推特", "Instagram"):
+                        link_elems = row.xpath('.//td//a/@href')
+                        if link_elems:
+                            key = "twitter" if field_key == "推特" else "instagram"
+                            social_links[key] = link_elems[0]
+
+                if social_links:
+                    profile.social_links = social_links
+
+                return profile
+
+            except Exception as e:
+                logger.debug(f"AV联盟 抓取失败 {url}: {e}")
+
+        return None
+
+
+# ==========================================
 # 统一刮削器
 # ==========================================
 
@@ -899,6 +1060,7 @@ class ActorProfileScraper:
         # 延迟导入避免循环依赖
         from app.scraper.wikipedia_scraper import WikidataScraper, WikipediaScraper
         self._scrapers: list[BaseActorProfileScraper] = [
+            AvLeagueScraper(),   # AV联盟（新人资料全、更新快，作为第一演员补充来源）
             DMMActressScraper(),
             JavWikiScraper(),
             AVOpenScraper(),

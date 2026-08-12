@@ -21,6 +21,7 @@
 - 后台 asyncio 循环，默认 24h 一轮（可在 config 覆盖），亦可手动触发。
 """
 import asyncio
+import json
 import logging
 import random
 from dataclasses import asdict
@@ -157,6 +158,9 @@ async def enrich_actor(module: str, actor, session) -> dict:
 
     if updates:
         for f, v in updates.items():
+            # social_links 列是 JSON 字符串（Text），字典需序列化后再写入
+            if f == "social_links" and isinstance(v, dict):
+                v = json.dumps(v, ensure_ascii=False)
             setattr(actor, f, v)
         await session.commit()
         logger.info(f"[{module}] 演员 {actor.name} 补全 {len(updates)} 个字段: {list(updates.keys())}")
