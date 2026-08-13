@@ -732,6 +732,19 @@ def _apply_actor_profile(db_actor, profile, module_name: str):
         db_actor.nationality = profile.country
 
 
+async def _apply_actor_tags(session, profile, actor_id: int, module_name: str):
+    """把刮削标签（AV联盟 タグ / Wiki 受賞歴）写入 actor_tags（is_user=False，v3.5）。"""
+    if not getattr(profile, "tags", None):
+        return
+    try:
+        from app.utils.actor_tag_sync import sync_auto_actor_tags
+        from app.utils.module_helper import get_module_model
+        ActorTag = get_module_model(module_name, "actor_tag")
+        await sync_auto_actor_tags(session, ActorTag, actor_id, profile.tags)
+    except Exception as e:
+        logger.warning(f"模块演员 {actor_id} 自动标签写入失败(忽略): {e}")
+
+
 async def _download_module_actor_avatar(actor_id: int, url: str, module_name: str = None) -> bool:
     """下载演员头像到 DATA/avatars/{module_name}/actor_{id}.jpg
 
@@ -822,6 +835,9 @@ async def scrape_module_actor_profile(module_name: str, actor_id: int):
 
         # 应用全部资料字段（通用 + 模块特有），仅填充空字段
         _apply_actor_profile(db_actor, profile, module_name)
+
+        # 荣誉/风格标签落库（v3.5，is_user=False）
+        await _apply_actor_tags(session2, profile, actor_id, module_name)
 
         # 下载头像到本地约定文件，使列表/详情页头像端点能显示
         if profile.avatar_url:
@@ -915,6 +931,7 @@ async def batch_scrape_module_actor_profiles(
                         a = r.scalar_one_or_none()
                         if a:
                             _apply_actor_profile(a, profile, module_name)
+                            await _apply_actor_tags(s, profile, a.id, module_name)
                             if profile.avatar_url:
                                 await _download_module_actor_avatar(a.id, profile.avatar_url, module_name)
                             await s.commit()
@@ -997,6 +1014,7 @@ async def batch_scrape_module_actors(
                         a = r.scalar_one_or_none()
                         if a:
                             _apply_actor_profile(a, profile, module_name)
+                            await _apply_actor_tags(s, profile, a.id, module_name)
                             if profile.avatar_url:
                                 await _download_module_actor_avatar(a.id, profile.avatar_url, module_name)
                             await s.commit()

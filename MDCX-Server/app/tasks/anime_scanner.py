@@ -332,7 +332,7 @@ class AnimeScanner(BaseScanner):
                 (await session.execute(select(AnimeSeries.name))).scalars().all()
             )
 
-            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             batch_counter = 0  # 2026-08-08: 增量提交——每批 100 部 commit，超时也不丢已扫描部分
             for root, dirs, files in walk_entries:
                 for file_name in files:

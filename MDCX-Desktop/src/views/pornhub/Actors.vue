@@ -16,7 +16,6 @@
         <div class="actor-info">
           <div class="actor-name">{{ actor.name }}</div>
           <div class="actor-movies">{{ actor.movie_count }} 部作品</div>
-          <el-tag size="small" type="info" v-if="actor.source === 'scraper'">来自爬虫</el-tag>
         </div>
       </div>
       <el-empty v-if="!loading && !actors.length" description="暂无 PORNHub 演员，请先扫描影片" />

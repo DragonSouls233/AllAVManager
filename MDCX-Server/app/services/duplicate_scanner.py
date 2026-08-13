@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from app.tasks.base_scanner import iter_media_entries
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -236,7 +237,7 @@ async def scan_duplicates(
             continue
 
         logger.info(f"[duplicate_scanner] 正在扫描: {media_dir}")
-        walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_path)))
+        walk_entries = await asyncio.to_thread(iter_media_entries, media_path)
 
         for root, _dirs, files in walk_entries:
             dir_path = Path(root)

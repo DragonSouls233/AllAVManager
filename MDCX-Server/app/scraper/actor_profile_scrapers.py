@@ -108,6 +108,7 @@ class ActorProfile:
     zodiac: Optional[str] = None         # 星座（v3.4 新增）
     debut_year: Optional[int] = None     # 出道年份（v3.4 新增）
     social_links: Optional[dict] = None  # 社交账号（v3.4 新增，{twitter/instagram/blog/...: url}）
+    tags: Optional[list[str]] = None     # 荣誉/风格标签（v3.5 新增，来自 AV联盟 タグ、Wiki 受賞歴等）
     source: str = ""                     # 来源站点
     source_url: Optional[str] = None     # 来源URL
 
@@ -911,6 +912,7 @@ class AvLeagueScraper(BaseActorProfileScraper):
         "デビュー": "出道",
         "Twitter": "推特",
         "インスタ": "Instagram",
+        "タグ": "标签",
     }
 
     def _headers(self) -> dict:
@@ -1033,6 +1035,12 @@ class AvLeagueScraper(BaseActorProfileScraper):
                         if link_elems:
                             key = "twitter" if field_key == "推特" else "instagram"
                             social_links[key] = link_elems[0]
+                    elif field_key == "标签":
+                        # AV联盟"タグ"行: <a>可愛い</a>、<a>20代</a>…（风格/年龄类标签）
+                        tag_elems = row.xpath('.//td//a//text()')
+                        tags = [t.strip() for t in tag_elems if t.strip()]
+                        if tags:
+                            profile.tags = tags
 
                 if social_links:
                     profile.social_links = social_links

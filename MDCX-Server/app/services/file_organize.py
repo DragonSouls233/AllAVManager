@@ -15,6 +15,7 @@
 
 集成 Jinja2 命名模板（复用 app.services.naming）。
 """
+import asyncio
 import hashlib
 import importlib
 import logging
@@ -262,7 +263,11 @@ class FileOrganizeService:
             if target_dir:
                 os.makedirs(target_dir, exist_ok=True)
 
-            success = self._do_organize(task.job_type, task.source_path, task.target_path)
+            # 关键修复：_do_organize 内部 shutil.copy2/shutil.move 是同步阻塞的，
+            # 必须丢到线程池执行，避免阻塞事件循环导致服务端假死。
+            success = await asyncio.to_thread(
+                self._do_organize, task.job_type, task.source_path, task.target_path
+            )
             if not success:
                 job.status = "failed"
                 job.error_message = f"整理失败（{task.job_type}）"
@@ -716,7 +721,10 @@ async def auto_organize_watched(session: AsyncSession, module: str = "jav") -> d
 
             try:
                 if action == "move":
-                    res = safe_move_file(src, dst, safe_mode=True)
+                    # 关键修复：safe_move_file 会整文件读取(SHA256)+整文件复制，
+                    # 必须丢到线程池执行，否则会阻塞 asyncio 事件循环 → 整个服务端
+                    # （含前端静态资源）假死。详见诊断。
+                    res = await asyncio.to_thread(safe_move_file, src, dst, safe_mode=True)
                     if res["success"]:
                         movie.file_path = dst
                         await session.commit()
@@ -742,7 +750,7 @@ async def auto_organize_watched(session: AsyncSession, module: str = "jav") -> d
                             "error": res.get("error"),
                         })
                 elif action == "copy":
-                    res = safe_move_file(src, dst, safe_mode=False)
+                    res = await asyncio.to_thread(safe_move_file, src, dst, safe_mode=False)
                     if res["success"]:
                         summary["copied"] += 1
                         rule_detail["ok"] += 1
@@ -771,7 +779,7 @@ async def auto_organize_watched(session: AsyncSession, module: str = "jav") -> d
                         rule_detail["ok"] += 1
                     except OSError as e:
                         if e.errno == 18:
-                            res = safe_move_file(src, dst, safe_mode=False)
+                            res = await asyncio.to_thread(safe_move_file, src, dst, safe_mode=False)
                             if res["success"]:
                                 summary["copied"] += 1
                                 rule_detail["ok"] += 1

@@ -16,7 +16,7 @@ import os
 import re
 from pathlib import Path
 
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -247,7 +247,7 @@ class PornhubScanner(BaseScanner):
                 (await session.execute(select(PornhubMovie.code))).scalars().all()
             )
 
-            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             for root, dirs, files in walk_entries:
                 # 提取当前目录的演员名和国籍（跳过根目录）
                 # 传入 root 路径而非文件路径，_get_actor_from_path 内部使用 parent 提取目录

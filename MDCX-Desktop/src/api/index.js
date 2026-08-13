@@ -259,6 +259,11 @@ export const updateActor = (id, data) => api.patch(`/actors/${id}`, data)
 export const getActorStats = () => api.get('/actors/stats/overview')
 export const scrapeActorProfile = (id) => api.post(`/actors/${id}/scrape-profile`, null, { timeout: 120000 })
 export const scrapeActorProfiles = (data) => api.post('/actors/scrape-profiles/batch', data, { timeout: 300000 })
+// 从影片 actor 字段反查补齐演员表（含改名后的新艺名）
+export const syncModuleActors = (module) => api.post(`/modules/${module}/actors/sync`, null, { timeout: 120000 })
+// JavDB 改名演员自动合并：扫描候选 + 批量应用
+export const scanJavdbMerge = (data) => api.post('/actors/javdb-merge/scan', data, { timeout: 300000 })
+export const applyJavdbMerge = (data) => api.post('/actors/javdb-merge/apply', data, { timeout: 300000 })
 // 演员标签管理（v3.4 新增）
 export const getActorTags = (id) => api.get(`/actors/${id}/tags`)
 export const addActorTag = (id, data) => api.post(`/actors/${id}/tags`, data)

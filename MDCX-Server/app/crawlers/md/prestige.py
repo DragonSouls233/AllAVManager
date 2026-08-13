@@ -240,7 +240,8 @@ async def main(
                 LogBuffer.info().write(web_info + debug_info)
                 raise Exception(debug_info)
     except Exception as e:
-        print(traceback.format_exc())
+        # 403/反爬/超时属于预期内失败：只记一行警告，不打完整堆栈刷屏
+        logger.warning(f"[prestige] {number} 刮削失败: {e}")
         LogBuffer.error().write(str(e))
         dic = {
             "title": "",

@@ -56,6 +56,7 @@ from app.tasks.anime_scanner import (
     parse_nfo,
     parse_series_episode,
 )
+from app.tasks.base_scanner import iter_media_entries
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -191,7 +192,7 @@ class ResumableAnimeScanner:
         """遍历一个 media 根目录。返回跳过的已处理目录数。"""
         skipped = 0
         # 整棵目录树一次性枚举到线程，避免在主事件循环阻塞；网络盘 listdir 走线程池
-        walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+        walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
         for root, dirs, files in walk_entries:
             rel = str(Path(root).relative_to(media_dir)).replace("\\", "/")
             if rel == ".":
@@ -364,7 +365,7 @@ class ResumableAnimeScanner:
                 (await session.execute(select(AnimeMovie.code))).scalars().all()
             )
             for media_dir in self.media_dirs:
-                walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+                walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
                 for root, _dirs, files in walk_entries:
                     rel = str(Path(root).relative_to(media_dir)).replace("\\", "/")
                     if rel == ".":

@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -104,7 +104,7 @@ class JavScanner(BaseScanner):
             existing_codes: set[str] = set(
                 (await session.execute(select(JavMovie.code))).scalars().all()
             )
-            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             for root, dirs, files in walk_entries:
                 # 收集当前目录的演员信息
                 dir_path = Path(root)

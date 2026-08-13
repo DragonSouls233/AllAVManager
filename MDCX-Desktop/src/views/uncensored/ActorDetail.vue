@@ -10,7 +10,6 @@
         <h2>{{ actor.name }}</h2>
         <div class="stats">
           <span>{{ actor.movie_count }} 部作品</span>
-          <el-tag v-if="actor.source === 'scraper'" type="success" size="small">来自爬虫</el-tag>
         </div>
       </div>
       <div class="movies-section">

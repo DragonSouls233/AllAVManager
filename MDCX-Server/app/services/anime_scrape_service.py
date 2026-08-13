@@ -27,6 +27,7 @@ from app.tasks.anime_scanner import (
     generate_anime_code,
     parse_anime_filename,
 )
+from app.tasks.base_scanner import iter_media_entries
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -59,7 +60,7 @@ async def run_anime_dir_scrape(job_id: str, directory: str, only_missing: bool) 
     }
     try:
         # 1) 收集目录下所有视频 → (code, title, maker)
-        walk_entries = await asyncio.to_thread(lambda: list(os.walk(Path(directory))))
+        walk_entries = await asyncio.to_thread(iter_media_entries, Path(directory))
         candidates = []
         for root, _dirs, files in walk_entries:
             for file_name in files:

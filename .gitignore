@@ -3,8 +3,8 @@ test_screenshots/
 qa_screenshots/
 qa_screenshots_v2/
 screenshots/
-tmp_scancheck/
 tmp/
+query_tmp/
 *.png
 *.jpg
 *.jpeg
@@ -75,3 +75,6 @@ pornhub_fix_overview.md
 JAV系列_参考学习报告.md
 pornhub_actor_count_fix.md
 MDCX-Server/app/utils/atomic_write.py
+query_tmp
+tmp_scancheck
+tmp_sakuramedia

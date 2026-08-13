@@ -61,7 +61,7 @@
             <el-tag v-if="m.release_date" size="small">{{ String(m.release_date).slice(0, 10) }}</el-tag>
           </div>
           <div class="actors" v-if="m.actor">
-            <el-tag v-for="a in m.actor.split(',').slice(0, 4)" :key="a" size="small" type="success" class="actor-tag">{{ a.trim() }}</el-tag>
+            <el-tag v-for="a in m.actor.split(',').slice(0, 4)" :key="a" size="small" type="success" class="actor-tag">{{ actorName(a) }}</el-tag>
           </div>
         </div>
       </div>
@@ -125,6 +125,13 @@ function onFilterChange() {
 function onPageSizeChange() {
   store.page = 1
   loadMovies()
+}
+
+// 兜底剥离历史脏数据格式 {'name': 'xx'}
+function actorName(s) {
+  const t = String(s || '').trim()
+  const m = t.match(/\{'name':\s*'([^']*)'\}/)
+  return m ? m[1] : t
 }
 
 function resetFilters() {

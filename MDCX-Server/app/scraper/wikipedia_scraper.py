@@ -38,6 +38,118 @@ WIKIPEDIA_SEARCH = "https://{lang}.wikipedia.org/w/api.php"
 # User-Agent（Wikidata/Wikipedia 要求标识）
 USER_AGENT = "MDCX/3.0 (https://github.com/mdcx)"
 
+# 受賞歴 章节标题（日文维基荣誉段落）
+HONOR_SECTION_RE = re.compile(r"^=+\s*受賞(?:歴|賞)?.{0,8}=+$", re.M)
+# wiki 链接 [[A]] / [[A|B]] -> B
+WIKI_LINK_RE = re.compile(r"\[\[(?:[^|\]]*\|)?([^\]]+)\]\]")
+# 无引用 ref、模板、HTML 注释（简单清洗）
+WIKI_REF_RE = re.compile(r"<ref[^>]*>.*?</ref>|<ref[^>]*/>", re.S)
+WIKI_TEMPLATE_RE = re.compile(r"\{\{[^{}]*\}\}")
+WIKI_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def clean_wiki_markup(text: str) -> str:
+    """清洗维基标记，保留纯文本"""
+    if not text:
+        return ""
+    text = WIKI_REF_RE.sub("", text)
+    text = WIKI_TEMPLATE_RE.sub("", text)
+    text = WIKI_COMMENT_RE.sub("", text)
+    text = WIKI_LINK_RE.sub(r"\1", text)
+    text = text.replace("'''", "").replace("''", "").replace("&nbsp;", " ")
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_honor_tags(wikitext: str, limit: int = 15) -> list[str]:
+    """从日文维基 wikitext 的『受賞歴』章节提取荣誉标签
+
+    典型内容:
+        === 受賞歴 ===
+        * 2019年、[[FANZAアダルトアワード2019]] 優秀女優賞
+        * 2022年、'''キングスコート 年間売上ランキング 第1位'''
+    """
+    if not wikitext:
+        return []
+    tags: list[str] = []
+    in_honor = False
+    for raw in wikitext.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if HONOR_SECTION_RE.search(line):
+            in_honor = True
+            continue
+        if in_honor:
+            # 到达下一个章节则结束
+            if line.startswith("="):
+                break
+            if not line.startswith("*"):
+                continue
+            clean = clean_wiki_markup(line.lstrip("* "))
+            # 去掉行内列标记（; 序号: 说明 形式）与冗余空项
+            clean = re.sub(r"^\d+[.:、]\s*", "", clean)
+            if clean and clean not in tags:
+                tags.append(clean)
+                if len(tags) >= limit:
+                    break
+    return tags
+
+
+async def fetch_wikipedia_intro_and_tags(
+    name: str, name_jp: Optional[str], client
+) -> tuple[Optional[str], list[str]]:
+    """从 Wikipedia 获取演员简介摘要 + 荣誉标签（受賞歴）
+
+    优先日文维基（AV 女优资料更全，受賞歴 通常只有日文条目有），
+    摘要回退中文/英文。返回 (intro, tags)。
+    """
+    intro = None
+    tags: list[str] = []
+    for lang, query_name in [("ja", name_jp), ("zh", name), ("en", name)]:
+        if not query_name:
+            continue
+        try:
+            # 1) 搜索精确匹配的页面标题
+            search_url = (
+                f"{WIKIPEDIA_SEARCH.format(lang=lang)}?action=query"
+                f"&list=search&srsearch={quote(query_name)}&srlimit=1&format=json"
+            )
+            headers = {"User-Agent": USER_AGENT}
+            search_data = await client.get_json(search_url, headers=headers)
+            results = search_data.get("query", {}).get("search", [])
+            if not results:
+                continue
+            title = results[0].get("title")
+            if not title:
+                continue
+
+            # 2) 摘要（rest_v1）
+            summary_url = WIKIPEDIA_API.format(lang=lang, title=quote(title))
+            summary_data = await client.get_json(summary_url, headers=headers)
+            extract = summary_data.get("extract")
+            if extract and not intro:
+                intro = extract[:500] + ("..." if len(extract) > 500 else "")
+
+            # 3) 日文维基完整 wikitext -> 受賞歴 荣誉标签
+            if lang == "ja" and not tags:
+                wt_url = (
+                    f"{WIKIPEDIA_SEARCH.format(lang=lang)}?action=parse"
+                    f"&page={quote(title)}&prop=wikitext&format=json&formatversion=2"
+                )
+                wt_data = await client.get_json(wt_url, headers=headers)
+                wikitext = wt_data.get("parse", {}).get("wikitext")
+                if wikitext:
+                    tags = extract_honor_tags(wikitext)
+
+            # 日文维基是权威来源，拿到即停
+            if lang == "ja" or intro:
+                break
+        except Exception as e:
+            logger.debug(f"Wikipedia {lang} 获取失败 {query_name}: {e}")
+            continue
+    return intro, tags
+
 
 class WikidataScraper(BaseActorProfileScraper):
     """Wikidata 演员资料刮削器
@@ -185,10 +297,8 @@ LIMIT 5
                     # Wikimedia 图片 URL 需要特殊计算（md5 前缀）
                     avatar_url = self._build_commons_url(img_filename)
 
-            # 获取简介（从 Wikipedia）
-            intro = None
-            if name:
-                intro = await self._fetch_wikipedia_summary(name, name_jp, client)
+            # 获取简介与荣誉标签（从 Wikipedia，日文维基受賞歴优先）
+            intro, tags = await fetch_wikipedia_intro_and_tags(name, name_jp, client)
 
             # 社交账号（v3.4 新增，从 Wikidata claims 提取）
             social_links = self._extract_social_links(claims)
@@ -202,6 +312,7 @@ LIMIT 5
                 birth_date=birth_date,
                 birthplace=birthplace,
                 intro=intro,
+                tags=tags or None,
                 social_links=social_links,
                 source="wikidata",
                 source_url=f"https://www.wikidata.org/wiki/{qid}",

@@ -9,6 +9,15 @@
       <el-tooltip content="把合并进来的别名作品一起算上，修正列表里过时的作品数" placement="top">
         <el-button :loading="recalcing" @click="recalcCounts">重算作品数</el-button>
       </el-tooltip>
+      <el-button type="warning" @click="openProfileDialog">
+        <el-icon><Refresh /></el-icon> 资料刮削
+      </el-button>
+      <el-button type="info" plain @click="syncActors" :loading="syncing">
+        <el-icon><RefreshLeft /></el-icon> 同步演员
+      </el-button>
+      <el-button type="danger" plain @click="openMergeDialog">
+        <el-icon><Switch /></el-icon> JavDB 自动合并
+      </el-button>
     </div>
 
     <!-- 作品数分类 Tab -->
@@ -44,7 +53,6 @@
               已合并 {{ mergedOf(actor).length }} 名
             </el-tag>
           </el-tooltip>
-          <el-tag size="small" type="info" v-if="actor.source === 'scraper'">来自爬虫</el-tag>
         </div>
       </div>
       <el-empty v-if="!loading && !actors.length" description="暂无演员，请先扫描影片" />
@@ -55,18 +63,83 @@
         :total="total" :page-sizes="[60, 120, 240]" layout="total, sizes, prev, pager, next"
         @size-change="handleSizeChange" @current-change="loadActors" />
     </div>
+
+    <!-- 资料刮削对话框 -->
+    <el-dialog v-model="profileVisible" title="演员资料补充刮削" width="560px">
+      <el-alert type="info" :closable="false" show-icon class="tip">
+        <template #title>
+          从 AV联盟 → DMM → JavWiki → 维基百科等源补充演员资料（生日/身高/三围/罩杯/出道/社交等），仅补空缺字段，最多处理 100 人
+        </template>
+      </el-alert>
+      <el-form label-width="100px" class="dialog-form">
+        <el-form-item label="最少作品数">
+          <el-input-number v-model="profileMinMovies" :min="1" :max="100" />
+          <span class="muted" style="margin-left:8px">仅刮削达到该作品数的演员</span>
+        </el-form-item>
+        <el-form-item label="同时补头像">
+          <el-switch v-model="profileIncludeAvatar" />
+          <span class="muted" style="margin-left:8px">资料源有头像时一并补充（缺头像的演员）</span>
+        </el-form-item>
+      </el-form>
+      <div class="actions">
+        <el-button type="primary" @click="startProfileScrape" :loading="profileScraping">
+          <el-icon><Refresh /></el-icon> 开始刮削
+        </el-button>
+      </div>
+    </el-dialog>
+
+    <!-- JavDB 改名演员自动合并对话框 -->
+    <el-dialog v-model="mergeVisible" title="JavDB 改名演员自动合并" width="760px">
+      <el-alert type="info" :closable="false" show-icon class="tip">
+        <template #title>
+          读取 JavDB 演员库（含全部历史艺名），匹配本地演员表中的同名演员。建议先执行「同步演员」补齐改名后的新艺名，再扫描合并。
+        </template>
+      </el-alert>
+      <div class="actions" style="margin: 12px 0">
+        <el-button type="primary" @click="scanJavdbMergeCandidates" :loading="mergeScanning">
+          <el-icon><Search /></el-icon> 扫描合并候选
+        </el-button>
+        <el-button type="success" @click="applySelectedMerges" :loading="mergeApplying" :disabled="!mergeSelected.length">
+          <el-icon><Switch /></el-icon> 合并选中（{{ mergeSelected.length }} 组）
+        </el-button>
+        <span class="muted" style="margin-left: auto">共 {{ mergeCandidates.length }} 组候选</span>
+      </div>
+      <el-table :data="mergeCandidates" v-loading="mergeScanning" max-height="440" size="small"
+        @selection-change="onMergeSelectionChange">
+        <el-table-column type="selection" width="42" />
+        <el-table-column label="JavDB 全部艺名" min-width="200">
+          <template #default="{ row }">
+            <el-tag size="small" type="info" style="margin-right:4px">{{ row.javdb_names[0] }}</el-tag>
+            <span class="muted" style="font-size:12px">{{ row.javdb_names.slice(1).join(' / ') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="保留（主名）" min-width="120">
+          <template #default="{ row }">
+            <b>{{ row.canonical.name }}</b>
+            <div class="muted" style="font-size:12px">{{ row.canonical.movie_count }} 部</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="并入" min-width="160">
+          <template #default="{ row }">
+            <el-tag size="small" type="warning" style="margin:2px 4px 2px 0" v-for="s in row.sources" :key="s.id">
+              {{ s.name }}（{{ s.movie_count }}）
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Search } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Search, Refresh, RefreshLeft, Switch } from '@element-plus/icons-vue'
 import defaultAvatar from '@/assets/default-avatar.png'
 import { getAvatarSrc } from '@/utils/media'
 import { getJavActors } from '@/api/jav'
-import { recalcActorMovieCount } from '@/api'
+import { recalcActorMovieCount, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge } from '@/api'
 
 const router = useRouter()
 const keyword = ref('')
@@ -149,6 +222,128 @@ function handleAvatarError(e) {
   e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
+// ===== 资料刮削（批量补充演员信息）=====
+const profileVisible = ref(false)
+const profileMinMovies = ref(2)
+const profileIncludeAvatar = ref(false)
+const profileScraping = ref(false)
+
+function openProfileDialog() {
+  profileVisible.value = true
+}
+
+async function startProfileScrape() {
+  try {
+    await ElMessageBox.confirm(
+      `确认对「jav」模块 ≥ ${profileMinMovies.value} 部作品的前 100 名演员启动资料刮削吗？` +
+      (profileIncludeAvatar.value ? '（将同时补充缺失的头像）' : ''),
+      '资料刮削',
+      { confirmButtonText: '开始刮削', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) {
+    return // 用户取消
+  }
+  profileScraping.value = true
+  try {
+    const res = await scrapeActorProfiles({
+      module: 'jav',
+      min_movies: profileMinMovies.value,
+      include_avatar: profileIncludeAvatar.value
+    })
+    profileVisible.value = false
+    ElMessage.success(`资料刮削完成：共 ${res.total} 人，成功 ${res.success}，失败 ${res.failed}`)
+    loadActors()
+  } catch (e) {
+    ElMessage.error('资料刮削失败: ' + (e.message || '未知错误'))
+  } finally {
+    profileScraping.value = false
+  }
+}
+
+// ===== 同步演员（从影片 actor 字段反查补齐演员表）=====
+const syncing = ref(false)
+async function syncActors() {
+  try {
+    await ElMessageBox.confirm(
+      '从「jav」模块所有影片的 actor 字段提取演员名，补齐缺失的演员记录（含改名后的新艺名）。继续吗？',
+      '同步演员',
+      { confirmButtonText: '开始同步', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch (e) {
+    return
+  }
+  syncing.value = true
+  try {
+    const res = await syncModuleActors('jav')
+    ElMessage.success(`同步完成：发现 ${res.actors_found} 人，新增 ${res.actors_added}，更新计数 ${res.actors_updated}`)
+    loadActors()
+  } catch (e) {
+    ElMessage.error('同步演员失败: ' + (e.message || '未知错误'))
+  } finally {
+    syncing.value = false
+  }
+}
+
+// ===== JavDB 改名演员自动合并 =====
+const mergeVisible = ref(false)
+const mergeScanning = ref(false)
+const mergeApplying = ref(false)
+const mergeCandidates = ref([])
+const mergeSelected = ref([])
+
+function openMergeDialog() {
+  mergeVisible.value = true
+}
+
+async function scanJavdbMergeCandidates() {
+  mergeScanning.value = true
+  try {
+    const res = await scanJavdbMerge({ module: 'jav', max_pages: 30 })
+    mergeCandidates.value = res.candidates || []
+    ElMessage.success(`扫描完成：本地 ${res.scanned} 位演员，发现 ${res.total} 组改名合并候选`)
+    if (!mergeCandidates.value.length) {
+      ElMessage.info('未发现改名合并候选。若本库刚导入改名演员，请先执行「同步演员」补齐新艺名。')
+    }
+  } catch (e) {
+    ElMessage.error('扫描失败: ' + (e.message || '未知错误'))
+  } finally {
+    mergeScanning.value = false
+  }
+}
+
+function onMergeSelectionChange(rows) {
+  mergeSelected.value = rows
+}
+
+async function applySelectedMerges() {
+  const selections = mergeSelected.value.map(r => ({
+    canonical_id: r.canonical.id,
+    source_ids: r.sources.map(s => s.id)
+  }))
+  try {
+    await ElMessageBox.confirm(
+      `确认合并选中的 ${selections.length} 组演员吗？\n被合并演员的作品将归入保留演员名下，其姓名自动成为别名。此操作不可撤销。`,
+      'JavDB 自动合并',
+      { confirmButtonText: '确认合并', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) {
+    return
+  }
+  mergeApplying.value = true
+  try {
+    const res = await applyJavdbMerge({ module: 'jav', selections })
+    ElMessage.success(`已合并 ${res.applied} 组演员`)
+    const mergedIds = new Set()
+    res.results?.forEach(r => mergedIds.add(r.canonical_id))
+    mergeCandidates.value = mergeCandidates.value.filter(c => !mergedIds.has(c.canonical.id))
+    loadActors()
+  } catch (e) {
+    ElMessage.error('合并失败: ' + (e.message || '未知错误'))
+  } finally {
+    mergeApplying.value = false
+  }
+}
+
 onMounted(loadActors)
 </script>
 
@@ -166,4 +361,7 @@ onMounted(loadActors)
 .actor-name { font-size: 14px; font-weight: bold; }
 .actor-movies { font-size: 12px; color: #999; }
 .pagination-wrap { margin-top: 20px; display: flex; justify-content: center; }
+.tip { margin-bottom: 4px; }
+.dialog-form { margin-top: 12px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 </style>

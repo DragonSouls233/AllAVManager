@@ -261,6 +261,10 @@ async def list_actors(
         # 作品关系实际以 movies.actor 逗号分隔文本存储）
         query = select(actor_cls)
 
+        # 排除刮削时自动创建的占位演员（source=scraper）：本地没有真实作品就不应出现在演员库
+        if hasattr(actor_cls, "source"):
+            query = query.where(actor_cls.source != "scraper")
+
         if search:
             # 同时匹配别名(alias)，使合并后被合并演员的旧名仍可检索到
             # （合并会把 source.name 写入 canonical.alias，source 行硬删除，
@@ -1070,6 +1074,7 @@ async def batch_scrape_actor_profiles(
 ):
     """批量刮削演员资料"""
     from app.scraper.actor_profile_scrapers import get_actor_profile_scraper, ActorProfile
+    from app.utils.actor_tag_sync import sync_auto_actor_tags
     from app.utils.http_client import AsyncHttpClient
 
     actor_cls = get_module_model(module, "actor")
@@ -1102,12 +1107,12 @@ async def batch_scrape_actor_profiles(
     scraper = get_actor_profile_scraper()
 
     for row in actors_data:
-        actor = row[0]
-        movie_cnt = getattr(actor, "movie_count", 0) or 0
+        row_actor = row[0]
+        movie_cnt = getattr(row_actor, "movie_count", 0) or 0
 
         result_item = {
-            "actor_id": actor.id,
-            "name": actor.name,
+            "actor_id": row_actor.id,
+            "name": row_actor.name,
             "movie_count": movie_cnt,
             "status": "pending",
             "scraped_fields": {},
@@ -1116,8 +1121,8 @@ async def batch_scrape_actor_profiles(
 
         try:
             profile = await scraper.get_profile(
-                name=actor.name,
-                name_jp=getattr(actor, "name_jp", None),
+                name=row_actor.name,
+                name_jp=getattr(row_actor, "name_jp", None),
                 preferred_sources=body.sources,
             )
 
@@ -1141,44 +1146,69 @@ async def batch_scrape_actor_profiles(
                     "debut_year": "debut_year",
                 }
 
-                for profile_field, actor_field in field_mapping.items():
-                    if hasattr(profile, profile_field):
-                        value = getattr(profile, profile_field)
-                        if value and hasattr(actor, actor_field):
-                            current_value = getattr(actor, actor_field)
-                            if not current_value or current_value == "":
-                                setattr(actor, actor_field, value)
-                                scraped_fields[actor_field] = value
+                # 注意: 上方查询块退出时 `async with sess` 会 close 掉 session,
+                # 旧 actor 对象已 detached, 修改/提交无效。必须在同一事务块内
+                # 重新加载演员后再 setattr 并 commit。
+                async with sess:
+                    actor = await sess.get(actor_cls, row_actor.id)
+                    if actor is None:
+                        failed += 1
+                        result_item["status"] = "not_found"
+                        results.append(result_item)
+                        await asyncio.sleep(0.5)
+                        continue
 
-                if profile.social_links and not getattr(actor, "social_links", None):
-                    actor.social_links = json.dumps(profile.social_links, ensure_ascii=False)
-                    scraped_fields["social_links"] = profile.social_links
+                    for profile_field, actor_field in field_mapping.items():
+                        if hasattr(profile, profile_field):
+                            value = getattr(profile, profile_field)
+                            if value and hasattr(actor, actor_field):
+                                current_value = getattr(actor, actor_field)
+                                if not current_value or current_value == "":
+                                    setattr(actor, actor_field, value)
+                                    scraped_fields[actor_field] = value
 
-                if body.include_avatar and profile.avatar_url and not getattr(actor, "avatar_url", None):
-                    avatar_path = await _download_actor_avatar(
-                        actor.id, profile.avatar_url, actor.name, module
-                    )
-                    if avatar_path:
-                        actor.avatar_url = str(avatar_path)
-                        scraped_fields["avatar_url"] = str(avatar_path)
-                        result_item["avatar_updated"] = True
+                    if profile.social_links and not getattr(actor, "social_links", None):
+                        actor.social_links = json.dumps(profile.social_links, ensure_ascii=False)
+                        scraped_fields["social_links"] = profile.social_links
 
-                if scraped_fields:
-                    async with sess:
+                    if body.include_avatar and profile.avatar_url and not getattr(actor, "avatar_url", None):
+                        try:
+                            avatar_path = await _download_actor_avatar(
+                                actor.id, profile.avatar_url, actor.name, module
+                            )
+                            if avatar_path:
+                                actor.avatar_url = str(avatar_path)
+                                scraped_fields["avatar_url"] = str(avatar_path)
+                                result_item["avatar_updated"] = True
+                        except Exception as e:
+                            # 头像下载失败不影响资料字段提交
+                            logger.warning(f"演员 {actor.name} 头像下载失败(忽略): {e}")
+
+                    # 荣誉/风格标签落库（v3.5）：AV联盟 タグ + Wiki 受賞歴，is_user=False 区分手动标签
+                    if getattr(profile, "tags", None):
+                        try:
+                            ActorTag = get_module_model(module, "actor_tag")
+                            new_tags = await sync_auto_actor_tags(sess, ActorTag, actor.id, profile.tags)
+                            if new_tags:
+                                scraped_fields["tags"] = new_tags
+                        except Exception as e:
+                            logger.warning(f"演员 {actor.name} 自动标签写入失败(忽略): {e}")
+
+                    if scraped_fields:
                         await sess.commit()
-                    success += 1
-                    result_item["status"] = "success"
-                    result_item["scraped_fields"] = scraped_fields
-                    result_item["source"] = profile.source
-                else:
-                    failed += 1
-                    result_item["status"] = "no_update"
+                        success += 1
+                        result_item["status"] = "success"
+                        result_item["scraped_fields"] = scraped_fields
+                        result_item["source"] = profile.source
+                    else:
+                        failed += 1
+                        result_item["status"] = "no_update"
             else:
                 failed += 1
                 result_item["status"] = "not_found"
 
         except Exception as e:
-            logger.error(f"刮削演员 {actor.name} 失败: {e}")
+            logger.error(f"刮削演员 {row_actor.name} 失败: {e}")
             failed += 1
             result_item["status"] = "error"
             result_item["error"] = str(e)
@@ -1199,8 +1229,13 @@ async def batch_scrape_actor_profiles(
 async def _download_actor_avatar(
     actor_id: int, url: str, actor_name: str = "", module: str = "jav"
 ) -> Optional[Path]:
-    """下载演员头像到本地(按模块隔离: avatars/{module}/actor_{id}.jpg)"""
+    """下载演员头像到本地(按模块隔离: avatars/{module}/actor_{id}.jpg)。
+
+    与原有头像刮削链(actor_avatar.py 的 _download_avatar)保持一致:
+    同样先存 _raw.jpg 再做人脸裁剪, 裁剪失败用原图, 保存到同一路径。
+    """
     from app.config.manager import get_config_manager
+    from app.utils.http_client import AsyncHttpClient
 
     manager = get_config_manager()
     avatar_dir = manager.computed.data_dir / "avatars"
@@ -1208,10 +1243,12 @@ async def _download_actor_avatar(
         avatar_dir = avatar_dir / module
     avatar_dir.mkdir(parents=True, exist_ok=True)
 
+    raw_path = avatar_dir / f"actor_{actor_id}_raw.jpg"
     output_path = (avatar_dir / f"actor_{actor_id}.jpg").resolve()
 
     async with AsyncHttpClient(timeout=30) as client:
         try:
+            # 提取域名用于 Referer
             match = re.match(r'https?://([^/]+)', url)
             referer_domain = f"https://{match.group(1)}" if match else "https://www.dmm.co.jp"
 
@@ -1221,17 +1258,43 @@ async def _download_actor_avatar(
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             }
 
+            logger.info(f"下载头像 {actor_id} ({actor_name}): {url}")
             content = await client.get_bytes(url, headers=headers)
             if content and len(content) > 500:
-                with open(output_path, "wb") as f:
+                # 保存原始图片
+                with open(raw_path, "wb") as f:
                     f.write(content)
-                logger.info(f"演员 {actor_name} 头像已下载: {output_path}")
-                return output_path
+                logger.debug(f"原始头像已保存: {raw_path} ({len(content)} bytes)")
 
+                # 尝试人脸裁剪(与原有头像刮削链一致)
+                cropped = False
+                try:
+                    from app.utils.face_crop import FaceCropper, AVATAR_SIZE
+                    cropper = FaceCropper()
+                    result = cropper.crop_face(
+                        str(raw_path), str(output_path), target_size=AVATAR_SIZE
+                    )
+                    if result:
+                        logger.info(f"人脸裁剪完成: {output_path}")
+                        cropped = True
+                        # 裁剪成功后清理原图
+                        if raw_path.exists():
+                            raw_path.unlink()
+                except Exception as e:
+                    logger.debug(f"人脸裁剪失败，使用原图: {e}")
+
+                if not cropped:
+                    # 不使用裁剪，直接使用原图作为头像
+                    raw_path.rename(output_path)
+                    logger.info(f"头像下载成功（无裁剪）: {output_path} ({len(content)} bytes)")
+
+                return output_path
+            else:
+                logger.warning(f"头像太小或为占位图: {url} ({len(content) if content else 0} bytes)")
+                return None
         except Exception as e:
             logger.error(f"下载头像失败 {url}: {e}")
-
-    return None
+            return None
 
 
 # ===== 演员资料抓取 =====
@@ -1587,3 +1650,73 @@ async def fetch_javdb_aliases_api(
 
     aliases = list(dict.fromkeys(a for a in aliases if a))
     return {"status": "ok" if aliases else "empty", "actor_id": actor_id, "name": name, "aliases": aliases[:20]}
+
+
+# ===== JavDB 改名演员自动合并 =====
+
+class JavDBMergeScanRequest(BaseModel):
+    module: str = Body("jav", description="模块名")
+    max_pages: int = Body(30, ge=1, le=100, description="抓取 JavDB 演员目录页数（每页50人）")
+    proxy: str | None = Body(None, description="代理地址（本地测试用，服务器留空走内置代理）")
+
+
+@router.post("/javdb-merge/scan")
+async def javdb_merge_scan_api(req: JavDBMergeScanRequest):
+    """扫描改名演员合并候选
+
+    抓取 JavDB 有码演员目录（title 属性含全部历史名称），
+    与本地演员库匹配：同一 JavDB 组命中 >=2 个本地演员 → 合并候选。
+    """
+    from app.services.javdb_actor_merge import scan_merge_candidates
+
+    result = await scan_merge_candidates(
+        module=req.module, max_pages=req.max_pages, proxy=req.proxy
+    )
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
+
+
+class JavDBMergeApplyRequest(BaseModel):
+    module: str = Body("jav", description="模块名")
+    selections: list[dict] = Body(..., description="选中的候选：{canonical_id, source_ids[]}")
+
+
+@router.post("/javdb-merge/apply")
+async def javdb_merge_apply_api(req: JavDBMergeApplyRequest):
+    """批量应用选中的合并候选（source 并入 canonical）
+
+    自动保护：已被合并（作为 source 被并入）或已作为 canonical 保留的演员，
+    不会再次出现在后续合并中，避免交叉合并冲突。
+    """
+    from app.services.actor_merge_service import merge_actors
+
+    results = []
+    used: set[int] = set()  # 已参与合并的演员 id（canonical + source）
+    for sel in req.selections:
+        canonical_id = int(sel.get("canonical_id") or 0)
+        source_ids = [int(s) for s in (sel.get("source_ids") or [])]
+        if canonical_id <= 0 or not source_ids:
+            continue
+        # 冲突保护：跳过已使用的演员
+        if canonical_id in used:
+            results.append({"canonical_id": canonical_id, "error": "该演员已参与过合并，跳过"})
+            continue
+        source_ids = [s for s in source_ids if s not in used]
+        if not source_ids:
+            results.append({"canonical_id": canonical_id, "error": "其来源演员已参与过合并，跳过"})
+            continue
+        r = await merge_actors(canonical_id, source_ids, req.module)
+        if "error" in r:
+            results.append({"canonical_id": canonical_id, "error": r["error"]})
+        else:
+            used.add(canonical_id)
+            used.update(source_ids)
+            results.append({
+                "canonical_id": canonical_id,
+                "canonical_name": r.get("canonical_name"),
+                "merged_names": r.get("merged_names"),
+                "movies_updated": r.get("movies_updated"),
+                "movie_count": r.get("movie_count"),
+            })
+    return {"applied": len(results), "results": results}

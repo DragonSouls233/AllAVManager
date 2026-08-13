@@ -228,8 +228,12 @@ class ActorAvatarScraper:
         elif self.use_local_library:
             logger.debug(f"模块 {self.module} 不在 Gfriends 适用范围,跳过本地资料库匹配,改走在线刮削")
 
-        # 1. 首先尝试从 JavDB 搜索（更稳定）
-        avatar_url = await self._search_javdb_avatar(actor.name, actor.name_jp)
+        # 1. 优先使用 AV联盟（av-league.com）搜索（稳定无拦截）
+        avatar_url = await self._search_avleague_avatar(actor.name, actor.name_jp)
+
+        if not avatar_url:
+            # 2. 尝试从 JavDB 搜索（更稳定）
+            avatar_url = await self._search_javdb_avatar(actor.name, actor.name_jp)
 
         if not avatar_url:
             # 备用：尝试从 JavBus 搜索
@@ -255,6 +259,41 @@ class ActorAvatarScraper:
 
         logger.info(f"演员 {actor.name} 头像已更新: {local_path}")
         return True
+
+    async def _search_avleague_avatar(
+        self, name: str, name_jp: Optional[str] = None
+    ) -> Optional[str]:
+        """从 AV联盟（av-league.com）搜索演员头像 URL
+
+        AV联盟站内搜索仅支持演员名，命中后返回其榜单头像
+        （data-layzr 相对路径，需拼接站点域名）。
+        """
+        from app.services.avleague_service import BASE_URL, search_actress
+
+        search_names = [name_jp or name, name]
+        seen = set()
+        search_names = [n for n in search_names if n and n not in seen and not seen.add(n)]
+
+        for current_name in search_names:
+            try:
+                hit = await search_actress(current_name)
+            except Exception as e:
+                logger.debug(f"AV联盟搜索 {current_name} 失败: {e}")
+                continue
+
+            if not hit or not hit.get("avatar_url"):
+                continue
+
+            avatar_url = hit["avatar_url"]
+            if avatar_url.startswith("//"):
+                avatar_url = "https:" + avatar_url
+            elif avatar_url.startswith("/"):
+                avatar_url = BASE_URL + avatar_url
+
+            logger.info(f"AV联盟找到匹配演员 {hit['name']}: {avatar_url}")
+            return avatar_url
+
+        return None
 
     async def _search_javdb_avatar(
         self, name: str, name_jp: Optional[str] = None

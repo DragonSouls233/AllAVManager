@@ -607,7 +607,7 @@ class PatchEngine:
     @staticmethod
     def _nfo_to_scraped_dict(imported, code: str) -> dict:
         """将 NFOParser.ImportedMovie 转为与刮削结果一致的 dict"""
-        actors = [{"name": a} for a in (imported.actors or [])] if imported.actors else []
+        actors = list(imported.actors or [])
         return {
             "code": imported.code or code,
             "title": imported.title,
@@ -1082,7 +1082,12 @@ class PatchEngine:
                     # --- 处理 actors（模块表多为 actor 单列，western 为 actors 文本列） ---
                     actors_data = scraped_data.get("actors")
                     if actors_data:
-                        actor_names = [a.name if hasattr(a, "name") else str(a) for a in actors_data]
+                        actor_names = [
+                            a.name if hasattr(a, "name")
+                            else a.get("name") if isinstance(a, dict)
+                            else str(a)
+                            for a in actors_data
+                        ]
                         joined = ", ".join(filter(None, actor_names))
                         if joined:
                             updates.append("actor = :actor")

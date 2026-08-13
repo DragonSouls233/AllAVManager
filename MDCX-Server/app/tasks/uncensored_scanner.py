@@ -21,6 +21,7 @@ from app.tasks.base_scanner import (
     BaseScanner,
     copy_video_assets_to_data_dir,
     find_local_cover,
+    iter_media_entries,
 )
 from app.utils.logger import get_logger
 
@@ -150,7 +151,7 @@ class UncensoredScanner(BaseScanner):
                 (await session.execute(select(UncensoredMovie.code))).scalars().all()
             )
 
-            walk_entries = await asyncio.to_thread(lambda: list(os.walk(media_dir)))
+            walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             for root, dirs, files in walk_entries:
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()

@@ -3,6 +3,7 @@
 所有模块扫描器的公共基类
 """
 
+import asyncio
 import os
 import re
 import shutil
@@ -124,6 +125,43 @@ def find_local_cover(video_file_path: str | Path, code: str) -> str | None:
     return None
 
 
+# 遍历时剪枝跳过的系统/垃圾目录名（整盘扫描时避免陷入回收站、系统卷信息等）
+_SKIP_WALK_DIRS = {
+    "$recycle.bin", "system volume information", "@eadir", "#recycle",
+    "found.000", "recycler", "$sysreset", "node_modules", "__pycache__",
+    ".git", ".svn", ".hg",
+}
+
+
+def iter_media_entries(
+    media_dir: str | Path,
+    max_depth: int = 8,
+) -> list[tuple[str, list[str], list[str]]]:
+    """受控遍历媒体目录：限制深度 + 剪枝系统/隐藏目录。
+
+    替代 `list(os.walk(media_dir))`——当 media_dirs 是整盘符（H:\\、Z:\\）或超大
+    网络目录时，无限制的 os.walk 会遍历出数百万条目并长期占满线程池，导致整个
+    服务假死（日志/API 全部停止）。此函数：
+    - 限制下探深度（max_depth），整盘目录下只读有效媒体层级；
+    - 剪枝回收站、系统卷信息、隐藏目录等无效目录；
+    - 返回值与 os.walk 相同：(root, dirs, files) 列表。
+    """
+    media_dir = Path(media_dir)
+    base_parts = len(media_dir.parts)
+    entries: list[tuple[str, list[str], list[str]]] = []
+    for root, dirs, files in os.walk(media_dir, topdown=True):
+        depth = len(Path(root).parts) - base_parts
+        if depth >= max_depth:
+            dirs[:] = []  # 不再下探
+        else:
+            dirs[:] = [
+                d for d in dirs
+                if d.lower() not in _SKIP_WALK_DIRS and not d.startswith(".")
+            ]
+        entries.append((root, dirs, files))
+    return entries
+
+
 async def copy_video_assets_to_data_dir(
     video_file_path: str | Path,
     code: str,
@@ -181,7 +219,9 @@ async def copy_video_assets_to_data_dir(
         if dst.exists() and dst.stat().st_size >= size:
             continue
         try:
-            shutil.copy2(src, dst)
+            # 丢到线程池执行，避免同步复制阻塞事件循环（扫描期间大量小文件复制
+            # 会拖慢整个服务端，APScheduler 曾因此报 "missed by 1:08"）。
+            await asyncio.to_thread(shutil.copy2, src, dst)
             copied += 1
             logger.info(f"[{module_name}] 复制视频资源: {src.name} → {dst}")
         except Exception as e:

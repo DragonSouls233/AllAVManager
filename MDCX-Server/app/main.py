@@ -38,6 +38,12 @@ logger = get_logger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+# 模块扫描并发信号量：整盘/超大目录 os.walk 极耗磁盘 IO，
+# 7 个模块同时扫描会占满线程池并拖死事件循环（日志/API 全部停止）。
+# 限制同时最多 2 个模块扫描。
+_SCAN_CONCURRENCY_SEM = asyncio.Semaphore(2)
+
+
 async def _run_module_scan(module_name: str, scanner) -> dict:
     """运行模块扫描，返回扫描结果
 
@@ -236,7 +242,8 @@ async def _lifespan_impl(app: FastAPI):
             _scan_update_lock = asyncio.Lock()
 
             async def _run_and_track(mod_name: str, scanner) -> None:
-                result = await _run_module_scan(mod_name, scanner)
+                async with _SCAN_CONCURRENCY_SEM:
+                    result = await _run_module_scan(mod_name, scanner)
                 async with _scan_update_lock:
                     _scan_results[mod_name] = result
                     # 每条子扫描完成时尝试更新总记录

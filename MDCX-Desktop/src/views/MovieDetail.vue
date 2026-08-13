@@ -370,8 +370,14 @@ const actorList = computed(() => {
   if (typeof m.actor === 'string' && m.actor.trim()) {
     // 优先使用后端返回的 actor_ids（名字→数字 id），跳转演员详情用数字 id
     const ids = (m.actor_ids && typeof m.actor_ids === 'object') ? m.actor_ids : {}
+    // 兜底剥离历史脏数据格式 {'name': 'xx'}
+    const nameOf = s => {
+      const t = s.trim()
+      const mm = t.match(/\{'name':\s*'([^']*)'\}/)
+      return mm ? mm[1] : t
+    }
     return m.actor.split(',').map(s => {
-      const n = s.trim()
+      const n = nameOf(s)
       return { name: n, id: ids[n] || n }
     }).filter(a => a.name)
   }

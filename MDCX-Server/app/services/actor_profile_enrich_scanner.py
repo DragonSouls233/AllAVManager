@@ -156,16 +156,29 @@ async def enrich_actor(module: str, actor, session) -> dict:
         if merged and merged != (getattr(actor, "alias", None) or ""):
             updates["alias"] = merged
 
-    if updates:
+    # 自动标签（v3.5）：AV联盟 タグ / Wiki 受賞歴 -> actor_tags（is_user=False）
+    new_tags: list[str] = []
+    scraped_tags = prof.get("tags")
+    if scraped_tags:
+        try:
+            from app.utils.actor_tag_sync import sync_auto_actor_tags
+            ActorTag = get_module_model(module, "actor_tag")
+            new_tags = await sync_auto_actor_tags(session, ActorTag, actor.id, scraped_tags)
+        except Exception as e:
+            logger.debug(f"[{module}] 演员 {actor.name} 自动标签写入失败(忽略): {e}")
+
+    if updates or new_tags:
         for f, v in updates.items():
             # social_links 列是 JSON 字符串（Text），字典需序列化后再写入
             if f == "social_links" and isinstance(v, dict):
                 v = json.dumps(v, ensure_ascii=False)
             setattr(actor, f, v)
         await session.commit()
+        if new_tags:
+            updates["tags"] = new_tags
         logger.info(f"[{module}] 演员 {actor.name} 补全 {len(updates)} 个字段: {list(updates.keys())}")
 
-    return {"updated": bool(updates), "fields": updates}
+    return {"updated": bool(updates or new_tags), "fields": updates}
 
 
 async def _list_missing_actors(session, ActorModel) -> list:

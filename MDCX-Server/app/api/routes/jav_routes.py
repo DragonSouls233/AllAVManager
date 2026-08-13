@@ -134,7 +134,12 @@ async def list_actors():
     try:
         from app.db.jav_models import JavActor
         from sqlalchemy import select
-        stmt = select(JavActor).order_by(JavActor.movie_count.desc())
+        # 排除刮削时自动创建的占位演员（source=scraper）：本地没有真实作品就不应出现在演员库
+        stmt = (
+            select(JavActor)
+            .where(JavActor.source != "scraper")
+            .order_by(JavActor.movie_count.desc())
+        )
         result = await session.execute(stmt)
         actors = result.scalars().all()
         # alias / merged_from：让列表页能直观标出「这个演员合并过哪些旧名」
