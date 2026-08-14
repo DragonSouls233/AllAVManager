@@ -199,9 +199,10 @@ class JavDBClient:
 
 async def create_client_from_config() -> JavDBClient:
     """从 MDCX 配置创建 JavDB 客户端。"""
+    from app.services.proxy_manager import get_effective_proxy_url
+
     config = get_config()
     cookie = (config.crawler.javdb_cookie or "").strip()
-    proxy = None
-    if config.proxy.enabled and config.proxy.address:
-        proxy = f"http://{config.proxy.address}:{config.proxy.port}"
+    # 统一走项目代理唯一入口：优先内置 xray 实际端口，回退 config.proxy，都没有则直连
+    proxy = get_effective_proxy_url()
     return JavDBClient(session_token=cookie, proxy=proxy)

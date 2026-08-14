@@ -150,10 +150,10 @@ def _parse_size(text: str) -> int:
 
 def create_default_searcher() -> AggregateSearcher:
     """创建带默认搜索源的聚合搜索器。"""
-    config = get_config()
-    proxy = None
-    if config.proxy.enabled and config.proxy.address:
-        proxy = f"http://{config.proxy.address}:{config.proxy.port}"
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    # 统一走项目代理唯一入口（内置 xray 优先，回退 config.proxy）
+    proxy = get_effective_proxy_url()
 
     searcher = AggregateSearcher(proxy=proxy)
     searcher.register("sukebei", search_sukebei)

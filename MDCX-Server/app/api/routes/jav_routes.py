@@ -435,6 +435,9 @@ async def list_movies(
     maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
     genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
     code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
+    is_chinese: Optional[int] = Query(None, description="1=仅中文"),
+    is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
+    info_state: Optional[str] = Query(None, description="complete=信息全 / incomplete=信息不全（NFO+封面+预览图）"),
 ):
     """列出有码模块影片列表"""
     db = get_jav_db()
@@ -460,19 +463,57 @@ async def list_movies(
             filters.append(JavMovie.genre.contains(genre))
         if code_prefix:
             filters.append(JavMovie.code.startswith(code_prefix))
+        if is_chinese:
+            filters.append(JavMovie.is_chinese == 1)
+        if is_uncensored:
+            filters.append(JavMovie.is_uncensored == 1)
 
-        total_stmt = select(func.count(JavMovie.id))
-        if filters:
-            total_stmt = total_stmt.where(*filters)
-        total_result = await session.execute(total_stmt)
-        total = total_result.scalar()
+        if info_state in ("complete", "incomplete"):
+            # 信息全/不全筛选：需要文件系统检查 NFO，无法纯 SQL 完成。
+            # 先按 DB 列预筛候选，再逐部判断 NFO 存在，最后手动分页。
+            base = list(filters)
+            if info_state == "complete":
+                base.append(JavMovie.cover_url.isnot(None))
+                base.append(JavMovie.sample_images.isnot(None))
+                base.append(JavMovie.sample_images != "")
+            stmt = select(JavMovie)
+            if base:
+                stmt = stmt.where(*base)
+            all_rows = (await session.execute(stmt)).scalars().all()
 
-        stmt = select(JavMovie)
-        if filters:
-            stmt = stmt.where(*filters)
-        stmt = stmt.order_by(JavMovie.created_at.desc()).offset(skip).limit(limit)
-        result = await session.execute(stmt)
-        movies = result.scalars().all()
+            from app.utils.media_helpers import get_movie_local_dir
+
+            def _is_complete(m) -> bool:
+                has_cover = bool(m.cover_url or m.poster_url)
+                has_sample = bool(m.sample_images and m.sample_images.strip()
+                                  and m.sample_images.strip() not in ("[]", "null"))
+                has_nfo = False
+                if m.code:
+                    try:
+                        has_nfo = (get_movie_local_dir("jav", m.code) / "movie.nfo").exists()
+                    except Exception:
+                        has_nfo = False
+                return has_cover and has_sample and has_nfo
+
+            if info_state == "complete":
+                matched = [m for m in all_rows if _is_complete(m)]
+            else:
+                matched = [m for m in all_rows if not _is_complete(m)]
+            total = len(matched)
+            movies = matched[skip:skip + limit]
+        else:
+            total_stmt = select(func.count(JavMovie.id))
+            if filters:
+                total_stmt = total_stmt.where(*filters)
+            total_result = await session.execute(total_stmt)
+            total = total_result.scalar()
+
+            stmt = select(JavMovie)
+            if filters:
+                stmt = stmt.where(*filters)
+            stmt = stmt.order_by(JavMovie.created_at.desc()).offset(skip).limit(limit)
+            result = await session.execute(stmt)
+            movies = result.scalars().all()
 
         # 统计待刮削数量
         pending_stmt = select(func.count(JavMovie.id)).where(JavMovie.status == "pending")
@@ -946,6 +987,223 @@ async def scrape_jav_movie(movie_id: int):
     except Exception as e:
         logger.error(f"JAV 刮削失败 [{movie_id}]: {e}")
         return {"status": "error", "message": str(e)}
+    finally:
+        await session.close()
+
+
+@router.post("/movies/force-scrape")
+async def force_scrape_jav_movie(data: dict):
+    """特殊刮削：按番号 + 指定 JAVDB/JAVBUS 链接强制重刮
+
+    解决同番号多个条目导致自动刮削匹配到错误信息的问题：
+    1. 用户提供正确的详情页链接（或指定站点），后端直接抓取该链接，
+       不经过搜索，避免匹配到错误条目；
+    2. 刮削前先清理影片文件夹下已刮削的旧数据（NFO/图片），再重新刮削。
+    """
+    import shutil
+    from pathlib import Path as _Path
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie, JavActor
+    from app.utils.media_helpers import (
+        get_movie_local_dir,
+        ensure_movie_media_local,
+        ensure_actor_avatar_local,
+    )
+
+    code = str(data.get("code") or "").strip().upper()
+    url = str(data.get("url") or "").strip()
+    site = str(data.get("site") or "").strip().lower()
+    movie_id = data.get("movie_id")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="番号不能为空")
+
+    # 站点判定：URL 域名优先，其次 site 参数
+    low_url = url.lower()
+    if "javdb" in low_url:
+        site = "javdb"
+    elif "javbus" in low_url:
+        site = "javbus"
+    if site not in ("javdb", "javbus"):
+        raise HTTPException(status_code=400, detail="请提供 JAVDB 或 JAVBUS 的详情链接，或指定站点")
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        # 定位影片
+        if movie_id:
+            movie = await session.get(JavMovie, movie_id)
+        else:
+            movie = await session.scalar(select(JavMovie).where(JavMovie.code == code))
+        if not movie:
+            raise HTTPException(status_code=404, detail=f"库中未找到番号 {code} 的影片，请确认番号正确")
+
+        # ── 1. 清理已刮削到文件夹下的旧数据 ──
+        removed = []
+        media_dir = get_movie_local_dir("jav", movie.code)
+        try:
+            if media_dir.exists():
+                shutil.rmtree(media_dir, ignore_errors=True)
+                removed.append(str(media_dir))
+        except Exception as e:
+            logger.warning(f"清理媒体目录失败 {media_dir}: {e}")
+        if movie.file_path:
+            video_dir = _Path(movie.file_path).parent
+            try:
+                for nfo in video_dir.glob("*.nfo"):
+                    nfo.unlink(missing_ok=True)
+                    removed.append(str(nfo))
+            except Exception as e:
+                logger.warning(f"清理 NFO 失败 {video_dir}: {e}")
+        # 清空库中旧媒体引用，避免残留 404
+        movie.cover_url = None
+        movie.poster_url = None
+        movie.thumb_url = None
+        movie.sample_images = None
+        await session.commit()
+
+        # ── 2. 刮削 ──
+        if url:
+            # 直接按用户提供的详情链接刮削（不搜索，避免匹配错条目）
+            if site == "javdb":
+                from app.crawlers.javdb import JavDBCrawler
+                crawler = JavDBCrawler()
+            else:
+                from app.crawlers.javbus import JavBusCrawler
+                crawler = JavBusCrawler()
+            scrape_result = await crawler.scrape_url(url, code)
+        else:
+            # 无链接：指定站点按番号搜索刮削
+            from app.scraper.engine import get_scraper_engine
+            engine = get_scraper_engine()
+            scrape_result = await engine.scrape_number(code, sources=[site], module="jav")
+
+        if not scrape_result or not scrape_result.title:
+            return {
+                "status": "error",
+                "message": f"刮削失败: {site} 未返回 {code} 的数据（请检查链接是否正确、站点是否可达）",
+                "removed": removed,
+            }
+
+        # ── 3. 写库（字段映射与 scrape_jav_movie 一致） ──
+        old_actor_names = {n.strip() for n in (movie.actor or "").split(",") if n.strip()}
+        movie.title = scrape_result.title
+        if scrape_result.original_title:
+            movie.original_title = scrape_result.original_title
+        if scrape_result.release_date:
+            movie.release_date = str(scrape_result.release_date)
+        if scrape_result.duration:
+            movie.duration = scrape_result.duration
+        if scrape_result.rating:
+            movie.rating = scrape_result.rating
+        if scrape_result.plot:
+            movie.plot = scrape_result.plot
+        if scrape_result.studio:
+            movie.studio = scrape_result.studio
+        if scrape_result.series:
+            movie.series = scrape_result.series
+        if scrape_result.label:
+            movie.label = scrape_result.label
+        if scrape_result.is_mosaic is not None:
+            movie.is_mosaic = scrape_result.is_mosaic
+        if scrape_result.is_uncensored is not None:
+            movie.is_uncensored = scrape_result.is_uncensored
+        if scrape_result.is_chinese is not None:
+            movie.is_chinese = scrape_result.is_chinese
+        if scrape_result.genres:
+            movie.genre = ",".join(scrape_result.genres)
+        if scrape_result.tags:
+            movie.tag = ",".join(scrape_result.tags)
+        if scrape_result.sample_images:
+            import json
+            movie.sample_images = json.dumps(scrape_result.sample_images, ensure_ascii=False)
+
+        # 媒体下载到标准落盘目录 {data}/movies/jav/{code}/
+        local_media = await ensure_movie_media_local(
+            module_name="jav", code=movie.code,
+            cover_url=scrape_result.cover_url,
+            fanart_url=scrape_result.poster_url,
+            thumb_url=scrape_result.thumb_url,
+        )
+        if local_media.get("cover"):
+            movie.cover_url = local_media["cover"]
+        if local_media.get("fanart"):
+            movie.poster_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            movie.thumb_url = local_media["thumb"]
+
+        # 演员：写文本字段 + 复用/创建 JavActor + 重算作品数
+        new_actor_names: set = set()
+        if scrape_result.actors:
+            actor_names = [a.name for a in scrape_result.actors]
+            movie.actor = ",".join(actor_names)
+            new_actor_names = {n for n in actor_names if n}
+            for actor_info in scrape_result.actors:
+                if not actor_info.name:
+                    continue
+                existing = await session.scalar(select(JavActor).where(JavActor.name == actor_info.name))
+                if existing:
+                    if not existing.avatar_url and actor_info.avatar_url:
+                        local_avatar = await ensure_actor_avatar_local(
+                            actor_info.name, actor_info.avatar_url
+                        )
+                        existing.avatar_url = local_avatar or actor_info.avatar_url
+                    if not existing.source_site:
+                        existing.source_site = scrape_result.source
+                else:
+                    local_avatar = await ensure_actor_avatar_local(
+                        actor_info.name, actor_info.avatar_url
+                    )
+                    session.add(JavActor(
+                        name=actor_info.name,
+                        avatar_url=local_avatar or actor_info.avatar_url,
+                        source="scraper",
+                        source_site=scrape_result.source,
+                        movie_count=0,
+                    ))
+        else:
+            movie.actor = None
+
+        # 来源信息
+        movie.source = scrape_result.source
+        if scrape_result.source_url:
+            movie.source_url = scrape_result.source_url
+        movie.status = "scraped"
+        await session.commit()
+
+        # 重算受影响演员作品数（重刮可能改变演员列表，不能累加）
+        affected = new_actor_names | old_actor_names
+        if affected:
+            from app.utils.actor_alias import count_actor_movies
+            actors = (await session.execute(
+                select(JavActor).where(JavActor.name.in_(list(affected)))
+            )).scalars().all()
+            for actor in actors:
+                actor.movie_count = await count_actor_movies(session, JavMovie, actor)
+            await session.commit()
+
+        # ── 4. 生成 NFO（回写到视频所在目录，失败不阻断） ──
+        nfo_path = None
+        try:
+            from app.output.nfo import NFOGenerator
+            out_dir = str(movie.output_dir) if movie.output_dir else (str(_Path(movie.file_path).parent) if movie.file_path else "")
+            if out_dir:
+                gen = NFOGenerator(output_dir=out_dir)
+                nfo_path = gen.generate_from_movie(
+                    movie=movie, movie_dir=None, kodi_compatible=True,
+                    actor_names=sorted(new_actor_names) if new_actor_names else None,
+                )
+        except Exception as e:
+            logger.warning("JAV 特殊刮削 NFO 生成失败: %s", e)
+
+        return {
+            "status": "ok",
+            "message": f"刮削成功: {scrape_result.title}",
+            "source": scrape_result.source,
+            "actors": sorted(new_actor_names),
+            "removed": removed,
+            "nfo": nfo_path,
+        }
     finally:
         await session.close()
 

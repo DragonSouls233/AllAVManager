@@ -260,10 +260,10 @@ async def search_online_source(code: str) -> StreamSearchResult:
     """
     result = StreamSearchResult(code=code.upper())
 
-    config = get_config()
-    proxy = None
-    if config.proxy.enabled and config.proxy.address:
-        proxy = f"http://{config.proxy.address}:{config.proxy.port}"
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    # 统一走项目代理唯一入口（内置 xray 优先，回退 config.proxy）
+    proxy = get_effective_proxy_url()
 
     async with httpx.AsyncClient(
         timeout=15.0,

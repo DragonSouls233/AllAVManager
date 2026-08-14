@@ -105,6 +105,65 @@ class JavBusCrawler(BaseCrawler):
             self.mark_error()
             logger.debug(f"JavBus {code} 刮削失败: {e}")
             return None
+
+    async def scrape_url(self, url: str, code: str, ctx=None) -> Optional[ScrapeResult]:
+        """直接抓取指定 JavBus 详情页 URL 刮削（不搜索，避免同番号匹配到错误条目）
+
+        Args:
+            url: JavBus 详情页完整链接（如 https://www.javbus.com/ABC-123）
+            code: 番号（详情页解析结果以调用方传入为准，用于写库）
+            ctx: 单次刮削共享上下文（可选）
+
+        Returns:
+            ScrapeResult 刮削结果
+        """
+        if ctx and ctx.http_client is not None:
+            return await self._scrape_url_with_client(url, code, ctx.http_client, ctx)
+
+        async with AsyncHttpClient() as client:
+            return await self._scrape_url_with_client(url, code, client, ctx)
+
+    async def _scrape_url_with_client(
+        self,
+        url: str,
+        code: str,
+        client: AsyncHttpClient,
+        ctx=None,
+    ) -> Optional[ScrapeResult]:
+        """按详情页 URL 刮削（接受共享 client）"""
+        headers = None
+        if ctx:
+            headers = ctx.get_headers("javbus.com")
+        if not headers or not headers.get("cookie"):
+            from app.utils.cookie_manager import get_cookie_headers
+            headers = get_cookie_headers("javbus")
+
+        try:
+            html_text = await client.get_text(url, headers=headers)
+
+            if "driver-verify" in html_text.lower() or "cloudflare" in html_text.lower():
+                logger.debug(f"JavBus 详情页 {url}: 遇到验证拦截，跳过")
+                self.mark_error()
+                return None
+
+            html = etree.fromstring(html_text, etree.HTMLParser())
+
+            if self._is_not_found(html):
+                return None
+
+            result = self._parse_detail_page(html, code)
+
+            if result:
+                self.mark_success()
+            else:
+                self.mark_error()
+
+            return result
+
+        except Exception as e:
+            self.mark_error()
+            logger.debug(f"JavBus 详情页 {url} 刮削失败: {e}")
+            return None
     
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """

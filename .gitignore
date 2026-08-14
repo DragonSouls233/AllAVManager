@@ -67,3 +67,4 @@ MDCX-Server/static/assets/
 *.jpg
 *.jpeg
 *.gif
+deploy-force-scrape.bat

@@ -253,10 +253,9 @@ async def create_app_client_from_config() -> JavDBAppClient:
     """从 MDCX 配置创建匿名客户端（仅取代理，无需登录）。"""
     proxy = None
     try:
-        from app.config.manager import get_config
-        config = get_config()
-        if config.proxy.enabled and config.proxy.address:
-            proxy = f"http://{config.proxy.address}:{config.proxy.port}"
+        from app.services.proxy_manager import get_effective_proxy_url
+        # 统一走项目代理唯一入口：优先内置 xray 实际端口，回退 config.proxy
+        proxy = get_effective_proxy_url()
     except Exception:  # noqa: BLE001
         log.debug("create_app_client_from_config: 读取代理配置失败，使用直连")
     return JavDBAppClient(proxy=proxy)

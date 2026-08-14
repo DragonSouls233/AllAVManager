@@ -96,6 +96,33 @@ class JavDBCrawler(BaseCrawler):
             self.mark_error()
         return result
 
+    async def scrape_url(self, url: str, code: str, ctx=None) -> Optional[ScrapeResult]:
+        """直接抓取指定 JavDB 详情页 URL 刮削（不搜索，避免同番号匹配到错误条目）
+
+        Args:
+            url: JavDB 详情页完整链接（如 https://javdb.com/v/xxxx）
+            code: 番号（详情页解析结果以调用方传入为准，用于写库）
+            ctx: 单次刮削共享上下文（可选）
+
+        Returns:
+            ScrapeResult 刮削结果
+        """
+        detail_text = await self._fetch_with_cloudscraper(url, ctx=ctx)
+        if not detail_text:
+            return None
+
+        if self._is_cf_blocked(detail_text) or "driver-verify" in detail_text.lower():
+            logger.debug(f"JavDB 详情页 {url}: 验证拦截，刮削失败")
+            return None
+
+        html = Selector(detail_text)
+        result = self._parse_detail_page(html, code, url)
+        if result:
+            self.mark_success()
+        else:
+            self.mark_error()
+        return result
+
     async def _scrape_via_app_api(self, code: str) -> Optional[ScrapeResult]:
         """通过 JavDB 匿名 App JSON API 兜底刮削（免登录、绕过 Cloudflare）。
 

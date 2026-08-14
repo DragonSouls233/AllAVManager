@@ -20,6 +20,11 @@ export async function scrapeJavMovie(id, force = false) {
   return api.post(`/jav/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
 }
 
+// 特殊刮削：按番号 + 指定 JAVDB/JAVBUS 链接强制重刮（先清理旧数据再重新刮削）
+export async function forceScrapeJavMovie(data = {}) {
+  return api.post('/jav/movies/force-scrape', data, { timeout: 180000 })
+}
+
 export async function updateJavMovie(id, data) {
   return api.patch(`/jav/movies/${id}`, data)
 }

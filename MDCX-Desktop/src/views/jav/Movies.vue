@@ -28,6 +28,9 @@
       <el-button type="danger" plain @click="startRefill" :loading="store.scraping">
         <el-icon><Refresh /></el-icon> 批量补图
       </el-button>
+      <el-button type="danger" @click="openForceScrape">
+        <el-icon><MagicStick /></el-icon> 特殊刮削
+      </el-button>
       <el-button type="info" @click="startImportNfo" :loading="store.scraping">
         <el-icon><Document /></el-icon> 导入 NFO
       </el-button>
@@ -37,6 +40,17 @@
       <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
       <el-tag v-if="route.query.genre" type="danger" closable @close="clearRouteFilter('genre')">类别：{{ route.query.genre }}</el-tag>
       <el-tag v-if="route.query.code_prefix" type="info" closable @close="clearRouteFilter('code_prefix')">番号：{{ route.query.code_prefix }}</el-tag>
+    </div>
+
+    <!-- 信息筛选 TAB：中文 / 无码 / 信息全 / 信息不全 -->
+    <div class="info-tabs">
+      <el-radio-group v-model="infoTab" @change="onInfoTabChange">
+        <el-radio-button value="">全部</el-radio-button>
+        <el-radio-button value="chinese">中文</el-radio-button>
+        <el-radio-button value="uncensored">无码</el-radio-button>
+        <el-radio-button value="complete">信息全</el-radio-button>
+        <el-radio-button value="incomplete">信息不全</el-radio-button>
+      </el-radio-group>
     </div>
 
     <div class="movies-grid" v-loading="store.loading">
@@ -81,6 +95,42 @@
         @size-change="onPageSizeChange"
       />
     </div>
+
+    <!-- 特殊刮削：按番号 + 指定 JAVDB/JAVBUS 链接强制重刮 -->
+    <el-dialog v-model="forceScrapeVisible" title="特殊刮削（指定链接修复）" width="560px" :close-on-click-modal="false">
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="用于修复同番号自动刮削匹配到错误信息的情况。将先清理该影片文件夹下的旧 NFO/图片，再按指定链接重新刮削。"
+        style="margin-bottom: 16px"
+      />
+      <el-form label-width="90px">
+        <el-form-item label="番号" required>
+          <el-input v-model="forceScrapeForm.code" placeholder="如 ABC-123" style="width: 260px" />
+        </el-form-item>
+        <el-form-item label="站点">
+          <el-radio-group v-model="forceScrapeForm.site">
+            <el-radio value="javdb">JAVDB</el-radio>
+            <el-radio value="javbus">JAVBUS</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="详情链接">
+          <el-input
+            v-model="forceScrapeForm.url"
+            type="textarea"
+            :rows="2"
+            placeholder="粘贴该番号的 JAVDB/JAVBUS 详情页链接（推荐，可精确定位）。留空则按番号+站点搜索刮削。"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="forceScrapeVisible = false">取消</el-button>
+        <el-button type="primary" :loading="forceScrapeLoading" @click="submitForceScrape">
+          清理并重新刮削
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -90,6 +140,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useJavStore } from '@/stores/jav'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getCoverSrc, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
+import { forceScrapeJavMovie } from '@/api/jav'
 
 const router = useRouter()
 const route = useRoute()
@@ -144,8 +195,20 @@ function resetFilters() {
   loadMovies()
 }
 
+// 信息筛选 TAB：''=全部 / chinese=中文 / uncensored=无码 / complete=信息全 / incomplete=信息不全
+const infoTab = ref('')
+
+function onInfoTabChange() {
+  store.page = 1
+  loadMovies()
+}
+
 async function loadMovies() {
-  await store.loadMovies({ keyword: keyword.value || undefined, ...routeFilterParams() })
+  const params = { keyword: keyword.value || undefined, ...routeFilterParams() }
+  if (infoTab.value === 'chinese') params.is_chinese = 1
+  else if (infoTab.value === 'uncensored') params.is_uncensored = 1
+  else if (infoTab.value === 'complete' || infoTab.value === 'incomplete') params.info_state = infoTab.value
+  await store.loadMovies(params)
 }
 
 function goDetail(id) {
@@ -225,6 +288,43 @@ async function startImportNfo() {
   }
 }
 
+// ---------- 特殊刮削（指定链接强制重刮） ----------
+const forceScrapeVisible = ref(false)
+const forceScrapeLoading = ref(false)
+const forceScrapeForm = ref({ code: '', site: 'javdb', url: '' })
+
+function openForceScrape() {
+  forceScrapeForm.value = { code: '', site: 'javdb', url: '' }
+  forceScrapeVisible.value = true
+}
+
+async function submitForceScrape() {
+  const f = forceScrapeForm.value
+  if (!String(f.code || '').trim()) {
+    ElMessage.warning('请输入番号')
+    return
+  }
+  forceScrapeLoading.value = true
+  try {
+    const res = await forceScrapeJavMovie({
+      code: String(f.code).trim(),
+      site: f.site,
+      url: String(f.url || '').trim() || undefined,
+    })
+    if (res?.status === 'ok') {
+      ElMessage.success(res.message || '刮削成功')
+      forceScrapeVisible.value = false
+      await loadMovies()
+    } else {
+      ElMessage.error(res?.message || '刮削失败，请检查链接或站点是否可达')
+    }
+  } catch (e) {
+    ElMessage.error('刮削失败: ' + (e?.response?.data?.detail || e?.message))
+  } finally {
+    forceScrapeLoading.value = false
+  }
+}
+
 function onCoverError(e) {
   e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 150"><rect fill="%23333" width="100" height="150"/><text x="50" y="80" text-anchor="middle" fill="%23666" font-size="12">无封面</text></svg>'
 }
@@ -233,6 +333,10 @@ onMounted(() => loadMovies())
 </script>
 
 <style scoped>
+.info-tabs {
+  margin: 12px 0 16px;
+}
+
 .movies-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

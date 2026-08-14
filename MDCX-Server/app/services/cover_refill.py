@@ -85,17 +85,12 @@ class RefillResult:
 
 
 def _get_proxy() -> Optional[str]:
-    """从 MDCX 配置中获取代理 URL。"""
+    """从项目统一代理入口获取代理 URL（内置 xray 优先，回退 config.proxy）。"""
     try:
-        config = get_config()
-        if config.proxy.enabled:
-            addr = config.proxy.address or ""
-            port = config.proxy.port or 0
-            if addr and port:
-                return f"http://{addr}:{port}"
+        from app.services.proxy_manager import get_effective_proxy_url
+        return get_effective_proxy_url()
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _get_javdb_cookie() -> str:

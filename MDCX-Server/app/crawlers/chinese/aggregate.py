@@ -394,13 +394,9 @@ class ChineseAggregateScraper:
 
 async def scrape_chinese(code: str) -> Optional[ScrapeResult]:
     """国产刮削入口 — 供 scraper/engine.py 调用。"""
-    config = getattr(__import__("app.config.manager", fromlist=["get_config"]), "get_config")()
-    proxy = None
-    try:
-        if config.proxy.enabled and config.proxy.address:
-            proxy = f"http://{config.proxy.address}:{config.proxy.port}"
-    except Exception:
-        pass
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    proxy = get_effective_proxy_url()
 
     scraper = ChineseAggregateScraper(proxy=proxy)
     info = await scraper.search(code)
