@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -136,15 +136,18 @@ class ChineseScanner(BaseScanner):
                         extracted_actor=",".join(folder_actors) if folder_actors else None,
                         folder_based_actors=",".join(folder_actors) if folder_actors else None,
                         file_path=str(file_path),
-                        file_size=file_path.stat().st_size if file_path.exists() else 0,
+                        file_size=_file_size(file_path),
                         status="pending",
                     )
                     session.add(new_movie)
                     result["movies_added"] += 1
                     result["scanned"] += 1
                     if code:
+                        # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）
                         asyncio.ensure_future(
-                            copy_video_assets_to_data_dir(str(file_path), code, "chinese")
+                            self._copy_limited(
+                                copy_video_assets_to_data_dir(str(file_path), code, "chinese")
+                            )
                         )
 
             await session.commit()

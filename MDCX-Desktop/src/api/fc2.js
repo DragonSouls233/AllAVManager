@@ -1,7 +1,7 @@
 import { api } from './index'
 
-export async function getFc2Actors() {
-  return api.get('/fc2/actors')
+export async function getFc2Actors(params = {}) {
+  return api.get('/fc2/actors', { params })
 }
 
 export async function getFc2Actor(id) {

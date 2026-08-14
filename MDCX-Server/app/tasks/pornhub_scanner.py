@@ -16,7 +16,7 @@ import os
 import re
 from pathlib import Path
 
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -264,10 +264,19 @@ class PornhubScanner(BaseScanner):
 
                     code = extract_pornhub_code(file_name)
                     if not code:
-                        # 文件名不含 PornHub viewkey 时，回退用文件名(去扩展名)作为 code。
-                        # 否则按演员/标题命名的影片会被整批丢弃，导致演员只关联 1~2 部。
+                        # 文件名不含 PornHub viewkey 时，回退用「相对路径」作为 code。
+                        # 不能只用文件名 stem：M:/N:/O: 各目录普遍存在同名文件
+                        # （video.mp4 / 01.mp4 / clip 01.mp4），若按 stem 做 code，
+                        # 跨目录同名文件会被 existing_codes 内存判重成批丢弃，
+                        # 这正是 PORNHUB 库几乎无数据的原因之一。
                         # viewkey 仅刮削阶段使用；无 viewkey 的影片刮削时会优雅跳过。
-                        code = re.sub(r"[^\w\-]", "_", Path(file_name).stem)
+                        try:
+                            rel = file_path.relative_to(media_dir)
+                        except ValueError:
+                            rel = Path(file_path.name)
+                        code = re.sub(
+                            r"[^\w\-]", "_", rel.with_suffix("").as_posix()
+                        )
                     result["matched"] += 1
 
                     # 检查是否已存在（内存判重，避免 N+1 查询）
@@ -281,15 +290,25 @@ class PornhubScanner(BaseScanner):
                         title=Path(file_name).stem,
                         actor=actor_name,
                         file_path=str(file_path),
-                        file_size=file_path.stat().st_size if file_path.exists() else 0,
+                        file_size=_file_size(file_path),
                         status="pending",
                     )
                     session.add(new_movie)
                     result["movies_added"] += 1
                     result["scanned"] += 1
+
+                    # 增量提交：整盘首扫影片量可达数万，若只在全部扫完后一次 commit，
+                    # 扫描超时/中断时已 add 未 commit 的数据会整体丢失（PORNHUB 一直
+                    # 空库的另一个原因）。每 200 条落地一次，中断也能保住已扫盘符的数据。
+                    if result["scanned"] % 200 == 0:
+                        await session.commit()
+
                     if code:
+                        # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）
                         asyncio.ensure_future(
-                            copy_video_assets_to_data_dir(str(file_path), code, "pornhub")
+                            self._copy_limited(
+                                copy_video_assets_to_data_dir(str(file_path), code, "pornhub")
+                            )
                         )
 
                     if actor_name:

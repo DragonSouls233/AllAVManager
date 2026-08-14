@@ -459,9 +459,11 @@ class MissingDetector:
         from app.config.manager import PROJECT_ROOT
         code = movie_data.get("code", str(movie_id))
         project_root = PROJECT_ROOT
-        # 根据 source 推断模块子目录（data/movies/{模块}/{code}/）
+        # 按电影所属模块决定子目录（data/movies/{模块}/{code}/）
+        # 优先用 detector 构造时传入的模块名；缺失时再从 source 兜底推断，
+        # 不能仅靠 source 推断，否则 chinese/western/fc2 等电影会误入 jav 目录
         source = movie_data.get("source") or ""
-        module_name = _source_to_module(source)
+        module_name = self.module_name or _source_to_module(source)
         server_data_dir = project_root / "data" / "movies" / module_name / code
 
         db_output_dir = movie_data.get("output_dir")

@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MDCX 桌面端 · 播放器重设计原型 (Cinema v1)</title>
+<style>
+  :root{
+    /* ===== 设计 Token：影院暗色主题 ===== */
+    --bg-0:#0b0c0f;        /* 应用底色 */
+    --bg-1:#141519;        /* 面板 */
+    --bg-2:#1c1e24;        /* 卡片/控件 */
+    --bg-3:#262932;        /* hover 浮层 */
+    --line:#2c2f38;        /* 描边 */
+    --txt-1:#eef1f6;       /* 主文字 */
+    --txt-2:#aeb4c2;       /* 次文字 */
+    --txt-3:#717886;       /* 弱文字 */
+    --brand:#3b8cff;       /* 品牌蓝（沿用 Element/Artplayer 蓝系） */
+    --brand-2:#2396ef;
+    --ok:#2ecc71; --warn:#f5a623; --bad:#ef4d56; --live:#ff5c8a;
+    --r-lg:16px; --r-md:12px; --r-sm:8px;
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+    --shadow:0 10px 40px rgba(0,0,0,.55);
+    --font:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg-0);color:var(--txt-1);font-family:var(--font);-webkit-font-smoothing:antialiased;height:100vh;overflow:hidden}
+  .app{display:grid;grid-template-rows:56px 1fr 40px;height:100vh}
+
+  /* ===== 顶栏 ===== */
+  .topbar{display:flex;align-items:center;gap:var(--sp-4);padding:0 var(--sp-5);background:linear-gradient(180deg,#15171c,#0e0f12);border-bottom:1px solid var(--line)}
+  .brand{font-weight:800;font-size:18px;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+  .brand .play-ico{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--brand),#7b5bff);display:grid;place-items:center;font-size:12px;color:#fff}
+  .crumbs{color:var(--txt-3);font-size:13px;display:flex;gap:6px}
+  .crumbs b{color:var(--txt-2);font-weight:600}
+  .spacer{flex:1}
+
+  /* ===== 后端连接胶囊 ===== */
+  .conn{display:flex;align-items:center;gap:8px;background:var(--bg-2);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12.5px;cursor:pointer;transition:.2s;user-select:none}
+  .conn:hover{border-color:var(--brand)}
+  .conn .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px rgba(46,204,113,.18)}
+  .conn .ping{color:var(--txt-3);font-variant-numeric:tabular-nums}
+  .conn .proto{background:rgba(59,140,255,.14);color:var(--brand);padding:2px 8px;border-radius:999px;font-weight:600}
+  .conn[data-state="weak"] .dot{background:var(--warn);box-shadow:0 0 0 4px rgba(245,166,35,.18)}
+  .conn[data-state="weak"] .ping{color:var(--warn)}
+  .conn[data-state="reconnect"] .dot{background:var(--bad);animation:pulse 1s infinite}
+  .conn[data-state="reconnect"] .conn-text{color:var(--bad)}
+  @keyframes pulse{50%{opacity:.35}}
+
+  /* ===== 主舞台 ===== */
+  .stage{display:grid;grid-template-columns:1fr 340px;gap:var(--sp-5);padding:var(--sp-5);overflow:hidden}
+  .player-wrap{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+
+  /* 播放器 */
+  .player{position:relative;aspect-ratio:16/9;background:#000;border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow)}
+  .poster{position:absolute;inset:0;background:
+      radial-gradient(120% 80% at 30% 20%,#2a2f45 0,#14151c 55%,#0a0b0f 100%);
+    display:grid;place-items:center}
+  .poster .big-cover{width:46%;aspect-ratio:2/3;border-radius:10px;background:linear-gradient(160deg,#3b4566,#20232c);box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .poster .cover-code{margin-top:14px;color:var(--txt-2);font-size:14px;letter-spacing:2px}
+  .big-play{position:absolute;inset:0;display:grid;place-items:center;cursor:pointer;z-index:3}
+  .big-play .b{width:84px;height:84px;border-radius:50%;background:rgba(59,140,255,.92);display:grid;place-items:center;font-size:34px;color:#fff;box-shadow:0 10px 40px rgba(59,140,255,.5);transition:.2s}
+  .big-play:hover .b{transform:scale(1.06)}
+  .player.playing .big-play{opacity:0;pointer-events:none}
+
+  /* 控制栏 */
+  .controls{position:absolute;left:0;right:0;bottom:0;padding:0 16px 12px;background:linear-gradient(0deg,rgba(0,0,0,.85),transparent);opacity:0;transform:translateY(8px);transition:.25s;z-index:4}
+  .player:hover .controls,.player.playing .controls{opacity:1;transform:none}
+  .progress{position:relative;height:18px;display:flex;align-items:center;cursor:pointer;margin-bottom:6px}
+  .progress .track{position:absolute;left:0;right:0;height:5px;background:rgba(255,255,255,.18);border-radius:3px;overflow:visible}
+  .progress .buffered{position:absolute;left:0;height:5px;width:78%;background:rgba(255,255,255,.28);border-radius:3px}
+  .progress .played{position:absolute;left:0;height:5px;width:42%;background:linear-gradient(90deg,var(--brand),#7b5bff);border-radius:3px}
+  .progress .knob{position:absolute;left:42%;width:13px;height:13px;border-radius:50%;background:#fff;transform:translateX(-50%);box-shadow:0 2px 6px rgba(0,0,0,.5);transition:opacity .15s}
+  .progress:hover .knob{opacity:1}
+  .tp{position:absolute;bottom:26px;width:160px;height:90px;border-radius:8px;overflow:hidden;transform:translateX(-50%);border:2px solid rgba(255,255,255,.85);box-shadow:0 8px 24px rgba(0,0,0,.6);display:none;pointer-events:none;background:#222}
+  .tp span{position:absolute;bottom:4px;left:0;right:0;text-align:center;font-size:11px;color:#fff;text-shadow:0 1px 2px #000}
+  .progress:hover .tp{display:block}
+  .bar{display:flex;align-items:center;gap:6px;color:#fff}
+  .bar button{background:transparent;border:none;color:#fff;font-size:13px;padding:7px 10px;border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:.15s}
+  .bar button:hover{background:rgba(255,255,255,.14)}
+  .bar .pp{font-size:18px}
+  .bar .time{font-size:12.5px;color:#dfe3ea;font-variant-numeric:tabular-nums;margin:0 4px}
+  .bar .spacer{flex:1}
+  .bar .chip{background:rgba(255,255,255,.1);font-weight:600}
+  .bar .chip.active{background:var(--brand)}
+
+  /* 画质菜单 */
+  .qmenu{position:absolute;bottom:46px;right:16px;background:var(--bg-1);border:1px solid var(--line);border-radius:10px;padding:6px;min-width:150px;display:none;z-index:6;box-shadow:var(--shadow)}
+  .qmenu.show{display:block}
+  .qmenu div{padding:8px 12px;border-radius:7px;font-size:13px;cursor:pointer;display:flex;justify-content:space-between}
+  .qmenu div:hover{background:var(--bg-3)}
+  .qmenu div.sel{color:var(--brand);font-weight:600}
+  .qmenu div .hz{color:var(--txt-3);font-size:11px}
+
+  /* 续播提示 */
+  .resume{display:flex;align-items:center;gap:10px;background:linear-gradient(90deg,rgba(59,140,255,.14),rgba(59,140,255,.04));border:1px solid rgba(59,140,255,.3);border-radius:var(--r-md);padding:12px 16px;font-size:13px}
+  .resume .ic{width:34px;height:34px;border-radius:9px;background:var(--brand);display:grid;place-items:center;font-size:16px}
+  .resume b{color:var(--brand)}
+  .resume .go{margin-left:auto;background:var(--brand);color:#fff;border:none;padding:7px 16px;border-radius:8px;cursor:pointer;font-weight:600}
+
+  /* ===== 右侧栏 ===== */
+  .side{display:flex;flex-direction:column;gap:var(--sp-4);overflow:auto;min-width:0}
+  .side::-webkit-scrollbar{width:8px}
+  .side::-webkit-scrollbar-thumb{background:var(--bg-3);border-radius:8px}
+  .card{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-4)}
+  .movie-card{display:flex;gap:14px}
+  .movie-card .cover{width:92px;aspect-ratio:2/3;border-radius:10px;background:linear-gradient(160deg,#3b4566,#20232c);flex:0 0 auto;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .movie-card .meta{min-width:0;flex:1}
+  .movie-card .code{color:var(--brand);font-weight:700;font-size:13px;letter-spacing:1px}
+  .movie-card .title{font-size:15px;font-weight:600;margin:4px 0 8px;line-height:1.4}
+  .movie-card .rating{display:inline-flex;align-items:center;gap:5px;color:var(--warn);font-weight:700;font-size:14px}
+  .movie-card .plot{color:var(--txt-3);font-size:12px;line-height:1.6;margin-top:10px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .tag{background:var(--bg-2);border:1px solid var(--line);color:var(--txt-2);font-size:11px;padding:3px 9px;border-radius:999px}
+  .actor{background:rgba(59,140,255,.12);border:1px solid rgba(59,140,255,.3);color:#cfe0ff;font-size:11px;padding:3px 9px;border-radius:999px;cursor:pointer}
+  .actor:hover{border-color:var(--brand)}
+
+  .sec-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--txt-1);margin-bottom:12px}
+  .sec-title .n{background:var(--bg-2);color:var(--txt-2);font-size:11px;padding:1px 8px;border-radius:999px}
+  .series ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+  .series li{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:9px;background:var(--bg-2);font-size:13px;cursor:pointer;transition:.15s;border:1px solid transparent}
+  .series li:hover{background:var(--bg-3)}
+  .series li .idx{width:22px;height:22px;border-radius:6px;background:var(--bg-3);display:grid;place-items:center;font-size:11px;color:var(--txt-2)}
+  .series li .dur{margin-left:auto;color:var(--txt-3);font-size:11px;font-variant-numeric:tabular-nums}
+  .series li.playing{background:linear-gradient(90deg,rgba(59,140,255,.2),rgba(59,140,255,.05));border-color:var(--brand)}
+  .series li.playing .idx{background:var(--brand);color:#fff}
+  .series li.playing .nm{color:#fff;font-weight:600}
+  .series li .badge-done{color:var(--ok);font-size:11px}
+
+  /* ===== 底部状态条 ===== */
+  .statusbar{display:flex;align-items:center;gap:18px;padding:0 var(--sp-5);background:#0e0f12;border-top:1px solid var(--line);font-size:11.5px;color:var(--txt-3)}
+  .statusbar .live-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:5px;vertical-align:middle}
+  .statusbar .hint{margin-left:auto;color:var(--txt-3)}
+  .statusbar b{color:var(--txt-2);font-weight:600}
+
+  /* 顶部轻量提示 toast */
+  .toast{position:fixed;top:68px;left:50%;transform:translateX(-50%) translateY(-12px);background:var(--bg-2);border:1px solid var(--line);color:var(--txt-1);padding:10px 18px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;z-index:20;box-shadow:var(--shadow)}
+  .toast.show{opacity:1;transform:translateX(-50%)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand"><span class="play-ico">▶</span> MDCX</div>
+    <nav class="crumbs">媒体库 / <b>JAV</b> / <b>ABC-123</b> · 标题示例</nav>
+    <div class="spacer"></div>
+    <div class="conn" id="conn" data-state="online" title="点击模拟：在线 / 弱网 / 重连">
+      <span class="dot"></span>
+      <span class="conn-text">后端已连接</span>
+      <span class="ping" id="ping">12ms</span>
+      <span class="proto">HLS·自适应</span>
+    </div>
+  </header>
+
+  <!-- 主舞台 -->
+  <main class="stage">
+    <section class="player-wrap">
+      <div class="player" id="player">
+        <div class="poster">
+          <div>
+            <div class="big-cover"></div>
+            <div class="cover-code" style="text-align:center">ABC-123</div>
+          </div>
+        </div>
+        <div class="big-play" id="bigPlay"><div class="b">▶</div></div>
+        <div class="controls">
+          <div class="progress" id="progress">
+            <div class="track"></div>
+            <div class="buffered"></div>
+            <div class="played"></div>
+            <div class="knob"></div>
+            <div class="tp" id="tp"><span id="tpTime">42:15</span></div>
+          </div>
+          <div class="bar">
+            <button class="pp" id="pp">▶</button>
+            <span class="time" id="time">42:15 / 1:40:30</span>
+            <div class="spacer"></div>
+            <button class="chip" id="qbtn">画质 · 自动</button>
+            <button class="chip" id="rate">1.0x</button>
+            <button class="chip" id="sub">字幕 · 中文</button>
+            <button title="音量">🔊</button>
+            <button title="画中画">⧉</button>
+            <button title="设置">⚙</button>
+            <button title="全屏">⛶</button>
+          </div>
+          <div class="qmenu" id="qmenu">
+            <div class="sel" data-q="自动" data-hz="按带宽">自动 <span class="hz">自适应</span></div>
+            <div data-q="1080P" data-hz="4.2 Mbps">1080P <span class="hz">4.2M</span></div>
+            <div data-q="720P" data-hz="2.4 Mbps">720P <span class="hz">2.4M</span></div>
+            <div data-q="480P" data-hz="1.1 Mbps">480P <span class="hz">1.1M</span></div>
+            <div data-q="原画" data-hz="8.6 Mbps">原画 <span class="hz">8.6M</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="resume">
+        <div class="ic">⏯</div>
+        <div>已从观影记录恢复 · 上次看到 <b>68%</b>（第 42:15），点此继续</div>
+        <button class="go" id="resumeGo">继续观看</button>
+      </div>
+    </section>
+
+    <!-- 右侧栏 -->
+    <aside class="side">
+      <div class="card movie-card">
+        <div class="cover"></div>
+        <div class="meta">
+          <div class="code">ABC-123</div>
+          <div class="title">星光下的约定：夏日终曲</div>
+          <div class="rating">★ 8.6 <span style="color:var(--txt-3);font-weight:400;font-size:12px">/ 10</span></div>
+          <div class="chips">
+            <span class="tag">剧情</span><span class="tag">治愈</span><span class="tag">2025</span>
+            <span class="actor">樱井花音</span><span class="actor">佐藤凛</span>
+          </div>
+          <div class="plot">一段关于夏日、离别与重逢的温柔故事。在海岸小镇的最后一个暑假，两个年轻人用镜头记录下彼此最真实的模样……</div>
+        </div>
+      </div>
+
+      <div class="card series">
+        <div class="sec-title">本系列连播 <span class="n">6 话</span></div>
+        <ul id="seriesList">
+          <li data-ep="1"><span class="idx">1</span><span class="nm">第1话 · 初夏的邂逅</span><span class="badge-done">✓ 已看</span></li>
+          <li data-ep="2"><span class="idx">2</span><span class="nm">第2话 · 海风的味道</span><span class="badge-done">✓ 已看</span></li>
+          <li class="playing" data-ep="3"><span class="idx">3</span><span class="nm">第3话 · 星光下的约定</span><span class="dur">1:40:30</span></li>
+          <li data-ep="4"><span class="idx">4</span><span class="nm">第4话 · 潮声渐远</span><span class="dur">1:38:02</span></li>
+          <li data-ep="5"><span class="idx">5</span><span class="nm">第5话 · 未寄出的信</span><span class="dur">1:35:47</span></li>
+          <li data-ep="6"><span class="idx">6</span><span class="nm">第6话 · 夏日终曲</span><span class="dur">1:42:11</span></li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+
+  <!-- 底部状态条 -->
+  <footer class="statusbar">
+    <span><span class="live-dot"></span>媒体源：<b>后端代理</b> /api/v1/movies/123/play</span>
+    <span>画质：<b id="sbQ">自动 (HLS)</b></span>
+    <span>码率：<b id="sbRate">4.2 Mbps</b></span>
+    <span>缓冲：<b>就绪</b></span>
+    <span class="hint">快捷键：空格 播放 · ←→ 快退/进 · F 全屏 · ? 帮助</span>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const $ = s => document.querySelector(s)
+  const player = $('#player'), pp = $('#pp'), bigPlay = $('#bigPlay'), time = $('#time')
+  let playing = false
+  const TOTAL = 1*3600 + 40*60 + 30 // 1:40:30
+
+  const fmt = s => { s=Math.max(0,Math.floor(s)); const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
+    return (h>0?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0') }
+
+  function setPlay(state){
+    playing = state
+    player.classList.toggle('playing', state)
+    pp.textContent = state ? '❚❚' : '▶'
+    bigPlay.querySelector('.b').textContent = state ? '❚❚' : '▶'
+  }
+  function toggle(){ setPlay(!playing); toast(playing?'开始播放':'已暂停') }
+  pp.onclick = toggle
+  bigPlay.onclick = toggle
+  $('#resumeGo').onclick = ()=>{ setPlay(true); toast('已从 42:15 继续') }
+
+  // 进度条 hover 缩略图 + 拖动
+  const progress = $('#progress'), tp = $('#tp'), tpTime = $('#tpTime')
+  progress.onmousemove = e=>{
+    const r = progress.getBoundingClientRect()
+    const p = Math.min(1, Math.max(0,(e.clientX-r.left)/r.width))
+    const x = r.width*p
+    tp.style.left = x+'px'
+    tpTime.textContent = fmt(p*TOTAL)
+    // 模拟缩略图（渐变占位）
+    tp.style.background = `linear-gradient(${140+p*200}deg,hsl(${200+p*60} 40% 30%),hsl(${280-p*80} 45% 18%))`
+  }
+  progress.onclick = e=>{
+    const r = progress.getBoundingClientRect()
+    const p = Math.min(1, Math.max(0,(e.clientX-r.left)/r.width))
+    $('.played').style.width = (p*100)+'%'
+    $('.knob').style.left = (p*100)+'%'
+    time.textContent = fmt(p*TOTAL)+' / '+fmt(TOTAL)
+    toast('跳转到 '+fmt(p*TOTAL))
+  }
+
+  // 画质菜单
+  const qbtn=$('#qbtn'), qmenu=$('#qmenu')
+  qbtn.onclick = e=>{ e.stopPropagation(); qmenu.classList.toggle('show') }
+  qmenu.onclick = e=>{
+    const it = e.target.closest('div[data-q]'); if(!it) return
+    [...qmenu.children].forEach(c=>c.classList.remove('sel'))
+    it.classList.add('sel')
+    const q = it.dataset.q
+    qbtn.textContent = '画质 · '+q
+    $('#sbQ').textContent = q==='自动'?'自动 (HLS)':q
+    $('#sbRate').textContent = it.dataset.hz
+    qmenu.classList.remove('show')
+    toast('画质 → '+q)
+  }
+  document.onclick = ()=> qmenu.classList.remove('show')
+
+  // 倍速
+  const rates=[1,1.25,1.5,2,0.75], rateBtn=$('#rate'); let ri=0
+  rateBtn.onclick=()=>{ ri=(ri+1)%rates.length; rateBtn.textContent=rates[ri]+'x'; toast('倍速 '+rates[ri]+'x') }
+
+  // 字幕
+  $('#sub').onclick=()=>toast('字幕轨道：中文 / 日文 / 关闭')
+
+  // 系列连播
+  $('#seriesList').onclick = e=>{
+    const li = e.target.closest('li'); if(!li) return
+    [...$('#seriesList').children].forEach(c=>c.classList.remove('playing'))
+    li.classList.add('playing')
+    const ep = li.dataset.ep
+    $('.code').textContent = 'ABC-'+String(120+ +ep)
+    toast('切换到 第'+ep+'话')
+  }
+
+  // 后端连接状态模拟
+  const conn=$('#conn'), ping=$('#ping'), connText=conn.querySelector('.conn-text')
+  const states=[
+    {s:'online',  t:'后端已连接', p:'12ms', proto:'HLS·自适应'},
+    {s:'weak',    t:'弱网 · 已降码率', p:'320ms', proto:'480P·保流畅'},
+    {s:'reconnect',t:'连接中断 · 自动重连中', p:'—', proto:'重试 2/5'}
+  ]
+  let si=0
+  conn.onclick=()=>{
+    si=(si+1)%states.length; const v=states[si]
+    conn.dataset.state=v.s; connText.textContent=v.t; ping.textContent=v.p
+    conn.querySelector('.proto').textContent=v.proto
+    if(v.s==='reconnect') toast('⚠ 与后端断开，正在自动重连…')
+    else if(v.s==='weak') toast('⚠ 网络较弱，已自动切到 480P 保流畅')
+    else toast('✓ 后端连接正常（12ms）')
+  }
+
+  function toast(msg){
+    const t=$('#toast'); t.textContent=msg; t.classList.add('show')
+    clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),1800)
+  }
+</script>
+</body>
+</html>

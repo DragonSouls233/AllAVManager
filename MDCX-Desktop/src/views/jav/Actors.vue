@@ -12,6 +12,9 @@
       <el-button type="warning" @click="openProfileDialog">
         <el-icon><Refresh /></el-icon> 资料刮削
       </el-button>
+      <el-button type="success" plain @click="openAvatarDialog">
+        <el-icon><Picture /></el-icon> 补头像
+      </el-button>
       <el-button type="info" plain @click="syncActors" :loading="syncing">
         <el-icon><RefreshLeft /></el-icon> 同步演员
       </el-button>
@@ -64,17 +67,88 @@
         @size-change="handleSizeChange" @current-change="loadActors" />
     </div>
 
+    <!-- 头像刮削对话框（本地库 → AV联盟 → JavDB → JavBus，全局进度浮层） -->
+    <el-dialog v-model="avatarVisible" title="演员头像补充刮削" width="640px">
+      <el-alert type="info" :closable="false" show-icon class="tip">
+        <template #title>
+          只处理无头像的演员，依次从 本地资料库 → AV联盟 → JavDB → JavBus 抓取头像{{ avatarStore.library.available ? '（已检测到本地头像资料库，可优先离线匹配）' : '' }}
+        </template>
+      </el-alert>
+
+      <el-form label-width="100px" class="dialog-form">
+        <el-form-item label="最少作品数">
+          <el-input-number v-model="avatarMinMovies" :min="1" :max="50" />
+          <span class="muted" style="margin-left:8px">仅刮削达到该作品数的演员</span>
+        </el-form-item>
+        <el-form-item label="本地资料库" v-if="avatarStore.library.available">
+          <el-switch v-model="avatarStore.useLocalLibrary" />
+          <span class="muted" style="margin-left:8px">
+            优先从本地资料库匹配（{{ libPathText }}，共 {{ avatarStore.library.count ?? '?' }} 张）
+          </span>
+        </el-form-item>
+      </el-form>
+
+      <div class="actions">
+        <el-button @click="runAvatarPreview" :loading="avatarPreviewing">
+          <el-icon><View /></el-icon> 预览待处理
+        </el-button>
+        <el-button type="primary" @click="startAvatarScrape" :loading="avatarStarting" :disabled="avatarStore.active">
+          <el-icon><VideoPlay /></el-icon> 开始刮削
+        </el-button>
+        <el-button v-if="avatarStore.active" type="danger" @click="avatarStore.cancel()">
+          取消任务
+        </el-button>
+      </div>
+
+      <!-- 预览列表 -->
+      <template v-if="avatarPreviewList.length">
+        <el-divider>待处理演员（前 20 个，共 {{ avatarPreviewTotal }} 个）</el-divider>
+        <div class="preview-list">
+          <span v-for="a in avatarPreviewList" :key="a.id" class="preview-chip">
+            {{ a.name }}<small v-if="a.movie_cnt">（{{ a.movie_cnt }}）</small>
+          </span>
+        </div>
+      </template>
+
+      <!-- 任务进度（同时全局浮层也会显示） -->
+      <template v-if="avatarStore.active || avatarStore.status.status">
+        <el-divider>任务进度</el-divider>
+        <div class="job-status">
+          <el-tag :type="avatarJobTagType">{{ avatarStore.status.status || '空闲' }}</el-tag>
+          <span class="muted job-msg">{{ avatarStore.statusText }}</span>
+        </div>
+        <el-progress
+          v-if="avatarStore.progressPercent > 0"
+          :percentage="avatarStore.progressPercent"
+          :status="avatarStore.isFinished ? 'success' : undefined"
+          class="job-progress"
+        />
+        <el-descriptions :column="3" border size="small" class="job-desc" v-if="avatarHasJobDetail">
+          <el-descriptions-item label="总数">{{ avatarStore.status.total }}</el-descriptions-item>
+          <el-descriptions-item label="已处理">{{ avatarStore.status.completed }}</el-descriptions-item>
+          <el-descriptions-item label="成功">{{ avatarStore.status.success }}</el-descriptions-item>
+          <el-descriptions-item label="失败">{{ avatarStore.status.failed }}</el-descriptions-item>
+          <el-descriptions-item label="跳过">{{ avatarStore.status.skipped }}</el-descriptions-item>
+          <el-descriptions-item label="当前演员">{{ avatarStore.status.current_actor || '—' }}</el-descriptions-item>
+        </el-descriptions>
+      </template>
+    </el-dialog>
+
     <!-- 资料刮削对话框 -->
     <el-dialog v-model="profileVisible" title="演员资料补充刮削" width="560px">
       <el-alert type="info" :closable="false" show-icon class="tip">
         <template #title>
-          从 AV联盟 → DMM → JavWiki → 维基百科等源补充演员资料（生日/身高/三围/罩杯/出道/社交等），仅补空缺字段，最多处理 100 人
+          从 AV联盟 → DMM → JavWiki → 维基百科等源补充演员资料（生日/身高/三围/罩杯/出道/社交等），仅补空缺字段，自动跳过资料已完整的演员
         </template>
       </el-alert>
       <el-form label-width="100px" class="dialog-form">
         <el-form-item label="最少作品数">
           <el-input-number v-model="profileMinMovies" :min="1" :max="100" />
           <span class="muted" style="margin-left:8px">仅刮削达到该作品数的演员</span>
+        </el-form-item>
+        <el-form-item label="刮削数量">
+          <el-input-number v-model="profileLimit" :min="1" :max="500" />
+          <span class="muted" style="margin-left:8px">最多刮削人数（优先资料缺失的演员）</span>
         </el-form-item>
         <el-form-item label="同时补头像">
           <el-switch v-model="profileIncludeAvatar" />
@@ -132,14 +206,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, RefreshLeft, Switch } from '@element-plus/icons-vue'
+import { Search, Refresh, RefreshLeft, Switch, Picture, View, VideoPlay } from '@element-plus/icons-vue'
 import defaultAvatar from '@/assets/default-avatar.png'
 import { getAvatarSrc } from '@/utils/media'
 import { getJavActors } from '@/api/jav'
-import { recalcActorMovieCount, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge } from '@/api'
+import { recalcActorMovieCount, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge, previewAvatarScrape } from '@/api'
+import { useAvatarScrapeStore } from '@/stores/avatarScrape'
+
+const avatarStore = useAvatarScrapeStore()
 
 const router = useRouter()
 const keyword = ref('')
@@ -182,8 +259,14 @@ async function recalcCounts() {
 async function loadActors() {
   loading.value = true
   try {
-    const res = await getJavActors()
-    // API 返回的可能是数组或 {items, total}
+    const res = await getJavActors({
+      search: keyword.value || undefined,
+      movie_count_filter: movieCountFilter.value,
+      min_movies: minMoviesForFilter.value,
+      page: page.value,
+      page_size: pageSize.value,
+    })
+    // API 返回 {items, total}；旧版本可能返回数组，向下兼容
     if (Array.isArray(res)) {
       actors.value = res
       total.value = res.length
@@ -222,9 +305,74 @@ function handleAvatarError(e) {
   e.target.src = defaultAvatar(e.target.alt || '?')
 }
 
+// ===== 头像补充刮削（全局 store，本地库 → AV联盟 → JavDB → JavBus）=====
+const avatarVisible = ref(false)
+const avatarMinMovies = ref(2)
+const avatarPreviewing = ref(false)
+const avatarStarting = ref(false)
+const avatarPreviewList = ref([])
+const avatarPreviewTotal = ref(0)
+
+const libPathText = computed(() => {
+  const p = avatarStore.library?.path
+  if (!p) return ''
+  const parts = String(p).split(/[\\/]/)
+  return parts.slice(-3).join('/')
+})
+
+const avatarHasJobDetail = computed(() =>
+  avatarStore.status && (avatarStore.status.total !== undefined || avatarStore.status.completed !== undefined)
+)
+const avatarJobTagType = computed(() => {
+  const s = avatarStore.status?.status
+  if (s === 'completed') return 'success'
+  if (s === 'failed' || s === 'cancelled') return 'danger'
+  if (s === 'running' || s === 'pending') return 'warning'
+  return 'info'
+})
+
+function openAvatarDialog() {
+  avatarVisible.value = true
+  avatarStore.initLibrary()
+}
+
+async function runAvatarPreview() {
+  avatarPreviewing.value = true
+  avatarPreviewList.value = []
+  try {
+    const res = await previewAvatarScrape({
+      minMovies: avatarMinMovies.value,
+      useLocalLibrary: avatarStore.useLocalLibrary
+    })
+    const list = res.actors || res.items || []
+    avatarPreviewList.value = list
+    avatarPreviewTotal.value = res.total || list.length
+  } catch (e) {
+    // 拦截器已提示
+  } finally {
+    avatarPreviewing.value = false
+  }
+}
+
+async function startAvatarScrape() {
+  avatarStarting.value = true
+  try {
+    const ok = await avatarStore.start({
+      minMovies: avatarMinMovies.value,
+      useLocalLibrary: avatarStore.useLocalLibrary
+    })
+    if (ok) avatarVisible.value = false
+  } catch (e) {
+    // 拦截器已提示
+  } finally {
+    avatarStarting.value = false
+  }
+}
+
 // ===== 资料刮削（批量补充演员信息）=====
 const profileVisible = ref(false)
 const profileMinMovies = ref(2)
+const profileLimit = ref(100)
 const profileIncludeAvatar = ref(false)
 const profileScraping = ref(false)
 
@@ -235,7 +383,7 @@ function openProfileDialog() {
 async function startProfileScrape() {
   try {
     await ElMessageBox.confirm(
-      `确认对「jav」模块 ≥ ${profileMinMovies.value} 部作品的前 100 名演员启动资料刮削吗？` +
+      `确认对「jav」模块 ≥ ${profileMinMovies.value} 部作品的前 ${profileLimit.value} 名资料缺失演员启动资料刮削吗？` +
       (profileIncludeAvatar.value ? '（将同时补充缺失的头像）' : ''),
       '资料刮削',
       { confirmButtonText: '开始刮削', cancelButtonText: '取消', type: 'warning' }
@@ -248,13 +396,14 @@ async function startProfileScrape() {
     const res = await scrapeActorProfiles({
       module: 'jav',
       min_movies: profileMinMovies.value,
+      limit: profileLimit.value,
       include_avatar: profileIncludeAvatar.value
     })
     profileVisible.value = false
-    ElMessage.success(`资料刮削完成：共 ${res.total} 人，成功 ${res.success}，失败 ${res.failed}`)
-    loadActors()
+    ElMessage.success(res.message || `资料刮削已启动（共 ${res.total} 人，后台执行中）`)
+    setTimeout(() => loadActors(), 5000)
   } catch (e) {
-    ElMessage.error('资料刮削失败: ' + (e.message || '未知错误'))
+    ElMessage.error('资料刮削启动失败: ' + (e.message || '未知错误'))
   } finally {
     profileScraping.value = false
   }
@@ -364,4 +513,10 @@ onMounted(loadActors)
 .tip { margin-bottom: 4px; }
 .dialog-form { margin-top: 12px; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.preview-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.preview-chip { background: #f4f4f5; border-radius: 4px; padding: 2px 8px; font-size: 12px; color: #606266; }
+.job-status { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.job-msg { font-size: 13px; }
+.job-progress { margin-top: 10px; }
+.job-desc { margin-top: 10px; }
 </style>

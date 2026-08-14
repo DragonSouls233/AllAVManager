@@ -102,6 +102,51 @@ def _resolve_asset_target(src_name: str, code: str) -> str | None:
     return None
 
 
+def detect_version_flags(file_name: str) -> dict:
+    """从视频文件名统一识别版本后缀，供各模块扫描器落库使用。
+
+    与 nfo_parser._detect_version_suffix 口径保持一致，映射规则：
+      -C / -CH / -CN / -中字   → is_chinese=True
+      -U / -Uncensored / -无码  → is_uncensored=True
+      -UC（复合，无码+中字）    → is_chinese=True 且 is_uncensored=True
+      -Leak / -流出 / -破解     → is_leak=True
+      -4K / -UHD                → is_4k=True
+
+    返回 {"is_chinese", "is_uncensored", "is_leak", "is_4k"} 四个布尔标记。
+    """
+    stem = Path(file_name).stem
+    # 尾部版本后缀（允许 - / _ / 空格 / 无分隔符，兼容 JAV 常见命名）
+    m = re.search(r"[-_.\s]?([A-Za-z0-9\u4e00-\u9fff]{1,12})$", stem)
+    suffix = m.group(1) if m else ""
+    low = suffix.lower()
+
+    flags = {
+        "is_chinese": False,
+        "is_uncensored": False,
+        "is_leak": False,
+        "is_4k": False,
+    }
+    if not low:
+        return flags
+
+    # 复合后缀优先：UC = 无码 + 中字
+    if low == "uc":
+        flags["is_chinese"] = True
+        flags["is_uncensored"] = True
+        return flags
+
+    # 4K 判定前置：UHD 含 "u"，必须先判 4K 再判无码，否则 -UHD 会被误判为无码
+    if "4k" in low or "uhd" in low:
+        flags["is_4k"] = True
+    if any(k in low for k in ("c", "ch", "cn", "中字", "中文")):
+        flags["is_chinese"] = True
+    if "uhd" not in low and any(k in low for k in ("u", "unc", "uncensored", "无码", "無碼")):
+        flags["is_uncensored"] = True
+    if any(k in low for k in ("leak", "流出", "破解", "rip")):
+        flags["is_leak"] = True
+    return flags
+
+
 def find_local_cover(video_file_path: str | Path, code: str) -> str | None:
     """在视频目录中查找本地封面，返回绝对路径（用于回填 cover_url）。
 
@@ -133,13 +178,29 @@ _SKIP_WALK_DIRS = {
 }
 
 
+def _list_dir_entries(path: Path) -> list:
+    """列目录条目（容错）。用于线程池中执行，避免同步磁盘 IO 阻塞事件循环。"""
+    try:
+        return sorted(path.iterdir())
+    except OSError:
+        return []
+
+
+def _file_size(path: Path) -> int:
+    """取文件大小（容错）。网络盘上一次 stat 即可，避免 exists()+stat() 两次 IO。"""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def iter_media_entries(
     media_dir: str | Path,
     max_depth: int = 8,
 ) -> list[tuple[str, list[str], list[str]]]:
-    """受控遍历媒体目录：限制深度 + 剪枝系统/隐藏目录。
+    """受控遍历媒体目录：限制深度 + 剪枝系统/隐藏目录（os.scandir 快速实现）。
 
-    替代 `list(os.walk(media_dir))`——当 media_dirs 是整盘符（H:\\、Z:\\）或超大
+    替代 `list(os.walk(media_dir))`——当 media_dirs 是整盘符（M:\\、H:\\）或超大
     网络目录时，无限制的 os.walk 会遍历出数百万条目并长期占满线程池，导致整个
     服务假死（日志/API 全部停止）。此函数：
     - 限制下探深度（max_depth），整盘目录下只读有效媒体层级；
@@ -147,18 +208,35 @@ def iter_media_entries(
     - 返回值与 os.walk 相同：(root, dirs, files) 列表。
     """
     media_dir = Path(media_dir)
-    base_parts = len(media_dir.parts)
     entries: list[tuple[str, list[str], list[str]]] = []
-    for root, dirs, files in os.walk(media_dir, topdown=True):
-        depth = len(Path(root).parts) - base_parts
-        if depth >= max_depth:
-            dirs[:] = []  # 不再下探
-        else:
-            dirs[:] = [
-                d for d in dirs
-                if d.lower() not in _SKIP_WALK_DIRS and not d.startswith(".")
-            ]
-        entries.append((root, dirs, files))
+    # 显式栈做受限深度遍历（等价 os.walk topdown + dirs 剪枝，但只列目录名与文件名，
+    # 不 stat 文件内容；scandir 目录项复用系统缓存，整盘遍历明显更快）
+    stack: list[tuple[Path, int]] = [(media_dir, 0)]
+    while stack:
+        root, depth = stack.pop()
+        try:
+            with os.scandir(root) as it:
+                dirs: list[str] = []
+                files: list[str] = []
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if (
+                                depth < max_depth
+                                and entry.name.lower() not in _SKIP_WALK_DIRS
+                                and not entry.name.startswith(".")
+                            ):
+                                dirs.append(entry.name)
+                        else:
+                            files.append(entry.name)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+        entries.append((str(root), dirs, files))
+        # 逆序压栈，保持与 os.walk 一致的目录访问顺序
+        for d in reversed(dirs):
+            stack.append((root / d, depth + 1))
     return entries
 
 
@@ -196,7 +274,9 @@ async def copy_video_assets_to_data_dir(
 
     copied = 0
     # 遍历视频目录中的真实文件，兼容通用名与 {code}-前缀命名
-    for src in sorted(video_dir.iterdir()):
+    # iterdir 是同步磁盘 IO，在慢盘/网络盘上会阻塞事件循环（数千并发复制时秒级假死），
+    # 丢到线程池执行
+    for src in await asyncio.to_thread(_list_dir_entries, video_dir):
         if not src.is_file():
             continue
         dst_name = _resolve_asset_target(src.name, code)
@@ -237,6 +317,21 @@ class BaseScanner(ABC):
         self.module_name = module_name
         self.media_dirs = [Path(d) for d in media_dirs if Path(d).exists()]
         self.video_extensions = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"}
+
+    # 复制任务并发限制：整盘/超大目录扫描时，无限制 ensure_future 会同时派发数千个
+    # 资源复制协程，线程池被占满 + 同步磁盘 IO 风暴会拖死事件循环（表现为日志/API 全部
+    # 停止的"假死"，连 600s 扫描超时也无法触发）。anime 模块 2026-08-08 已修复，此处分发复用。
+    _COPY_SEM: asyncio.Semaphore | None = None
+
+    async def _copy_limited(self, coro) -> None:
+        """并发受限地执行复制任务"""
+        if BaseScanner._COPY_SEM is None:
+            BaseScanner._COPY_SEM = asyncio.Semaphore(5)
+        try:
+            async with BaseScanner._COPY_SEM:
+                await asyncio.wait_for(coro, timeout=60)
+        except Exception:
+            pass  # 复制失败不影响扫描主流程
 
     @abstractmethod
     async def scan(self) -> dict:

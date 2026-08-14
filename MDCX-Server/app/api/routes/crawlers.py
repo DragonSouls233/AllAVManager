@@ -267,6 +267,13 @@ async def set_crawler_priority(
 
         await _save_crawler_setting(session, f"crawler_{name}_priority", str(priority))
 
+    # 保存后即时应用到爬虫实例（无需重启即生效）
+    provider.apply_saved_settings({
+        f"crawler_{name}_priority": str(p)
+        for name, p in priorities.items()
+        if provider.get(name)
+    })
+
     return {"status": "ok", "message": f"已更新 {len(priorities)} 个站点的优先级"}
 
 

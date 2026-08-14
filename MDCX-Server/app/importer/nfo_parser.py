@@ -55,6 +55,7 @@ class ImportedMovie:
     is_chinese: Optional[bool] = None    # 中文字幕/中文配音版（后缀 -C/-CH/-CN/-中字）
     is_uncensored: Optional[bool] = None # 无码版（后缀 -U/-UC/-无码/-Uncensored）
     is_leak: Optional[bool] = None       # 流出/破解版（后缀 -Leak/-流出/-破解）
+    is_4k: Optional[bool] = None         # 4K 分辨率版（后缀 -4K/-UHD）
     code_suffix: Optional[str] = None    # 原始后缀（如 C/Leak/U），用于追溯
 
     # 元信息
@@ -161,6 +162,8 @@ class NFOParser:
             out["is_uncensored"] = bool(m.is_uncensored)
         if m.is_leak is not None:
             out["is_leak"] = bool(m.is_leak)
+        if m.is_4k is not None:
+            out["is_4k"] = bool(m.is_4k)
         return out
 
     def _detect_version_suffix(self, movie: ImportedMovie, nfo_path: Path) -> None:
@@ -231,6 +234,10 @@ class NFOParser:
         # 判定流出/破解版
         if detected_suffix and _match_any(detected_suffix, ["leak", "流出", "破解", "rip"]):
             movie.is_leak = True
+            movie.code_suffix = detected_suffix
+        # 判定 4K 分辨率版
+        if detected_suffix and _match_any(detected_suffix, ["4k", "uhd"]):
+            movie.is_4k = True
             movie.code_suffix = detected_suffix
 
         # NFO 内 genre 关键字叠加判定（冗余信号）

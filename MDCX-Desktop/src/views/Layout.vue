@@ -55,6 +55,10 @@
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
           </el-menu-item>
+          <el-menu-item index="/jav/folder-check">
+            <el-icon><FolderOpened /></el-icon>
+            <template #title>文件夹归属</template>
+          </el-menu-item>
           <el-menu-item index="/jav/studios">
             <el-icon><OfficeBuilding /></el-icon>
             <template #title>制片厂</template>

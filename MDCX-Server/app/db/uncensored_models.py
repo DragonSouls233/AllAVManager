@@ -3,7 +3,7 @@ JAV 无码模块数据模型 (uncensored.db)
 """
 from datetime import datetime
 
-from sqlalchemy import String
+from sqlalchemy import Boolean, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class UNCENSORED_BASE(DeclarativeBase):
@@ -26,6 +26,10 @@ class UncensoredMovie(MovieMixin, UNCENSORED_BASE):
     __tablename__ = "movies"
 
     source_platform: Mapped[str | None] = mapped_column(String(50), index=True)
+    is_chinese: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 中文字幕版（-C/-UC 后缀）
+    is_uncensored: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 无码版（-U/-UC 后缀）
+    is_leak: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 流出/破解版
+    is_4k: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 4K 分辨率版
 
 
 class UncensoredActor(ActorMixin, UNCENSORED_BASE):

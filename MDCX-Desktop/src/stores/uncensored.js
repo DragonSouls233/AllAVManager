@@ -26,8 +26,8 @@ export const useUncensoredStore = defineStore('uncensored', () => {
     return await getUncensoredMovie(id)
   }
 
-  async function loadActors() {
-    const res = await getUncensoredActors()
+  async function loadActors(params = {}) {
+    const res = await getUncensoredActors(params)
     actors.value = res || []
     return actors.value
   }

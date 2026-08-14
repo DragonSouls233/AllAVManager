@@ -22,6 +22,7 @@ class CrawlerStatus(str, Enum):
 class CrawlerPriority(int, Enum):
     """刮削器优先级（数字越小优先级越高）"""
     HIGHEST = 0
+    VERY_HIGH = 5
     HIGH = 10
     NORMAL = 50
     LOW = 100

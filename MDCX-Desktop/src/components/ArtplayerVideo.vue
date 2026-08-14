@@ -24,6 +24,7 @@ import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { ElEmpty } from 'element-plus'
 import Artplayer from 'artplayer'
 import Hls from 'hls.js'
+import { getServerBaseUrl } from '@/utils/media'
 
 const props = defineProps({
   url: { type: String, default: '' },
@@ -32,8 +33,11 @@ const props = defineProps({
   // 外挂字幕 URL
   subtitleUrl: { type: String, default: '' },
   subtitleType: { type: String, default: 'vtt' }, // vtt | srt
-  // 缩略图进度条 VTT URL
+  // @deprecated 缩略图进度条 VTT URL（旧方案，hover 预览不生效）
   spriteVttUrl: { type: String, default: '' },
+  // 缩略图进度条元数据（Artplayer 5 官方 thumbnails API）：
+  // { sprite_url, count, cols, thumb_width, thumb_height }
+  spriteMeta: { type: Object, default: null },
   // 主题色
   theme: { type: String, default: '#2396ef' },
   // 自动播放
@@ -45,9 +49,12 @@ const props = defineProps({
   // HLS 自适应画质列表 v3.5：[{ bandwidth, width, height, label }]
   // 空数组表示单码率或直接播放
   qualities: { type: Array, default: () => [] },
+  // 播放页专属右键菜单（Play.vue 注入，如"生成 GIF"）。
+  // 每项 { html, click }，click 调用时传入 art 实例。
+  extraContextmenu: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['ready', 'timeupdate', 'screenshot', 'chapter-mark'])
+const emit = defineEmits(['ready', 'timeupdate', 'screenshot', 'chapter-mark', 'error', 'ended'])
 
 const artplayerRef = ref(null)
 let art = null
@@ -213,6 +220,9 @@ const initArtplayer = (videoUrl) => {
       crossOrigin: 'anonymous',
       preload: 'auto',
     },
+    // 缩略图进度条：用 Artplayer 5 官方 thumbnails 选项，
+    // 替换此前无效的 art.template.ingestedThumbnailCues 伪代码。
+    thumbnails: buildThumbnails(),
     settings: buildSettings(),
     contextmenu: [
       {
@@ -227,6 +237,13 @@ const initArtplayer = (videoUrl) => {
           art.screenshot()
         },
       },
+      // 合并播放页专属菜单（如"生成 GIF"），click 接收 art 实例
+      ...props.extraContextmenu.map((item) => ({
+        html: item.html,
+        click() {
+          item.click(art)
+        },
+      })),
     ],
     controls: [
       {
@@ -251,11 +268,6 @@ const initArtplayer = (videoUrl) => {
     }
   }
 
-  // 加载缩略图进度条 VTT
-  if (props.spriteVttUrl) {
-    loadThumbnailVtt(props.spriteVttUrl)
-  }
-
   art.on('ready', () => {
     emit('ready', art)
   })
@@ -267,46 +279,32 @@ const initArtplayer = (videoUrl) => {
   art.on('video:screenshot', ({ dataURL }) => {
     emit('screenshot', dataURL)
   })
+
+  // 播放错误（含 HLS 致命错误）→ 通知父组件触发连接胶囊重连态
+  art.on('error', (e) => {
+    emit('error', e)
+  })
+
+  // 播放结束 → 父组件据系列连播自动播放下一部
+  art.on('video:ended', () => {
+    emit('ended')
+  })
 }
 
-const loadThumbnailVtt = (vttUrl) => {
-  if (!art) return
-  fetch(vttUrl)
-    .then((r) => r.text())
-    .then((vtt) => {
-      const cues = parseVtt(vtt)
-      if (art.template) {
-        art.template.ingestedThumbnailCues = cues
-      }
-    })
-    .catch(() => {})
-}
-
-const parseVtt = (vtt) => {
-  const cues = []
-  const lines = vtt.split('\n')
-  let current = null
-  for (const line of lines) {
-    const m = line.match(/(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/)
-    if (m) {
-      current = { start: parseTimestamp(m[1]), end: parseTimestamp(m[2]) }
-    } else if (current && line.includes('#xywh=')) {
-      const xywh = line.match(/#xywh=(\d+),(\d+),(\d+),(\d+)/)
-      if (xywh) {
-        current.x = parseInt(xywh[1])
-        current.y = parseInt(xywh[2])
-        current.w = parseInt(xywh[3])
-        current.h = parseInt(xywh[4])
-        cues.push(current)
-      }
-    }
+// 构建 Artplayer 缩略图进度条配置（官方 thumbnails API）
+const buildThumbnails = () => {
+  const s = props.spriteMeta
+  if (!s || !s.sprite_url) return undefined
+  const url = /^https?:\/\//i.test(s.sprite_url)
+    ? s.sprite_url
+    : `${getServerBaseUrl()}${s.sprite_url}`
+  return {
+    url,
+    number: s.count,
+    column: s.cols,
+    width: s.thumb_width,
+    height: s.thumb_height,
   }
-  return cues
-}
-
-const parseTimestamp = (ts) => {
-  const [h, m, s] = ts.split(':')
-  return parseFloat(h) * 3600 + parseFloat(m) * 60 + parseFloat(s)
 }
 
 // 暴露 art 实例方法给父组件

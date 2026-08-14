@@ -181,8 +181,19 @@ class ScraperEngine:
 
         # 多站点结果合并（使用 merger 模块）
         if len(valid_results) > 1:
-            from app.scraper.merger import merge_results
-            merged = merge_results(valid_results)
+            from app.scraper.merger import MergeConfig, merge_results
+
+            # 用实际生效的爬虫优先级动态构建合并优先级，
+            # 使「站点优先级」界面保存的设置真实作用于最终来源选择
+            # （默认表仅兜底未注册来源，如 dmm_web 等）
+            from app.crawlers.provider import get_provider
+            provider = get_provider()
+            base_cfg = MergeConfig()
+            source_priority = dict(base_cfg.source_priority)
+            for crawler in crawlers:
+                source_priority[crawler.name] = provider.effective_priority(crawler)
+
+            merged = merge_results(valid_results, config=MergeConfig(source_priority=source_priority))
             if merged:
                 logger.info(f"已合并 {len(valid_results)} 个爬虫结果为番号 {number}")
                 return merged

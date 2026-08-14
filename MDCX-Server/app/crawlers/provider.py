@@ -3,9 +3,10 @@
 """
 
 import logging
+from enum import Enum
 from typing import Optional, Type
 
-from app.crawlers.base import BaseCrawler, CrawlerInfo, CrawlerStatus
+from app.crawlers.base import BaseCrawler, CrawlerInfo, CrawlerPriority, CrawlerStatus
 from app.scraper.number import NumberType, get_number_type
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,8 @@ class CrawlerProvider:
             cls._instance._crawler_classes: dict[str, Type[BaseCrawler]] = {}
             cls._instance._prefix_map: dict[str, list[str]] = {}
             cls._instance._type_map: dict[str, list[str]] = {}
+            # 运行时优先级覆盖（来自数据库设置，保存后即时生效，无需重启）
+            cls._instance._priority_overrides: dict[str, int] = {}
         return cls._instance
     
     def register(self, crawler_class: Type[BaseCrawler]) -> None:
@@ -161,7 +164,7 @@ class CrawlerProvider:
                 if crawler.status == CrawlerStatus.ENABLED
             )
         
-        # 4. 获取实例并按优先级排序
+        # 4. 获取实例并按优先级排序（使用生效优先级：数据库设置优先于类属性）
         crawlers = [
             self._crawlers[name]
             for name in matched_names
@@ -169,10 +172,65 @@ class CrawlerProvider:
         ]
         
         # 按优先级排序（数字越小优先级越高）
-        crawlers.sort(key=lambda c: c.priority)
+        crawlers.sort(key=lambda c: self._effective_priority(c))
         
         return crawlers
-    
+
+    # ============================================
+    # 运行时优先级（数据库设置生效）
+    # ============================================
+
+    def _effective_priority(self, crawler: BaseCrawler) -> int:
+        """获取爬虫的生效优先级
+
+        优先级顺序：数据库保存的覆盖值 > 类属性默认值。
+        数据库设置语义为「数值越大越优先」（站点优先级界面 1000/999/...），
+        覆盖时取负值转换为「数值越小越优先」与爬虫类属性一致。
+        """
+        override = self._priority_overrides.get(crawler.name)
+        if override is not None:
+            return override
+        p = getattr(crawler, "priority", CrawlerPriority.NORMAL)
+        return p.value if isinstance(p, Enum) else int(p)
+
+    def effective_priority(self, crawler: BaseCrawler) -> int:
+        """对外公开的生效优先级（供刮削合并使用）"""
+        return self._effective_priority(crawler)
+
+    def apply_saved_settings(self, settings: dict[str, str]) -> None:
+        """应用数据库中保存的站点设置到爬虫实例（即时生效，无需重启）
+
+        支持的 key（来自 site_priority / crawlers 路由）：
+        - crawler_{name}_priority : 站点优先级（数值越大越优先）
+        - crawler_{name}_enabled  : "true" / "false" 启用状态
+        """
+        for key, value in (settings or {}).items():
+            if not isinstance(value, str) or not value:
+                continue
+            if key.startswith("crawler_") and key.endswith("_priority"):
+                name = key[len("crawler_"):-len("_priority")]
+                crawler = self._crawlers.get(name)
+                if crawler is None:
+                    continue
+                try:
+                    raw = int(value)
+                except (TypeError, ValueError):
+                    continue
+                self._priority_overrides[name] = -abs(raw) if raw != 0 else 0
+            elif key.startswith("crawler_") and key.endswith("_enabled"):
+                name = key[len("crawler_"):-len("_enabled")]
+                crawler = self._crawlers.get(name)
+                if crawler is None:
+                    continue
+                if value == "false":
+                    crawler.disable()
+                elif value == "true":
+                    crawler.enable()
+
+    def clear_priority_overrides(self) -> None:
+        """清空运行时优先级覆盖（回到类属性默认）"""
+        self._priority_overrides.clear()
+
     def list_crawlers(self, status: Optional[CrawlerStatus] = None) -> list[CrawlerInfo]:
         """
         列出所有刮削器信息
@@ -265,7 +323,7 @@ def get_crawlers_for_module(module: str) -> list[BaseCrawler]:
         and _provider._crawlers[name].status == CrawlerStatus.ENABLED
     ]
     # 按优先级排序（数字越小优先级越高）
-    crawlers.sort(key=lambda c: c.priority)
+    crawlers.sort(key=lambda c: _provider._effective_priority(c))
     return crawlers
 
 

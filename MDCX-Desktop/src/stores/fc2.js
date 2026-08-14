@@ -26,8 +26,8 @@ export const useFc2Store = defineStore('fc2', () => {
     return await getFc2Movie(id)
   }
 
-  async function loadActors() {
-    const res = await getFc2Actors()
+  async function loadActors(params = {}) {
+    const res = await getFc2Actors(params)
     actors.value = res || []
     return actors.value
   }

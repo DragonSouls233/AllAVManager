@@ -38,7 +38,7 @@ const actors = ref([])
 async function loadActors() {
   loading.value = true
   try {
-    actors.value = await store.loadActors()
+    actors.value = await store.loadActors({ search: keyword.value || undefined })
   } finally {
     loading.value = false
   }

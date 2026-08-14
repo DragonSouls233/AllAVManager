@@ -27,7 +27,13 @@ export function getServerUrl() {
 }
 
 export async function checkServerConnection(url) {
-  const base = url ? url.replace(/\/$/, '') : (localStorage.getItem(STORAGE_KEY) || window.location.origin)
+  // Electron 桌面端 file:// 协议下 window.location.origin 不是后端地址，
+  // 未显式传 url 且未配置 serverUrl 时直接判定未配置，避免向 file:// 发起无意义探测。
+  const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron
+  const base = url
+    ? url.replace(/\/$/, '')
+    : (localStorage.getItem(STORAGE_KEY) || (isElectron ? '' : window.location.origin))
+  if (!base) return { ok: false, error: '未配置服务器地址' }
   const testUrl = `${base}/api/v1/health`
   try {
     const res = await axios.get(testUrl, { timeout: 5000 })

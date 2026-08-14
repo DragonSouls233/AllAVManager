@@ -85,6 +85,7 @@ class MergeConfig:
                 # === 主源（10）— 最可靠、速度快 ===
                 "javbus": 10,       # 有码主站，数据全面稳定
                 "fc2": 10,          # FC2 主站
+                "javdb": 10,        # JAVDB 评分/标签最全 —— 与 JavBus 并列第一序列
 
                 # === 高质量结构化源（15）— JSON/API 数据 ===
                 "avmoo": 15,        # JSON API，中文多语言标题，质量高
@@ -92,7 +93,6 @@ class MergeConfig:
                 "dmm_web": 15,      # DMM 网页版
 
                 # === 标准源（20）— 可靠的主流站点 ===
-                "javdb": 20,        # 评分/标签质量好
                 "missav": 20,       # MissAV，数据较全
                 "javlibrary": 20,   # JavLibrary，老牌库
                 "mgstage": 20,      # MGStage

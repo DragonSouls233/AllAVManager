@@ -403,7 +403,7 @@ async def play_chinese_video_file(movie_id: int, request: _Request):
 
 
 @router.get("/movies/{movie_id}/play/external")
-async def get_chinese_external_play_url(movie_id: int, protocol: str = "http"):
+async def get_chinese_external_play_url(movie_id: int, request: _Request, protocol: str = "http"):
     """获取国产影片外部播放地址"""
     db = get_chinese_db()
     session = await db.get_session()
@@ -420,14 +420,12 @@ async def get_chinese_external_play_url(movie_id: int, protocol: str = "http"):
             raise HTTPException(status_code=404, detail="视频文件不存在")
 
         from app.config.manager import get_config
+        from app.utils.play_url import build_play_base_url
         config = get_config()
         host = getattr(config.server, "host", "0.0.0.0")
         port = getattr(config.server, "port", 8420)
 
-        if host in ("0.0.0.0", "127.0.0.1", "localhost"):
-            base = f"http://localhost:{port}"
-        else:
-            base = f"http://{host}:{port}"
+        base = build_play_base_url(request, host, port)
 
         if protocol == "http":
             play_url = f"{base}/api/v1/chinese/movies/{movie_id}/play/file"

@@ -136,6 +136,9 @@
           <div v-for="movie in movies" :key="movie.id" class="movie-card" @click="goDetail(movie.id)">
             <div class="movie-cover">
               <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
+              <div class="movie-badges">
+                <span v-for="b in movieBadges(movie)" :key="b.text" class="movie-badge" :class="b.cls">{{ b.text }}</span>
+              </div>
               <div class="movie-play">
                 <el-icon size="36"><VideoPlay /></el-icon>
               </div>
@@ -208,6 +211,9 @@
               >
                 <div class="mini-cover">
                   <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
+                  <div class="movie-badges mini-badges">
+                    <span v-for="b in movieBadges(movie)" :key="b.text" class="movie-badge" :class="b.cls">{{ b.text }}</span>
+                  </div>
                 </div>
                 <div class="mini-info">
                   <div class="mini-code">{{ movie.code }}</div>
@@ -233,6 +239,9 @@
               >
                 <div class="mini-cover">
                   <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
+                  <div class="movie-badges mini-badges">
+                    <span v-for="b in movieBadges(movie)" :key="b.text" class="movie-badge" :class="b.cls">{{ b.text }}</span>
+                  </div>
                 </div>
                 <div class="mini-info">
                   <div class="mini-code">{{ movie.code }}</div>
@@ -415,6 +424,17 @@ function getMovieCover(actor) {
     return getFileProxyUrl(actor.cover_url)
   }
   return getMovieCoverUrl(actor)
+}
+
+// 版本标记：中文字幕 / 破解流出 / 无码 / 无码中文 / 4K（后端 is_chinese / is_leak / is_uncensored / is_4k）
+const movieBadges = (movie) => {
+  const list = []
+  if (movie?.is_4k) list.push({ text: '4K', cls: '4k' })
+  if (movie?.is_leak) list.push({ text: '破解', cls: 'leak' })
+  if (movie?.is_chinese && movie?.is_uncensored) list.push({ text: '无码中文', cls: 'uc' })
+  else if (movie?.is_chinese) list.push({ text: '中文', cls: 'chinese' })
+  else if (movie?.is_uncensored) list.push({ text: '无码', cls: 'uncensored' })
+  return list
 }
 
 const handleAvatarError = (event) => {
@@ -745,7 +765,10 @@ const loadAll = () => {
 }
 
 // 演员 ID 变化 → 整体重新加载
+// keep-alive 缓存下组件切走后仍存活，route.params.id 会随新路由（影片详情也用 :id）变化，
+// 误触发演员请求 → 404"演员不存在"弹窗。仅当前路由确为演员详情页时才重载。
 watch(actorId, () => {
+  if (!String(route.name || '').endsWith('ActorDetail')) return
   loadAll()
 })
 
@@ -934,6 +957,60 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* 版本标记：中文字幕/破解流出/无码（叠加封面右上角，醒目） */
+.movie-badges {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.movie-badge {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: #fff;
+  letter-spacing: 1px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.movie-badge.chinese {
+  background: #e64545;
+}
+
+.movie-badge.leak {
+  background: #9c27b0;
+}
+
+.movie-badge.uncensored {
+  background: #409eff;
+}
+
+.movie-badge.uc {
+  background: #e67e22;
+}
+
+.movie-badge.4k {
+  background: #2ecc71;
+}
+
+.mini-badges {
+  top: 3px;
+  right: 3px;
+  gap: 2px;
+}
+
+.mini-badges .movie-badge {
+  font-size: 9px;
+  padding: 2px 4px;
+  border-radius: 3px;
 }
 
 .movie-play {
@@ -1161,6 +1238,7 @@ onMounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 .mini-cover {
+  position: relative;
   width: 60px;
   height: 80px;
   flex-shrink: 0;

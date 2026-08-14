@@ -731,7 +731,12 @@ const saveEdit = async () => {
 
 // 路由参数变化时重新加载（Vue Router 复用了同一组件实例）
 // 2026-08-08: 加 NaN 守卫——离开详情页跳列表时 route.params.id 变 undefined，Number()=NaN，避免触发 GET /movies/NaN
-watch(movieId, (val) => { if (Number.isFinite(val) && val > 0) load() })
+// 2026-08-13: keep-alive 缓存下组件切走后仍存活，route.params.id 会随新路由（演员详情也用 :id）变化误触发加载；
+//             仅当前路由确为影片详情页时才重载
+watch(movieId, (val) => {
+  if (!String(route.name || '').endsWith('MovieDetail')) return
+  if (Number.isFinite(val) && val > 0) load()
+})
 // 模块切换时重置 API 缓存，确保 loadApi 加载正确的模块接口
 watch(moduleType, () => { apiRef.value = null })
 

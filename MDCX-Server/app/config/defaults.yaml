@@ -79,6 +79,7 @@ scraper:
   retry_count: 3
   timeout: 60                 # 超时延长到60秒，减少重试
   language: zh
+  preview_count: 12           # 预览图下载数量上限（DMM 样本图默认 12 张）
 
 proxy:
   http: null

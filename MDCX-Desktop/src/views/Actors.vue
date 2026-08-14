@@ -162,13 +162,17 @@
     <el-dialog v-model="profileVisible" title="演员资料补充刮削" width="560px">
       <el-alert type="info" :closable="false" show-icon class="avatar-tip">
         <template #title>
-          从 AV联盟 → DMM → JavWiki → 维基百科等源补充演员资料（生日/身高/三围/罩杯/出道/社交等），仅补空缺字段，最多处理 100 人
+          从 AV联盟 → DMM → JavWiki → 维基百科等源补充演员资料（生日/身高/三围/罩杯/出道/社交等），仅补空缺字段，自动跳过资料已完整的演员
         </template>
       </el-alert>
       <el-form label-width="100px" class="avatar-form">
         <el-form-item label="最少作品数">
           <el-input-number v-model="profileMinMovies" :min="1" :max="100" />
           <span class="muted" style="margin-left:8px">仅刮削达到该作品数的演员</span>
+        </el-form-item>
+        <el-form-item label="刮削数量">
+          <el-input-number v-model="profileLimit" :min="1" :max="500" />
+          <span class="muted" style="margin-left:8px">最多刮削人数（优先资料缺失的演员）</span>
         </el-form-item>
         <el-form-item label="同时补头像">
           <el-switch v-model="profileIncludeAvatar" />
@@ -409,6 +413,7 @@ watch(
 // ===== 资料刮削（批量补充演员信息）=====
 const profileVisible = ref(false)
 const profileMinMovies = ref(2)
+const profileLimit = ref(100)
 const profileIncludeAvatar = ref(false)
 const profileScraping = ref(false)
 
@@ -443,7 +448,7 @@ async function syncActors() {
 async function startProfileScrape() {
   try {
     await ElMessageBox.confirm(
-      `确认对「${moduleType.value}」模块 ≥ ${profileMinMovies.value} 部作品的前 100 名演员启动资料刮削吗？` +
+      `确认对「${moduleType.value}」模块 ≥ ${profileMinMovies.value} 部作品的前 ${profileLimit.value} 名资料缺失演员启动资料刮削吗？` +
       (profileIncludeAvatar.value ? '（将同时补充缺失的头像）' : ''),
       '资料刮削',
       { confirmButtonText: '开始刮削', cancelButtonText: '取消', type: 'warning' }
@@ -456,13 +461,14 @@ async function startProfileScrape() {
     const res = await scrapeActorProfiles({
       module: moduleType.value,
       min_movies: profileMinMovies.value,
+      limit: profileLimit.value,
       include_avatar: profileIncludeAvatar.value
     })
     profileVisible.value = false
-    ElMessage.success(`资料刮削完成：共 ${res.total} 人，成功 ${res.success}，失败 ${res.failed}`)
-    loadActors()
+    ElMessage.success(res.message || `资料刮削已启动（共 ${res.total} 人，后台执行中）`)
+    setTimeout(() => loadActors(), 5000)
   } catch (e) {
-    ElMessage.error('资料刮削失败: ' + (e.message || '未知错误'))
+    ElMessage.error('资料刮削启动失败: ' + (e.message || '未知错误'))
   } finally {
     profileScraping.value = false
   }

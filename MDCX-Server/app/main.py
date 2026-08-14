@@ -50,9 +50,22 @@ async def _run_module_scan(module_name: str, scanner) -> dict:
     Returns:
         {"movies_added": int, "total": int}
     """
-    SCAN_TIMEOUT = 600  # 10分钟超时，防止网络盘挂死
+    # 模块扫描超时（秒）：整盘/多盘符模块首扫耗时远超小目录，600s 一刀切会
+    # 导致 pornhub(M:/N:/O: 三个整盘)、jav(H:/I:/J:/K:) 等大模块每次都超时中断
+    # 丢数据（PORNHUB 库一直为空的原因之一）。按模块给足窗口，同时保留超时兜底
+    # 防止网络盘真挂死时无限占用。
+    _SCAN_TIMEOUTS = {
+        "pornhub": 7200,    # M:/N:/O: 三个整盘，首扫最慢
+        "jav": 3600,        # H:/I:/J:/K: 经典名录/系列 共 5 个目录
+        "chinese": 1800,    # Z:\ 整盘，实测 3 分钟可扫完 2.5 万文件
+        "western": 1800,    # Y:\ 整盘
+        "anime": 900,
+        "fc2": 900,
+        "uncensored": 600,
+    }
+    SCAN_TIMEOUT = _SCAN_TIMEOUTS.get(module_name, 600)
     try:
-        logger.info(f"开始扫描模块 [{module_name}] ...")
+        logger.info(f"开始扫描模块 [{module_name}] ... (超时 {SCAN_TIMEOUT}s)")
         result = await asyncio.wait_for(scanner.scan(), timeout=SCAN_TIMEOUT)
         added = result.get("movies_added", 0)
         total = result.get("total", 0)
@@ -368,6 +381,26 @@ async def _lifespan_impl(app: FastAPI):
         logger.info(f"插件系统初始化完成：共 {total} 个插件，已注册 {crawler_count} 个爬虫插件")
     except Exception as e:
         logger.warning(f"插件系统初始化失败: {e}")
+
+    # 应用数据库中保存的站点优先级/启用状态到爬虫实例（使「站点优先级」设置真实生效）
+    try:
+        from app.crawlers.provider import get_provider
+        from app.db.system_db import SystemDatabase
+        from app.db.system_models import Setting
+        from sqlalchemy import select
+
+        db = SystemDatabase.get_instance()
+        async with db.session_factory() as _sess:
+            _result = await _sess.execute(select(Setting))
+            _crawler_settings = {
+                row.key: row.value
+                for row in _result.scalars().all()
+                if row.key and row.key.startswith("crawler_")
+            }
+        get_provider().apply_saved_settings(_crawler_settings)
+        logger.info(f"已应用 {len(_crawler_settings)} 条站点优先级/启用设置到爬虫实例")
+    except Exception as e:
+        logger.warning(f"应用站点优先级设置失败: {e}")
 
     # 启动 CookieCloud 自动同步
     try:

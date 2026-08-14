@@ -25,6 +25,9 @@
         <el-icon><Monitor /></el-icon> 批量刮削
         <el-tag v-if="store.pendingCount" size="small" type="danger" style="margin-left:4px">{{ store.pendingCount }}</el-tag>
       </el-button>
+      <el-button type="danger" plain @click="startRefill" :loading="store.scraping">
+        <el-icon><Refresh /></el-icon> 批量补图
+      </el-button>
       <el-button type="info" @click="startImportNfo" :loading="store.scraping">
         <el-icon><Document /></el-icon> 导入 NFO
       </el-button>
@@ -42,8 +45,7 @@
           <img :src="getCoverSrc(m)" :alt="m.title" @error="onCoverError">
           <div class="cover-badge">{{ m.source_platform || 'JAV' }}</div>
           <div class="cover-badges">
-            <el-tag v-if="m.is_chinese" size="small" type="danger" effect="dark">中文</el-tag>
-            <el-tag v-if="m.is_uncensored" size="small" type="warning" effect="dark">无码</el-tag>
+            <el-tag v-for="b in getMovieVersionBadges(m)" :key="b.text" size="small" :type="versionBadgeType(b.type)" effect="dark">{{ b.text }}</el-tag>
           </div>
           <div class="cover-status">
             <el-tag v-if="m.status === 'scraped'" size="small" type="success">已刮削</el-tag>
@@ -87,7 +89,7 @@ import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useJavStore } from '@/stores/jav'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getCoverSrc } from '@/utils/media'
+import { getCoverSrc, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
 
 const router = useRouter()
 const route = useRoute()
@@ -181,6 +183,30 @@ async function startScrapeAll() {
     ElMessage.success(res.message || '批量刮削已启动')
   } catch (e) {
     if (e !== 'cancel') {
+      console.error('[批量刮削启动失败]', e) // 保留完整堆栈，便于定位 DOMException 来源
+      ElMessage.error('启动失败: ' + (e.message || '未知错误'))
+    }
+  }
+}
+
+// 批量补图：对「已刮削但缺封面/预览图」的影片完整重刮（后台执行）
+async function startRefill() {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '将自动筛选「已刮削但缺封面/预览图」的影片并完整重刮（后台执行，可重复调用）。请输入本次处理数量：',
+      '批量补图',
+      {
+        inputValue: '50',
+        inputValidator: (v) => (/^\d+$/.test(v) && +v >= 1 && +v <= 200) ? true : '请输入 1-200 的整数',
+        confirmButtonText: '开始补图',
+        cancelButtonText: '取消',
+      }
+    )
+    const res = await store.triggerMediaRefill(Number(value))
+    ElMessage.success(res.message || '补图已启动')
+  } catch (e) {
+    if (e !== 'cancel') {
+      console.error('[批量补图启动失败]', e) // 保留完整堆栈，便于定位 DOMException 来源
       ElMessage.error('启动失败: ' + (e.message || '未知错误'))
     }
   }
@@ -193,6 +219,7 @@ async function startImportNfo() {
     ElMessage.success(res.message || 'NFO 导入已启动')
   } catch (e) {
     if (e !== 'cancel') {
+      console.error('[NFO导入启动失败]', e) // 保留完整堆栈，便于定位 DOMException 来源
       ElMessage.error('启动失败: ' + (e.message || '未知错误'))
     }
   }

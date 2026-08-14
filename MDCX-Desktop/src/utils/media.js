@@ -1,5 +1,13 @@
 export const getServerBaseUrl = () => {
-  // 媒体资源(封面/头像/文件代理)始终由托管当前页面的同一后端提供，
+  // Electron 桌面端:页面经 loadFile(file://) 加载,window.location.origin 是 file:// 而非后端地址,
+  // 若仍用 origin 拼 URL 会得到 file:///api/v1/... → 封面/头像/媒体全部裂图。
+  // 桌面端必须回退到 localStorage serverUrl(App.vue 启动时 detectBackend 自动探测写入,登录页/设置页也可手动设置)。
+  const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron
+  if (isElectron) {
+    const url = localStorage.getItem('serverUrl')
+    return url ? url.replace(/\/$/, '') : ''
+  }
+  // Web 部署:媒体资源(封面/头像/文件代理)始终由托管当前页面的同一后端提供，
   // 因此固定使用页面真实来源(window.location.origin)，
   // 不受 localStorage 中 serverUrl 旧配置影响——
   // 否则一旦 serverUrl 被填成内网/旧地址，浏览器会从连不通的 host 取图→全部裂图。
@@ -181,4 +189,37 @@ export const getMovieImageUrl = (movie, imageMode = 'poster') => {
     return getMovieThumbUrl(movie)
   }
   return getMovieCoverUrl(movie)
+}
+
+/**
+ * 影片版本标记统一生成（封面墙 / 各模块影片库 / 演员详情共用）。
+ * 与后端扫描/导入识别口径一一对应：
+ *   -4K/-UHD → 4K；-Leak/-流出/-破解 → 破解；
+ *   -C → 中文；-U → 无码；-UC（复合）→ 无码中文
+ * 返回 [{ text, type }]，type 用于 el-tag 颜色映射（chinese/uncensored/leak/uc/4k）。
+ */
+export const getMovieVersionBadges = (movie) => {
+  const list = []
+  if (movie?.is_4k) list.push({ text: '4K', type: '4k' })
+  if (movie?.is_leak) list.push({ text: '破解', type: 'leak' })
+  if (movie?.is_chinese && movie?.is_uncensored) {
+    list.push({ text: '无码中文', type: 'uc' })
+  } else if (movie?.is_chinese) {
+    list.push({ text: '中文', type: 'chinese' })
+  } else if (movie?.is_uncensored) {
+    list.push({ text: '无码', type: 'uncensored' })
+  }
+  return list
+}
+
+/** 版本标记 → el-tag type 颜色映射 */
+export const versionBadgeType = (type) => {
+  const map = {
+    chinese: 'danger',
+    leak: 'danger',
+    uncensored: 'warning',
+    uc: 'warning',
+    '4k': 'success',
+  }
+  return map[type] || 'info'
 }

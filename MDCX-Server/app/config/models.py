@@ -49,6 +49,7 @@ class ScraperConfig(BaseModel):
     retry_count: int = Field(default=3, ge=0, le=10, title="重试次数")
     timeout: int = Field(default=30, ge=5, le=300, title="请求超时(秒)")
     language: Literal["zh", "en", "ja"] = Field(default="zh", title="元数据语言")
+    preview_count: int = Field(default=12, ge=3, le=24, title="预览图下载数量上限")
 
 
 class CrawlerConfig(BaseModel):

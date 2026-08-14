@@ -127,27 +127,50 @@ async def api_code_extract_test(data: dict):
 
 
 @router.get("/actors")
-async def list_actors():
-    """列出有码演员列表"""
+async def list_actors(
+    search: Optional[str] = Query(None, description="按名字/日文名/别名搜索"),
+    movie_count_filter: Optional[str] = Query(None, description="作品数过滤: all/multi/single"),
+    min_movies: int = Query(2, ge=1, le=20, description="多作品阈值(部): multi>=此值归多作品, single<此值归素人"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(60, ge=1, le=240),
+):
+    """列出有码演员列表（支持作品数分类过滤与分页）"""
     db = get_jav_db()
     session = await db.get_session()
     try:
         from app.db.jav_models import JavActor
-        from sqlalchemy import select
+        from sqlalchemy import select, or_, func
         # 排除刮削时自动创建的占位演员（source=scraper）：本地没有真实作品就不应出现在演员库
         stmt = (
             select(JavActor)
             .where(JavActor.source != "scraper")
-            .order_by(JavActor.movie_count.desc())
         )
+        if search:
+            alias_col = getattr(JavActor, "alias", None)
+            cond = or_(
+                JavActor.name.contains(search),
+                JavActor.name_jp.contains(search),
+                JavActor.name_en.contains(search),
+            )
+            if alias_col is not None:
+                cond = or_(cond, alias_col.contains(search))
+            stmt = stmt.where(cond)
+        if movie_count_filter == "multi":
+            stmt = stmt.where(func.coalesce(JavActor.movie_count, 0) >= min_movies)
+        elif movie_count_filter == "single":
+            stmt = stmt.where(func.coalesce(JavActor.movie_count, 0) < min_movies)
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = await session.scalar(count_stmt)
+        stmt = stmt.order_by(JavActor.movie_count.desc())
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         result = await session.execute(stmt)
         actors = result.scalars().all()
         # alias / merged_from：让列表页能直观标出「这个演员合并过哪些旧名」
         from app.utils.actor_alias import merged_from_names
-        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
+        return {"total": total or 0, "items": [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
                  "module_type": "jav",
                  "alias": a.alias, "merged_from": merged_from_names(a),
-                 "source": a.source, "avatar_url": a.avatar_url} for a in actors]
+                 "source": a.source, "avatar_url": a.avatar_url} for a in actors]}
     finally:
         await session.close()
 
@@ -219,6 +242,10 @@ async def get_actor_movies(
                 "duration": m.duration, "rating": m.rating,
                 "studio": m.studio, "maker": getattr(m, "maker", None),
                 "genre": m.genre,
+                "is_chinese": m.is_chinese,
+                "is_uncensored": m.is_uncensored,
+                "is_leak": m.is_leak,
+                "is_4k": m.is_4k,
                 "module_type": "jav",
                 "file_path": m.file_path,
             })
@@ -290,6 +317,10 @@ async def get_actor_timeline(actor_id: int):
                     "id": m.id, "code": m.code, "title": m.title,
                     "cover_url": m.cover_url,
                     "release_date": m.release_date,
+                    "is_chinese": m.is_chinese,
+                    "is_uncensored": m.is_uncensored,
+                    "is_leak": m.is_leak,
+                    "is_4k": m.is_4k,
                     "module_type": "jav",
                 } for m in ms],
             })
@@ -305,6 +336,10 @@ async def get_actor_timeline(actor_id: int):
                 "id": m.id, "code": m.code, "title": m.title,
                 "cover_url": m.cover_url,
                 "release_date": m.release_date,
+                "is_chinese": m.is_chinese,
+                "is_uncensored": m.is_uncensored,
+                "is_leak": m.is_leak,
+                "is_4k": m.is_4k,
                 "module_type": "jav",
             } for m in unknown_movies],
         } if unknown_movies else None
@@ -503,7 +538,7 @@ async def get_movie(movie_id: int):
             "module_type": "jav",
             "original_title": movie.original_title,
             "is_chinese": movie.is_chinese, "is_uncensored": movie.is_uncensored,
-            "is_mosaic": movie.is_mosaic,
+            "is_mosaic": movie.is_mosaic, "is_leak": movie.is_leak, "is_4k": movie.is_4k,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "thumb_url": movie.thumb_url, "sample_images": _parse_sample_images(movie.sample_images),
             "actor": movie.actor, "actor_ids": actor_ids, "studio": movie.studio,
@@ -517,6 +552,150 @@ async def get_movie(movie_id: int):
             "play_count": movie.play_count, "last_played_at": str(movie.last_played_at) if movie.last_played_at else None,
             "view_status": movie.view_status,
             "status": movie.status, "created_at": str(movie.created_at),
+            "updated_at": str(movie.updated_at),
+        }
+    finally:
+        await session.close()
+
+
+@router.patch("/movies/{movie_id}")
+async def update_jav_movie(movie_id: int, body: dict):
+    """编辑影片数据
+
+    前端详情页「编辑影片数据」保存走本端点。
+    与通用 PATCH /api/v1/movies/{id} 不同，本端点直接写 jav 模块的
+    文本字段（movie.actor / movie.studio / movie.series），因为 jav 详情
+    链路（get_movie / related / actor_alias 作品数统计）读取的是这些文本列；
+    同时同步 MovieActor 关联表、查建 Studio/Series 外键，并重算受影响演员
+    的 movie_count，保证编辑后各处数据一致。
+    """
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie, JavActor, MovieActor, Studio, Series
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        movie = await session.get(JavMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 番号唯一校验
+        if "code" in body and body["code"] is not None:
+            new_code = str(body["code"]).strip()
+            if not new_code:
+                raise HTTPException(status_code=400, detail="番号不能为空")
+            dup = await session.scalar(
+                select(JavMovie.id).where(JavMovie.code == new_code, JavMovie.id != movie_id)
+            )
+            if dup:
+                raise HTTPException(status_code=409, detail=f"番号 {new_code} 已被其他影片占用")
+            movie.code = new_code
+
+        # 文本字段
+        for field in ("title", "original_title", "release_date", "director",
+                      "maker", "studio", "series", "plot", "file_path"):
+            if field in body:
+                val = body[field]
+                movie.__setattr__(field, (str(val).strip() if val not in (None, "") else None))
+
+        # 数字字段
+        if "duration" in body and body["duration"] not in (None, ""):
+            try:
+                movie.duration = int(body["duration"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="时长必须是整数")
+        if "rating" in body and body["rating"] not in (None, ""):
+            try:
+                r = float(body["rating"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="评分必须是数字")
+            movie.rating = max(0.0, min(10.0, r))
+
+        # genre：逗号分隔字符串（jav 详情/相关端点按逗号切分）
+        if "genre" in body:
+            raw = body["genre"]
+            if raw in (None, ""):
+                movie.genre = None
+            else:
+                parts = [str(x).strip() for x in raw] if isinstance(raw, list) \
+                    else [p.strip() for p in str(raw).split(",")]
+                movie.genre = ", ".join(p for p in parts if p) if any(parts) else None
+
+        # actors：写文本字段 + 同步 MovieActor 关联表
+        old_names = {n.strip() for n in (movie.actor or "").split(",") if n.strip()}
+        new_names: set = set()
+        if "actors" in body:
+            raw = body["actors"]
+            if raw in (None, ""):
+                names = []
+            else:
+                names = [str(x).strip() for x in raw] if isinstance(raw, list) \
+                    else [p.strip() for p in str(raw).split(",")]
+            names = [n for n in names if n]
+            new_names = set(names)
+            movie.actor = ", ".join(names) if names else None
+
+            await session.execute(sa_delete(MovieActor).where(MovieActor.movie_id == movie_id))
+            for nm in names:
+                actor = await session.scalar(select(JavActor).where(JavActor.name == nm))
+                if not actor:
+                    actor = JavActor(name=nm, movie_count=0)
+                    session.add(actor)
+                    await session.flush()
+                session.add(MovieActor(movie_id=movie_id, actor_id=actor.id))
+
+        # studio / series：查建外键（文本字段已在上方写入）
+        for fk_field, Model in (("studio", Studio), ("series", Series)):
+            if fk_field in body:
+                name_val = body[fk_field]
+                name = str(name_val).strip() if name_val not in (None, "") else None
+                if name:
+                    obj = await session.scalar(select(Model).where(Model.name == name))
+                    if not obj:
+                        obj = Model(name=name, movie_count=0)
+                        session.add(obj)
+                        await session.flush()
+                    movie.__setattr__(f"{fk_field}_id", obj.id)
+                else:
+                    movie.__setattr__(f"{fk_field}_id", None)
+
+        await session.commit()
+
+        # 重算受影响演员的作品数（LIKE 文本字段计数，编辑后保持统计一致）
+        affected = new_names | old_names
+        if affected:
+            from app.utils.actor_alias import count_actor_movies
+            actors = (await session.execute(
+                select(JavActor).where(JavActor.name.in_(list(affected)))
+            )).scalars().all()
+            for actor in actors:
+                actor.movie_count = await count_actor_movies(session, JavMovie, actor)
+            await session.commit()
+
+        # 可选 NFO 回写（失败不阻断保存）
+        if body.get("sync_nfo", True):
+            try:
+                from app.output.nfo import NFOGenerator
+                mv = await session.get(JavMovie, movie_id)
+                out_dir = str(mv.output_dir) if mv.output_dir else (str(mv.file_path.parent) if mv.file_path else "")
+                if out_dir:
+                    gen = NFOGenerator(output_dir=out_dir)
+                    gen.generate_from_movie(movie=mv, movie_dir=None, kodi_compatible=True,
+                                            actor_names=sorted(new_names) if new_names else None)
+            except Exception as e:
+                logger.warning("jav 影片 %s NFO 回写失败: %s", movie_id, e)
+
+        await session.refresh(movie)
+        return {
+            "id": movie.id, "code": movie.code, "title": movie.title,
+            "module_type": "jav",
+            "original_title": movie.original_title,
+            "actor": movie.actor, "studio": movie.studio,
+            "series": movie.series, "maker": movie.maker,
+            "release_date": movie.release_date, "duration": movie.duration,
+            "rating": movie.rating, "genre": movie.genre,
+            "plot": movie.plot, "file_path": movie.file_path,
             "updated_at": str(movie.updated_at),
         }
     finally:
@@ -1022,6 +1201,8 @@ async def import_jav_nfo(
                             cover_url=cover_url,
                             is_chinese=imported_movie.is_chinese if imported_movie.is_chinese else False,
                             is_uncensored=imported_movie.is_uncensored if imported_movie.is_uncensored else False,
+                            is_leak=imported_movie.is_leak if imported_movie.is_leak else False,
+                            is_4k=imported_movie.is_4k if imported_movie.is_4k else False,
                             source="nfo",
                             status="pending",
                         )
@@ -1350,7 +1531,7 @@ async def play_jav_video_file(movie_id: int, request: _Request):
 
 
 @router.get("/movies/{movie_id}/play/external")
-async def get_jav_external_play_url(movie_id: int, protocol: str = "http"):
+async def get_jav_external_play_url(movie_id: int, request: _Request, protocol: str = "http"):
     """获取 JAV 影片外部播放地址"""
     db = get_jav_db()
     session = await db.get_session()
@@ -1367,14 +1548,12 @@ async def get_jav_external_play_url(movie_id: int, protocol: str = "http"):
             raise HTTPException(status_code=404, detail="视频文件不存在")
 
         from app.config.manager import get_config
+        from app.utils.play_url import build_play_base_url
         config = get_config()
         host = getattr(config.server, "host", "0.0.0.0")
         port = getattr(config.server, "port", 8420)
 
-        if host in ("0.0.0.0", "127.0.0.1", "localhost"):
-            base = f"http://localhost:{port}"
-        else:
-            base = f"http://{host}:{port}"
+        base = build_play_base_url(request, host, port)
 
         if protocol == "http":
             play_url = f"{base}/api/v1/jav/movies/{movie_id}/play/file"
@@ -1383,3 +1562,37 @@ async def get_jav_external_play_url(movie_id: int, protocol: str = "http"):
             return {"protocol": "direct", "play_url": movie.file_path, "player_command": movie.file_path, "copy_text": movie.file_path}
     finally:
         await session.close()
+
+
+# ========== 文件夹归属检测 / 回填 ==========
+# 用途：演员文件夹里存放的一定是该演员的作品。很多素人企划片的 movies.actor 只写了
+# "佚名"/素人名/艺名，导致演员页作品数少于文件夹里的实际文件数。此功能扫描所有
+# JAV 有码文件夹，找出「文件夹归属演员未写入 actor 字段」的影片并支持一键回填。
+
+
+@router.get("/folder-check")
+async def folder_check(actor: Optional[str] = Query(None, description="仅关注某演员（可模糊）")):
+    """检测全部影片的文件夹归属 vs actor 字段差异"""
+    from app.utils.folder_actor_check import analyze
+
+    result = await analyze(actor_filter=actor)
+    return result
+
+
+class FolderFillRequest(BaseModel):
+    actor: Optional[str] = Field(None, description="仅回填指定演员相关的影片；空 = 全部")
+
+
+@router.post("/folder-check/fill")
+async def folder_check_fill(data: FolderFillRequest, background_tasks: BackgroundTasks):
+    """一键回填：把文件夹归属演员追加写入 movies.actor 并重算 movie_count"""
+    actor_filter = (data.actor or "").strip() or None
+
+    async def _run():
+        from app.utils.folder_actor_check import apply_fill
+
+        updated = await apply_fill(actor_filter=actor_filter)
+        logger.info("folder-check/fill 完成，更新 %s 部（actor=%s）", updated, actor_filter)
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "actor": actor_filter}

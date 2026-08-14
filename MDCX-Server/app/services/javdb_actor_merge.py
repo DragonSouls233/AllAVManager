@@ -13,6 +13,7 @@ import re
 from sqlalchemy import select
 
 from app.utils.module_helper import get_module_model, get_module_session
+from app.utils.actor_alias import merged_from_names
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,10 @@ async def scan_merge_candidates(module: str = "jav", max_pages: int = 30, proxy:
     # 本地演员 -> 命中的 JavDB 组集合
     actor_groups: dict[int, tuple] = {}  # actor_id -> (actor, set(gid))
     for actor in local_actors:
+        # 已合并过的演员（alias 含来源旧名）不再参与候选，
+        # 避免「合并完成后重新扫描又显示同一组」
+        if merged_from_names(actor):
+            continue
         keys = _actor_match_keys(actor)
         groups: set[str] = set()
         for k in keys:

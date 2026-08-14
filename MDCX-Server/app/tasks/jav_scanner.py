@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -134,8 +134,10 @@ class JavScanner(BaseScanner):
                     if folder_actors:
                         result["actors"].update(folder_actors)
 
-                    # 检测中字/无码标记
-                    is_chinese, is_uncensored = self._detect_suffix(file_name)
+                    # 检测版本标记（-C 中文 / -U 无码 / -UC 无码中文 / -Leak 破解 / -4K）
+                    flags = detect_version_flags(file_name)
+                    is_chinese = flags["is_chinese"]
+                    is_uncensored = flags["is_uncensored"]
 
                     # 提取工作室
                     studio = self._detect_studio(code, dir_path, media_dir)
@@ -154,13 +156,15 @@ class JavScanner(BaseScanner):
                         code=code,
                         title=Path(file_name).stem,
                         file_path=str(file_path),
-                        file_size=file_path.stat().st_size if file_path.exists() else 0,
+                        file_size=_file_size(file_path),
                         actor=actor_str,
                         studio=studio,
                         cover_url=cover_url,
                         is_chinese=is_chinese,
                         is_uncensored=is_uncensored,
                         is_mosaic=not is_uncensored,
+                        is_leak=flags["is_leak"],
+                        is_4k=flags["is_4k"],
                         source="folder",
                         status="pending",
                     )
@@ -169,9 +173,12 @@ class JavScanner(BaseScanner):
                     result["scanned"] += 1
 
                     # 将视频目录的 NFO + 封面复制到数据中心目录
+                    # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）
                     if code:
                         asyncio.ensure_future(
-                            copy_video_assets_to_data_dir(str(file_path), code, "jav")
+                            self._copy_limited(
+                                copy_video_assets_to_data_dir(str(file_path), code, "jav")
+                            )
                         )
 
             await session.commit()
@@ -210,27 +217,6 @@ class JavScanner(BaseScanner):
                 return code
 
         return None
-
-    def _detect_suffix(self, file_name: str) -> tuple[bool, bool]:
-        """检测文件名中的 -C/-UC/-U 后缀"""
-        stem = Path(file_name).stem
-        is_chinese = False
-        is_uncensored = False
-
-        # 优先匹配复合后缀
-        uc_match = re.search(r'[-_.\s]?(UC|uc)$', stem)
-        if uc_match:
-            return True, True  # UC = 中字 + 无码
-
-        c_match = re.search(r'[-_.\s]?C$', stem)
-        if c_match:
-            return True, False  # C = 中字
-
-        u_match = re.search(r'[-_.\s]?U$', stem)
-        if u_match:
-            return False, True  # U = 无码
-
-        return is_chinese, is_uncensored
 
     def _detect_studio(self, code: str, file_dir: Path, media_dir: Path) -> str | None:
         """尝试检测工作室"""

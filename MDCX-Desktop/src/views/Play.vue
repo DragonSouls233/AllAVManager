@@ -1,10 +1,62 @@
 <template>
   <div class="play" v-loading="loading">
-    <!-- 播放器主区域 -->
+    <!-- 后端连接状态胶囊（Cinema v1 §3.2） -->
+    <div class="conn-bar">
+      <ConnectionStatus :mode="connectionMode" />
+    </div>
+
+    <!-- 快捷键帮助面板（Cinema v1 §3.5，? 唤起或点按钮） -->
+    <ShortcutHelp v-model="showShortcutHelp" />
+
+    <!-- 播放器主区域（统一基座：ArtplayerVideo） -->
     <div class="player-container">
-      <div ref="artplayerRef" class="artplayer-box"></div>
+      <ArtplayerVideo
+        v-if="movie"
+        ref="playerRef"
+        :url="videoUrl"
+        :sprite-meta="spriteMeta"
+        :audio-tracks="audioTracks"
+        :qualities="hlsQualities"
+        :autoplay="autoNext"
+        :extra-contextmenu="extraContextmenu"
+        @ready="onPlayerReady"
+        @chapter-mark="markChapter"
+        @error="onPlayerError"
+        @ended="onPlayerEnded"
+      />
       <div v-if="!movie?.file_path" class="no-file">
         <el-empty description="该影片没有关联文件" />
+      </div>
+    </div>
+
+    <!-- 断点续播条（Cinema v1 §3.3） -->
+    <div v-if="showResume && resumeInfo" class="resume-bar">
+      <el-icon><VideoPlay /></el-icon>
+      <span class="resume-text">从第 {{ formatTime(resumeInfo.position) }} 继续（已看 {{ resumePercent }}%）</span>
+      <el-button type="primary" size="small" @click="resumePlay">继续观看</el-button>
+      <el-button size="small" text @click="showResume = false">从头播放</el-button>
+    </div>
+
+    <!-- 系列连播（Cinema v1 §5） -->
+    <div v-if="seriesPlaylist.length > 1" class="series-bar">
+      <div class="series-head">
+        <span class="series-title">📺 系列连播 · {{ movie.series }}</span>
+        <span class="series-count">{{ seriesCurrentIndex + 1 }} / {{ seriesPlaylist.length }}</span>
+      </div>
+      <div class="series-list">
+        <div
+          v-for="(m, i) in seriesPlaylist"
+          :key="m.id"
+          class="series-item"
+          :class="{ active: i === seriesCurrentIndex, watched: i < seriesCurrentIndex }"
+          @click="goSeriesMovie(m)"
+        >
+          <img v-if="seriesCover(m)" :src="seriesCover(m)" class="series-cover" />
+          <div class="series-meta">
+            <div class="series-code">{{ m.code }}</div>
+            <div class="series-sub">{{ m.title || m.release_date || '未命名' }}</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -34,6 +86,9 @@
           </el-button>
           <el-button size="small" @click="generateGifHere">
             <el-icon><Picture /></el-icon> 生成 GIF
+          </el-button>
+          <el-button size="small" @click="showShortcutHelp = true" title="键盘快捷键（?）">
+            <el-icon><MagicStick /></el-icon> 快捷键
           </el-button>
         </div>
       </div>
@@ -592,8 +647,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   VideoPlay, Monitor, Star, Flag, Picture, Refresh, MagicStick, Grid, Delete, Check, Search, Download
 } from '@element-plus/icons-vue'
-import Artplayer from 'artplayer'
-import Hls from 'hls.js'
+import ArtplayerVideo from '@/components/ArtplayerVideo.vue'
 import {
   getMovie, getMoviePlayUrl, playWithMpv as mpvPlay, updateMovie,
   getPlayerConfig, listChapters, addChapter, updateChapter, deleteChapter,
@@ -603,18 +657,35 @@ import {
   getThumbnailSprite, generateThumbnailSprite,
   getSourceMergeFields, previewSourceScrape, applySourceMerge,
   getHlsQualities,
+  getModuleSeriesMovies,
+  // 断点续播（Cinema v1 §3.3）
+  getViewingHistory, recordPlay,
   // fanart.tv 集成 (v4.1 C1)
   getMovieFanarts, searchFanarts as searchFanartsApi, downloadMovieFanart, updateMovieTmdbId
 } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
+import ConnectionStatus from '@/components/ConnectionStatus.vue'
+import ShortcutHelp from '@/components/ShortcutHelp.vue'
 import { getServerBaseUrl, getSubtitleFileUrl } from '@/utils/media'
 import { getModulePlayInfo, getModulePlayUrl } from '@/utils/play'
 
 const route = useRoute()
 const router = useRouter()
-const artplayerRef = ref(null)
+// 统一播放器组件引用（Cinema v1 §1：收口 Play.vue 内联 Artplayer，复用 ArtplayerVideo）
+const playerRef = ref(null)
+// 播放地址（响应式，变更即触发组件重建播放器）
+const videoUrl = ref('')
+// 播放页专属右键菜单（注入生成 GIF），click 接收 art 实例
+const extraContextmenu = [
+  {
+    html: '生成 GIF（3 秒）',
+    click() {
+      generateGifHere()
+    },
+  },
+]
+// art 实例在组件 @ready 后赋值，供续播/截图/字幕/mpv 等复用
 let art = null
-let hls = null
 
 const movie = ref(null)
 const loading = ref(false)
@@ -667,6 +738,24 @@ const spriteForm = reactive({ interval: 30, cols: 10 })
 const audioTracks = ref([])
 const hlsQualities = ref([])
 const adaptiveMode = ref(false)
+
+// ===== 连接胶囊模式文案 + 断点续播（Cinema v1）=====
+const connectionMode = computed(() => {
+  if (adaptiveMode.value) return 'HLS·自适应'
+  return currentProtocol.value === 'http' ? '直连' : currentProtocol.value
+})
+
+// 快捷键帮助面板可见性（Cinema v1 §3.5）：全局 ? 唤起，按钮亦可开
+const showShortcutHelp = ref(false)
+const resumeInfo = ref(null)
+const showResume = ref(false)
+const resumePercent = computed(() => {
+  if (!resumeInfo.value?.position) return 0
+  const dur = Number(movie.value?.duration) || resumeInfo.value.duration || 0
+  if (!dur) return 0
+  return Math.max(0, Math.min(100, Math.round((resumeInfo.value.position / dur) * 100)))
+})
+let recordTimer = null
 
 // ===== 字段来源精选（§7.5）=====
 const loadingFields = ref(false)
@@ -923,84 +1012,9 @@ const compareRowClass = ({ row }) => {
 
 // ===== Artplayer 初始化 =====
 
-// v3.5: 构建播放器设置菜单（章节/音轨/画质）
-const buildArtSettings = () => {
-  const items = []
-  // 章节
-  if (chapters.value.length) {
-    items.push({
-      html: '章节',
-      tooltip: '显示章节列表',
-      selector: chapters.value.map(c => ({
-        html: `${formatTime(c.start)} - ${c.title}`,
-        time: c.start,
-      })),
-      onSelect(item) {
-        art.currentTime = item.time
-        return item.html
-      }
-    })
-  }
-  // 音轨切换
-  if (audioTracks.value.length > 1) {
-    items.push({
-      html: '音轨',
-      tooltip: '切换音轨',
-      selector: audioTracks.value.map(t => ({
-        html: t.label || `音轨 ${t.index + 1}`,
-        value: t.index,
-        default: !!t.default,
-      })),
-      onSelect(item) {
-        switchAudioTrack(item.value)
-        return item.html
-      }
-    })
-  }
-  // 画质切换（HLS 自适应码率）
-  if (hlsQualities.value.length) {
-    items.push({
-      html: '画质',
-      tooltip: '自适应码率',
-      selector: [
-        { html: '自动', value: -1, default: true },
-        ...hlsQualities.value.map((q, i) => ({
-          html: q.label || `${q.height}p`,
-          value: i,
-        })),
-      ],
-      onSelect(item) {
-        switchQuality(item.value)
-        return item.html
-      }
-    })
-  }
-  return items
-}
-
-// v3.5: 切换音轨
-const switchAudioTrack = (trackIndex) => {
-  if (!art) return
-  const video = art.video
-  if (hls) {
-    try { hls.audioTrack = trackIndex } catch (e) { console.warn('音轨切换失败:', e) }
-  } else if (video && video.audioTracks && video.audioTracks.length) {
-    for (let i = 0; i < video.audioTracks.length; i++) {
-      video.audioTracks[i].enabled = i === trackIndex
-    }
-  } else {
-    ElMessage.warning('当前浏览器或播放模式不支持音轨切换，建议使用 HLS 模式')
-  }
-}
-
-// v3.5: 切换画质（HLS 自适应码率）
-const switchQuality = (levelIndex) => {
-  if (!hls) {
-    ElMessage.warning('画质切换仅支持 HLS 自适应码率模式')
-    return
-  }
-  hls.currentLevel = levelIndex
-}
+// v3.5: 播放器设置菜单（章节/音轨/画质）与音轨/画质切换已收口到
+// <ArtplayerVideo> 组件（buildSettings / switchAudioTrack / switchQuality），
+// 不再在 Play.vue 内重复实现。
 
 // v3.5: 切换自适应码率模式
 const toggleAdaptive = async () => {
@@ -1017,136 +1031,65 @@ const toggleAdaptive = async () => {
   await loadVideo()
 }
 
-const initArtplayer = (videoUrl) => {
-  if (art) {
-    art.destroy(false)
-    art = null
-  }
-  if (hls) {
-    hls.destroy()
-    hls = null
-  }
-
-  const isHls = videoUrl.includes('/hls/') || videoUrl.endsWith('.m3u8')
-
-  art = new Artplayer({
-    container: artplayerRef.value,
-    url: videoUrl,
-    type: isHls ? 'm3u8' : 'video',
-    customType: {
-      m3u8: (video, url) => {
-        if (Hls.isSupported()) {
-          if (hls) hls.destroy()
-          hls = new Hls()
-          hls.loadSource(url)
-          hls.attachMedia(video)
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = url
-        }
-      }
-    },
-    volume: 0.7,
-    autoplay: false,
-    autoSize: false,
-    autoMini: false,
-    screenshot: true,
-    setting: true,
-    loop: false,
-    flip: true,
-    playbackRate: true,
-    aspectRatio: true,
-    fullscreen: true,
-    fullscreenWeb: true,
-    subtitleOffset: true,
-    miniProgressBar: true,
-    mutex: true,
-    backdrop: true,
-    playsInline: true,
-    autoPlayback: true,
-    airplay: true,
-    theme: '#2396ef',
-    lang: 'zh-cn',
-    moreVideoAttr: {
-      crossOrigin: 'anonymous',
-      preload: 'auto',
-    },
-    settings: buildArtSettings(),
-
-    contextmenu: [
-      {
-        html: '标记此刻为章节',
-        click() {
-          markChapter()
-        }
-      },
-      {
-        html: '生成 GIF（3 秒）',
-        click() {
-          generateGifHere()
-        }
-      }
-    ],
-    controls: [
-      {
-        name: 'mark-chapter',
-        position: 'right',
-        html: '<i class="art-icon">📍</i>',
-        tooltip: '标记此刻',
-        click() {
-          markChapter()
-        }
-      }
-    ]
-  })
-
-  // 加载缩略图进度条 VTT
-  if (spriteMeta.value?.vtt_url) {
-    loadThumbnailSpriteVtt(spriteMeta.value.vtt_url)
-  }
-
-  art.on('ready', () => {
-    console.log('Artplayer ready')
-  })
-}
-
-const loadThumbnailSpriteVtt = (vttUrl) => {
-  if (!art) return
-  // Artplayer 5 支持 thumbnail 配置（需 artplayer-plugin-thumbnail 或直接用 VTT）
-  // 这里通过自定义控件实现简易预览
-  fetch(vttUrl).then(r => r.text()).then(vtt => {
-    const cues = parseVtt(vtt)
-    art.template.ingestedThumbnailCues = cues
-  }).catch(() => {})
-}
-
-const parseVtt = (vtt) => {
-  const cues = []
-  const lines = vtt.split('\n')
-  let current = null
-  for (const line of lines) {
-    const m = line.match(/(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/)
-    if (m) {
-      current = { start: parseTimestamp(m[1]), end: parseTimestamp(m[2]) }
-    } else if (current && line.includes('#xywh=')) {
-      const xywh = line.match(/#xywh=(\d+),(\d+),(\d+),(\d+)/)
-      if (xywh) {
-        current.x = parseInt(xywh[1])
-        current.y = parseInt(xywh[2])
-        current.w = parseInt(xywh[3])
-        current.h = parseInt(xywh[4])
-        cues.push(current)
-      }
-    }
-  }
-  return cues
-}
-
-const parseTimestamp = (ts) => {
-  const [h, m, s] = ts.split(':')
-  return parseFloat(h) * 3600 + parseFloat(m) * 60 + parseFloat(s)
-}
+// ===== 播放器初始化已收口到 <ArtplayerVideo>（ArtplayerVideo.vue）=====
+// 播放器实例在 onPlayerReady 中由组件 @ready 事件赋值给 art；
+// 缩略图 / 音轨 / 画质 / 章节设置由组件内部 buildThumbnails / buildSettings 处理。
+// loadVideo() 计算好视频地址后只需赋值 videoUrl，组件 watch 自动重建播放器。
 
 // ===== 数据加载 =====
+// ===== 系列连播（Cinema v1 §5）=====
+const seriesPlaylist = ref([])
+const seriesCurrentIndex = ref(-1)
+// 连播自动播放开关：仅由连播跳转/手动点选触发，首次进入不自动播
+const autoNext = ref(false)
+
+const loadSeriesPlaylist = async () => {
+  const series = movie.value?.series
+  if (!series || !currentModule.value) {
+    // 仅模块场景支持系列聚合（通用表暂无 series 聚合端点）
+    seriesPlaylist.value = []
+    seriesCurrentIndex.value = -1
+    return
+  }
+  try {
+    const res = await getModuleSeriesMovies(currentModule.value, series)
+    const items = res.items || []
+    seriesPlaylist.value = items
+    seriesCurrentIndex.value = items.findIndex(
+      (it) => String(it.id) === String(movie.value.id)
+    )
+  } catch (e) {
+    console.warn('loadSeriesPlaylist failed', e)
+    seriesPlaylist.value = []
+  }
+}
+
+const seriesCover = (m) => {
+  const u = m.cover_url
+  if (!u) return ''
+  return /^https?:\/\//i.test(u) ? u : `${getServerBaseUrl()}${u}`
+}
+
+// 跳转到系列中的某一部（手动点选或自动连播）
+const goSeriesMovie = (m) => {
+  if (!m) return
+  autoNext.value = true
+  const query = currentModule.value ? { module: currentModule.value } : {}
+  router.push({ name: 'Play', params: { id: m.id }, query })
+}
+
+// 播放结束自动连播下一部
+const playNextInSeries = () => {
+  if (!seriesPlaylist.value.length) return
+  const next = seriesPlaylist.value[seriesCurrentIndex.value + 1]
+  if (next) {
+    autoNext.value = true
+    goSeriesMovie(next)
+  } else {
+    ElMessage.info('已是本系列最后一集')
+  }
+}
+
 const loadMovie = async () => {
   loading.value = true
   try {
@@ -1188,14 +1131,68 @@ const loadMovie = async () => {
     }
 
     if (movie.value.file_path) {
+      await loadResume()
       await loadVideo()
     }
+    // 系列连播（Cinema v1 §5）：有 series 则拉同系列影片列表
+    loadSeriesPlaylist()
   } catch (e) {
     console.error(e)
     ElMessage.error('加载失败')
   } finally {
     loading.value = false
   }
+}
+
+// ===== 断点续播（Cinema v1 §3.3）=====
+// 加载观影历史，若存在有效进度则提示续播
+const loadResume = async () => {
+  if (!movie.value?.id) return
+  try {
+    const params = { movie_id: movie.value.id }
+    if (currentModule.value) params.module = currentModule.value
+    const res = await getViewingHistory(params)
+    const items = res?.items || (Array.isArray(res) ? res : []) || []
+    const hit = items.find(it => String(it.movie_id) === String(movie.value.id))
+    if (!hit) return
+    const pos = Number(hit.position) || 0
+    const dur = Number(movie.value.duration) || Number(hit.duration) || 0
+    if (pos > 5 && (!dur || pos < dur - 10)) {
+      resumeInfo.value = { position: pos, duration: dur }
+      showResume.value = true
+    }
+  } catch (e) {
+    // 续播为非关键路径，失败静默
+    console.warn('loadResume failed', e)
+  }
+}
+
+// 点击"继续观看"：跳到记录位置并播放
+const resumePlay = () => {
+  if (art && resumeInfo.value) {
+    art.currentTime = resumeInfo.value.position
+    if (art.play) art.play()
+  }
+  showResume.value = false
+}
+
+// 播放中每 10s 上报一次进度（后端 /viewing/play 已存在）
+const startRecording = () => {
+  if (recordTimer) clearInterval(recordTimer)
+  recordTimer = setInterval(async () => {
+    if (!art || art.paused || !movie.value?.id) return
+    try {
+      const data = {
+        movie_id: movie.value.id,
+        position: Math.round(art.currentTime),
+        duration: Math.round(art.duration || movie.value.duration || 0),
+      }
+      if (currentModule.value) data.module = currentModule.value
+      await recordPlay(data)
+    } catch (e) {
+      // 非关键路径
+    }
+  }, 10000)
 }
 
 const loadVideo = async () => {
@@ -1205,22 +1202,40 @@ const loadVideo = async () => {
   }
 
   try {
-    let videoUrl
+    let url
     if (currentModule.value) {
       const res = await getModulePlayUrl(currentModule.value, route.params.id, currentProtocol.value)
-      videoUrl = res.play_url
+      url = res.play_url
     } else if (adaptiveMode.value) {
       const base = getServerBaseUrl()
-      videoUrl = `${base}/api/v1/movies/${route.params.id}/hls/master.m3u8`
+      url = `${base}/api/v1/movies/${route.params.id}/hls/master.m3u8`
     } else {
       const res = await getMoviePlayUrl(route.params.id, currentProtocol.value)
-      videoUrl = res.play_url
+      url = res.play_url
     }
-    await nextTick()
-    initArtplayer(videoUrl)
+    // 收口：直接赋值响应式 videoUrl，由 <ArtplayerVideo> watch 自动重建播放器
+    videoUrl.value = url
   } catch (e) {
     console.error(e)
+    // 通知连接胶囊进入重连态
+    window.dispatchEvent(new Event('mdcx:network-error'))
   }
+}
+
+// 组件 @ready：拿到 art 实例并启动续播上报
+const onPlayerReady = (a) => {
+  art = a
+  startRecording()
+}
+
+// 组件 @error：播放失败（含 HLS 致命错误）→ 触发连接胶囊重连态
+const onPlayerError = () => {
+  window.dispatchEvent(new Event('mdcx:network-error'))
+}
+
+// 组件 @ended：系列连播自动播放下一部
+const onPlayerEnded = () => {
+  playNextInSeries()
 }
 
 const changeProtocol = async (protocol) => {
@@ -1310,14 +1325,14 @@ const loadChapters = async () => {
   } catch (e) {}
 }
 
-const markChapter = async () => {
-  if (!art) return
-  const t = art.currentTime
+const markChapter = async (t) => {
+  const time = (typeof t === 'number') ? t : (art ? art.currentTime : 0)
+  if (!art && typeof t !== 'number') return
   try {
-    const res = await addChapter(route.params.id, { start: t })
+    const res = await addChapter(route.params.id, { start: time })
     chapters.value.push(res)
     chapters.value.sort((a, b) => a.start - b.start)
-    ElMessage.success(`已标记章节 @ ${formatTime(t)}`)
+    ElMessage.success(`已标记章节 @ ${formatTime(time)}`)
   } catch (e) {
     ElMessage.error('标记失败')
   }
@@ -1619,7 +1634,26 @@ onMounted(() => {
   // 监听全局快捷键事件（mpv 播放/暂停/截图）
   window.addEventListener('mdcx-mpv-toggle', onMpvToggle)
   window.addEventListener('mdcx-mpv-screenshot', onMpvScreenshot)
+  // F 全屏 / M 静音：Artplayer 默认未绑定，本项目显式接入（Cinema v1 §3.5）
+  window.addEventListener('keydown', onGlobalShortcut)
 })
+
+// 全局快捷键：F 切换全屏，M 切换静音（与 Artplayer 约定一致，输入框/修饰键不触发）
+const onGlobalShortcut = (e) => {
+  if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return
+  const tag = e.target?.tagName?.toUpperCase?.()
+  const editable = e.target?.getAttribute?.('contenteditable')
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || editable === 'true' || editable === '') return
+  if (!art) return
+  const k = e.key.toLowerCase()
+  if (k === 'f') {
+    e.preventDefault()
+    art.fullscreen = !art.fullscreen
+  } else if (k === 'm') {
+    e.preventDefault()
+    art.muted = !art.muted
+  }
+}
 
 // 监听路由变化（切换影片时重新加载）
 watch(() => [route.params.id, route.query.module], () => {
@@ -1634,10 +1668,11 @@ const onMpvScreenshot = () => {
 }
 
 onUnmounted(() => {
-  if (art) art.destroy(false)
-  if (hls) hls.destroy()
+  if (recordTimer) clearInterval(recordTimer)
   window.removeEventListener('mdcx-mpv-toggle', onMpvToggle)
   window.removeEventListener('mdcx-mpv-screenshot', onMpvScreenshot)
+  window.removeEventListener('keydown', onGlobalShortcut)
+  // art 实例由 <ArtplayerVideo> 组件自行销毁，避免重复 destroy
 })
 </script>
 
@@ -1667,6 +1702,99 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ===== 后端连接胶囊条（Cinema v1 §3.2） ===== */
+.conn-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ===== 断点续播条（Cinema v1 §3.3） ===== */
+.resume-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(59, 140, 255, 0.10);
+  border: 1px solid rgba(59, 140, 255, 0.30);
+  color: var(--el-color-primary, #3b8cff);
+  font-size: 13px;
+}
+.resume-bar .resume-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ===== 系列连播（Cinema v1 §5） ===== */
+.series-bar {
+  background: var(--bg-card, #fff);
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light, #ebeef5);
+}
+.series-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.series-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #303133);
+}
+.series-count {
+  font-size: 12px;
+  color: var(--text-secondary, #909399);
+}
+.series-list {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.series-item {
+  flex: 0 0 auto;
+  width: 120px;
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  transition: border-color .2s;
+  background: #000;
+}
+.series-item.active {
+  border-color: var(--el-color-primary, #409eff);
+}
+.series-item.watched .series-cover {
+  opacity: .55;
+}
+.series-cover {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  display: block;
+}
+.series-meta {
+  padding: 4px 6px;
+  background: var(--bg-card, #fff);
+}
+.series-code {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #303133);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.series-sub {
+  font-size: 11px;
+  color: var(--text-secondary, #909399);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .player-info {

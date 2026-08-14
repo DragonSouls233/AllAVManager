@@ -200,12 +200,17 @@ async def update_priority_order(
 
     provider = CrawlerProvider()
     base_priority = 1000
+    saved = {}
     for idx, name in enumerate(req.order):
         if not provider.get(name):
             logger.warning(f"站点不存在: {name}，跳过")
             continue
         priority = base_priority - idx
         await _save_setting(session, f"crawler_{name}_priority", str(priority))
+        saved[f"crawler_{name}_priority"] = str(priority)
+
+    # 保存后即时应用到爬虫实例（无需重启即生效）
+    provider.apply_saved_settings(saved)
 
     return {"status": "ok", "updated": len(req.order)}
 

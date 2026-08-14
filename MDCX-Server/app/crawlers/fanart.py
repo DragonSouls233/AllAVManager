@@ -260,9 +260,9 @@ class FanartCrawler:
         if movie.file_path:
             movie_dir = Path(movie.file_path).parent
         else:
-            # 无文件路径时，保存到 output_dir 下的 {code}/extrafanart
-            output_dir = Path(config.scraper.output_dir)
-            movie_dir = output_dir / (movie.code or str(movie.id))
+            # 无文件路径时，保存到规范目录 data/movies/{module}/{code}/extrafanart
+            from app.utils.media_helpers import get_movie_local_dir
+            movie_dir = get_movie_local_dir(module, movie.code or str(movie.id))
         save_dir = movie_dir / subdir
         save_dir.mkdir(parents=True, exist_ok=True)
 

@@ -33,6 +33,7 @@ class JavMovie(MovieMixin, JAV_BASE):
     is_uncensored: Mapped[bool | None] = mapped_column(Boolean, default=False)
     is_mosaic: Mapped[bool | None] = mapped_column(Boolean, default=True)
     is_leak: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 流出/破解版
+    is_4k: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 4K 分辨率版（文件名 -4K/-UHD 后缀）
     label: Mapped[str | None] = mapped_column(String(100))
     tmdb_id: Mapped[int | None] = mapped_column(Integer, index=True)  # TMDB ID（fanart.tv查询）
 

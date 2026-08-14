@@ -5,13 +5,13 @@ qa_screenshots_v2/
 screenshots/
 tmp/
 query_tmp/
-*.png
-*.jpg
-*.jpeg
-*.gif
+tmp_scancheck/
+tmp_sakuramedia/
+_verify_data/
 .chrome-test/
 ms-playwright/
 browser_test.js
+
 qa_*.js
 qa_*.mjs
 qa_*.py
@@ -23,6 +23,13 @@ tmp_*.log
 test_*.py
 test_*.txt
 test_report_*.txt
+fix_*.py
+query_*.py
+check_*.py
+stats*.py
+run_*.py
+sync_*.py
+batch_*.py
 
 # 调试/日志
 debug.log
@@ -36,6 +43,7 @@ qa_test_log_*.bak.txt
 docs/plans/
 tools/
 scripts/
+.workbuddy
 
 # 临时文件
 __pycache__/
@@ -52,29 +60,10 @@ MDCX-Desktop/dist-electron/
 MDCX-Desktop/release/
 MDCX-Desktop/webdist/
 MDCX-Desktop/node_modules/
-
-# 服务器静态资源（前端构建产物）
 MDCX-Server/static/assets/
 
 # 杂项
-.workbuddy
-_verify_data
-check_jav_db.py
-fix_*.py
-query_*.py
-gfriends.py
-gfriends_importer.py
-stats.py
-MDCX-Server/qa_interactive_report.txt
-MDCX-Server/qa_interactive.py
-DEPLOY_SERVER.md
-deploy_to_server.ps1
-pornhub_actor_analysis.md
-.gitignore
-pornhub_fix_overview.md
-JAV系列_参考学习报告.md
-pornhub_actor_count_fix.md
-MDCX-Server/app/utils/atomic_write.py
-query_tmp
-tmp_scancheck
-tmp_sakuramedia
+*.png
+*.jpg
+*.jpeg
+*.gif

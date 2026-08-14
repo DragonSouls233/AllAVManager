@@ -22,6 +22,8 @@ from app.tasks.base_scanner import (
     copy_video_assets_to_data_dir,
     find_local_cover,
     iter_media_entries,
+    _file_size,
+    detect_version_flags,
 )
 from app.utils.logger import get_logger
 
@@ -197,6 +199,9 @@ class UncensoredScanner(BaseScanner):
                     # 本地封面（通用名或 {番号}-poster.jpg 等），回填 cover_url
                     cover_url = find_local_cover(file_path, code)
 
+                    # 检测版本标记（-C 中文 / -U 无码 / -UC 无码中文 / -Leak 破解 / -4K）
+                    flags = detect_version_flags(file_name)
+
                     # 写入新影片记录
                     new_movie = UncensoredMovie(
                         code=code,
@@ -206,7 +211,11 @@ class UncensoredScanner(BaseScanner):
                         studio=studio,
                         cover_url=cover_url,
                         file_path=str(file_path),
-                        file_size=file_path.stat().st_size if file_path.exists() else 0,
+                        file_size=_file_size(file_path),
+                        is_chinese=flags["is_chinese"],
+                        is_uncensored=flags["is_uncensored"],
+                        is_leak=flags["is_leak"],
+                        is_4k=flags["is_4k"],
                         status="pending",
                     )
                     session.add(new_movie)
@@ -214,9 +223,12 @@ class UncensoredScanner(BaseScanner):
                     result["scanned"] += 1
 
                     # 将视频目录的 NFO + 封面 + 预览图复制到数据中心目录
+                    # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）
                     if code:
                         asyncio.ensure_future(
-                            copy_video_assets_to_data_dir(str(file_path), code, "uncensored")
+                            self._copy_limited(
+                                copy_video_assets_to_data_dir(str(file_path), code, "uncensored")
+                            )
                         )
 
             await session.commit()

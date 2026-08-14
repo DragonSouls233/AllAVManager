@@ -31,7 +31,7 @@ class JavDBCrawler(BaseCrawler):
     display_name = "JavDB"
     base_url = "https://javdb.com"
     
-    priority = CrawlerPriority.HIGH
+    priority = CrawlerPriority.VERY_HIGH
     supported_types = ["jav", "jav_uncensored", "fc2"]
     supported_prefixes = []
     description = "JAV数据库站点，支持多语言"

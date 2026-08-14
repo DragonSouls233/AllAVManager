@@ -182,7 +182,9 @@ async def _detect_module_missing_for_engine(
                 try:
                     from app.config.manager import get_config_manager
                     data_dir = get_config_manager().computed.data_dir
-                    module_name = getattr(movie, "module_name", None) or "jav"
+                    # 电影来自 module 参数对应的模块数据库（movies 表无 module_name 列，
+                    # 不能回退到 "jav"，否则其他模块的电影会被错误归入 jav 目录）
+                    module_name = module
                     code = getattr(movie, "code", "") or ""
                     if code:
                         output_dir = str(Path(data_dir) / "movies" / module_name / code)

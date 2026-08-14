@@ -22,14 +22,25 @@ def get_uncensored_db() -> ModuleDatabase:
 
 
 @router.get("/actors")
-async def list_actors():
+async def list_actors(search: Optional[str] = Query(None, description="按名字/日文名/别名搜索")):
     """列出无码演员列表"""
     db = get_uncensored_db()
     session = await db.get_session()
     try:
         from app.db.uncensored_models import UncensoredActor
-        from sqlalchemy import select
-        stmt = select(UncensoredActor).order_by(UncensoredActor.movie_count.desc())
+        from sqlalchemy import select, or_
+        stmt = select(UncensoredActor)
+        if search:
+            alias_col = getattr(UncensoredActor, "alias", None)
+            cond = or_(
+                UncensoredActor.name.contains(search),
+                UncensoredActor.name_jp.contains(search),
+                UncensoredActor.name_en.contains(search),
+            )
+            if alias_col is not None:
+                cond = or_(cond, alias_col.contains(search))
+            stmt = stmt.where(cond)
+        stmt = stmt.order_by(UncensoredActor.movie_count.desc())
         result = await session.execute(stmt)
         actors = result.scalars().all()
         return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url, "module_type": "uncensored"} for a in actors]
@@ -302,6 +313,8 @@ async def list_movies(
             {"id": m.id, "code": m.code, "title": m.title,
              "source_platform": m.source_platform,
              "series": m.series,
+             "is_chinese": m.is_chinese, "is_uncensored": m.is_uncensored,
+             "is_leak": m.is_leak, "is_4k": m.is_4k,
              "cover_url": m.cover_url, "actor": m.actor,
              "module_type": "uncensored",
              "file_path": m.file_path, "status": m.status}
@@ -328,6 +341,8 @@ async def get_movie(movie_id: int):
             "id": movie.id, "code": movie.code, "title": movie.title,
             "original_title": movie.original_title,
             "source_platform": movie.source_platform, "series": movie.series,
+            "is_chinese": movie.is_chinese, "is_uncensored": movie.is_uncensored,
+            "is_leak": movie.is_leak, "is_4k": movie.is_4k,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "actor": movie.actor, "studio": movie.studio,
             "module_type": "uncensored",
@@ -604,7 +619,7 @@ async def play_uncensored_video_file(movie_id: int, request: _Request):
 
 
 @router.get("/movies/{movie_id}/play/external")
-async def get_uncensored_external_play_url(movie_id: int, protocol: str = "http"):
+async def get_uncensored_external_play_url(movie_id: int, request: _Request, protocol: str = "http"):
     """获取无码影片外部播放地址"""
     db = get_uncensored_db()
     session = await db.get_session()
@@ -621,14 +636,12 @@ async def get_uncensored_external_play_url(movie_id: int, protocol: str = "http"
             raise HTTPException(status_code=404, detail="视频文件不存在")
 
         from app.config.manager import get_config
+        from app.utils.play_url import build_play_base_url
         config = get_config()
         host = getattr(config.server, "host", "0.0.0.0")
         port = getattr(config.server, "port", 8420)
 
-        if host in ("0.0.0.0", "127.0.0.1", "localhost"):
-            base = f"http://localhost:{port}"
-        else:
-            base = f"http://{host}:{port}"
+        base = build_play_base_url(request, host, port)
 
         if protocol == "http":
             play_url = f"{base}/api/v1/uncensored/movies/{movie_id}/play/file"

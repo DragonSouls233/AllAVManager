@@ -38,8 +38,7 @@
           <div class="cover-tags">
             <span v-if="item.studio" class="tag-studio">{{ item.studio }}</span>
             <span v-if="item.release_date" class="tag-date">{{ String(item.release_date).slice(0, 10) }}</span>
-            <span v-if="item.is_chinese" class="tag-cn">中文</span>
-            <span v-if="item.is_uncensored" class="tag-un">无码</span>
+            <el-tag v-for="b in getMovieVersionBadges(item)" :key="b.text" size="small" :type="versionBadgeType(b.type)" effect="dark">{{ b.text }}</el-tag>
           </div>
           <p class="cover-actors-line" v-if="item.actor">{{ item.actor }}</p>
         </div>
@@ -65,6 +64,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getMovies } from '@/api'
+import { getServerBaseUrl, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
 
 const router = useRouter()
 const items = ref([])
@@ -75,8 +75,9 @@ const page = ref(1)
 const coverPageSize = ref(48)
 const totalCount = ref(0)
 
+// 复用 media.js 的统一逻辑：Web 用页面 origin，Electron 桌面端回退 localStorage serverUrl（file:// 下 origin 不是后端地址）
 function getServerBase() {
-  return window.location.origin
+  return getServerBaseUrl()
 }
 
 function coverUrl(item) {

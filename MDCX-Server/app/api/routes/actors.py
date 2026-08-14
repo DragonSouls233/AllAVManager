@@ -216,6 +216,7 @@ class BatchActorProfileScrapeRequest(BaseModel):
     """批量演员资料刮削请求"""
     actor_ids: list[int] = []
     min_movies: int = Query(2, ge=1, description="最少作品数")
+    limit: int = Query(100, ge=1, le=500, description="最多刮削人数")
     sources: Optional[list[str]] = Query(
         None,
         description="刮削来源: dmm_actress/javwiki/avopen/avwikidb/wikidata/wikipedia/gfriends"
@@ -1067,12 +1068,17 @@ async def delete_actor_avatar(
 
 # ===== 批量演员资料刮削 =====
 
-@router.post("/scrape-profiles/batch", response_model=BatchActorProfileScrapeResponse)
+@router.post("/scrape-profiles/batch")
 async def batch_scrape_actor_profiles(
+    background_tasks: BackgroundTasks,
     body: BatchActorProfileScrapeRequest = Body(...),
     module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
 ):
-    """批量刮削演员资料"""
+    """批量刮削演员资料（后台任务，立即返回）
+
+    注意: 100 人 × 多来源串行刮削耗时数十分钟，必须后台执行；
+    同步执行会导致前端 axios 超时断连，uvicorn 取消 handler 后批次中途被掐断。
+    """
     from app.scraper.actor_profile_scrapers import get_actor_profile_scraper, ActorProfile
     from app.utils.actor_tag_sync import sync_auto_actor_tags
     from app.utils.http_client import AsyncHttpClient
@@ -1093,137 +1099,156 @@ async def batch_scrape_actor_profiles(
                     actor_cls.name != "",
                 )
                 .order_by(func.coalesce(actor_cls.movie_count, 0).desc())
-                .limit(100)
             )
+            # 跳过资料已完整（核心资料字段均有值）的演员，避免已刮削成功的重复占用名额。
+            # 注意: 不含 intro/name_jp —— AV联盟等主要来源不提供这两个字段，若计入则几乎所有
+            # 演员都"缺资料"，导致每次都重复刮削同一批人。以来源可回填的核心字段为准。
+            missing_cols = []
+            for _f in ("birth_date", "height", "bust", "waist", "hip", "cup", "avatar_url"):
+                if hasattr(actor_cls, _f):
+                    missing_cols.append(func.coalesce(getattr(actor_cls, _f), "") == "")
+            if missing_cols:
+                query = query.where(or_(*missing_cols))
+            query = query.limit(body.limit)
 
         result = await sess.execute(query)
         actors_data = result.fetchall()
 
     total = len(actors_data)
-    success = 0
-    failed = 0
-    results = []
+    job_id = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    if total == 0:
+        return {"status": "started", "job_id": job_id, "total": 0, "message": "没有需要刮削的演员"}
 
     scraper = get_actor_profile_scraper()
 
-    for row in actors_data:
-        row_actor = row[0]
-        movie_cnt = getattr(row_actor, "movie_count", 0) or 0
+    async def _run_batch():
+        logger.info(f"[{module}] 批量演员资料刮削启动: {total} 人, job={job_id}")
+        success = 0
+        failed = 0
+        results = []
 
-        result_item = {
-            "actor_id": row_actor.id,
-            "name": row_actor.name,
-            "movie_count": movie_cnt,
-            "status": "pending",
-            "scraped_fields": {},
-            "avatar_updated": False,
-        }
+        for row in actors_data:
+            row_actor = row[0]
+            movie_cnt = getattr(row_actor, "movie_count", 0) or 0
 
-        try:
-            profile = await scraper.get_profile(
-                name=row_actor.name,
-                name_jp=getattr(row_actor, "name_jp", None),
-                preferred_sources=body.sources,
-            )
+            result_item = {
+                "actor_id": row_actor.id,
+                "name": row_actor.name,
+                "movie_count": movie_cnt,
+                "status": "pending",
+                "scraped_fields": {},
+                "avatar_updated": False,
+            }
 
-            if profile and profile.name:
-                scraped_fields = {}
+            try:
+                profile = await scraper.get_profile(
+                    name=row_actor.name,
+                    name_jp=getattr(row_actor, "name_jp", None),
+                    preferred_sources=body.sources,
+                )
 
-                field_mapping = {
-                    "birth_date": "birth_date",
-                    "age": "age",
-                    "height": "height",
-                    "bust": "bust",
-                    "waist": "waist",
-                    "hip": "hip",
-                    "cup": "cup",
-                    "birthplace": "birthplace",
-                    "name_jp": "name_jp",
-                    "alias": "alias",
-                    "hobby": "hobby",
-                    "intro": "intro",
-                    "zodiac": "zodiac",
-                    "debut_year": "debut_year",
-                }
+                if profile and profile.name:
+                    scraped_fields = {}
 
-                # 注意: 上方查询块退出时 `async with sess` 会 close 掉 session,
-                # 旧 actor 对象已 detached, 修改/提交无效。必须在同一事务块内
-                # 重新加载演员后再 setattr 并 commit。
-                async with sess:
-                    actor = await sess.get(actor_cls, row_actor.id)
-                    if actor is None:
-                        failed += 1
-                        result_item["status"] = "not_found"
-                        results.append(result_item)
-                        await asyncio.sleep(0.5)
-                        continue
+                    field_mapping = {
+                        "birth_date": "birth_date",
+                        "age": "age",
+                        "height": "height",
+                        "bust": "bust",
+                        "waist": "waist",
+                        "hip": "hip",
+                        "cup": "cup",
+                        "birthplace": "birthplace",
+                        "name_jp": "name_jp",
+                        "alias": "alias",
+                        "hobby": "hobby",
+                        "intro": "intro",
+                        "zodiac": "zodiac",
+                        "debut_year": "debut_year",
+                    }
 
-                    for profile_field, actor_field in field_mapping.items():
-                        if hasattr(profile, profile_field):
-                            value = getattr(profile, profile_field)
-                            if value and hasattr(actor, actor_field):
-                                current_value = getattr(actor, actor_field)
-                                if not current_value or current_value == "":
-                                    setattr(actor, actor_field, value)
-                                    scraped_fields[actor_field] = value
+                    # 注意: 上方查询块退出时 `async with sess` 会 close 掉 session,
+                    # 旧 actor 对象已 detached, 修改/提交无效。必须在同一事务块内
+                    # 重新加载演员后再 setattr 并 commit。
+                    async with sess:
+                        actor = await sess.get(actor_cls, row_actor.id)
+                        if actor is None:
+                            failed += 1
+                            result_item["status"] = "not_found"
+                            results.append(result_item)
+                            await asyncio.sleep(0.5)
+                            continue
 
-                    if profile.social_links and not getattr(actor, "social_links", None):
-                        actor.social_links = json.dumps(profile.social_links, ensure_ascii=False)
-                        scraped_fields["social_links"] = profile.social_links
+                        for profile_field, actor_field in field_mapping.items():
+                            if hasattr(profile, profile_field):
+                                value = getattr(profile, profile_field)
+                                if value and hasattr(actor, actor_field):
+                                    current_value = getattr(actor, actor_field)
+                                    if not current_value or current_value == "":
+                                        setattr(actor, actor_field, value)
+                                        scraped_fields[actor_field] = value
 
-                    if body.include_avatar and profile.avatar_url and not getattr(actor, "avatar_url", None):
-                        try:
-                            avatar_path = await _download_actor_avatar(
-                                actor.id, profile.avatar_url, actor.name, module
-                            )
-                            if avatar_path:
-                                actor.avatar_url = str(avatar_path)
-                                scraped_fields["avatar_url"] = str(avatar_path)
-                                result_item["avatar_updated"] = True
-                        except Exception as e:
-                            # 头像下载失败不影响资料字段提交
-                            logger.warning(f"演员 {actor.name} 头像下载失败(忽略): {e}")
+                        if profile.social_links and not getattr(actor, "social_links", None):
+                            actor.social_links = json.dumps(profile.social_links, ensure_ascii=False)
+                            scraped_fields["social_links"] = profile.social_links
 
-                    # 荣誉/风格标签落库（v3.5）：AV联盟 タグ + Wiki 受賞歴，is_user=False 区分手动标签
-                    if getattr(profile, "tags", None):
-                        try:
-                            ActorTag = get_module_model(module, "actor_tag")
-                            new_tags = await sync_auto_actor_tags(sess, ActorTag, actor.id, profile.tags)
-                            if new_tags:
-                                scraped_fields["tags"] = new_tags
-                        except Exception as e:
-                            logger.warning(f"演员 {actor.name} 自动标签写入失败(忽略): {e}")
+                        if body.include_avatar and profile.avatar_url and not getattr(actor, "avatar_url", None):
+                            try:
+                                avatar_path = await _download_actor_avatar(
+                                    actor.id, profile.avatar_url, actor.name, module
+                                )
+                                if avatar_path:
+                                    actor.avatar_url = str(avatar_path)
+                                    scraped_fields["avatar_url"] = str(avatar_path)
+                                    result_item["avatar_updated"] = True
+                            except Exception as e:
+                                # 头像下载失败不影响资料字段提交
+                                logger.warning(f"演员 {actor.name} 头像下载失败(忽略): {e}")
 
-                    if scraped_fields:
-                        await sess.commit()
-                        success += 1
-                        result_item["status"] = "success"
-                        result_item["scraped_fields"] = scraped_fields
-                        result_item["source"] = profile.source
-                    else:
-                        failed += 1
-                        result_item["status"] = "no_update"
-            else:
+                        # 荣誉/风格标签落库（v3.5）：AV联盟 タグ + Wiki 受賞歴，is_user=False 区分手动标签
+                        if getattr(profile, "tags", None):
+                            try:
+                                ActorTag = get_module_model(module, "actor_tag")
+                                new_tags = await sync_auto_actor_tags(sess, ActorTag, actor.id, profile.tags)
+                                if new_tags:
+                                    scraped_fields["tags"] = new_tags
+                            except Exception as e:
+                                logger.warning(f"演员 {actor.name} 自动标签写入失败(忽略): {e}")
+
+                        if scraped_fields:
+                            await sess.commit()
+                            success += 1
+                            result_item["status"] = "success"
+                            result_item["scraped_fields"] = scraped_fields
+                            result_item["source"] = profile.source
+                        else:
+                            failed += 1
+                            result_item["status"] = "no_update"
+                else:
+                    failed += 1
+                    result_item["status"] = "not_found"
+
+            except Exception as e:
+                logger.error(f"刮削演员 {row_actor.name} 失败: {e}")
                 failed += 1
-                result_item["status"] = "not_found"
+                result_item["status"] = "error"
+                result_item["error"] = str(e)
 
-        except Exception as e:
-            logger.error(f"刮削演员 {row_actor.name} 失败: {e}")
-            failed += 1
-            result_item["status"] = "error"
-            result_item["error"] = str(e)
+            results.append(result_item)
+            await asyncio.sleep(0.5)
 
-        results.append(result_item)
-        await asyncio.sleep(0.5)
+        logger.info(f"[{module}] 批量演员资料刮削完成: 成功 {success}, 失败 {failed}, job={job_id}")
+        _cache.invalidate("actors:")
 
-    _cache.invalidate("actors:")
+    background_tasks.add_task(_run_batch)
 
-    return BatchActorProfileScrapeResponse(
-        total=total,
-        success=success,
-        failed=failed,
-        results=results,
-    )
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "total": total,
+        "message": f"演员资料批量刮削已启动，共 {total} 人，后台执行中",
+    }
 
 
 async def _download_actor_avatar(

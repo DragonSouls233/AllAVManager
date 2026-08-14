@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getJavMovies, getJavMovie, getJavActors, getJavActor, scrapeJavMovie, scrapeAllPendingJav, importJavNfo } from '@/api/jav'
+import { getJavMovies, getJavMovie, getJavActors, getJavActor, scrapeJavMovie, scrapeAllPendingJav, importJavNfo, scrapeMediaRefill } from '@/api/jav'
 import { scanModule } from '@/api/modules'
 
 export const useJavStore = defineStore('jav', () => {
@@ -75,10 +75,22 @@ export const useJavStore = defineStore('jav', () => {
     }
   }
 
+  async function triggerMediaRefill(limit = 50) {
+    scraping.value = true
+    scrapingStatus.value = '正在启动缺图补刮...'
+    try {
+      const res = await scrapeMediaRefill({ module: 'jav', limit })
+      scrapingStatus.value = res.message || '缺图补刮已启动'
+      return res
+    } finally {
+      scraping.value = false
+    }
+  }
+
   return {
     movies, total, actors, loading, page, pageSize, statusFilter, pendingCount,
     scraping, scrapingStatus,
     loadMovies, loadMovieDetail, loadActors, loadActorDetail,
-    triggerScan, triggerScrapeAll, triggerImportNfo,
+    triggerScan, triggerScrapeAll, triggerImportNfo, triggerMediaRefill,
   }
 })

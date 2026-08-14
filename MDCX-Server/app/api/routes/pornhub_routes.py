@@ -1094,7 +1094,8 @@ async def scrape_all_actor_profiles_enhanced(background_tasks: BackgroundTasks):
         try:
             for i, actor_row in enumerate(actors):
                 # 去重校验：如果资料完整且已有头像本地文件，跳过（按名或按 id 命名均可）
-                name_local = Path(AVATAR_DIR) / f"{re.sub(r'[\\/:*?\"<>|]', '_', actor_row.name)}.jpg"
+                safe_name = re.sub(r'[\\/:*?"<>|]', '_', actor_row.name)
+                name_local = Path(AVATAR_DIR) / f"{safe_name}.jpg"
                 id_local = Path(AVATAR_DIR) / f"actor_{actor_row.id}.jpg"
                 if actor_row.avatar_url and actor_row.nationality and (name_local.exists() or id_local.exists()):
                     skipped += 1
@@ -1384,7 +1385,7 @@ async def play_pornhub_video_file(movie_id: int, request: _Request):
 
 
 @router.get("/movies/{movie_id}/play/external")
-async def get_pornhub_external_play_url(movie_id: int, protocol: str = "http"):
+async def get_pornhub_external_play_url(movie_id: int, request: _Request, protocol: str = "http"):
     """获取 PORNHub 影片外部播放地址"""
     db = get_pornhub_db()
     session = await db.get_session()
@@ -1401,14 +1402,12 @@ async def get_pornhub_external_play_url(movie_id: int, protocol: str = "http"):
             raise HTTPException(status_code=404, detail="视频文件不存在")
 
         from app.config.manager import get_config
+        from app.utils.play_url import build_play_base_url
         config = get_config()
         host = getattr(config.server, "host", "0.0.0.0")
         port = getattr(config.server, "port", 8420)
 
-        if host in ("0.0.0.0", "127.0.0.1", "localhost"):
-            base = f"http://localhost:{port}"
-        else:
-            base = f"http://{host}:{port}"
+        base = build_play_base_url(request, host, port)
 
         if protocol == "http":
             play_url = f"{base}/api/v1/pornhub/movies/{movie_id}/play/file"

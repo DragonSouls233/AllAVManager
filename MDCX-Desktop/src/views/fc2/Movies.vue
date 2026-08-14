@@ -21,6 +21,9 @@
         <div class="cover">
           <img :src="getCoverSrc(m)" :alt="m.title" @error="onCoverError">
           <div class="cover-badge">{{ m.seller_id || 'FC2' }}</div>
+          <div class="cover-badges">
+            <el-tag v-for="b in getMovieVersionBadges(m)" :key="b.text" size="small" :type="versionBadgeType(b.type)" effect="dark">{{ b.text }}</el-tag>
+          </div>
         </div>
         <div class="info">
           <div class="title">{{ m.title || m.code }}</div>
@@ -55,7 +58,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useFc2Store } from '@/stores/fc2'
 import { ElMessage } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
-import { getCoverSrc } from '@/utils/media'
+import { getCoverSrc, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
 
 const route = useRoute()
 const router = useRouter()
@@ -137,6 +140,7 @@ watch(() => route.query, () => { store.page = 1; loadMovies() }, { deep: true })
 .cover { position: relative; aspect-ratio: 3/4; overflow: hidden; }
 .cover img { width: 100%; height: 100%; object-fit: cover; }
 .cover-badge { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.6); color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.cover-badges { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
 .info { padding: 8px; }
 .title { font-size: 13px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { display: flex; gap: 4px; align-items: center; margin-top: 4px; }

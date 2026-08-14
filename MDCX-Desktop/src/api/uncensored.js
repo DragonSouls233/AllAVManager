@@ -1,7 +1,7 @@
 import { api } from './index'
 
-export async function getUncensoredActors() {
-  return api.get('/uncensored/actors')
+export async function getUncensoredActors(params = {}) {
+  return api.get('/uncensored/actors', { params })
 }
 
 export async function getUncensoredActor(id) {

@@ -484,6 +484,12 @@ const routes = [
         component: () => import('@/views/ActorDetail.vue')
       },
       {
+        path: 'jav/folder-check',
+        name: 'JavFolderCheck',
+        component: () => import('@/views/jav/FolderCheck.vue'),
+        meta: { title: 'JAV 有码 · 文件夹归属' }
+      },
+      {
         path: 'jav/studios',
         name: 'JavStudios',
         component: () => import('@/views/Studios.vue')

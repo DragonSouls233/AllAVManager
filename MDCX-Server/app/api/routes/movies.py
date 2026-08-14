@@ -5,12 +5,13 @@
 import asyncio
 import importlib
 import json
+import re
 import time
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy import select, func, and_, or_, delete as sa_delete
 from sqlalchemy.exc import IntegrityError
@@ -21,7 +22,10 @@ import logging
 
 from app.db.database import get_session
 from app.db.system_models import FavoriteItem, FavoriteGroup
-from app.utils.media_helpers import collect_media_dirs, fast_file_exists, search_video_in_media_dirs
+from app.utils.media_helpers import (
+    collect_media_dirs, fast_file_exists, search_video_in_media_dirs,
+    get_movie_local_dir, get_module_movies_dir,
+)
 from app.utils.media_helpers import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
@@ -454,6 +458,7 @@ async def list_movies(
             is_mosaic=m.is_mosaic,
             is_chinese=m.is_chinese,
             is_leak=m.is_leak,
+            is_4k=getattr(m, "is_4k", None),
             file_path=m.file_path,
             file_size=m.file_size,
             sample_images=_parse_sample_images(m.sample_images),
@@ -664,28 +669,27 @@ async def _search_cover_in_output_dir(movie, od: Path, session) -> Optional[str]
 
 
 async def _search_cover_in_config_output_dir(movie, session) -> Optional[str]:
-    """当 movie.output_dir 不存在或为空时，使用 config.scraper.output_dir 构造可能的封面路径"""
+    """当 movie.output_dir 不存在或为空时，用规范目录 data/movies/{module}/{code}/ 构造可能的封面路径（兼容旧 output_dir 兜底）。"""
+    source = getattr(movie, 'source', None) or ''
+    module_name = _source_to_module(source)
+    code = getattr(movie, 'code', None)
+    if not code:
+        return None
+    # 优先规范目录 data/movies/{module}/{code}/
+    expected_dir = get_movie_local_dir(module_name, code)
+    if expected_dir.exists() and expected_dir.is_dir():
+        result = await _search_cover_in_output_dir(movie, expected_dir, session)
+        if result:
+            return result
+    # 兼容旧配置 output_dir（历史误存）下已存在的刮削产物
     try:
         from app.config.manager import get_config
-        cfg = get_config()
-        base_dir = Path(cfg.scraper.output_dir)
-        if not base_dir.exists() or not base_dir.is_dir():
-            return None
-        source = getattr(movie, 'source', None) or ''
-        module_name = _source_to_module(source)
-        code = getattr(movie, 'code', None)
-        if not code:
-            return None
-        expected_dir = base_dir / module_name / code
-        if expected_dir.exists() and expected_dir.is_dir():
-            result = await _search_cover_in_output_dir(movie, expected_dir, session)
-            if result:
-                return result
-        expected_dir_direct = base_dir / code
-        if expected_dir_direct.exists() and expected_dir_direct.is_dir():
-            result = await _search_cover_in_output_dir(movie, expected_dir_direct, session)
-            if result:
-                return result
+        cfg_dir = Path(get_config().scraper.output_dir)
+        for od in (cfg_dir / module_name / code, cfg_dir / code):
+            if od.exists() and od.is_dir():
+                result = await _search_cover_in_output_dir(movie, od, session)
+                if result:
+                    return result
     except Exception:
         pass
     return None
@@ -1727,6 +1731,7 @@ async def get_external_player_url(
 @router.get("/{movie_id}/webdav")
 async def get_webdav_url(
     movie_id: int,
+    request: Request,
     module: str = Query("jav"),
 ):
     """获取视频文件的 WebDAV 访问地址"""
@@ -1745,12 +1750,12 @@ async def get_webdav_url(
         raise HTTPException(status_code=404, detail="视频文件不存在")
 
     from app.config.manager import get_config
+    from app.utils.play_url import build_play_base_url
     config = get_config()
     server_host = getattr(config.server, 'host', '127.0.0.1')
     server_port = getattr(config.server, 'port', 8420)
 
-    use_localhost = server_host in ('0.0.0.0', '127.0.0.1', 'localhost')
-    base_url = f"http://localhost:{server_port}" if use_localhost else f"http://{server_host}:{server_port}"
+    base_url = build_play_base_url(request, server_host, server_port)
 
     import urllib.parse
     path_str = str(file_path)
@@ -2800,6 +2805,31 @@ _SOURCE_DETAIL_BASE = {
     "fanart": "https://fanart.tv",
 }
 
+# DMM 样本图（预览图）直链前缀，用于刮削结果无样图时的兜底来源
+_DMM_PIC_RE = re.compile(r"pics\.dmm\.co\.jp/digital/video/([a-z0-9]+)/", re.IGNORECASE)
+
+
+def _dmm_sample_urls_from_result(result) -> list[str]:
+    """从刮削结果中提取 DMM cid，构造 DMM 标准样本图 URL（{cid}jp-1~12.jpg）。
+
+    多来源（javdb/avsox/dmm 等）的封面直链均为 pics.dmm.co.jp，可提取 cid；
+    AV联盟 作品详情页同样内嵌该 cid，本质上同源。兜底失败时返回空列表不影响流程。
+    """
+    cid = None
+    for u in (getattr(result, "cover_url", None), getattr(result, "poster_url", None)):
+        if u:
+            m = _DMM_PIC_RE.search(u)
+            if m:
+                cid = m.group(1)
+                break
+    if not cid:
+        raw = getattr(result, "raw_data", None) or {}
+        if isinstance(raw, dict):
+            cid = raw.get("cid")
+    if not cid:
+        return []
+    return [f"https://pics.dmm.co.jp/digital/video/{cid}/{cid}jp-{i}.jpg" for i in range(1, 13)]
+
 
 def _detail_referer(source: str | None, code: str | None) -> str | None:
     """构造详情页 Referer（如 javbus 需 https://www.javbus.com/{code} 才能下载封面）。"""
@@ -2813,24 +2843,25 @@ def _detail_referer(source: str | None, code: str | None) -> str | None:
     return None
 
 
-async def _persist_scraped_media(result, code: str):
-    """下载刮削封面+预览图到服务端 output_dir/<模块>/<番号>/，并生成 NFO（规则3）。"""
+async def _persist_scraped_media(result, code: str, module: str = "jav"):
+    """下载刮削封面+预览图到规范目录 data/movies/<模块>/<番号>/，并生成 NFO（规则3）。
+
+    注意：落盘目录按电影所属模块（module）决定，而不是按刮削来源站点推断，
+    否则无码/fc2/欧美等片会被误写入 jav 目录。
+    """
     import logging
     import re
     logger = logging.getLogger(__name__)
     try:
-        from app.config.manager import get_config
         from app.output.images import ImageProcessor
         from app.output.nfo import generate_nfo
-        output_dir = Path(get_config().scraper.output_dir).resolve()
     except Exception as e:
-        logger.warning(f"解析刮削输出目录失败: {e}")
+        logger.warning(f"加载图片/NFO 模块失败: {e}")
         return None, [], None
 
     safe_code = re.sub(r'[<>:"/\\|?*]', '', code or "movie")
-    source = getattr(result, "source", None) or ""
-    module_name = _source_to_module(source)
-    movie_dir = output_dir / module_name / safe_code
+    # 刮削产物统一保存到规范目录 {data_base}/movies/{module}/{code}/（见 media_helpers.py）
+    movie_dir = get_movie_local_dir(module, safe_code)
     movie_dir.mkdir(parents=True, exist_ok=True)
 
     referer = _detail_referer(getattr(result, "source", None), code)
@@ -2859,9 +2890,14 @@ async def _persist_scraped_media(result, code: str):
                     cover_src, str(movie_dir), filename="cover.jpg", referer=referer
                 )
             samples = getattr(result, "sample_images", None) or []
+            if not samples:
+                # 兜底：从封面/DMM cid 构造标准样本图（预览图），扩大预览图来源
+                samples = _dmm_sample_urls_from_result(result)
             if samples:
+                from app.config.manager import get_config as _get_cfg
+                preview_count = getattr(_get_cfg().scraper, "preview_count", 12)
                 sample_local = await proc.download_samples(
-                    samples[:6], str(movie_dir), referer=referer
+                    samples[:preview_count], str(movie_dir), referer=referer
                 )
         try:
             generate_nfo(result, str(movie_dir))
@@ -2885,7 +2921,7 @@ async def _apply_scrape_result(session, movie, result, module: str = "jav") -> d
     if not (result and result.is_valid()):
         return {"status": "failed", "message": "刮削失败，未找到匹配数据"}
 
-    cover_local, sample_local, movie_dir = await _persist_scraped_media(result, movie.code)
+    cover_local, sample_local, movie_dir = await _persist_scraped_media(result, movie.code, module)
     if movie_dir:
         movie.output_dir = movie_dir
 
@@ -3064,8 +3100,16 @@ async def _try_scrape_from_nfo(movie) -> Optional[dict]:
     from app.config.manager import get_config
 
     candidates = []
+    # 优先规范目录 data/movies/{module}/{code}/
+    module_name = _source_to_module(getattr(movie, "source", None) or "")
+    code = getattr(movie, "code", None)
+    if code:
+        standard_dir = get_movie_local_dir(module_name, code)
+        candidates.append(standard_dir)
     if getattr(movie, "output_dir", None):
-        candidates.append(Path(movie.output_dir))
+        od = Path(movie.output_dir)
+        if od not in candidates:
+            candidates.append(od)
     try:
         cfg_dir = Path(get_config().scraper.output_dir)
         if cfg_dir not in candidates:
@@ -3211,6 +3255,141 @@ async def scrape_movie(
             "status": "error",
             "message": f"刮削过程中发生错误: {str(e)}",
         }
+
+
+def _movie_dir_has_media(module: str, code: str) -> bool:
+    """判断规范目录 data/movies/{module}/{code}/ 是否已有图片（封面/预览图）。
+
+    用于「缺图电影」筛选：目录下存在任意 jpg/png/webp 即视为有图。
+    """
+    try:
+        movie_dir = get_movie_local_dir(module, code or "")
+        if movie_dir.is_dir():
+            for f in movie_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+# 兑底来源：主来源链无结果或仅有元数据无封面时，用以下站点再补一轮
+_REFILL_FALLBACK_SOURCES = ["javdb", "avmoo", "avsox", "dmm_web"]
+
+
+@router.post("/scrape-media-refill")
+async def scrape_media_refill(
+    background_tasks: BackgroundTasks,
+    module: str = Query("jav", description="模块库"),
+    movie_ids: Optional[list[int]] = Body(
+        None, description="指定电影 ID；不传则自动筛选「已刮削但缺封面/预览图」的影片"
+    ),
+    limit: int = Body(50, ge=1, le=200, description="自动筛选时的最大处理数量"),
+    sources: Optional[list[str]] = Body(
+        None, description="指定刮削来源站点（默认走模块完整来源链）"
+    ),
+):
+    """批量补刮（v3.5）：对缺封面/预览图的影片完整重刮并下载图片
+
+    - 指定 movie_ids 时只处理指定影片；
+    - 否则自动筛选 status=scraped 且规范目录无图片的影片（limit 限量，分批调用）；
+    - 每部走完整引擎刮削（多源并发 + merger 合并），结果仍无封面时用兑底来源重试一轮；
+    - 后台任务执行，立即返回排队数量。
+    """
+    session = await get_module_session(module)
+    MovieModel = _get_mod_model(module, "movie")
+    try:
+        if movie_ids:
+            result = await session.execute(
+                select(MovieModel).where(MovieModel.id.in_(movie_ids))
+            )
+            candidates = result.scalars().all()
+        else:
+            result = await session.execute(
+                select(MovieModel)
+                .where(
+                    MovieModel.status == "scraped",
+                    MovieModel.code.is_not(None),
+                )
+                .order_by(MovieModel.scraped_at.desc())
+            )
+            candidates = []
+            for m in result.scalars():
+                if not m.code:
+                    continue
+                has_img = _movie_dir_has_media(module, m.code)
+                has_cover_db = bool(
+                    getattr(m, "cover_url", None) or getattr(m, "poster_url", None)
+                )
+                # 缺图判定：目录无图，或 DB 只有远程/空封面（未成功落盘）
+                if not has_img or not has_cover_db:
+                    candidates.append(m)
+                if len(candidates) >= limit:
+                    break
+    finally:
+        await session.close()
+
+    if not candidates:
+        return {"status": "ok", "message": "没有需要补刮的影片", "total": 0, "queued": 0}
+
+    pending = [(m.id, m.code) for m in candidates]
+
+    async def _run():
+        from app.scraper.engine import ScraperEngine
+        engine = ScraperEngine()
+        success = 0
+        no_source = 0
+        failed = 0
+        for mid, code in pending:
+            result = None
+            try:
+                result = await engine.scrape_number(code, sources=sources, module=module)
+                if not (result and result.is_valid()):
+                    no_source += 1
+                    continue
+                if not getattr(result, "cover_url", None):
+                    # 兑底：主来源无封面时用常见站点再补一轮
+                    fallback = await engine.scrape_number(
+                        code, sources=_REFILL_FALLBACK_SOURCES, module=module
+                    )
+                    if fallback and fallback.is_valid() and fallback.cover_url:
+                        result = fallback
+            except Exception as e:
+                logger.debug(f"补刮失败 {code}: {e}")
+
+            if not (result and result.is_valid()):
+                failed += 1
+                continue
+
+            s = await get_module_session(module)
+            try:
+                m = await s.get(MovieModel, mid)
+                if m is None:
+                    failed += 1
+                    continue
+                resp = await _apply_scrape_result(s, m, result, module)
+                if resp["status"] == "ok":
+                    await s.commit()
+                    _cache.invalidate("movies:")
+                    success += 1
+                else:
+                    await s.rollback()
+                    failed += 1
+            except Exception as e:
+                await s.rollback()
+                logger.debug(f"补刮落库失败 {code}: {e}")
+                failed += 1
+            finally:
+                await s.close()
+        logger.info(f"缺图批量补刮完成({module}): 成功 {success}, 无数据 {no_source}, 失败 {failed}")
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "ok",
+        "message": f"已排队补刮 {len(pending)} 部影片（后台执行）",
+        "total": len(pending),
+        "queued": len(pending),
+    }
 
 
 @router.get("/{movie_id}", response_model=MovieResponse)

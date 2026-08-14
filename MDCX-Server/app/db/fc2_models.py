@@ -27,6 +27,10 @@ class Fc2Movie(MovieMixin, FC2_BASE):
     __tablename__ = "movies"
 
     is_mosaic: Mapped[bool | None] = mapped_column(Boolean)
+    is_chinese: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 中文字幕版（-C/-UC 后缀）
+    is_uncensored: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 无码版（-U/-UC 后缀）
+    is_leak: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 流出/破解版
+    is_4k: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 4K 分辨率版
     seller_id: Mapped[str | None] = mapped_column(String(50))
 
 

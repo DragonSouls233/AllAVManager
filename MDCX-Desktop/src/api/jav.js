@@ -32,6 +32,11 @@ export async function scrapeAllPendingJav() {
   return api.post('/jav/movies/scrape-all-pending')
 }
 
+// 缺图电影批量补刮（完整重刮 + 兑底，后台执行）
+export async function scrapeMediaRefill(data = {}) {
+  return api.post('/movies/scrape-media-refill', data)
+}
+
 export async function importJavNfo(params = {}) {
   return api.post('/jav/movies/import-nfo', null, { params })
 }
@@ -98,4 +103,14 @@ export async function getJavActorAvatarUrl(id) {
 
 export async function testCodeExtract(filename) {
   return api.post('/jav/code-extract-test', { filename })
+}
+
+// ===== 文件夹归属检测 / 回填 =====
+
+export async function getJavFolderCheck(params = {}) {
+  return api.get('/jav/folder-check', { params })
+}
+
+export async function fillJavFolderCheck(data = {}) {
+  return api.post('/jav/folder-check/fill', data)
 }
