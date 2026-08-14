@@ -239,8 +239,11 @@ class AsyncHttpClient:
                 )
             await resp.aread()
             return resp
-        except Exception:
+        except Exception as e:
             # 连接池可能因代理断开等原因损坏 / 半开连接，重建客户端再试一次
+            logger.warning(
+                f"httpx {method} {url} 失败，重建连接池重试: {type(e).__name__}: {e}"
+            )
             try:
                 await self._httpx_client.aclose()
             except Exception:
@@ -358,6 +361,11 @@ class AsyncHttpClient:
                     return response
 
                 except Exception as e:
+                    # 记录每次失败（超时/连接失败/5xx），否则“刮削失败但不知为何”
+                    logger.warning(
+                        f"GET 失败 ({attempt + 1}/{self.max_retries}) {url}: "
+                        f"{type(e).__name__}: {e}"
+                    )
                     # 致命的 curl_cffi C 层错误（Python3.14 下 native 库损坏）：
                     # 直接禁用 curl_cffi，后续请求全部走 httpx 降级。
                     if "void *" in str(e) or "cdata" in str(e) or type(e).__name__.startswith("Curl"):
@@ -368,6 +376,8 @@ class AsyncHttpClient:
                         await asyncio.sleep(1.0 * (attempt + 1))
 
         # curl_cffi 不可用或本次失败 → 降级到 httpx（接口兼容 Response）
+        if self.max_retries > 0:
+            logger.warning(f"GET {url} 重试 {self.max_retries} 次均失败，降级 httpx 再试")
         return await self._httpx_request("GET", url, req_headers, cookies, dict(kwargs))
     
     async def get_text(
@@ -496,6 +506,11 @@ class AsyncHttpClient:
                     return response
 
                 except Exception as e:
+                    # 记录每次失败，便于定位批量刮削整批失败的原因
+                    logger.warning(
+                        f"POST 失败 ({attempt + 1}/{self.max_retries}) {url}: "
+                        f"{type(e).__name__}: {e}"
+                    )
                     # 致命的 curl_cffi C 层错误：禁用 curl_cffi，降级 httpx
                     if "void *" in str(e) or "cdata" in str(e) or type(e).__name__.startswith("Curl"):
                         self._curl_failed = True
@@ -505,6 +520,8 @@ class AsyncHttpClient:
                         await asyncio.sleep(1.0 * (attempt + 1))
 
         # curl_cffi 不可用或本次失败 → 降级到 httpx
+        if self.max_retries > 0:
+            logger.warning(f"POST {url} 重试 {self.max_retries} 次均失败，降级 httpx 再试")
         return await self._httpx_request(
             "POST", url, req_headers, cookies,
             {"data": data, "json": json, **kwargs},

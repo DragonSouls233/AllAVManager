@@ -43,9 +43,15 @@ class Fc2Scanner(BaseScanner):
         """扫描 FC2 媒体目录并落库"""
         results = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0, "errors": []}
 
+        logger.info(f"[fc2] 扫描启动: media_dirs={[str(d) for d in self.media_dirs]}")
         for media_dir in self.media_dirs:
             try:
+                logger.info(f"[fc2] 开始扫描目录: {media_dir}")
                 dir_result = await self._scan_directory(media_dir)
+                logger.info(
+                    f"[fc2] 目录扫描完成: {media_dir} 共发现 {dir_result['total']} 个文件，"
+                    f"新增 {dir_result.get('movies_added', 0)}"
+                )
                 results["total"] += dir_result["total"]
                 results["scanned"] += dir_result["scanned"]
                 results["matched"] += dir_result["matched"]
@@ -54,6 +60,10 @@ class Fc2Scanner(BaseScanner):
                 results["errors"].append(f"{media_dir}: {e}")
                 logger.error(f"扫描目录失败 {media_dir}: {e}")
 
+        logger.info(
+            f"[fc2] 扫描完成: 共发现 {results['total']} 个文件，新增 {results['movies_added']}，"
+            f"错误 {len(results['errors'])} 个"
+        )
         return results
 
     async def _scan_directory(self, media_dir: Path) -> dict:

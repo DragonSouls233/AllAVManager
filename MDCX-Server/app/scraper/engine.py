@@ -5,6 +5,7 @@
 import asyncio
 import inspect
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -214,6 +215,8 @@ class ScraperEngine:
             ctx: 单次刮削共享上下文（可选，向后兼容）
         """
         async with self._semaphore:
+            started = time.monotonic()
+            logger.debug(f"爬虫 {crawler.name} 开始刮削 {number}")
             try:
                 # 检测 crawler 是否支持 ctx 参数（已迁移的 scraper 复用共享 client）
                 if ctx is not None and _scrape_accepts_ctx(crawler):
@@ -227,14 +230,23 @@ class ScraperEngine:
                         crawler.scrape(number),
                         timeout=self.timeout,
                     )
+                logger.debug(
+                    f"爬虫 {crawler.name} 刮削 {number} 完成，耗时 {time.monotonic() - started:.1f}s"
+                )
                 return result
 
             except asyncio.TimeoutError:
-                logger.warning(f"爬虫 {crawler.name} 刮削 {number} 超时")
+                logger.warning(
+                    f"爬虫 {crawler.name} 刮削 {number} 超时 "
+                    f"({self.timeout}s，耗时 {time.monotonic() - started:.1f}s)"
+                )
                 return None
 
             except Exception as e:
-                logger.error(f"爬虫 {crawler.name} 刮削 {number} 出错: {e}")
+                logger.error(
+                    f"爬虫 {crawler.name} 刮削 {number} 出错: "
+                    f"{type(e).__name__}: {e}"
+                )
                 return None
     
     async def scrape_file(
@@ -293,6 +305,8 @@ class ScraperEngine:
             番号 -> 结果 的映射
         """
         self._progress = ScrapeProgress(total=len(numbers))
+        started = time.monotonic()
+        logger.info(f"批量刮削开始: 共 {len(numbers)} 个番号 (sources={sources})")
         
         results = {}
         
@@ -315,7 +329,12 @@ class ScraperEngine:
         
         for number, result in task_results:
             results[number] = result
-        
+
+        ok = sum(1 for v in results.values() if v is not None)
+        logger.info(
+            f"批量刮削完成: 共 {len(numbers)} 个，成功 {ok}，失败 {len(numbers) - ok}，"
+            f"耗时 {time.monotonic() - started:.1f}s"
+        )
         return results
     
     async def scrape_files(
@@ -334,6 +353,8 @@ class ScraperEngine:
             文件路径 -> 结果 的映射
         """
         self._progress = ScrapeProgress(total=len(file_paths))
+        started = time.monotonic()
+        logger.info(f"批量刮削文件开始: 共 {len(file_paths)} 个文件 (sources={sources})")
         
         results = {}
         
@@ -356,7 +377,12 @@ class ScraperEngine:
         
         for file_path, result in task_results:
             results[file_path] = result
-        
+
+        ok = sum(1 for v in results.values() if v is not None)
+        logger.info(
+            f"批量刮削文件完成: 共 {len(file_paths)} 个，成功 {ok}，失败 {len(file_paths) - ok}，"
+            f"耗时 {time.monotonic() - started:.1f}s"
+        )
         return results
     
     @property

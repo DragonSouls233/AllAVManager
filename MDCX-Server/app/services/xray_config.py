@@ -55,6 +55,8 @@ SCRAPE_PROXY_DOMAINS = [
     "kin8tengoku.com",
     "tokyo-hot.com",
     "amazon.co.jp",
+    "pornhub.com",
+    "cn.pornhub.com",
     "google.com",  # 用于测速与出口 IP 检查
     "generate_204",
 ]

@@ -27,7 +27,11 @@ session 重复 close 是幂等的，不会产生副作用。
 from contextvars import ContextVar
 from typing import List
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 # 当前请求生命周期内登记的所有裸 session（每个请求一个独立列表）
 _request_sessions: ContextVar[List[AsyncSession]] = ContextVar("mdcx_request_sessions")
@@ -72,6 +76,10 @@ async def session_cleanup_middleware(request, call_next):
     try:
         response = await call_next(request)
     finally:
+        registered = len(_request_sessions.get())
         await close_registered_sessions()
         _request_sessions.reset(token)
+        # debug 级：连接数持续偏高说明有调用方在请求级泄漏裸 session
+        if registered:
+            logger.debug(f"请求 {request.url.path} 关闭 {registered} 个模块 session")
     return response

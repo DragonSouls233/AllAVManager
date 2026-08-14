@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getPornhubMovies, getPornhubMovie, getPornhubActors, getPornhubActor } from '@/api/pornhub'
+import { getPornhubMovies, getPornhubMovie, getPornhubActors, getPornhubActor, triggerPornhubResumableScan } from '@/api/pornhub'
 import { scanModule } from '@/api/modules'
 
 export const usePornhubStore = defineStore('pornhub', () => {
@@ -40,5 +40,10 @@ export const usePornhubStore = defineStore('pornhub', () => {
     return await scanModule('pornhub')
   }
 
-  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
+  /** 后台断点续扫（目录级 checkpoint，仅扫未完成目录，立即返回） */
+  async function triggerResumableScan(rescan = false) {
+    return await triggerPornhubResumableScan(rescan)
+  }
+
+  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan, triggerResumableScan }
 })

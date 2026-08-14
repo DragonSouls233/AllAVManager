@@ -1,4 +1,4 @@
-"""
+﻿"""
 无码内容爬虫
 
 支持站点：
@@ -59,7 +59,7 @@ class CaribbeancomCrawler(BaseCrawler):
 
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
 
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -215,7 +215,7 @@ class HeyzoCrawler(BaseCrawler):
 
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
 
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -367,7 +367,7 @@ class S1StyleCrawler(BaseCrawler):
 
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
 
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -507,7 +507,7 @@ class TenMusumeCrawler(BaseCrawler):
 
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
 
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -646,7 +646,7 @@ class CaribbeancomprCrawler(BaseCrawler):
 
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
 
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -754,7 +754,7 @@ class RagdollCrawler(BaseCrawler):
 
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
 
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -862,7 +862,7 @@ class Kin8tengokuCrawler(BaseCrawler):
         if not movie_id:
             return None
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -922,7 +922,7 @@ class PacopacomamaCrawler(BaseCrawler):
         if not movie_id:
             return None
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -979,7 +979,7 @@ class GachiCrawler(BaseCrawler):
         if not movie_id:
             return None
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
@@ -1038,7 +1038,7 @@ class T28Crawler(BaseCrawler):
         if not movie_id:
             return None
         detail_url = f"{self.base_url}/moviepages/{movie_id}/index.html"
-        async with AsyncHttpClient(timeout=30) as client:
+        async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:

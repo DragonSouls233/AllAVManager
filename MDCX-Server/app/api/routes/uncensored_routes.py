@@ -363,7 +363,7 @@ async def get_movie(movie_id: int):
 
 @router.post("/movies/{movie_id}/scrape")
 async def scrape_uncensored_movie(movie_id: int):
-    """刮削指定无码影片的元数据"""
+    """刮削指定无码影片的元数据（含资源下载与演员合并）"""
     db = get_uncensored_db()
     session = await db.get_session()
     try:
@@ -378,7 +378,7 @@ async def scrape_uncensored_movie(movie_id: int):
 
         from app.scraper.engine import get_scraper_engine
         engine = get_scraper_engine()
-        scrape_result = await engine.scrape_number(movie.code)
+        scrape_result = await engine.scrape_number(movie.code, module="uncensored")
 
         if not scrape_result or not scrape_result.title:
             return {"status": "error", "message": f"刮削失败: 未找到 {movie.code} 的数据"}
@@ -409,14 +409,26 @@ async def scrape_uncensored_movie(movie_id: int):
                 existing = await session.execute(select(UncensoredActor).where(UncensoredActor.name == actor_info.name))
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
+                    # 合并演员信息：更新别名、头像等
+                    if actor_info.alias and not db_actor.alias:
+                        db_actor.alias = actor_info.alias
+                    if actor_info.avatar_url and not db_actor.avatar_url:
+                        db_actor.avatar_url = actor_info.avatar_url
                     db_actor.movie_count += 1
                 else:
-                    session.add(UncensoredActor(name=actor_info.name, source="scraper", movie_count=1))
+                    session.add(UncensoredActor(
+                        name=actor_info.name,
+                        alias=actor_info.alias,
+                        avatar_url=actor_info.avatar_url,
+                        source="scraper",
+                        movie_count=1
+                    ))
 
         movie.source = scrape_result.source or "scraper"
         movie.status = "scraped"
         await session.commit()
 
+        # 资源下载（封面、海报等）已在 engine.scrape_number 中完成
         return {"status": "ok", "message": f"刮削成功: {scrape_result.title}"}
 
     except HTTPException:
@@ -453,7 +465,7 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
         success = failed = 0
         for m in pending:
             try:
-                sr = await engine.scrape_number(m.code)
+                sr = await engine.scrape_number(m.code, module="uncensored")
                 if sr and sr.title:
                     s = await db.get_session()
                     try:

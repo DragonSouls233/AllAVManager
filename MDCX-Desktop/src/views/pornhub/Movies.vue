@@ -7,8 +7,13 @@
       <el-button type="primary" @click="search">搜索</el-button>
       <el-button @click="resetFilters">重置</el-button>
       <el-button type="success" @click="startScan" :loading="scanning">
-        <el-icon><FolderOpened /></el-icon> 扫描目录
+        <el-icon><FolderOpened /></el-icon> 扫描目录(断点续扫)
       </el-button>
+      <el-tooltip content="忽略已处理目录记录，从零全量重扫" placement="top">
+        <el-button @click="startRescan" :loading="scanning">
+          <el-icon><RefreshRight /></el-icon> 全量重扫
+        </el-button>
+      </el-tooltip>
       <el-tag v-if="store.total">共 {{ store.total }} 部</el-tag>
       <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
       <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
@@ -114,11 +119,22 @@ function goDetail(id) {
 async function startScan() {
   scanning.value = true
   try {
-    await store.triggerScan()
-    await loadMovies()
-    ElMessage.success('扫描完成')
+    const res = await store.triggerResumableScan(false)
+    ElMessage.success(res?.message || 'PORNHub 断点续扫已后台启动，可在服务端日志查看进度')
   } catch (e) {
-    ElMessage.error('扫描失败: ' + (e.message || '未知错误'))
+    ElMessage.error('扫描启动失败: ' + (e.message || '未知错误'))
+  } finally {
+    scanning.value = false
+  }
+}
+
+async function startRescan() {
+  scanning.value = true
+  try {
+    const res = await store.triggerResumableScan(true)
+    ElMessage.success(res?.message || 'PORNHub 全量重扫已后台启动')
+  } catch (e) {
+    ElMessage.error('重扫启动失败: ' + (e.message || '未知错误'))
   } finally {
     scanning.value = false
   }

@@ -211,9 +211,15 @@ class PornhubScanner(BaseScanner):
         """扫描 PORNHub 媒体目录并落库"""
         results = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0, "actors_found": {}, "errors": []}
 
+        logger.info(f"[pornhub] 扫描启动: media_dirs={[str(d) for d in self.media_dirs]}")
         for media_dir in self.media_dirs:
             try:
+                logger.info(f"[pornhub] 开始扫描目录: {media_dir}")
                 dir_result = await self._scan_directory(Path(media_dir))
+                logger.info(
+                    f"[pornhub] 目录扫描完成: {media_dir} 共发现 {dir_result['total']} 个文件，"
+                    f"新增 {dir_result.get('movies_added', 0)}"
+                )
                 results["total"] += dir_result["total"]
                 results["scanned"] += dir_result["scanned"]
                 results["matched"] += dir_result["matched"]
@@ -228,6 +234,10 @@ class PornhubScanner(BaseScanner):
             await self._update_actor_counts()
 
         results["actors_found"] = list(results["actors_found"].keys())
+        logger.info(
+            f"[pornhub] 扫描完成: 共发现 {results['total']} 个文件，新增 {results['movies_added']}，"
+            f"错误 {len(results['errors'])} 个"
+        )
         return results
 
     async def _scan_directory(self, media_dir: Path) -> dict:
@@ -302,6 +312,7 @@ class PornhubScanner(BaseScanner):
                     # 空库的另一个原因）。每 200 条落地一次，中断也能保住已扫盘符的数据。
                     if result["scanned"] % 200 == 0:
                         await session.commit()
+                        logger.info(f"[pornhub] 增量提交: 已入库 {result['movies_added']} 部")
 
                     if code:
                         # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）

@@ -63,10 +63,17 @@ async def _run_module_scan(module_name: str, scanner) -> dict:
         "fc2": 900,
         "uncensored": 600,
     }
+    # pornhub 走断点续扫（ResumablePornhubScanner）：目录级 checkpoint + 分批提交，
+    # 直接 await 不套 wait_for，三整盘扫不完也不会被掐断/泄漏遍历线程。
+    _RESUMABLE_MODULES = {"pornhub"}
     SCAN_TIMEOUT = _SCAN_TIMEOUTS.get(module_name, 600)
     try:
-        logger.info(f"开始扫描模块 [{module_name}] ... (超时 {SCAN_TIMEOUT}s)")
-        result = await asyncio.wait_for(scanner.scan(), timeout=SCAN_TIMEOUT)
+        if module_name in _RESUMABLE_MODULES:
+            logger.info(f"开始扫描模块 [{module_name}] ... (断点续扫，无硬超时)")
+            result = await scanner.scan()
+        else:
+            logger.info(f"开始扫描模块 [{module_name}] ... (超时 {SCAN_TIMEOUT}s)")
+            result = await asyncio.wait_for(scanner.scan(), timeout=SCAN_TIMEOUT)
         added = result.get("movies_added", 0)
         total = result.get("total", 0)
         # 2026-08-05 修复: 同步"文件删除"事件，使统计反映真实净变化
@@ -280,9 +287,14 @@ async def _lifespan_impl(app: FastAPI):
                     valid_dirs = filter_reachable([str(d) for d in dirs])
                     if valid_dirs:
                         import importlib
-                        scanner_mod = importlib.import_module(mod_path)
-                        scanner_cls = getattr(scanner_mod, cls_name)
-                        scanner = scanner_cls(valid_dirs)
+                        if mod_name == "pornhub":
+                            # 启动自动扫描也走断点续扫（checkpoint 幂等续扫，不重复入库）
+                            from app.tasks.pornhub_resumable import ResumablePornhubScanner
+                            scanner = ResumablePornhubScanner(valid_dirs, batch_size=200)
+                        else:
+                            scanner_mod = importlib.import_module(mod_path)
+                            scanner_cls = getattr(scanner_mod, cls_name)
+                            scanner = scanner_cls(valid_dirs)
                         asyncio.create_task(_run_and_track(mod_name, scanner))
                         _startup_module_scan_tasks.append(f"{mod_name}({len(valid_dirs)}个目录)")
 

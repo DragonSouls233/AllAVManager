@@ -71,9 +71,15 @@ class ChineseScanner(BaseScanner):
         """
         results = {"total": 0, "scanned": 0, "actors": set(), "movies_added": 0, "errors": []}
 
+        logger.info(f"[chinese] 扫描启动: media_dirs={[str(d) for d in self.media_dirs]}")
         for media_dir in self.media_dirs:
             try:
+                logger.info(f"[chinese] 开始扫描目录: {media_dir}")
                 dir_result = await self._scan_directory(media_dir)
+                logger.info(
+                    f"[chinese] 目录扫描完成: {media_dir} 共发现 {dir_result['total']} 个文件，"
+                    f"新增 {dir_result.get('movies_added', 0)}"
+                )
                 results["total"] += dir_result["total"]
                 results["scanned"] += dir_result["scanned"]
                 results["actors"].update(dir_result["actors"])
@@ -87,6 +93,10 @@ class ChineseScanner(BaseScanner):
             await self._update_actor_counts()
 
         results["actors"] = list(results["actors"])
+        logger.info(
+            f"[chinese] 扫描完成: 共发现 {results['total']} 个文件，新增 {results['movies_added']}，"
+            f"错误 {len(results['errors'])} 个"
+        )
         return results
 
     async def _scan_directory(self, media_dir: Path) -> dict:

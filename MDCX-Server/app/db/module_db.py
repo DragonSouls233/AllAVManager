@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
+import time
+
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -69,6 +71,24 @@ class ModuleDatabase:
             expire_on_commit=False,
         )
 
+        # 慢查询日志：耗时 > 3s 的 SQL 记 warning（正常查询 <10ms，
+        # 慢查询通常意味着网络盘 IO 卡顿 / 大表全扫 / 锁等待，是性能问题定位的第一现场）
+        @event.listens_for(self.engine.sync_engine, "before_cursor_execute")
+        def _slow_query_mark(conn, cursor, statement, parameters, context, executemany):
+            conn._mdcx_sql_start = time.monotonic()
+
+        @event.listens_for(self.engine.sync_engine, "after_cursor_execute")
+        def _slow_query_report(conn, cursor, statement, parameters, context, executemany):
+            start = getattr(conn, "_mdcx_sql_start", None)
+            if start is None:
+                return
+            elapsed = time.monotonic() - start
+            if elapsed > 3.0:
+                logger.warning(
+                    f"[db-slow] 模块 [{self.module_name}] SQL 耗时 {elapsed:.1f}s: "
+                    f"{str(statement)[:200]}"
+                )
+
         self._initialized = False
 
         if "sqlite" in db_url:
@@ -93,11 +113,16 @@ class ModuleDatabase:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"初始化模块数据库 [{self.module_name}]: {self.db_path}")
 
-        async with self.engine.begin() as conn:
-            await conn.execute(text("PRAGMA journal_mode=WAL"))
-            await conn.run_sync(self.base_class.metadata.create_all)
-            # 旧表补齐缺失列（create_all 只建表、不加列，见 _migrate_schema 说明）
-            await self._migrate_schema(conn)
+        try:
+            async with self.engine.begin() as conn:
+                await conn.execute(text("PRAGMA journal_mode=WAL"))
+                await conn.run_sync(self.base_class.metadata.create_all)
+                # 旧表补齐缺失列（create_all 只建表、不加列，见 _migrate_schema 说明）
+                await self._migrate_schema(conn)
+        except Exception:
+            # 数据库损坏/磁盘满/表结构冲突都在这暴露，否则只会看到调用方一串下游报错
+            logger.exception(f"模块数据库 [{self.module_name}] 初始化失败: {self.db_path}")
+            raise
 
         self._initialized = True
         logger.info(f"模块数据库 [{self.module_name}] 初始化完成，表: {list(self.base_class.metadata.tables.keys())}")
@@ -187,6 +212,7 @@ class ModuleDatabase:
     async def close(self) -> None:
         await self.engine.dispose()
         self._initialized = False
+        logger.info(f"模块数据库 [{self.module_name}] 连接池已释放")
 
     @classmethod
     def get_instance(

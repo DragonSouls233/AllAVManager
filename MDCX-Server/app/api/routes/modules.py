@@ -30,6 +30,22 @@ SCANNER_MAP = {
 }
 
 
+def _build_scanner(module_name: str, media_dirs: list[str]):
+    """构建模块扫描器：anime/pornhub 用断点续扫器（checkpoint 安全长跑），其余常规。"""
+    module_path, class_name = SCANNER_MAP[module_name]
+    import importlib
+    mod = importlib.import_module(module_path)
+    scanner_cls = getattr(mod, class_name)
+    scanner = scanner_cls(media_dirs)
+    if module_name == "anime":
+        from app.tasks.anime_resumable import ResumableAnimeScanner
+        scanner = ResumableAnimeScanner(media_dirs, batch_size=200)
+    elif module_name == "pornhub":
+        from app.tasks.pornhub_resumable import ResumablePornhubScanner
+        scanner = ResumablePornhubScanner(media_dirs, batch_size=200)
+    return scanner
+
+
 async def _run_scan(module_name: str) -> dict:
     """根据模块名动态导入并执行扫描器"""
     if module_name not in SCANNER_MAP:
@@ -44,12 +60,18 @@ async def _run_scan(module_name: str) -> dict:
     if not media_dirs:
         raise HTTPException(status_code=400, detail=f"模块 {module_name} 未配置媒体目录")
 
-    module_path, class_name = SCANNER_MAP[module_name]
-    import importlib
-    mod = importlib.import_module(module_path)
-    scanner_cls = getattr(mod, class_name)
-    scanner = scanner_cls(media_dirs)
-    return await scanner.scan()
+    scanner = _build_scanner(module_name, media_dirs)
+    logger.info(f"模块 [{module_name}] 手动扫描启动: {media_dirs}")
+    try:
+        result = await scanner.scan()
+    except Exception:
+        logger.exception(f"模块 [{module_name}] 手动扫描异常")
+        raise
+    logger.info(
+        f"模块 [{module_name}] 手动扫描完成: 共发现 {result.get('total', 0)} 文件，"
+        f"新增 {result.get('movies_added', 0)}，跳过已处理目录 {result.get('skipped_dirs', 0)}"
+    )
+    return result
 
 
 @router.get("")
@@ -191,11 +213,7 @@ async def _delayed_module_scan(module_name: str, media_dirs: list[str]) -> None:
     """延迟执行模块扫描（给配置写入一点时间缓冲）"""
     await asyncio.sleep(1)
     try:
-        module_path, class_name = SCANNER_MAP[module_name]
-        import importlib
-        mod = importlib.import_module(module_path)
-        scanner_cls = getattr(mod, class_name)
-        scanner = scanner_cls(media_dirs)
+        scanner = _build_scanner(module_name, media_dirs)
         result = await scanner.scan()
         added = result.get("movies_added", 0)
         total = result.get("total", 0)

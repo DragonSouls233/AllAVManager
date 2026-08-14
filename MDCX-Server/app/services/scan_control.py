@@ -327,6 +327,7 @@ class ScanControlService:
                 valid_dirs = filter_reachable([str(d) for d in dirs])
                 if valid_dirs:
                     try:
+                        logger.info(f"手动扫描 开始模块 [{mod_name}]: {valid_dirs}")
                         scanner_mod = importlib.import_module(mod_path)
                         scanner_cls = getattr(scanner_mod, cls_name)
                         scanner = scanner_cls(valid_dirs)
@@ -337,8 +338,16 @@ class ScanControlService:
                             from app.tasks.anime_resumable import ResumableAnimeScanner
                             scanner = ResumableAnimeScanner(valid_dirs, batch_size=200)
                             result = await scanner.scan()
+                        elif mod_name == "pornhub":
+                            # 断点续扫：M:\N:\O:\ 三整盘，目录级 checkpoint + 分批提交，
+                            # 直接 await 不套 wait_for，扫不完也不会被 600s 掐断/泄漏线程
+                            # （详见 app/tasks/pornhub_resumable.py）。
+                            from app.tasks.pornhub_resumable import ResumablePornhubScanner
+                            scanner = ResumablePornhubScanner(valid_dirs, batch_size=200)
+                            result = await scanner.scan()
                         else:
-                            result = await asyncio.wait_for(scanner.scan(), timeout=600)
+                            # 整盘扫描的模块也可能超过 600s（慢网络盘），统一放宽到 1800s
+                            result = await asyncio.wait_for(scanner.scan(), timeout=1800)
                         added = result.get("movies_added", 0) or result.get("added", 0)
                         total = result.get("total", 0)
                         # 2026-08-05 修复: 同步文件删除事件

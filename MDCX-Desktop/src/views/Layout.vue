@@ -1549,7 +1549,7 @@ const logout = () => {
 }
 
 .header {
-  background: #fff;
+  background: var(--bg-card, #fff);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1557,6 +1557,7 @@ const logout = () => {
   height: 56px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
   z-index: 10;
+  border-bottom: 1px solid var(--border-light, #f2f6fc);
 }
 
 .header-left {
@@ -1593,13 +1594,43 @@ const logout = () => {
 
 .user-name {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular, #606266);
 }
 
 .main-content {
-  background: #f0f2f5;
+  background: var(--bg-page, #f0f2f5);
   padding: 20px;
   overflow-y: auto;
+}
+
+/* ===== 暗色影院风：Layout 结构区适配（html.dark 由主题 store 切换） ===== */
+:global(html.dark) .header {
+  background: #14161C;
+  border-bottom-color: var(--border-color);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+:global(html.dark) .main-content {
+  background: var(--bg-page);
+}
+
+:global(html.dark) .status-bar {
+  background: #101319;
+  border-top-color: var(--border-color);
+  color: var(--text-secondary);
+}
+
+:global(html.dark) .breadcrumb,
+:global(html.dark) .breadcrumb :deep(.el-breadcrumb__inner) {
+  color: var(--text-regular);
+}
+
+:global(html.dark) .nsfw-panel-title {
+  color: var(--text-primary);
+}
+
+:global(html.dark) .nsfw-panel-row {
+  color: var(--text-regular);
 }
 
 .fade-slide-enter-active,

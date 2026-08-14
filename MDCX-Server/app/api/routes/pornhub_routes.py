@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pornhub", tags=["PORNHub模块"])
 
+# 断点续扫并发锁：防止重复点击导致两个扫描同时写库
+_pornhub_scan_lock = asyncio.Lock()
+
 
 def get_pornhub_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("pornhub")
@@ -121,6 +124,57 @@ async def api_scan_local(data: dict):
     scanner = LocalMediaScanner()
     videos = scanner.scan_directory(directory)
     return {"directory": directory, "total": len(videos), "videos": videos[:50]}
+
+
+# ========== 扫描（断点续扫） ==========
+
+
+@router.post("/scan")
+async def trigger_pornhub_resumable_scan(background_tasks: BackgroundTasks,
+                                         rescan: bool = Query(False, description="重置 checkpoint 全量重扫")):
+    """后台执行 PORNHub 断点续扫（目录级 checkpoint，可反复运行，绝不 600s 掐断）
+
+    仅扫描尚未处理完的目录；重复点击不会重复入库（existing_codes 幂等跳过）。
+    rescan=true 时忽略已有 checkpoint，从零全量重扫。
+    """
+    from app.config.manager import get_config
+    cfg = get_config()
+    media_dirs = []
+    try:
+        media_dirs = getattr(cfg.modules.pornhub, "media_dirs", []) or []
+    except Exception:
+        pass
+    if not media_dirs:
+        logger.warning("PORNHub 断点续扫被拒绝: 未配置 media_dirs")
+        raise HTTPException(status_code=400, detail="PORNHub 模块未配置 media_dirs")
+
+    if _pornhub_scan_lock.locked():
+        logger.warning("PORNHub 断点续扫被拒绝: 已有扫描在运行中")
+        raise HTTPException(status_code=409, detail="PORNHub 扫描已在运行中")
+
+    logger.info(f"PORNHub 断点续扫已后台启动: rescan={rescan}, media_dirs={media_dirs}")
+
+    async def _run():
+        from app.tasks.pornhub_resumable import ResumablePornhubScanner
+        try:
+            async with _pornhub_scan_lock:
+                scanner = ResumablePornhubScanner(media_dirs, batch_size=200, rescan=rescan)
+                result = await scanner.scan()
+            logger.info(
+                f"PORNHub 断点续扫完成: 共发现 {result.get('total', 0)} 文件，"
+                f"新增 {result.get('movies_added', 0)}，跳过已处理目录 {result.get('skipped_dirs', 0)}"
+            )
+        except Exception as e:
+            # 后台任务异常必须落日志，否则静默失败无从排查
+            logger.error(f"PORNHub 断点续扫异常: {e}", exc_info=True)
+
+    background_tasks.add_task(_run)
+
+    return {
+        "status": "started",
+        "rescan": rescan,
+        "message": "PORNHub 断点续扫已后台启动" + ("（全量重扫）" if rescan else "（仅未完成目录）"),
+    }
 
 
 # ========== 演员 ==========

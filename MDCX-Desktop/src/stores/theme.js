@@ -9,7 +9,11 @@ const THEME_KEY = 'mdcx_theme'
  */
 export const useThemeStore = defineStore('theme', () => {
   // ============== State ==============
-  const isDark = ref(localStorage.getItem(THEME_KEY) === 'dark')
+  // Electron 桌面端默认影院暗色（首次启动无 localStorage 记录时）；
+  // Web 端保持亮色默认；用户手动切换后以 localStorage('mdcx_theme') 为准。
+  const isElectron = typeof window !== 'undefined' && !!(window.electronAPI && window.electronAPI.isElectron)
+  const stored = localStorage.getItem(THEME_KEY)
+  const isDark = ref(stored ? stored === 'dark' : !!isElectron)
 
   // ============== Getters ==============
   const mode = computed(() => (isDark.value ? 'dark' : 'light'))

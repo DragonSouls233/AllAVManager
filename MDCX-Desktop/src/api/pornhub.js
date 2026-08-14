@@ -16,6 +16,11 @@ export async function getPornhubMovie(id) {
   return api.get(`/pornhub/movies/${id}`)
 }
 
+/** 后台启动 PORNHub 断点续扫（目录级 checkpoint，可反复运行） */
+export async function triggerPornhubResumableScan(rescan = false) {
+  return api.post('/pornhub/scan', null, { params: { rescan } })
+}
+
 export async function updatePornhubMovie(id, data) {
   return api.patch(`/pornhub/movies/${id}`, data)
 }
