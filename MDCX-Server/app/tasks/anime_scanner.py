@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
 
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

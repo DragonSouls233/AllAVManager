@@ -69,6 +69,7 @@ class ScrapeResult:
     # 图片资源
     cover_url: Optional[str] = None     # 封面URL
     poster_url: Optional[str] = None    # 海报URL
+    thumb_url: Optional[str] = None     # 缩略图URL
     trailer_url: Optional[str] = None   # 预告片URL
     sample_images: list[str] = field(default_factory=list)  # 样图URL列表
     extrafanart: list[str] = field(default_factory=list)    # 额外剧照URL列表

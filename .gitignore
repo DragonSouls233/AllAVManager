@@ -11,6 +11,8 @@ _verify_data/
 .chrome-test/
 ms-playwright/
 browser_test.js
+QA-Tests
+reports
 
 qa_*.js
 qa_*.mjs

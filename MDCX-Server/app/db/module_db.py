@@ -71,8 +71,7 @@ class ModuleDatabase:
             expire_on_commit=False,
         )
 
-        # 慢查询日志：耗时 > 3s 的 SQL 记 warning（正常查询 <10ms，
-        # 慢查询通常意味着网络盘 IO 卡顿 / 大表全扫 / 锁等待，是性能问题定位的第一现场）
+        # 慢查询标记：仅在 DEBUG 级别提示网络盘慢查询，不报 WARNING
         @event.listens_for(self.engine.sync_engine, "before_cursor_execute")
         def _slow_query_mark(conn, cursor, statement, parameters, context, executemany):
             conn._mdcx_sql_start = time.monotonic()
@@ -83,7 +82,7 @@ class ModuleDatabase:
             if start is None:
                 return
             elapsed = time.monotonic() - start
-            if elapsed > 3.0:
+            if elapsed > 30.0:
                 logger.warning(
                     f"[db-slow] 模块 [{self.module_name}] SQL 耗时 {elapsed:.1f}s: "
                     f"{str(statement)[:200]}"

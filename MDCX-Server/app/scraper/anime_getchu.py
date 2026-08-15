@@ -16,6 +16,7 @@
 """
 import asyncio
 import contextlib
+import datetime
 import json
 import logging
 import re
@@ -550,6 +551,10 @@ async def scrape_anime_and_apply(
                 mv.source_url = meta["source_url"]
             mv.source = "getchu"
             mv.status = "completed"
+            mv.scraped_at = datetime.datetime.utcnow()
+            # 回填封面 URL（仅当 cover_url 为空且 meta 中有值）
+            if not mv.cover_url and meta.get("cover_url"):
+                mv.cover_url = meta["cover_url"]
             await session.commit()
 
             # 封面 + NFO + 预览图（数据中心，幂等：已存在跳过）

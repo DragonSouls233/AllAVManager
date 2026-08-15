@@ -33,7 +33,7 @@ _USER_AGENT = (
 _UNCENSORED_ADAPTERS: dict[str, str] = {
     "HEYZO": "https://www.heyzo.com",
     "TOKYO-HOT": "https://my.tokyo-hot.com",
-    "1PONDO": "https://www.1pondo.tv",
+    "1PONDO": "https://www.10musume.com",
     "CARIBBEANCOM": "https://www.caribbeancom.com",
     "10MUSUME": "https://www.10musume.com",
     "PACOPACOMAMA": "https://www.pacopacomama.com",
@@ -297,11 +297,11 @@ class HeyzoEnhancedCrawler(BaseCrawler):
 
 @register_crawler
 class OnePondoCrawler(BaseCrawler):
-    """1PONDO 专用爬虫。"""
+    """1PONDO 专用爬虫（1pondo.tv 已关闭，实际使用 10musume.com）。"""
 
     name = "1pondo"
     display_name = "1Pondo"
-    base_url = "https://www.1pondo.tv"
+    base_url = "https://www.10musume.com"
 
     priority = CrawlerPriority.NORMAL
     supported_types = ["jav_uncensored"]

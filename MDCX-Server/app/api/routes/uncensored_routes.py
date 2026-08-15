@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request as _Request
+from sqlalchemy import func, select
 
 from app.db.module_db import ModuleDatabase
 
@@ -376,6 +377,11 @@ async def scrape_uncensored_movie(movie_id: int):
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
 
+        # 记录刮削前的旧演员列表（用于后续重算 movie_count）
+        old_actor_names: set[str] = set()
+        if movie.actor:
+            old_actor_names = {a.strip() for a in movie.actor.split(",") if a.strip()}
+
         from app.scraper.engine import get_scraper_engine
         engine = get_scraper_engine()
         scrape_result = await engine.scrape_number(movie.code, module="uncensored")
@@ -386,8 +392,6 @@ async def scrape_uncensored_movie(movie_id: int):
         movie.title = scrape_result.title
         if scrape_result.original_title:
             movie.original_title = scrape_result.original_title
-        if scrape_result.cover_url:
-            movie.cover_url = scrape_result.cover_url
         if scrape_result.release_date:
             movie.release_date = str(scrape_result.release_date)
         if scrape_result.duration:
@@ -403,33 +407,83 @@ async def scrape_uncensored_movie(movie_id: int):
         if scrape_result.tags:
             movie.tag = ",".join(scrape_result.tags)
 
+        # ── 资源下载：将远程封面/预览图下载到本地 ──
+        from app.utils.media_helpers import (
+            ensure_movie_media_local,
+            ensure_actor_avatar_local,
+        )
+
+        local_media = await ensure_movie_media_local(
+            module_name="uncensored", code=movie.code,
+            cover_url=scrape_result.cover_url,
+            fanart_url=scrape_result.poster_url,
+            thumb_url=scrape_result.thumb_url,
+        )
+        if local_media.get("cover"):
+            movie.cover_url = local_media["cover"]
+        if local_media.get("fanart"):
+            movie.poster_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            movie.thumb_url = local_media["thumb"]
+        if not movie.cover_url and scrape_result.cover_url:
+            movie.cover_url = scrape_result.cover_url
+
+        # 演员处理
+        new_actor_names: set[str] = set()
         if scrape_result.actors:
-            movie.actor = ",".join(a.name for a in scrape_result.actors)
+            new_actor_names = {a.name for a in scrape_result.actors}
+            movie.actor = ",".join(sorted(new_actor_names))
+
             for actor_info in scrape_result.actors:
-                existing = await session.execute(select(UncensoredActor).where(UncensoredActor.name == actor_info.name))
+                existing = await session.execute(
+                    select(UncensoredActor).where(UncensoredActor.name == actor_info.name)
+                )
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
-                    # 合并演员信息：更新别名、头像等
-                    if actor_info.alias and not db_actor.alias:
-                        db_actor.alias = actor_info.alias
-                    if actor_info.avatar_url and not db_actor.avatar_url:
-                        db_actor.avatar_url = actor_info.avatar_url
-                    db_actor.movie_count += 1
+                    if not db_actor.avatar_url and actor_info.avatar_url:
+                        local_avatar = await ensure_actor_avatar_local(
+                            actor_info.name, actor_info.avatar_url
+                        )
+                        db_actor.avatar_url = local_avatar or actor_info.avatar_url
                 else:
+                    local_avatar = await ensure_actor_avatar_local(
+                        actor_info.name, actor_info.avatar_url
+                    )
                     session.add(UncensoredActor(
                         name=actor_info.name,
-                        alias=actor_info.alias,
-                        avatar_url=actor_info.avatar_url,
+                        avatar_url=local_avatar or actor_info.avatar_url,
                         source="scraper",
-                        movie_count=1
+                        source_site=scrape_result.source,
+                        movie_count=0,
                     ))
+        else:
+            movie.actor = None
 
         movie.source = scrape_result.source or "scraper"
         movie.status = "scraped"
         await session.commit()
 
-        # 资源下载（封面、海报等）已在 engine.scrape_number 中完成
-        return {"status": "ok", "message": f"刮削成功: {scrape_result.title}"}
+        # 重算受影响演员作品数（重刮可能改变演员列表，不能简单累加）
+        affected = new_actor_names | old_actor_names
+        if affected:
+            actors = (await session.execute(
+                select(UncensoredActor).where(UncensoredActor.name.in_(list(affected)))
+            )).scalars().all()
+            for actor in actors:
+                actor.movie_count = await session.scalar(
+                    select(func.count(UncensoredMovie.id)).where(
+                        UncensoredMovie.actor.contains(actor.name),
+                        UncensoredMovie.status != "pending",
+                    )
+                ) or 0
+            await session.commit()
+
+        return {
+            "status": "ok",
+            "message": f"刮削成功: {scrape_result.title}",
+            "source": scrape_result.source,
+            "actors": sorted(new_actor_names),
+        }
 
     except HTTPException:
         raise
@@ -460,9 +514,11 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
     async def _run():
         from app.db.uncensored_models import UncensoredMovie, UncensoredActor
         from app.scraper.engine import get_scraper_engine
+        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
         from sqlalchemy import select
         engine = get_scraper_engine()
         success = failed = 0
+        affected_actors: set[str] = set()
         for m in pending:
             try:
                 sr = await engine.scrape_number(m.code, module="uncensored")
@@ -475,7 +531,6 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
                         if mv:
                             mv.title = sr.title
                             if sr.original_title: mv.original_title = sr.original_title
-                            if sr.cover_url: mv.cover_url = sr.cover_url
                             if sr.release_date: mv.release_date = str(sr.release_date)
                             if sr.duration: mv.duration = sr.duration
                             if sr.rating: mv.rating = sr.rating
@@ -483,13 +538,37 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
                             if sr.studio: mv.studio = sr.studio
                             if sr.genres: mv.genre = ",".join(sr.genres)
                             if sr.tags: mv.tag = ",".join(sr.tags)
+
+                            # 下载封面到本地
+                            local_media = await ensure_movie_media_local(
+                                module_name="uncensored", code=mv.code,
+                                cover_url=sr.cover_url,
+                                fanart_url=sr.poster_url,
+                            )
+                            if local_media.get("cover"):
+                                mv.cover_url = local_media["cover"]
+                            if local_media.get("fanart"):
+                                mv.poster_url = local_media["fanart"]
+                            if not mv.cover_url and sr.cover_url:
+                                mv.cover_url = sr.cover_url
+
                             if sr.actors:
                                 mv.actor = ",".join(a.name for a in sr.actors)
                                 for ai in sr.actors:
+                                    affected_actors.add(ai.name)
                                     ex = await s.execute(select(UncensoredActor).where(UncensoredActor.name == ai.name))
                                     a = ex.scalar_one_or_none()
                                     if not a:
-                                        s.add(UncensoredActor(name=ai.name, source="scraper", movie_count=1))
+                                        local_avatar = await ensure_actor_avatar_local(
+                                            ai.name, ai.avatar_url
+                                        )
+                                        s.add(UncensoredActor(
+                                            name=ai.name,
+                                            avatar_url=local_avatar or ai.avatar_url,
+                                            source="scraper",
+                                            source_site=sr.source,
+                                            movie_count=0,
+                                        ))
                             mv.source = sr.source or "scraper"
                             mv.status = "scraped"
                             await s.commit()
@@ -500,6 +579,28 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
                     failed += 1
             except:
                 failed += 1
+
+        # 批量重算受影响演员的作品数
+        if affected_actors:
+            try:
+                s = await db.get_session()
+                try:
+                    actors = (await s.execute(
+                        select(UncensoredActor).where(UncensoredActor.name.in_(list(affected_actors)))
+                    )).scalars().all()
+                    for actor in actors:
+                        actor.movie_count = await s.scalar(
+                            select(func.count(UncensoredMovie.id)).where(
+                                UncensoredMovie.actor.contains(actor.name),
+                                UncensoredMovie.status != "pending",
+                            )
+                        ) or 0
+                    await s.commit()
+                finally:
+                    await s.close()
+            except Exception as e:
+                logger.warning(f"无码批量刮削-重算作品数失败: {e}")
+
         logger.info(f"无码批量刮削完成: 成功 {success}, 失败 {failed}")
 
     background_tasks.add_task(_run)
@@ -660,5 +761,51 @@ async def get_uncensored_external_play_url(movie_id: int, request: _Request, pro
             return {"protocol": "http", "play_url": play_url, "player_command": play_url, "copy_text": play_url}
         else:
             return {"protocol": "direct", "play_url": movie.file_path, "player_command": movie.file_path, "copy_text": movie.file_path}
+    finally:
+        await session.close()
+
+
+# ========== 演员合并 ==========
+
+
+@router.post("/actors/merge")
+async def merge_uncensored_actors(canonical_id: int = Query(...), source_ids: list[int] = Query(...)):
+    """合并无码演员：source 并入 canonical"""
+    from app.services.actor_merge_service import merge_actors
+    result = await merge_actors(canonical_id, source_ids, "uncensored")
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/actors/merge/search")
+async def search_similar_uncensored_actors(
+    name: str = Query(..., description="演员名称"),
+    threshold: float = Query(0.6, ge=0, le=1),
+):
+    """搜索名称相似的无码演员（推荐合并候选）"""
+    from app.services.actor_merge_service import search_similar_actors
+    items = await search_similar_actors(name, threshold=threshold, module="uncensored")
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/actors/merge/candidates/{actor_id}")
+async def get_uncensored_merge_candidates(actor_id: int):
+    """获取无码演员的合并候选列表"""
+    db = get_uncensored_db()
+    session = await db.get_session()
+    try:
+        from app.db.uncensored_models import UncensoredActor
+        from sqlalchemy import select
+
+        stmt = select(UncensoredActor).where(UncensoredActor.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        from app.services.actor_merge_service import search_similar_actors
+        items = await search_similar_actors(actor.name, threshold=0.6, module="uncensored")
+        return {"actor": {"id": actor.id, "name": actor.name, "alias": actor.alias, "movie_count": actor.movie_count},
+                "candidates": items, "total": len(items)}
     finally:
         await session.close()

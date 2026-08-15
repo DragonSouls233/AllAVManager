@@ -211,7 +211,7 @@ class BackupService:
 
     async def _backup_postgresql(self, dest: Path):
         """PostgreSQL 数据库备份（pg_dump）"""
-        import subprocess
+        import asyncio
         cfg = get_config().deployment.postgres
         env = os.environ.copy()
         if cfg.password:
@@ -225,10 +225,10 @@ class BackupService:
             "-f", str(dest),
             cfg.database,
         ]
-        process = await subprocess.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             *cmd, env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await process.communicate()
         if process.returncode != 0:

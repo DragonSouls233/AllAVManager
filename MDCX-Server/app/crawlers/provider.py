@@ -25,6 +25,26 @@ MODULE_CRAWLER_TYPES: dict[str, list[str]] = {
     "pornhub": ["pornhub"],
 }
 
+# 已失效的外部爬虫（站点已关闭或被 Cloudflare 封禁，不再使用）
+# 保留注册仅用于前端显示，运行时被自动禁用，避免反复重试浪费时间
+DISABLED_CRAWLERS: set[str] = {
+    "mgstage",      # www.mgstage.com → Cloudflare 封禁
+    "prestige",     # www.prestige-av.com → 需 Cookie 登录
+    "missav",       # missav.ws → Cloudflare 封禁
+    "avsex",        # gg5.co → Cloudflare 封禁
+    "lulubar",      # lulubar.co → Cloudflare 封禁
+    "faleno",       # faleno.jp → 需 Cookie 登录
+    "mywife",       # seesaawiki.jp → 403
+    "javlibrary",   # www.javlibrary.com → Cloudflare 封禁
+    "love6",        # love6.tv → SSL 协商失败
+    "fc2hub",       # javten.com → 403（且为 fc2 模块）
+    "avbase",       # www.avbase.net → Cloudflare 封禁
+    "airav",        # cn.airav.wiki → HTTP 521
+    "airav_cc",     # airav.io → 403
+    "gachi",        # www.gachinet.com → 代理无法解析
+    "t28",          # www.t28-tokyo.com → 代理无法解析
+}
+
 
 class CrawlerProvider:
     """
@@ -83,6 +103,11 @@ class CrawlerProvider:
             f"Registered crawler: {name} "
             f"(types={crawler.supported_types}, prefixes={crawler.supported_prefixes})"
         )
+        
+        # 自动禁用已失效的爬虫（避免反复重试浪费时间和日志）
+        if name in DISABLED_CRAWLERS:
+            crawler.disable()
+            logger.info(f"Crawler '{name}' auto-disabled (site no longer accessible)")
     
     def unregister(self, name: str) -> bool:
         """
