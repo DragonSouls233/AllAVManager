@@ -112,7 +112,11 @@ async def download_actor_avatar(actor_name: str, avatar_url: str) -> Optional[st
         return str(local_path)
 
     try:
-        client = AsyncHttpClient()
+        # 获取代理 URL（PornHub 需要翻墙）
+        from app.services.proxy_manager import get_effective_proxy_url
+        proxy_url = get_effective_proxy_url()
+
+        client = AsyncHttpClient(proxy=proxy_url)
         resp = await client.get(avatar_url, timeout=30)
         if resp and resp.status_code == 200:
             local_path.write_bytes(resp.content)
@@ -156,7 +160,11 @@ async def _scrape_from_pornhub(actor_name: str) -> Optional[EnhancedActorProfile
         ph_name = actor_name.replace(" ", "_")
         url = f"https://www.pornhub.com/pornstar/{ph_name}"
 
-        client = AsyncHttpClient()
+        # 获取代理 URL（PornHub 需要翻墙）
+        from app.services.proxy_manager import get_effective_proxy_url
+        proxy_url = get_effective_proxy_url()
+
+        client = AsyncHttpClient(proxy=proxy_url)
         resp = await client.get(
             url,
             cookies=_PH_BASE_COOKIES,

@@ -222,7 +222,7 @@ const initArtplayer = (videoUrl) => {
     },
     // 缩略图进度条：用 Artplayer 5 官方 thumbnails 选项，
     // 替换此前无效的 art.template.ingestedThumbnailCues 伪代码。
-    thumbnails: buildThumbnails(),
+    ...(buildThumbnails() || {}),
     settings: buildSettings(),
     contextmenu: [
       {
@@ -294,7 +294,7 @@ const initArtplayer = (videoUrl) => {
 // 构建 Artplayer 缩略图进度条配置（官方 thumbnails API）
 const buildThumbnails = () => {
   const s = props.spriteMeta
-  if (!s || !s.sprite_url) return undefined
+  if (!s || !s.sprite_url) return false
   const url = /^https?:\/\//i.test(s.sprite_url)
     ? s.sprite_url
     : `${getServerBaseUrl()}${s.sprite_url}`

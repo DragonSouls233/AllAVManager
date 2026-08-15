@@ -120,7 +120,7 @@ class PornhubCrawler(BaseCrawler):
             client = ctx.http_client
             need_close = False
         else:
-            client = AsyncHttpClient()
+            client = AsyncHttpClient(proxy=self._proxy)
             await client.init_session()
             need_close = True
 
@@ -683,7 +683,7 @@ class PornhubCrawler(BaseCrawler):
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """搜索 PornHub 视频"""
         results = []
-        client = AsyncHttpClient()
+        client = AsyncHttpClient(proxy=self._proxy)
         await client.init_session()
         try:
             search_url = f"{self.base_url}/video/search?search={keyword}"
@@ -760,7 +760,7 @@ class PornhubCrawler(BaseCrawler):
         elif base.startswith("/"):
             base = self.base_url + base
 
-        client = AsyncHttpClient()
+        client = AsyncHttpClient(proxy=self._proxy)
         await client.init_session()
         try:
             pages = max(1, min(int(max_pages), 20))

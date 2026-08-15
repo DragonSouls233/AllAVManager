@@ -20,6 +20,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jav", tags=["JAV有码"])
 
 
+def _fill_amateur_actor(movie) -> str:
+    """素人模式：当影片 actor 为空时，根据 code 前缀匹配公司名"""
+    from pathlib import Path as _Path
+    from app.config.manager import get_config
+    if movie and movie.actor:
+        return movie.actor
+    try:
+        cfg = get_config()
+        prefix_map = getattr(cfg.modules.jav, "amateur_prefix_map", None) or {}
+        amateur_enabled = getattr(cfg.modules.jav, "amateur_enabled", False)
+        amateur_dirs = getattr(cfg.modules.jav, "amateur_media_dirs", None) or []
+        if not amateur_enabled or not prefix_map or not amateur_dirs:
+            return movie.actor if movie else ""
+        # 检查 file_path 是否在素人目录中
+        if not movie or not movie.file_path:
+            return movie.actor if movie else ""
+        fp = _Path(movie.file_path).resolve()
+        for d in amateur_dirs:
+            try:
+                base = _Path(d).resolve()
+                if base in fp.parents or fp == base:
+                    break
+            except Exception:
+                continue
+        else:
+            # 不在任何素人目录中
+            return movie.actor if movie else ""
+    except Exception:
+        return movie.actor if movie else ""
+    code = (movie.code or "").upper().strip()
+    sorted_prefixes = sorted(prefix_map.keys(), key=len, reverse=True)
+    for prefix in sorted_prefixes:
+        if code.startswith(prefix.upper()):
+            return prefix_map[prefix]
+    if movie and movie.actor:
+        # 全局去重：去掉重复的演员名
+        names = [n.strip() for n in movie.actor.split(",") if n.strip()]
+        seen = set()
+        deduped = []
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                deduped.append(n)
+        return ",".join(deduped)
+    return ""
+
+
 def get_jav_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("jav")
 
@@ -438,13 +485,20 @@ async def list_movies(
     is_chinese: Optional[int] = Query(None, description="1=仅中文"),
     is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
     info_state: Optional[str] = Query(None, description="complete=信息全 / incomplete=信息不全（NFO+封面+预览图）"),
+    sort: Optional[str] = Query(None, description="排序字段: created_at, release_date, duration, rating, code。前缀-表示降序；code 为番号自然排序（ABC-001 < ABC-002 < ABC-010）"),
 ):
     """列出有码模块影片列表"""
     db = get_jav_db()
     session = await db.get_session()
     try:
         from app.db.jav_models import JavMovie
-        from sqlalchemy import select, func, or_
+        from sqlalchemy import select, func, or_, case, Integer
+        import re
+
+        # 番号自然排序键：字母前缀 + 数字部分（ABC-001 < ABC-002 < ABC-010）
+        def _code_sort_key(code: str) -> tuple:
+            m = re.match(r"([A-Za-z]*)(\d*)", code or "")
+            return (m.group(1).upper(), int(m.group(2)) if m.group(2) else 0)
 
         # 构建查询条件
         filters = []
@@ -499,6 +553,15 @@ async def list_movies(
                 matched = [m for m in all_rows if _is_complete(m)]
             else:
                 matched = [m for m in all_rows if not _is_complete(m)]
+            # info_state 分支为内存筛选，排序也走内存（番号自然序/发行日期）
+            if sort == "code":
+                matched.sort(key=lambda m: _code_sort_key(m.code))
+            elif sort == "-code":
+                matched.sort(key=lambda m: _code_sort_key(m.code), reverse=True)
+            elif sort == "release_date":
+                matched.sort(key=lambda m: (m.release_date or "", m.code))
+            elif sort == "-release_date":
+                matched.sort(key=lambda m: (m.release_date or "", m.code), reverse=True)
             total = len(matched)
             movies = matched[skip:skip + limit]
         else:
@@ -511,7 +574,36 @@ async def list_movies(
             stmt = select(JavMovie)
             if filters:
                 stmt = stmt.where(*filters)
-            stmt = stmt.order_by(JavMovie.created_at.desc()).offset(skip).limit(limit)
+            # 动态排序（默认按入库时间倒序）
+            sort_map = {
+                "created_at": JavMovie.created_at,
+                "release_date": JavMovie.release_date,
+                "duration": JavMovie.duration,
+                "rating": JavMovie.rating,
+            }
+            if sort in ("code", "-code"):
+                dash = func.instr(JavMovie.code, "-")
+                alpha = func.upper(func.case((dash > 1, func.substr(JavMovie.code, 1, dash - 1)), else_=""))
+                num = func.cast(func.substr(JavMovie.code, func.max(dash + 1, 1)), Integer)
+                if sort == "-code":
+                    stmt = stmt.order_by(alpha.desc().nulls_last(), num.desc().nulls_last(),
+                                         JavMovie.code.desc(), JavMovie.id.desc())
+                else:
+                    stmt = stmt.order_by(alpha.asc().nulls_last(), num.asc().nulls_last(),
+                                         JavMovie.code.asc(), JavMovie.id.desc())
+            elif sort:
+                field = sort[1:] if sort.startswith("-") else sort
+                col = sort_map.get(field)
+                if col is not None:
+                    if sort.startswith("-"):
+                        stmt = stmt.order_by(col.desc().nulls_last(), JavMovie.id.desc())
+                    else:
+                        stmt = stmt.order_by(col.asc().nulls_last(), JavMovie.id.desc())
+                else:
+                    stmt = stmt.order_by(JavMovie.created_at.desc(), JavMovie.id.desc())
+            else:
+                stmt = stmt.order_by(JavMovie.created_at.desc(), JavMovie.id.desc())
+            stmt = stmt.offset(skip).limit(limit)
             result = await session.execute(stmt)
             movies = result.scalars().all()
 
@@ -528,7 +620,7 @@ async def list_movies(
                  "module_type": "jav",
                  "source_platform": m.source,
                  "series": m.series,
-                 "cover_url": m.cover_url, "actor": m.actor,
+                 "cover_url": m.cover_url, "actor": _fill_amateur_actor(m),
                  "file_path": m.file_path, "status": m.status}
                 for m in movies
             ],
@@ -582,7 +674,7 @@ async def get_movie(movie_id: int):
             "is_mosaic": movie.is_mosaic, "is_leak": movie.is_leak, "is_4k": movie.is_4k,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "thumb_url": movie.thumb_url, "sample_images": _parse_sample_images(movie.sample_images),
-            "actor": movie.actor, "actor_ids": actor_ids, "studio": movie.studio,
+            "actor": _fill_amateur_actor(movie), "actor_ids": actor_ids, "studio": movie.studio,
             "series": movie.series, "label": movie.label,
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "plot": movie.plot,
@@ -732,7 +824,7 @@ async def update_jav_movie(movie_id: int, body: dict):
             "id": movie.id, "code": movie.code, "title": movie.title,
             "module_type": "jav",
             "original_title": movie.original_title,
-            "actor": movie.actor, "studio": movie.studio,
+            "actor": _fill_amateur_actor(movie), "studio": movie.studio,
             "series": movie.series, "maker": movie.maker,
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "genre": movie.genre,
@@ -937,7 +1029,13 @@ async def scrape_jav_movie(movie_id: int):
 
         # 演员
         if scrape_result.actors:
-            actor_names = [a.name for a in scrape_result.actors]
+            seen_names: set[str] = set()
+            actor_names: list[str] = []
+            for a in scrape_result.actors:
+                name = a.name.strip()
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    actor_names.append(name)
             movie.actor = ",".join(actor_names)
 
             for actor_info in scrape_result.actors:

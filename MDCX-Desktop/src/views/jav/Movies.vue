@@ -4,6 +4,15 @@
       <el-input v-model="keyword" placeholder="搜索标题/番号..." clearable style="width: 280px" @keyup.enter="search">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
+      <el-select v-model="sortBy" placeholder="排序" style="width: 160px" @change="onSortChange">
+        <el-option label="默认（最新）" value="" />
+        <el-option label="番号 ↑ (ABC-001→999)" value="code" />
+        <el-option label="番号 ↓ (ABC-999→001)" value="-code" />
+        <el-option label="发行日期 ↓" value="-release_date" />
+        <el-option label="发行日期 ↑" value="release_date" />
+        <el-option label="评分 ↓" value="-rating" />
+        <el-option label="时长 ↓" value="-duration" />
+      </el-select>
       <el-select v-model="store.statusFilter" placeholder="刮削状态" style="width: 130px" @change="onFilterChange">
         <el-option label="全部" value="" />
         <el-option label="待刮削" value="pending" />
@@ -147,6 +156,7 @@ const route = useRoute()
 const store = useJavStore()
 const keyword = ref('')
 const scanning = ref(false)
+const sortBy = ref('')
 
 // 2026-08-08: 详情页跳转筛选（系列/片商/类别/番号前缀）
 function routeFilterParams() {
@@ -180,6 +190,11 @@ function onPageSizeChange() {
   loadMovies()
 }
 
+function onSortChange() {
+  store.page = 1
+  loadMovies()
+}
+
 // 兜底剥离历史脏数据格式 {'name': 'xx'}
 function actorName(s) {
   const t = String(s || '').trim()
@@ -189,6 +204,7 @@ function actorName(s) {
 
 function resetFilters() {
   keyword.value = ''
+  sortBy.value = ''
   store.statusFilter = ''
   store.page = 1
   router.replace({ path: route.path, query: {} })
@@ -205,6 +221,7 @@ function onInfoTabChange() {
 
 async function loadMovies() {
   const params = { keyword: keyword.value || undefined, ...routeFilterParams() }
+  if (sortBy.value) params.sort = sortBy.value
   if (infoTab.value === 'chinese') params.is_chinese = 1
   else if (infoTab.value === 'uncensored') params.is_uncensored = 1
   else if (infoTab.value === 'complete' || infoTab.value === 'incomplete') params.info_state = infoTab.value

@@ -12,6 +12,23 @@ class ModuleConfig(BaseModel):
     media_dirs: list[str] = Field(default_factory=list, title="媒体目录列表")
 
 
+class JavModuleConfig(ModuleConfig):
+    """JAV 有码模块配置（含素人模式）"""
+
+    amateur_enabled: bool = Field(
+        default=False,
+        title="素人模式：无演员影片自动分配公司名"
+    )
+    amateur_media_dirs: list[str] = Field(
+        default_factory=list,
+        title="素人专属媒体目录（该目录影片走素人映射）"
+    )
+    amateur_prefix_map: dict[str, str] = Field(
+        default_factory=dict,
+        title="番号前缀→公司名映射（如 SIRO → Soft On Demand）"
+    )
+
+
 class ChineseModuleConfig(ModuleConfig):
     """国产模块配置（有文件夹演员独有功能）"""
 
@@ -77,7 +94,7 @@ class AnimeModuleConfig(ModuleConfig):
 
 class ModulesConfig(BaseModel):
     """7 模块统一配置"""
-    jav: ModuleConfig = ModuleConfig(enabled=True)
+    jav: JavModuleConfig = JavModuleConfig(enabled=True)
     uncensored: ModuleConfig = ModuleConfig()
     fc2: ModuleConfig = ModuleConfig()
     chinese: ChineseModuleConfig = ChineseModuleConfig()

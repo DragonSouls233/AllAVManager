@@ -70,3 +70,5 @@ MDCX-Server/static/assets/
 *.jpeg
 *.gif
 deploy-force-scrape.bat
+test_dup.js
+test_play.js

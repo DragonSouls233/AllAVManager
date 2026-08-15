@@ -67,6 +67,8 @@
             <el-option label="默认（最新）" value="" />
             <el-option label="发行日期 ↓" value="-release_date" />
             <el-option label="发行日期 ↑" value="release_date" />
+            <el-option label="番号 ↑ (ABC-001→999)" value="code" />
+            <el-option label="番号 ↓ (ABC-999→001)" value="-code" />
             <el-option label="评分 ↓" value="-rating" />
             <el-option label="播放次数 ↓" value="-play_count" />
             <el-option label="最近播放 ↓" value="-last_played_at" />

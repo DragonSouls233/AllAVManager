@@ -138,8 +138,22 @@ class JavScanner(BaseScanner):
                         continue
                     existing_codes.add(code)
 
-                    # 提取演员
-                    folder_actors = self._get_folder_actors(file_path, media_dir)
+                    # 提取演员（素人目录中的文件不走文件夹名提取）
+                    is_amateur = False
+                    try:
+                        from app.config.manager import get_config
+                        cfg = get_config()
+                        amateur_dirs = getattr(cfg.modules.jav, "amateur_media_dirs", None) or []
+                        fp = file_path.resolve()
+                        for d in amateur_dirs:
+                            base = Path(d).resolve()
+                            if base in fp.parents or fp == base:
+                                is_amateur = True
+                                break
+                    except Exception:
+                        pass
+
+                    folder_actors = [] if is_amateur else self._get_folder_actors(file_path, media_dir)
                     actor_str = ",".join(folder_actors) if folder_actors else None
                     if folder_actors:
                         result["actors"].update(folder_actors)

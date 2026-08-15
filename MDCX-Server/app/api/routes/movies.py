@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request, BackgroundTasks
 from pydantic import BaseModel
-from sqlalchemy import select, func, and_, or_, delete as sa_delete
+from sqlalchemy import select, func, and_, or_, case, Integer, delete as sa_delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -205,7 +205,7 @@ async def list_movies(
     min_rating: Optional[float] = Query(None, description="评分下限（含）"),
     max_rating: Optional[float] = Query(None, description="评分上限（含）"),
     letter: Optional[str] = Query(None, description="番号首字母过滤（A-Z 或 #，#表示数字开头）"),
-    sort: Optional[str] = Query(None, description="排序字段: release_date, duration, play_count, title, file_size, rating, last_played_at。前缀-表示降序"),
+    sort: Optional[str] = Query(None, description="排序字段: release_date, duration, play_count, title, file_size, rating, last_played_at, code。前缀-表示降序；code 为番号自然排序（ABC-001 < ABC-002 < ABC-010）"),
     seed: Optional[int] = Query(None, description="随机种子，提供时按种子做可复现随机排序"),
     module: str = Query("jav"),
     sys_session: AsyncSession = Depends(get_session),
@@ -360,18 +360,33 @@ async def list_movies(
             "file_size": MovieModel.file_size,
             "rating": MovieModel.rating,
             "last_played_at": MovieModel.last_played_at,
+            "code": MovieModel.code,
         }
         if sort.startswith("-"):
             field_name = sort[1:]
             col = sort_map.get(field_name)
             if col is not None:
-                query = query.order_by(col.desc().nulls_last(), MovieModel.id.desc())
+                if field_name == "code":
+                    # 番号自然排序：字母前缀 + 数字部分（ABC-001 < ABC-002 < ABC-010），降序
+                    dash = func.instr(MovieModel.code, "-")
+                    alpha = func.upper(func.case((dash > 1, func.substr(MovieModel.code, 1, dash - 1)), else_=""))
+                    num = func.cast(func.substr(MovieModel.code, func.max(dash + 1, 1)), Integer)
+                    query = query.order_by(alpha.desc().nulls_last(), num.desc().nulls_last(), MovieModel.code.desc(), MovieModel.id.desc())
+                else:
+                    query = query.order_by(col.desc().nulls_last(), MovieModel.id.desc())
             else:
                 query = query.order_by(MovieModel.id.desc())
         else:
             col = sort_map.get(sort)
             if col is not None:
-                query = query.order_by(col.asc().nulls_last(), MovieModel.id.desc())
+                if sort == "code":
+                    # 番号自然排序：字母前缀 + 数字部分（ABC-001 < ABC-002 < ABC-010）
+                    dash = func.instr(MovieModel.code, "-")
+                    alpha = func.upper(func.case((dash > 1, func.substr(MovieModel.code, 1, dash - 1)), else_=""))
+                    num = func.cast(func.substr(MovieModel.code, func.max(dash + 1, 1)), Integer)
+                    query = query.order_by(alpha.asc().nulls_last(), num.asc().nulls_last(), MovieModel.code.asc(), MovieModel.id.desc())
+                else:
+                    query = query.order_by(col.asc().nulls_last(), MovieModel.id.desc())
             else:
                 query = query.order_by(MovieModel.id.desc())
     else:

@@ -44,6 +44,7 @@ class ScrapeResult:
     code: str                           # 番号
     title: str                          # 标题
     source: str                         # 来源站点名
+    source_url: Optional[str] = None    # 来源页面 URL（多个爬虫已赋值/构造传参，正式声明避免 AttributeError）
     
     # 可选元数据
     original_title: Optional[str] = None  # 原始标题（日文/英文）

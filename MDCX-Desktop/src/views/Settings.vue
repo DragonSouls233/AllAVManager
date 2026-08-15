@@ -67,6 +67,67 @@
               </el-form>
             </el-collapse-item>
 
+            <!-- 素人配置 -->
+            <el-collapse-item title="素人配置（JAV素人影片映射）" name="amateur">
+              <el-form label-width="160px">
+                <el-form-item label="启用素人模式">
+                  <el-switch v-model="backendConfig.jav.amateur_enabled" />
+                  <div class="form-tip">
+                    <el-text type="info" size="small">
+                      开启后在下方保存素人目录，该目录的影片自动按映射表分配公司名作为演员
+                    </el-text>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="素人目录">
+                  <div style="width:100%">
+                    <div v-for="(d, idx) in amateurDirs" :key="idx" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+                      <el-input
+                        :model-value="d"
+                        readonly
+                        size="small"
+                        placeholder="目录路径"
+                      >
+                        <template #prepend>
+                          <el-tag size="small" :type="idx === 0 ? 'primary' : 'info'" style="border:none;">{{ idx + 1 }}</el-tag>
+                        </template>
+                        <template #append>
+                          <el-button @click="browseAmateurFolder(idx)" size="small" style="border:none;">
+                            <el-icon><FolderOpened /></el-icon>
+                          </el-button>
+                        </template>
+                      </el-input>
+                      <el-button size="small" type="danger" plain @click="removeAmateurDir(idx)" :disabled="amateurDirs.length <= 1">
+                        <el-icon><Delete /></el-icon>
+                      </el-button>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                      <el-button size="small" @click="browseAmateurFolder(-1)">
+                        <el-icon><Plus /></el-icon> 添加目录
+                      </el-button>
+                      <el-button size="small" type="primary" @click="saveAmateurConfig" :loading="savingAmateur">
+                        <el-icon><Check /></el-icon> 保存
+                      </el-button>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="番号前缀→公司名映射">
+                  <div style="width:100%">
+                    <div style="margin-bottom:8px;color:#909399;font-size:12px;">
+                      每行一个映射，格式：<code>番号前缀 = 公司名</code>，如：<code>SIRO = SOD Create</code>
+                    </div>
+                    <el-input
+                      v-model="amateurPrefixText"
+                      type="textarea"
+                      :rows="6"
+                      placeholder="SIRO = SOD Create&#10;MIUM = M&#39;s Video Group&#10;RCT = 株式会社RADIX"
+                    />
+                  </div>
+                </el-form-item>
+              </el-form>
+            </el-collapse-item>
+
             <el-collapse-item title="刮削配置" name="scraper">
               <el-form label-width="160px" :model="backendConfig.scraper">
                 <el-form-item label="并发数">
@@ -303,7 +364,7 @@ import { getModules, updateModulesConfig } from '@/api/modules'
 import DirectoryBrowser from '@/components/DirectoryBrowser.vue'
 
 const activeTab = ref('server')
-const activeCollapse = ref(['proxy', 'scraper'])
+const activeCollapse = ref(['proxy', 'amateur', 'scraper'])
 const configLoading = ref(false)
 const saving = ref(false)
 const proxyTesting = ref(false)
@@ -317,8 +378,67 @@ const serverConfig = ref({
 
 const backendConfig = ref({
   proxy: { enabled: false, protocol: 'http', http: '', socks5: '' },
+  jav: { amateur_enabled: false, amateur_prefix_map: {} },
   scraper: { concurrent_limit: 5, timeout: 60, retry_count: 3, media_dirs: [] },
   scan_control: { scan_cooldown_hours: 24, scan_reset_days: 7 }
+})
+
+const amateurPrefixText = ref('')
+
+// 素人目录
+const amateurDirs = ref([])
+const savingAmateur = ref(false)
+
+const browseAmateurFolder = async (index) => {
+  const result = await DirectoryBrowser.browse()
+  if (result?.path) {
+    if (index === -1) {
+      amateurDirs.value.push(result.path)
+    } else {
+      amateurDirs.value[index] = result.path
+    }
+  }
+}
+
+const removeAmateurDir = (index) => {
+  if (amateurDirs.value.length <= 1) return
+  amateurDirs.value.splice(index, 1)
+}
+
+const saveAmateurConfig = async () => {
+  savingAmateur.value = true
+  try {
+    await updateModulesConfig({
+      jav: {
+        amateur_enabled: backendConfig.value.jav.amateur_enabled,
+        amateur_media_dirs: amateurDirs.value,
+        amateur_prefix_map: backendConfig.value.jav.amateur_prefix_map
+      }
+    })
+    ElMessage.success('素人配置已保存')
+  } catch (e) {
+    ElMessage.error('保存失败: ' + (e?.response?.data?.detail || e.message || ''))
+  } finally {
+    savingAmateur.value = false
+  }
+}
+
+// 字典 ↔ 文本转换
+watch(() => backendConfig.value.jav.amateur_prefix_map, (map) => {
+  amateurPrefixText.value = Object.entries(map || {})
+    .map(([k, v]) => `${k} = ${v}`).join('\n')
+}, { immediate: true })
+watch(amateurPrefixText, (text) => {
+  const map = {}
+  for (const line of (text || '').split('\n')) {
+    const idx = line.indexOf('=')
+    if (idx > 0) {
+      const key = line.substring(0, idx).trim()
+      const val = line.substring(idx + 1).trim()
+      if (key && val) map[key.toUpperCase()] = val
+    }
+  }
+  backendConfig.value.jav.amateur_prefix_map = map
 })
 
 // 后端 Cookie 归属 crawler.*_cookie，保留完整 crawler 配置以免保存时丢失其他字段
@@ -454,6 +574,10 @@ const loadConfig = async () => {
         http: res.proxy?.http ?? res.proxy?.proxy_url ?? '',
         socks5: res.proxy?.socks5 ?? ''
       },
+      jav: {
+        amateur_enabled: res.modules?.jav?.amateur_enabled ?? false,
+        amateur_prefix_map: res.modules?.jav?.amateur_prefix_map ?? {}
+      },
       scraper: {
         concurrent_limit: res.scraper?.concurrent_limit ?? 5,
         timeout: res.scraper?.timeout ?? 60,
@@ -465,6 +589,11 @@ const loadConfig = async () => {
         scan_reset_days: res.scan_control?.scan_reset_days ?? 7
       }
     }
+    // 加载素人配置
+    const javCfg = res.modules?.jav || {}
+    backendConfig.value.jav.amateur_enabled = javCfg.amateur_enabled ?? false
+    backendConfig.value.jav.amateur_prefix_map = javCfg.amateur_prefix_map ?? {}
+    amateurDirs.value = (javCfg.amateur_media_dirs || []).filter(Boolean)
     // 保留完整 crawler 配置（含 fc2ppvdb_cookie 等），保存时再覆盖 javdb/javbus
     crawlerConfig.value = res.crawler ?? {}
     cookies.value.javdb = res.crawler?.javdb_cookie ?? res.javdb_cookie ?? ''
