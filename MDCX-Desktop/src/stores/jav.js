@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { getJavMovies, getJavMovie, getJavActors, getJavActor, scrapeJavMovie, scrapeAllPendingJav, importJavNfo, scrapeMediaRefill } from '@/api/jav'
 import { scanModule } from '@/api/modules'
+
+const PAGE_SIZE_KEY = 'mdcx_jav_page_size'
 
 export const useJavStore = defineStore('jav', () => {
   const movies = ref([])
@@ -9,7 +11,10 @@ export const useJavStore = defineStore('jav', () => {
   const actors = ref([])
   const loading = ref(false)
   const page = ref(1)
-  const pageSize = ref(24)
+  // 每页数量持久化：刷新/重进页面后保留用户选择（如 192/240/288）
+  const savedPageSize = Number(localStorage.getItem(PAGE_SIZE_KEY))
+  const pageSize = ref(Number.isInteger(savedPageSize) && savedPageSize >= 12 ? savedPageSize : 24)
+  watch(pageSize, (v) => localStorage.setItem(PAGE_SIZE_KEY, String(v)))
   const statusFilter = ref('')
   const pendingCount = ref(0)
   const scraping = ref(false)

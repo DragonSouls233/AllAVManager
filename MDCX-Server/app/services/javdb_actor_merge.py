@@ -40,22 +40,52 @@ def _parse_actor_card(html: str) -> dict[str, list[str]]:
     return result
 
 
-async def fetch_censored_actor_index(max_pages: int = 30, proxy: str | None = None) -> dict[str, list[str]]:
-    """抓取 JavDB 有码演员目录全部分页，构建 actor_id -> [全部名字] 索引
+async def fetch_censored_actor_index(max_pages: int = 100, proxy: str | None = None) -> dict[str, list[str]]:
+    """抓取 JavDB 有码演员目录，构建 actor_id -> [全部名字] 索引
+
+    **主通道：匿名 App API**（/api/v1/actors?type=0）——免登录、不绑定 IP、
+    绕 Cloudflare，不受 javdb.com 对出口 IP 封禁的影响（已被封时 HTML 目录
+    页会 403，导致合并扫描完全失效）。
+    **降级：HTML 目录页**（原逻辑，App API 签名失效等场景兜底）。
 
     Args:
-        max_pages: 最多抓取页数（每页 50 人）
+        max_pages: 最多抓取页数（App API 每页 50 人；HTML 每页 50 人）
         proxy: 显式代理（本地测试用 10808；None 则走项目内置代理）
 
     Returns:
         {actor_id: [名字...]}
     """
+    # ── 主通道：匿名 App API ──
+    try:
+        from app.services.javdb_app_client import JavDBAppClient, create_app_client_from_config
+        if proxy:
+            client = JavDBAppClient(proxy=proxy)
+        else:
+            client = await create_app_client_from_config()
+        try:
+            index = await client.fetch_actor_index(zone="censored", max_pages=max_pages)
+        finally:
+            await client.close()
+        if index:
+            logger.info(f"JavDB App API 演员目录抓取完成，共 {len(index)} 人")
+            return index
+        logger.warning("JavDB App API 演员目录为空，降级 HTML")
+    except Exception as e:
+        logger.warning(f"JavDB App API 演员目录抓取失败，降级 HTML: {e}")
+
+    # ── 降级：HTML 目录页（原逻辑）──
     from app.utils.http_client import AsyncHttpClient
+    from app.utils.cookie_manager import get_cookie_headers
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
+    # javdb 演员目录为公开数据，仅需 over18=1 年龄 cookie（登录 cookie 可选项）。
+    # 带上 get_cookie_headers 统一输出，避免裸请求被 CF 拒。
+    cookie_headers = get_cookie_headers("javdb")
+    if cookie_headers and cookie_headers.get("cookie"):
+        headers.setdefault("cookie", cookie_headers["cookie"])
     index: dict[str, list[str]] = {}
     async with AsyncHttpClient(proxy=proxy, timeout=20) as client:
         for page in range(1, max_pages + 1):
@@ -95,7 +125,7 @@ def _actor_match_keys(actor) -> set[str]:
     return keys
 
 
-async def scan_merge_candidates(module: str = "jav", max_pages: int = 30, proxy: str | None = None) -> dict:
+async def scan_merge_candidates(module: str = "jav", max_pages: int = 100, proxy: str | None = None) -> dict:
     """扫描改名演员合并候选
 
     流程：

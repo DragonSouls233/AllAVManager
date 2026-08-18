@@ -2954,6 +2954,9 @@ async def _apply_scrape_result(session, movie, result, module: str = "jav") -> d
             await session.flush()
             movie.studio_id = new_studio.id
     if result.series:
+        # 同步写 series 文本列：jav 系列聚合（jav_series.py）按文本列分组，
+        # 此前只写 series_id 外键导致批量补图后系列仍为空
+        movie.series = result.series
         series_obj = await session.scalar(select(Series).where(Series.name == result.series))
         if series_obj:
             movie.series_id = series_obj.id

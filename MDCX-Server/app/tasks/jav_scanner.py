@@ -81,8 +81,15 @@ class JavScanner(BaseScanner):
                 if dir_result.get("actors"):
                     results["actors"].update(dir_result["actors"])
             except Exception as e:
+                # 2026-08-18: 完整性冲突类(UNIQUE 重复)经内层回滚已能跳过,这里降级
+                # 为 warning,避免每次跨盘重名扫描刷 4 条 ERROR 干扰日志。其他错误
+                # 仍保留 ERROR 级别。
+                msg = f"扫描目录失败 {media_dir}: {e}"
+                if "UNIQUE constraint failed" in str(e):
+                    logger.warning(msg + " (重复番号已跳过)")
+                else:
+                    logger.error(msg)
                 results["errors"].append(f"{media_dir}: {e}")
-                logger.error(f"扫描目录失败 {media_dir}: {e}")
 
         # 同步演员表
         if results["actors"]:
@@ -104,6 +111,7 @@ class JavScanner(BaseScanner):
         from app.db.module_db import ModuleDatabase
         from app.db.jav_models import JavMovie
         from sqlalchemy import select
+        from sqlalchemy.exc import IntegrityError
 
         db = ModuleDatabase.get_instance("jav")
         session = await db.get_session()
@@ -115,6 +123,7 @@ class JavScanner(BaseScanner):
                 (await session.execute(select(JavMovie.code))).scalars().all()
             )
             walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
+            pending_movies: list[JavMovie] = []
             for root, dirs, files in walk_entries:
                 # 收集当前目录的演员信息
                 dir_path = Path(root)
@@ -193,6 +202,7 @@ class JavScanner(BaseScanner):
                         status="pending",
                     )
                     session.add(new_movie)
+                    pending_movies.append(new_movie)
                     result["movies_added"] += 1
                     result["scanned"] += 1
 
@@ -205,7 +215,30 @@ class JavScanner(BaseScanner):
                             )
                         )
 
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                # 并发扫描（自动扫描 + 手动触发 + 目录监听可能同时跑）时，各 session
+                # 各自查 existing_codes 看不到对方已插入的番号，commit 会撞 UNIQUE。
+                # 回滚后逐条重插，冲突的跳过，避免整个目录扫描失败丢数据。
+                logger.warning(
+                    f"[jav] 目录 {media_dir} 批量提交撞 UNIQUE 冲突，回滚后逐条重插跳过重复番号"
+                )
+                await session.rollback()
+                skipped_dup = 0
+                for m in pending_movies:
+                    session.add(m)
+                    try:
+                        await session.flush()
+                    except IntegrityError:
+                        await session.rollback()
+                        skipped_dup += 1
+                await session.commit()
+                result["movies_added"] -= skipped_dup
+                if skipped_dup:
+                    logger.warning(
+                        f"[jav] 目录 {media_dir} 跳过 {skipped_dup} 个重复番号（并发扫描冲突）"
+                    )
         finally:
             await session.close()
 

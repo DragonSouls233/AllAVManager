@@ -7,12 +7,21 @@ tmp/
 query_tmp/
 tmp_scancheck/
 tmp_sakuramedia/
+.tmpdb/
 _verify_data/
 .chrome-test/
 ms-playwright/
 browser_test.js
 QA-Tests
 reports
+# QA 报告与测试日志
+qa_report*.txt
+qa_log*.txt
+qa_test_log*.txt
+qa_test_log_*.bak.txt
+jav_module_report.txt
+MDCX_QA_测试分析.md
+MDCX_QA自动化提示词.md
 
 qa_*.js
 qa_*.mjs
@@ -22,22 +31,60 @@ qa_*.log
 tmp_*.py
 tmp_*.txt
 tmp_*.log
+tmp_*.js
+tmp_*.json
+tmp_*.md
+# 一次性调试/诊断脚本（点开头，git 默认不忽略）
+.db_*.py
+.diag_*.py
+.srv_*.py
+.test_*.py
+.verify_*.py
+.apply_*.py
+_debug_*.py
+_*.py
+# 一次性临时分析脚本
+analyze_*.py
+analyze_*.js
+analyze_*.txt
+cmp_*.py
+backfill-*.py
+backfill_*.py
 test_*.py
+test_*.js
 test_*.txt
+test_*.log
+test_*.json
+test_*.html
+test_*.png
+test_*.jpg
 test_report_*.txt
+test_*.vue
+test_*.sh
+test_*.bat
 fix_*.py
+fix_*.js
 query_*.py
 check_*.py
 stats*.py
 run_*.py
 sync_*.py
 batch_*.py
+verify_*.py
+verify_*.js
+verify_*.txt
+# 测试目录（不在产品代码内）
+MDCX-Server/tests/
 
 # 调试/日志
 debug.log
+debug_*.log
 qa_test_log.txt
 qa_test_log_*.bak.txt
 *.log
+check_*.log
+sync_*.log
+sync_*.txt
 
 # 开发工具
 .references/
@@ -72,3 +119,5 @@ MDCX-Server/static/assets/
 deploy-force-scrape.bat
 test_dup.js
 test_play.js
+deploy-movies-series.bat
+deploy-frontend.bat

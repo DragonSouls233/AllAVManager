@@ -18,6 +18,9 @@
       <el-button type="info" plain @click="syncActors" :loading="syncing">
         <el-icon><RefreshLeft /></el-icon> 同步演员
       </el-button>
+      <el-button type="warning" plain @click="openCleanupDialog">
+        <el-icon><Brush /></el-icon> 清理重建
+      </el-button>
       <el-button type="danger" plain @click="openMergeDialog">
         <el-icon><Switch /></el-icon> JavDB 自动合并
       </el-button>
@@ -209,11 +212,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, RefreshLeft, Switch, Picture, View, VideoPlay } from '@element-plus/icons-vue'
+import { Search, Refresh, RefreshLeft, Switch, Picture, View, VideoPlay, Brush } from '@element-plus/icons-vue'
 import defaultAvatar from '@/assets/default-avatar.png'
 import { getAvatarSrc } from '@/utils/media'
 import { getJavActors } from '@/api/jav'
-import { recalcActorMovieCount, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge, previewAvatarScrape } from '@/api'
+import { recalcActorMovieCount, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge, previewAvatarScrape, previewActorCleanup, rebuildActorCleanup } from '@/api'
 import { useAvatarScrapeStore } from '@/stores/avatarScrape'
 
 const avatarStore = useAvatarScrapeStore()
@@ -430,6 +433,44 @@ async function syncActors() {
     ElMessage.error('同步演员失败: ' + (e.message || '未知错误'))
   } finally {
     syncing.value = false
+  }
+}
+
+// ===== 清理重建（预览确认 → 执行）=====
+const cleanupPreviewing = ref(false)
+const cleanupExecuting = ref(false)
+
+async function openCleanupDialog() {
+  if (cleanupPreviewing.value || cleanupExecuting.value) return
+  cleanupPreviewing.value = true
+  try {
+    const res = await previewActorCleanup({ module: 'jav' })
+    const msg = [
+      `演员总数：${res.total_actors}`,
+      `垃圾名演员（将删除）：${res.garbage_count}`,
+      `孤儿演员（无作品且无资料，将删除）：${res.orphan_count}`,
+      `有资产保留：${res.kept_assets}`,
+      `素人影片（actor 置空，展示公司名）：${res.amateur_movies}`,
+      `非素人影片（剔除垃圾名）：${res.movies_garbage_actor}`
+    ].join('\n')
+    try {
+      await ElMessageBox.confirm(
+        `清理重建预览（不修改数据）：\n\n${msg}\n\n确认执行清理重建吗？会先备份数据库，此操作不可撤销。`,
+        '清理重建',
+        { confirmButtonText: '执行清理重建', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch (e) {
+      return
+    }
+    cleanupExecuting.value = true
+    const exec = await rebuildActorCleanup({ module: 'jav' })
+    ElMessage.success(`清理完成：删除垃圾 ${exec.deleted_garbage_count}、孤儿 ${exec.deleted_orphan_count}，素人置空 ${exec.amateur_movies_reset}，同步新增 ${exec.sync?.actors_added || 0}`)
+    loadActors()
+  } catch (e) {
+    ElMessage.error('清理重建失败: ' + (e.message || '未知错误'))
+  } finally {
+    cleanupPreviewing.value = false
+    cleanupExecuting.value = false
   }
 }
 

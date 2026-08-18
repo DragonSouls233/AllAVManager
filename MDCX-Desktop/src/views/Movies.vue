@@ -607,7 +607,16 @@ const applyFilters = () => {
 // ============== 路由跳转 ==============
 // 点击卡片进入番号详情页（简介/图片/系列），详情页内再点“播放”进入播放页
 const goDetail = (id) => router.push(`/movie/${id}`)
-const playMovie = (id) => router.push(`/play/${id}`)
+const playMovie = (id) => {
+  // 主库列表同时包含 jav/fc2/uncensored 等模块数据，播放时需按 module_type 带模块前缀（如 JAV 需 /jav/）
+  const movie = movies.value.find(m => String(m.id) === String(id))
+  const mod = movie?.module_type
+  if (mod) {
+    router.push({ path: `/play/${id}`, query: { module: mod } })
+  } else {
+    router.push(`/play/${id}`)
+  }
+}
 const goActor = (id) => router.push(`/actors/${id}`)
 
 // ============== 收藏 ==============

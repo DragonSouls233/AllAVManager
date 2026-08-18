@@ -49,52 +49,10 @@ class JavDBCrawler(BaseCrawler):
         Returns:
             ScrapeResult 刮削结果
         """
-        # 用 cloudscraper 绑定代理以获得更稳定的网络传输
-        html_text = await self._fetch_with_cloudscraper(
-            f"{self.base_url}/search?q={code}&locale=zh",
-            ctx=ctx,
-        )
-        if not html_text:
-            # HTML 全链失败（含 CF 拦截）→ 匿名 App API 兜底
-            return await self._scrape_via_app_api(code)
-
-        # fix23c: 检查是否被重定向到登录页（Cookie 失效）
-        if self._is_login_redirect(html_text):
-            logger.warning(f"JavDB {code}: Cookie 已失效，被重定向到登录页。请重新登录获取 Cookie")
-            # Cookie 失效同样不影响匿名 App API
-            return await self._scrape_via_app_api(code)
-
-        # 检查拦截
-        if self._is_cf_blocked(html_text):
-            logger.debug(f"JavDB {code}: Cloudflare 拦截，走匿名 App API 兜底")
-            return await self._scrape_via_app_api(code)
-
-        # 从搜索结果中提取详情页 URL
-        detail_url = self._extract_detail_url(html_text, code)
-        if not detail_url:
-            logger.debug(f"JavDB {code}: 搜索结果中未找到详情页")
-            return await self._scrape_via_app_api(code)
-
-        # 获取详情页
-        detail_text = await self._fetch_with_cloudscraper(detail_url, ctx=ctx)
-        if not detail_text:
-            return await self._scrape_via_app_api(code)
-
-        # 注意：不能用裸 ``"cloudflare" in detail_text`` 判断——javdb 正常详情页含
-        # ``static.cloudflareinsights.com`` 分析脚本（自带 "cloudflare" 字样），会误判为
-        # 拦截页导致刮削整批失败。改用 _is_cf_blocked（仅真 CF 挑战页/验证页才命中）。
-        if self._is_cf_blocked(detail_text) or "driver-verify" in detail_text.lower():
-            logger.debug(f"JavDB 详情页 {code}: 验证拦截，走匿名 App API 兜底")
-            return await self._scrape_via_app_api(code)
-
-        html = Selector(detail_text)
-        result = self._parse_detail_page(html, code, detail_url)
-
-        if result:
-            self.mark_success()
-        else:
-            self.mark_error()
-        return result
+        # 只走 JavDB App API 匿名通道（免登录、不绑定 IP、绕 CF）。
+        # 不再降级 HTML+cookie 链：javdb.com 直连被 Cloudflare 403 拦截，
+        # cookie 链实测全部 403 + 3 次重试 + httpx 降级，只会空转浪费时间。
+        return await self._scrape_via_app_api(code, zone=self._infer_zone(code))
 
     async def scrape_url(self, url: str, code: str, ctx=None) -> Optional[ScrapeResult]:
         """直接抓取指定 JavDB 详情页 URL 刮削（不搜索，避免同番号匹配到错误条目）
@@ -123,17 +81,18 @@ class JavDBCrawler(BaseCrawler):
             self.mark_error()
         return result
 
-    async def _scrape_via_app_api(self, code: str) -> Optional[ScrapeResult]:
-        """通过 JavDB 匿名 App JSON API 兜底刮削（免登录、绕过 Cloudflare）。
+    async def _scrape_via_app_api(self, code: str, zone: Optional[str] = None) -> Optional[ScrapeResult]:
+        """通过 JavDB 匿名 App JSON API 刮削（免登录、绕过 Cloudflare）。
 
-        当 HTML 详情链全部失败（CF 拦截 / Cookie 失效 / 连接错误）时使用。
+        zone 可选：按分区过滤搜索结果（censored/uncensored/western/fc2），
+        缩小范围提高精确命中率；无法确定时传 None 全分区搜索。
         返回元数据 + 磁力列表（javdb.py 原本不抓磁力，这里一并补上）。
         """
         try:
             from app.services.javdb_app_client import JavDBAppClient
             client = JavDBAppClient()
             try:
-                mv = await client.search_movie(code)
+                mv = await client.search_movie(code, zone=zone)
                 if not mv:
                     logger.debug(f"JavDB App API {code}: 未找到")
                     self.mark_error()
@@ -150,32 +109,14 @@ class JavDBCrawler(BaseCrawler):
                         return None
                 # 取磁力（App API 特有，HTML 链路拿不到）
                 magnets = await client.get_magnets(mv.id)
-                result = ScrapeResult(
-                    code=mv.number or code,
-                    title=mv.title or mv.origin_title or code,
-                    original_title=mv.origin_title or "",
-                    source=self.name,
-                    release_date=self._parse_date(mv.release_date),
-                    duration=mv.duration or None,
-                    cover_url=mv.cover_url or mv.thumb_url or "",
-                    poster_url=mv.cover_url or "",
-                    raw_data={
-                        "javdb_id": mv.id,
-                        "source": "javdb_app_api",
-                        "magnets": [
-                            {
-                                "name": m.name,
-                                "hash": m.hash,
-                                "size": m.size,
-                                "cnsub": m.cnsub,
-                                "hd": m.hd,
-                                "magnet_uri": m.magnet_uri,
-                            }
-                            for m in magnets
-                        ],
-                    },
-                    confidence=0.9,
-                )
+                # v4 详情补全：搜索接口字段极少（无 studio/series/actors/tags/plot），
+                # 2026-08-18 新增调 /api/v4/movies/{id} 补全，解决"NFO 系列只有小部分有"。
+                fields = await client.build_scrape_fields(mv, magnets)
+                fields["code"] = fields.get("code") or code
+                fields["title"] = fields.get("title") or code
+                fields["release_date"] = self._parse_date(fields.get("release_date") or "")
+                fields["confidence"] = 0.9
+                result = ScrapeResult(source=self.name, **fields)
                 self.mark_success()
                 return result
             finally:
@@ -184,6 +125,14 @@ class JavDBCrawler(BaseCrawler):
             logger.debug(f"JavDB App API 兜底失败 {code}: {e}")
             self.mark_error()
             return None
+
+    @staticmethod
+    def _infer_zone(code: str) -> Optional[str]:
+        """按番号格式推断 JavDB 分区；无法确定返回 None（全分区搜索 + 精确匹配 + 反向校验防串号）。"""
+        c = (code or "").upper().replace(" ", "")
+        if c.startswith("FC2"):
+            return "fc2"
+        return None
 
     @staticmethod
     def _parse_date(s: str) -> Optional[date]:

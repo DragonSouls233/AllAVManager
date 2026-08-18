@@ -193,25 +193,21 @@ class JavDBAppClient:
     async def search_movie(
         self, code: str, zone: Optional[str] = None
     ) -> Optional[JavDBAppMovie]:
-        """按番号搜索，返回精确匹配（number==code）的电影；无精确匹配则返回首个相关项。"""
-        params: dict[str, Any] = {"q": code, "page": 1}
-        if zone and zone in ZONES:
-            params["movie_type"] = ZONES[zone]
-        data = await self._request("GET", "/api/v2/search", params)
-        if not data:
-            return None
-        movies = (data.get("movies") or []) if isinstance(data, dict) else []
-        if not movies:
-            return None
+        """按番号搜索，返回精确匹配（number==code）的电影；无精确匹配则返回首个相关项。
+
+        若传了 zone（分区过滤）但未命中精确匹配，自动去掉分区限制全量重搜一次，
+        避免 JavDB 分区索引不全导致漏判——调用方无需感知。
+        """
         cu = code.upper().replace("-", "")
-        best = None
-        for m in movies:
-            num = (m.get("number") or "").upper().replace("-", "")
-            if num == cu:
-                best = m
-                break
-        if best is None:
+        movies = await self._search_raw(code, zone)
+        best = self._find_exact(movies, cu)
+        if best is None and zone and zone in ZONES:
+            movies = await self._search_raw(code, None)
+            best = self._find_exact(movies, cu)
+        if best is None and movies:
             best = movies[0]
+        if best is None:
+            return None
         return JavDBAppMovie(
             id=best.get("id") or "",
             number=best.get("number") or "",
@@ -226,6 +222,72 @@ class JavDBAppClient:
             has_preview_video=bool(best.get("has_preview_video") or False),
             raw=best,
         )
+
+    async def _search_raw(self, code: str, zone: Optional[str]) -> list[dict]:
+        """按番号 + 可选分区执行一次搜索，返回原始 movie 列表。"""
+        params: dict[str, Any] = {"q": code, "page": 1}
+        if zone and zone in ZONES:
+            params["movie_type"] = ZONES[zone]
+        data = await self._request("GET", "/api/v2/search", params)
+        if not data:
+            return []
+        return (data.get("movies") or []) if isinstance(data, dict) else []
+
+    @staticmethod
+    def _find_exact(movies: list[dict], code_upper_clean: str) -> Optional[dict]:
+        """在搜索结果中找番号精确匹配的条目。"""
+        for m in movies:
+            num = (m.get("number") or "").upper().replace("-", "")
+            if num == code_upper_clean:
+                return m
+        return None
+
+    async def fetch_actor_index(
+        self,
+        zone: str = "censored",
+        max_pages: int = 100,
+        limit: int = 50,
+    ) -> dict[str, list[str]]:
+        """翻页抓取演员目录，返回 {actor_id: [全部名字]}（匿名 App API，免登录不绑 IP）。
+
+        端点 /api/v1/actors?type={zone}&page=N&limit=M：
+        - type 分区：censored=0 / uncensored=1 / western=2 / fc2=3
+        - 每条含 name（主名）、name_zht（繁体名）、other_name（曾用名，逗号分隔）
+        翻页直到 actors 为空或达到 max_pages。
+        """
+        if zone not in ZONES:
+            raise ValueError(f"未知分区: {zone}")
+        index: dict[str, list[str]] = {}
+        for page in range(1, max_pages + 1):
+            data = await self._request(
+                "GET",
+                "/api/v1/actors",
+                {"page": page, "type": ZONES[zone], "limit": limit},
+            )
+            if not data:
+                break
+            actors = data.get("actors") or []
+            if not actors:
+                break
+            for a in actors:
+                aid = (a.get("id") or "").strip()
+                if not aid:
+                    continue
+                names: list[str] = []
+                for raw in (
+                    a.get("name") or "",
+                    a.get("name_zht") or "",
+                    (a.get("other_name") or "").replace("，", ","),
+                ):
+                    for n in raw.split(","):
+                        n = n.strip()
+                        if n and n not in names:
+                            names.append(n)
+                if names:
+                    index[aid] = names
+            if page % 20 == 0:
+                log.info(f"JavDB App API 演员目录已抓取 {page} 页，累计 {len(index)} 人")
+        return index
 
     async def get_magnets(self, movie_id: str) -> list[JavDBAppMagnet]:
         """按 App movie id 取磁力列表。"""
@@ -242,6 +304,105 @@ class JavDBAppClient:
         if not movie_id:
             return None
         return await self._request("GET", f"/api/v4/movies/{movie_id}")
+
+    async def build_scrape_fields(
+        self,
+        mv: JavDBAppMovie,
+        magnets: list[JavDBAppMagnet],
+    ) -> dict:
+        """聚合搜索 + v4 详情字段，返回可直接构造 ScrapeResult 的 dict（不含 source）。
+
+        2026-08-18 新增：搜索接口字段极少（无 studio/series/actors/tags/plot），
+        v4 详情接口补齐，解决 NFO 系列/演员/标签/简介缺失。
+        """
+        import re as _re
+
+        detail = await self.get_movie_detail(mv.id) or {}
+        dm = (detail.get("movie") or {}) if isinstance(detail, dict) else {}
+
+        # 演员
+        from app.crawlers.base import ActorInfo  # 局部导入避免循环依赖
+
+        actors: list[ActorInfo] = []
+        for a in (dm.get("actors") or []) if isinstance(dm.get("actors"), list) else []:
+            if isinstance(a, dict) and a.get("name"):
+                actors.append(ActorInfo(
+                    name=str(a.get("name")),
+                    avatar_url=str(a.get("avatar_url") or "") or None,
+                ))
+
+        # 标签/类型（JavDB tag name 常为 "中文名、日文名" 顿号分隔，拆分）
+        genres: list[str] = []
+        tags: list[str] = []
+        for t in (dm.get("tags") or []) if isinstance(dm.get("tags"), list) else []:
+            if not isinstance(t, dict) or not t.get("name"):
+                continue
+            parts = [p.strip() for p in _re.split(r"[、,，/]", str(t.get("name"))) if p.strip()]
+            genres.extend(parts)
+            tags.extend(parts)
+        genres = list(dict.fromkeys(genres))
+        tags = list(dict.fromkeys(tags))
+
+        # 样图（v4 详情 preview_images 为 large_url；搜索接口为 thumb）
+        sample_images: list[str] = []
+        previews = dm.get("preview_images")
+        if isinstance(previews, list):
+            for p in previews:
+                if isinstance(p, dict) and p.get("large_url"):
+                    sample_images.append(str(p["large_url"]))
+                elif isinstance(p, dict) and p.get("thumb_url"):
+                    sample_images.append(str(p["thumb_url"]))
+        if not sample_images:
+            raw_previews = mv.raw.get("preview_images")
+            if isinstance(raw_previews, list):
+                for p in raw_previews:
+                    if isinstance(p, dict) and p.get("thumb_url"):
+                        sample_images.append(str(p["thumb_url"]))
+
+        rating = None
+        try:
+            if dm.get("score"):
+                rating = float(dm["score"])
+        except (TypeError, ValueError):
+            rating = None
+
+        return {
+            "code": mv.number or "",
+            "title": mv.title or mv.origin_title or "",
+            "original_title": mv.origin_title or "",
+            "release_date": dm.get("release_date") or mv.release_date or "",
+            "duration": mv.duration or None,
+            "plot": str(dm.get("summary") or "") or None,
+            "genres": genres,
+            "tags": tags,
+            "actors": actors,
+            "all_actors": [a.name for a in actors],
+            "directors": [str(dm["director_name"])] if dm.get("director_name") else [],
+            "studio": str(dm.get("maker_name") or "") or None,
+            "maker": str(dm.get("maker_name") or "") or None,
+            "label": str(dm.get("publisher_name") or "") or None,
+            "series": str(dm.get("series_name") or "") or None,
+            "rating": rating,
+            "cover_url": mv.cover_url or mv.thumb_url or "",
+            "poster_url": mv.cover_url or "",
+            "thumb_url": mv.thumb_url or "",
+            "sample_images": sample_images,
+            "raw_data": {
+                "javdb_id": mv.id,
+                "source": "javdb_app_api",
+                "magnets": [
+                    {
+                        "name": m.name,
+                        "hash": m.hash,
+                        "size": m.size,
+                        "cnsub": m.cnsub,
+                        "hd": m.hd,
+                        "magnet_uri": m.magnet_uri,
+                    }
+                    for m in magnets
+                ],
+            },
+        }
 
     async def close(self):
         if self._http:

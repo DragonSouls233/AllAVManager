@@ -278,9 +278,12 @@ async def _fetch_cover_bytes(client: httpx.AsyncClient, javdbid: str) -> Optiona
         if r is not None:
             log.info("javdb cover %s → HTTP %s", url, r.status_code)
         return None
-    if not _looks_like_image(r.content):
+    # JavDB 图片 CDN 可能返回 XOR 混淆数据（key=首字节），解密后再校验
+    from app.utils.media_helpers import maybe_decrypt_javdb_image
+    content = maybe_decrypt_javdb_image(r.content)
+    if not _looks_like_image(content):
         return None
-    return r.content
+    return content
 
 
 async def _search_javdb_for_id(client: httpx.AsyncClient, code: str) -> Optional[str]:

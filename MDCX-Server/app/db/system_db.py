@@ -5,6 +5,7 @@
 from pathlib import Path
 
 from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.utils.logger import get_logger
@@ -29,7 +30,16 @@ class SystemDatabase:
         else:
             from app.config.manager import get_config
             config = get_config()
-            base_dir = Path(config.database.url).parent if "sqlite" in config.database.url else Path("data/database")
+            # 正确解析 SQLAlchemy URL 中的文件路径（旧写法 Path(url).parent 会带上
+            # "sqlite+aiosqlite:" 前缀生成无效路径，导致 system.db 永远打不开）
+            base_dir = Path("data/database")
+            if config.database.url and "sqlite" in config.database.url:
+                try:
+                    parsed = make_url(config.database.url)
+                    if parsed.database:
+                        base_dir = Path(parsed.database).parent
+                except Exception:
+                    pass
             self.db_path = str(base_dir / "system.db")
 
         db_url = f"sqlite+aiosqlite:///{self.db_path}"

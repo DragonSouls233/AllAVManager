@@ -33,10 +33,15 @@ async def get_scan_status(_admin: dict = Depends(require_admin)):
 
 
 @router.post("/trigger")
-async def trigger_manual_scan(_admin: dict = Depends(require_admin)):
-    """手动触发全模块扫描（不受冷却限制）"""
+async def trigger_manual_scan(
+    module: str | None = Query(
+        None, description="指定模块名（jav/fc2/uncensored/chinese/pornhub/western/anime），省略则扫描全部"
+    ),
+    _admin: dict = Depends(require_admin),
+):
+    """手动触发扫描（不受冷却限制）：可指定单模块或全部模块"""
     service = ScanControlService.get_instance()
-    result = await service.trigger_manual_scan()
+    result = await service.trigger_manual_scan(module)
     return result
 
 

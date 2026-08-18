@@ -52,188 +52,59 @@ class JavdbNewCrawler(BaseCrawler):
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
         """刮削指定番号"""
-        # 取 cookie + 代理（fix23：javdb_new 之前完全裸请求，必被 CF 挡）
-        from app.utils.cookie_manager import get_cookie_headers
-        cookie_headers = get_cookie_headers("javdb")
-
-        async with AsyncHttpClient() as client:
-            try:
-                await self._throttle()
-
-                # 搜索
-                search_url = f"{self.base_url}/search?q={code}&locale=zh"
-                html_text = await client.get_text(search_url, headers=cookie_headers)
-                if not html_text:
-                    return None
-
-                html = Selector(html_text)
-                html_text_lower = html_text.lower()
-
-                # 检查封锁
-                if "ray-id" in html_text_lower:
-                    logger.warning("JavDB blocked by Cloudflare")
-                    return None
-
-                # 获取搜索结果
-                res_list = html.xpath("//a[contains(@class,'box')]")
-                if not res_list:
-                    return None
-
-                detail_url = None
-                number_upper = code.upper()
-                clean_number = number_upper.replace(".", "").replace("-", "").replace(" ", "")
-
-                for each in res_list:
-                    href = each.xpath("@href").get()
-                    title = each.xpath("div[@class='video-title']/strong/text()").get()
-                    meta = each.xpath("div[@class='meta']/text()").get()
-
-                    if href and title:
-                        # 精确匹配
-                        if number_upper in title.upper():
-                            detail_url = urljoin(self.base_url, href) + "?locale=zh"
-                            break
-                        # 模糊匹配
-                        clean_content = (title + (meta or "")).upper().replace("-", "").replace(".", "").replace(" ", "")
-                        if clean_number in clean_content:
-                            detail_url = urljoin(self.base_url, href) + "?locale=zh"
-
-                if not detail_url:
-                    return None
-
-                # 获取详情页
-                await self._throttle()
-                html_text = await client.get_text(detail_url, headers=cookie_headers)
-                if not html_text:
-                    return None
-
-                html = Selector(html_text)
-
-                # 解析字段
-                title = self._extract_text(html, 'string(//h2[@class="title is-4"]/strong[@class="current-title"])')
-                if not title:
-                    return None
-
-                original_title = self._extract_text(
-                    html, 'string(//h2[@class="title is-4"]/span[@class="origin-title"])'
-                )
-
-                # 番号
-                number = self._extract_text(
-                    html, '//a[@class="button is-white copy-to-clipboard"]/@data-clipboard-text'
-                ) or code
-
-                # 演员
-                actors = []
-                for name in html.css("span:has(strong.female)").xpath(
-                    "//strong[contains(@class, 'female')]/preceding-sibling::a/text()"
-                ).getall():
-                    name = name.strip()
-                    if name:
-                        actors.append(ActorInfo(name=name))
-
-                # 制作商
-                studio = self._extract_text(
-                    html,
-                    '//strong[contains(text(),"片商:")]/../span/a/text()',
-                    '//strong[contains(text(),"Maker:")]/../span/a/text()',
-                )
-
-                # 发行商
-                publisher = self._extract_text(
-                    html,
-                    '//strong[contains(text(),"發行:")]/../span/a/text()',
-                    '//strong[contains(text(),"Publisher:")]/../span/a/text()',
-                )
-
-                # 时长
-                runtime = self._extract_text(
-                    html,
-                    '//strong[contains(text(),"時長")]/../span/text()',
-                    '//strong[contains(text(),"Duration:")]/../span/text()',
-                )
-                runtime = runtime.replace(" 分鍾", "").replace(" minute(s)", "").strip()
-
-                # 系列
-                series = self._extract_text(
-                    html,
-                    '//strong[contains(text(),"系列:")]/../span/a/text()',
-                    '//strong[contains(text(),"Series:")]/../span/a/text()',
-                )
-
-                # 发行日期
-                release = self._extract_text(
-                    html,
-                    '//strong[contains(text(),"日期:")]/../span/text()',
-                    '//strong[contains(text(),"Released Date:")]/../span/text()',
-                )
-
-                # 标签
-                genres = []
-                for tag in html.xpath(
-                    '//strong[contains(text(),"類別:")]/../span/a/text()'
-                ).getall():
-                    tag = tag.replace("\xa0", "").replace("'", "").replace(" ", "").strip()
-                    if tag and tag not in genres:
-                        genres.append(tag)
-
-                # 封面
-                cover = self._extract_text(html, "//img[@class='video-cover']/@src")
-                poster = cover.replace("/covers/", "/thumbs/") if cover else None
-
-                # 样图
-                sample_images = html.xpath(
-                    "//div[@class='tile-images preview-images']/a[@class='tile-item']/@href"
-                ).getall()
-
-                # 预告片
-                trailer = self._extract_text(html, "//video[@id='preview-video']/source/@src")
-                if trailer and trailer.startswith("//"):
-                    trailer = "https:" + trailer
-
-                # 评分
-                score_text = self._extract_text(html, "//span[@class='score-stars']/../text()")
-                rating = None
-                if score_text:
-                    if m := re.search(r"(\d+\.?\d*)", score_text):
-                        rating = float(m.group(1))
-
-                # 导演
-                director = self._extract_text(
-                    html,
-                    '//strong[contains(text(),"導演:")]/../span/a/text()',
-                    '//strong[contains(text(),"Director:")]/../span/a/text()',
-                )
-
-                # 判断有码/无码
-                is_uncensored = any(kw in title for kw in ["無碼", "無修正", "Uncensored"])
-
-                return ScrapeResult(
-                    code=number,
-                    title=title,
-                    source=self.name,
-                    studio=studio,
-                    maker=publisher,
-                    series=series,
-                    release_date=self._parse_date(release),
-                    duration=int(runtime) if runtime and runtime.isdigit() else None,
-                    plot="",
-                    genres=genres,
-                    actors=actors,
-                    cover_url=cover,
-                    poster_url=poster,
-                    trailer_url=trailer,
-                    sample_images=sample_images,
-                    rating=rating,
-                    raw_data={"director": director, "original_title": original_title},
-                )
-
-            except Exception as e:
-                logger.error(f"JavDB scrape error for {code}: {e}")
-                return None
+        # 只走 JavDB App API 匿名通道（免登录、不绑定 IP、绕 CF）。
+        # 不再降级 HTML+cookie 链：javdb.com 直连被 Cloudflare 403 拦截，
+        # cookie 链实测全部 403 + 3 次重试，只会空转浪费时间。
+        return await self._scrape_via_app_api(code, zone=self._infer_zone(code))
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
         return []
+
+    async def _scrape_via_app_api(self, code: str, zone: Optional[str] = None) -> Optional[ScrapeResult]:
+        """通过 JavDB 匿名 App JSON API 刮削（免登录、绕过 Cloudflare）。
+
+        zone 可选：按分区过滤搜索结果（censored/uncensored/western/fc2）。
+        与 javdb.py 主爬虫的通道保持一致。
+        """
+        try:
+            from app.services.javdb_app_client import JavDBAppClient
+            client = JavDBAppClient()
+            try:
+                mv = await client.search_movie(code, zone=zone)
+                if not mv:
+                    logger.debug(f"JavDB App API {code}: 未找到")
+                    return None
+                # 反向校验：App API 返回的 number 若与目标番号强不等价，判定为抓错片，拒绝入库防串号。
+                if mv.number:
+                    from app.utils.code_verify import reverse_code_check
+                    is_match, norm_e, norm_g = reverse_code_check(code, mv.number)
+                    if not is_match:
+                        logger.warning(
+                            f"JavDB App API 番号反向校验失败，拒绝入库: 期望={norm_e} 实际={norm_g} title={mv.title[:30]!r}"
+                        )
+                        return None
+                magnets = await client.get_magnets(mv.id)
+                # v4 详情补全：搜索接口字段极少（无 studio/series/actors/tags/plot），
+                # 2026-08-18 新增调 /api/v4/movies/{id} 补全，解决"NFO 系列只有小部分有"。
+                fields = await client.build_scrape_fields(mv, magnets)
+                fields["code"] = fields.get("code") or code
+                fields["title"] = fields.get("title") or code
+                fields["release_date"] = self._parse_date(fields.get("release_date") or "")
+                fields["confidence"] = 0.9
+                return ScrapeResult(source=self.name, **fields)
+            finally:
+                await client.close()
+        except Exception as e:
+            logger.debug(f"JavDB App API 兜底失败 {code}: {e}")
+            return None
+
+    @staticmethod
+    def _infer_zone(code: str) -> Optional[str]:
+        """按番号格式推断 JavDB 分区；无法确定返回 None（全分区搜索 + 精确匹配 + 反向校验防串号）。"""
+        c = (code or "").upper().replace(" ", "")
+        if c.startswith("FC2"):
+            return "fc2"
+        return None
 
     @staticmethod
     def _extract_text(html: Selector, *xpaths: str) -> str:

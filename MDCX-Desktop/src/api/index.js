@@ -270,6 +270,8 @@ export const syncModuleActors = (module) => api.post(`/modules/${module}/actors/
 // JavDB 改名演员自动合并：扫描候选 + 批量应用
 export const scanJavdbMerge = (data) => api.post('/actors/javdb-merge/scan', data, { timeout: 300000 })
 export const applyJavdbMerge = (data) => api.post('/actors/javdb-merge/apply', data, { timeout: 300000 })
+export const previewActorCleanup = (data) => api.post('/actors/cleanup/preview', data, { timeout: 180000 })
+export const rebuildActorCleanup = (data) => api.post('/actors/cleanup/rebuild', data, { timeout: 300000 })
 // 演员标签管理（v3.4 新增）
 export const getActorTags = (id) => api.get(`/actors/${id}/tags`)
 export const addActorTag = (id, data) => api.post(`/actors/${id}/tags`, data)
@@ -692,7 +694,7 @@ export const getCloudDrive2StreamUrl = (path) => api.get('/cloud-drive2/stream-u
 // 扫描控制
 // ============================================
 export const getScanStatus = () => api.get('/scan/status')
-export const triggerManualScan = () => api.post('/scan/trigger')
+export const triggerManualScan = (module) => api.post('/scan/trigger', null, { params: module ? { module } : {} })
 export const getScanRecords = (params) => api.get('/scan/records', { params })
 
 // ============== 115 网盘离线下载 ==============

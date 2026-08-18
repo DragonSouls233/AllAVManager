@@ -102,15 +102,27 @@ def setup_logging(
     if log_file:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding="utf-8",
+        # 2026-08-18: 复用 run.py bootstrap_logging() 早期挂上的同文件 handler,
+        # 避免两个 RotatingFileHandler 同时持锁导致 os.rename 互相 PermissionError
+        # (此前 startup.log 里出现过 4.2 万条 "另一个程序正在使用此文件")。
+        # _preserved 里的 handler 已经在上面 88-89 行重新 add 回 root 了,
+        # 这里只需要判定是否复用,不需要再 add 一次。
+        _bootstrap_reused = any(
+            getattr(_h, "baseFilename", None)
+            and Path(_h.baseFilename).resolve() == log_file.resolve()
+            for _h in _preserved
         )
-        file_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
-        file_handler.setFormatter(logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S"))
-        root_logger.addHandler(file_handler)
+        if not _bootstrap_reused:
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+                delay=True,
+            )
+            file_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
+            file_handler.setFormatter(logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S"))
+            root_logger.addHandler(file_handler)
 
     # 错误日志处理器(单独文件,仅 ERROR+)
     if error_log_file:

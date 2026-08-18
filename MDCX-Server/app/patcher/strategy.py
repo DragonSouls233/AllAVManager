@@ -942,6 +942,9 @@ class PatchEngine:
             for k, v in scraped_data.items():
                 if k not in nfo_kwargs:
                     nfo_kwargs[k] = v
+            # fix26: NFO 生成器内部会读取 result.raw_data（如 javdb_id / magnets 兜底），
+            # SimpleNamespace 没有该属性就会 AttributeError。统一补一个空 dict 兜底。
+            nfo_kwargs.setdefault("raw_data", {})
             nfo_data = SimpleNamespace(**nfo_kwargs)
 
             # 3) actors：list[ActorInfo] 或 list[str] → 统一为有 .name 属性的对象列表

@@ -57,7 +57,13 @@ def split_alias(raw: Optional[str]) -> List[str]:
 
 
 def _prune_redundant(names: Iterable[str]) -> List[str]:
-    """剔除冗余变体：若 A 是 B 的子串，则 LIKE '%A%' 已覆盖 '%B%'，丢弃 B"""
+    """剔除冗余变体：长名匹配是短名匹配的子集，若 A 是 B 的子串则丢弃 A（短名）
+
+    注意：方向与直觉相反但正确 —— LIKE '%B%'（长名）只命中含完整长名的行，
+    是 LIKE '%A%'（短名，含 A 即命中）的子集，所以必须**保留长的、丢弃短的**。
+    否则主名「新井リマ」会被别名「リマ」覆盖丢弃，导致作品统计过度聚合
+    （把任何含「リマ」的其他演员作品都算进来）。
+    """
     uniq: List[str] = []
     seen = set()
     for n in names:
@@ -70,11 +76,11 @@ def _prune_redundant(names: Iterable[str]) -> List[str]:
         seen.add(key)
         uniq.append(n)
 
-    # 短的优先，长的若包含短的则丢弃
-    uniq.sort(key=len)
+    # 长的优先，短的若是长的子串则丢弃（稳定排序，等长保持原序）
+    uniq.sort(key=len, reverse=True)
     kept: List[str] = []
     for n in uniq:
-        if any(short in n for short in kept):
+        if any(n in long for long in kept):
             continue
         kept.append(n)
     return kept
@@ -85,20 +91,37 @@ def actor_name_variants(actor, include_localized: bool = False) -> List[str]:
 
     :param include_localized: 是否把 name_jp / name_en 也纳入（默认否，避免过度匹配）
     """
-    raw: List[str] = []
-    name = getattr(actor, "name", None)
-    if name:
-        raw.append(str(name).strip())
-    raw.extend(split_alias(getattr(actor, "alias", None)))
+    name = (getattr(actor, "name", None) or "").strip()
+    aliases = split_alias(getattr(actor, "alias", None))
     if include_localized:
         for attr in ("name_jp", "name_en"):
             v = getattr(actor, attr, None)
             if v:
-                raw.append(str(v).strip())
-    variants = _prune_redundant(raw)
+                aliases.append(str(v).strip())
+
+    # 主名无条件保留：影片 actor 字段大多存主名，而主名可能比个别别名短
+    # （如 387 広瀬りおな <- 别名 広瀬りおなさん），若参与 _prune_redundant
+    # 会被更长别名按「子串」剪掉，导致按主名入库的影片全部漏统计。
+    variants: List[str] = []
+    seen = set()
+    if name:
+        variants.append(name)
+        seen.add(name.lower())
+
+    # 别名之间剪枝（长名优先、子串去重，避免过度聚合）；
+    # 同时剔除「已被主名覆盖」的别名（该别名 LIKE 命中集 ⊆ 主名 LIKE 命中集）。
+    for a in _prune_redundant(aliases):
+        key = a.lower()
+        if key in seen:
+            continue
+        if any(a in kept for kept in variants):
+            continue
+        seen.add(key)
+        variants.append(a)
+
     if not variants and name:
         # 名字过短（单字）时至少保留主名，否则会查出全库
-        variants = [str(name).strip()]
+        variants = [name]
     return variants
 
 

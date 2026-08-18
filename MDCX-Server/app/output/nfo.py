@@ -21,6 +21,19 @@ logger = logging.getLogger(__name__)
 _CDATA_FIELDS = {"plot", "outline", "originalplot", "tagline"}
 
 
+def _g(result, name: str, default=None):
+    """统一从 result 取字段，兼容 dataclass / SimpleNamespace / dict / None。
+
+    2026-08-18: strategy.py 传进来的 nfo_data 是 SimpleNamespace，NFO 内部原本
+    大量直访 result.xxx 在字段缺失时会 AttributeError。统一用 _g 兜底 None。
+    """
+    if result is None:
+        return default
+    if isinstance(result, dict):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
 class NFOGenerator:
     """
     NFO 文件生成器
@@ -170,7 +183,10 @@ class NFOGenerator:
                 original_title=getattr(movie, "original_title", None) or getattr(movie, "title_jp", None),
                 studio=getattr(movie, "studio_ref", None) and getattr(movie.studio_ref, "name", None),
                 maker=getattr(movie, "maker", None),
-                series=getattr(movie, "series_ref", None) and getattr(movie.series_ref, "name", None),
+                # 2026-08-18: series_ref 未预加载/未关联时兜底读 series 字符串列，
+                # 否则批量补系列脚本直接写 movie.series 后 NFO 仍缺 <series>
+                series=(getattr(getattr(movie, "series_ref", None), "name", None))
+                       or getattr(movie, "series", None),
                 release_date=release_date,
                 duration=getattr(movie, "duration", None),
                 plot=getattr(movie, "plot", None),
@@ -282,38 +298,38 @@ class NFOGenerator:
         # - NFO 缓存命中时 strategy.py 用 .isoformat() 存成字符串
         # _build_xml 内部对这两个字段调 .strftime(), 这里统一转换为 date/datetime,
         # 避免 'str' object has no attribute 'strftime'。
-        release_date = self._normalize_date(getattr(result, "release_date", None))
-        last_played = self._normalize_date(getattr(result, "last_played_at", None))
+        release_date = self._normalize_date(_g(result, "release_date"))
+        last_played = self._normalize_date(_g(result, "last_played_at"))
 
         # === 标题信息 ===
-        self._add_element(root, "title", result.title)
+        self._add_element(root, "title", _g(result, "title"))
         # originaltitle: 日语原标题(修复:原来错误地设为 title)
-        original_title = result.original_title or result.title
+        original_title = _g(result, "original_title") or _g(result, "title")
         self._add_element(root, "originaltitle", original_title)
         # sorttitle: 优先用日语标题排序,与 JavInfo 一致
         self._add_element(root, "sorttitle", original_title)
         # id: 番号
-        self._add_element(root, "id", result.code)
+        self._add_element(root, "id", _g(result, "code"))
         # num: 番号(JavInfo 约定字段,与 id 并存)
-        self._add_element(root, "num", result.code)
+        self._add_element(root, "num", _g(result, "code"))
 
         # === 简介(CDATA 包裹) ===
-        if result.plot:
-            self._add_cdata_element(root, "plot", result.plot)
+        if _g(result, "plot"):
+            self._add_cdata_element(root, "plot", _g(result, "plot"))
             # outline: 短简介(若 plot_short 存在则用,否则用 plot)
-            plot_short = getattr(result, "plot_short", None) or result.plot
+            plot_short = _g(result, "plot_short") or _g(result, "plot")
             self._add_cdata_element(root, "outline", plot_short)
 
         # originalplot: 日语原简介(关键缺失字段)
-        original_plot = getattr(result, "original_plot", None) or getattr(result, "plot_jp", None)
+        original_plot = _g(result, "original_plot") or _g(result, "plot_jp")
         if original_plot:
             self._add_cdata_element(root, "originalplot", original_plot)
 
         # tagline: 宣传语(用发行日期或 plot_short)
         if release_date:
             self._add_cdata_element(root, "tagline", f"发行日期 {release_date.strftime('%Y-%m-%d')}")
-        elif getattr(result, "plot_short", None):
-            self._add_cdata_element(root, "tagline", result.plot_short)
+        elif _g(result, "plot_short"):
+            self._add_cdata_element(root, "tagline", _g(result, "plot_short"))
 
         # === 日期 ===
         if release_date:
@@ -324,68 +340,74 @@ class NFOGenerator:
             self._add_element(root, "year", str(release_date.year))
 
         # === 时长 ===
-        if result.duration:
-            self._add_element(root, "runtime", str(result.duration))
+        if _g(result, "duration"):
+            self._add_element(root, "runtime", str(_g(result, "duration")))
 
         # === 评分(对齐 SSIS-018.nfo) ===
-        if result.rating is not None:
-            self._add_element(root, "rating", f"{result.rating:.1f}")
+        rating = _g(result, "rating")
+        if rating is not None:
+            self._add_element(root, "rating", f"{rating:.1f}")
             # criticrating: 影评人评分(rating × 10)
-            self._add_element(root, "criticrating", str(int(result.rating * 10)))
+            self._add_element(root, "criticrating", str(int(rating * 10)))
         # votes: 评分人数
-        if result.votes is not None:
-            self._add_element(root, "votes", str(result.votes))
+        votes = _g(result, "votes")
+        if votes is not None:
+            self._add_element(root, "votes", str(votes))
 
         # === 分级 ===
         # mpaa: JavInfo 用 "JP-18+" 格式,非中文"有码/无码"
-        if result.is_mosaic is True:
+        is_mosaic = _g(result, "is_mosaic")
+        if is_mosaic is True:
             self._add_element(root, "mpaa", "JP-18+")
             self._add_element(root, "customrating", "JP-18+")
-        elif result.is_mosaic is False:
+        elif is_mosaic is False:
             self._add_element(root, "mpaa", "JP-18+")  # 无码也是 18+
             self._add_element(root, "customrating", "JP-18+")
         # countrycode: 国家代码
         self._add_element(root, "countrycode", "JP")
 
         # === 制作信息 ===
-        if result.studio:
-            self._add_element(root, "studio", result.studio)
-        if result.maker:
-            self._add_element(root, "maker", result.maker)
+        if _g(result, "studio"):
+            self._add_element(root, "studio", _g(result, "studio"))
+        if _g(result, "maker"):
+            self._add_element(root, "maker", _g(result, "maker"))
         # publisher: 发行商(关键缺失字段)
-        publisher = getattr(result, "publisher", None) or result.maker
+        publisher = _g(result, "publisher") or _g(result, "maker")
         if publisher:
             self._add_element(root, "publisher", publisher)
         # label: 厂牌(关键缺失字段)
-        label = getattr(result, "label", None) or result.series
+        label = _g(result, "label") or _g(result, "series")
         if label:
             self._add_element(root, "label", label)
 
         # === 导演(关键缺失字段) ===
-        for director in result.directors:
+        for director in _g(result, "directors", []) or []:
             self._add_element(root, "director", director)
 
         # === 系列 ===
-        if result.series:
+        if _g(result, "series"):
             set_elem = ET.SubElement(root, "set")
             name_elem = ET.SubElement(set_elem, "name")
-            name_elem.text = result.series
+            name_elem.text = _g(result, "series")
 
         # === 标签 ===
-        for genre in result.genres:
+        for genre in _g(result, "genres", []) or []:
             self._add_element(root, "genre", genre)
             self._add_element(root, "tag", genre)
         # 额外标签
-        for tag in result.tags:
-            if tag not in result.genres:
+        genres = _g(result, "genres", []) or []
+        for tag in _g(result, "tags", []) or []:
+            if tag not in genres:
                 self._add_element(root, "tag", tag)
 
         # === 演员(对齐 SSIS-018.nfo:含 type 子元素) ===
-        for actor in result.actors:
+        for actor in _g(result, "actors", []) or []:
             self._add_actor(root, actor)
         # 男演员(导演/演员)
-        for actor_name in result.all_actors:
-            if not any(a.name == actor_name for a in result.actors):
+        all_actors = _g(result, "all_actors", []) or []
+        actors = _g(result, "actors", []) or []
+        for actor_name in all_actors:
+            if not any(a.name == actor_name for a in actors):
                 actor_elem = ET.SubElement(root, "actor")
                 name_elem = ET.SubElement(actor_elem, "name")
                 name_elem.text = actor_name
@@ -393,35 +415,36 @@ class NFOGenerator:
                 type_elem.text = "Actor"
 
         # === 图片(对齐 SSIS-018.nfo:独立 poster/cover 字段) ===
-        if result.cover_url:
-            self._add_element(root, "cover", result.cover_url)
+        if _g(result, "cover_url"):
+            self._add_element(root, "cover", _g(result, "cover_url"))
             thumb_elem = ET.SubElement(root, "thumb")
-            thumb_elem.text = result.cover_url
+            thumb_elem.text = _g(result, "cover_url")
             thumb_elem.set("aspect", "poster")
-        if result.poster_url:
-            self._add_element(root, "poster", result.poster_url)
+        if _g(result, "poster_url"):
+            self._add_element(root, "poster", _g(result, "poster_url"))
             thumb_elem2 = ET.SubElement(root, "thumb")
-            thumb_elem2.text = result.poster_url
+            thumb_elem2.text = _g(result, "poster_url")
             thumb_elem2.set("aspect", "poster")
-        for i, sample_url in enumerate(result.sample_images):
+        for i, sample_url in enumerate(_g(result, "sample_images", []) or []):
             thumb_elem = ET.SubElement(root, "thumb")
             thumb_elem.text = sample_url
             thumb_elem.set("aspect", f"fanart{i+1}")
 
         # === 预告片 ===
-        if result.trailer_url:
-            self._add_element(root, "trailer", result.trailer_url)
+        if _g(result, "trailer_url"):
+            self._add_element(root, "trailer", _g(result, "trailer_url"))
 
         # === 来源信息(对齐 SSIS-018.nfo:website/javdbid) ===
-        self._add_element(root, "source", result.source)
+        self._add_element(root, "source", _g(result, "source"))
         # website: 源站链接
-        source_url = getattr(result, "source_url", None) or getattr(result, "website", None)
+        source_url = _g(result, "source_url") or _g(result, "website")
         if source_url:
             self._add_element(root, "website", source_url)
         # javdbid: JavDB 视频 ID(关键缺失字段)
-        javdb_id = getattr(result, "javdb_id", None)
+        javdb_id = _g(result, "javdb_id")
         if not javdb_id:  # A1 匿名兜底把它放 raw_data 里
-            javdb_id = (result.raw_data or {}).get("javdb_id")
+            raw_data = self._coerce_raw_data(result)
+            javdb_id = raw_data.get("javdb_id")
         if javdb_id:
             self._add_element(root, "javdbid", javdb_id)
 
@@ -434,6 +457,31 @@ class NFOGenerator:
 
         return root
 
+    def _coerce_raw_data(self, result) -> dict:
+        """统一从 result 拿到 raw_data dict。
+
+        result 可能是 ScrapeResult(dataclass) / SimpleNamespace / 字典，
+        这里用 hasattr + dict 分支判断兜底所有可能形态，避免 'X has no attribute raw_data'。
+        """
+        if result is None:
+            return {}
+        if isinstance(result, dict):
+            return result.get("raw_data") or {}
+        raw = getattr(result, "raw_data", None)
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if hasattr(raw, "to_dict"):
+            try:
+                d = raw.to_dict()
+                return d if isinstance(d, dict) else {}
+            except Exception:
+                return {}
+        if hasattr(raw, "__dict__"):
+            return dict(raw.__dict__) or {}
+        return {}
+
     def _add_magnets(self, root: ET.Element, result: ScrapeResult) -> None:
         """把 raw_data['magnets'] 写入 <magnet> 标签。
 
@@ -442,7 +490,7 @@ class NFOGenerator:
             {"name", "hash", "size", "cnsub", "hd", "magnet_uri"}
         这里兼容两种数据源：带 magnet_uri 的 App API 磁力，以及 MagnetInfo.to_dict()。
         """
-        raw = result.raw_data or {}
+        raw = self._coerce_raw_data(result)
         magnets = raw.get("magnets") or []
         if not magnets:
             return
@@ -471,7 +519,7 @@ class NFOGenerator:
 
         release_date 可能为字符串(同 _build_xml 的容错说明), 这里统一归一化。
         """
-        release_date = self._normalize_date(getattr(result, "release_date", None))
+        release_date = self._normalize_date(_g(result, "release_date"))
 
         # Kodi NFO 规范参考：https://kodi.wiki/view/NFO_files/Movies
         # 主要补充以下字段（与 Emby/Jellyfin 共有部分会去重）：
@@ -486,27 +534,28 @@ class NFOGenerator:
         # - <playcount>：播放次数
         # - <lastplayed>：最后播放时间
         # - <art>：艺术图块（poster/fanart/thumb/landscape/banner/clearart/clearlogo）
-        # - <fileinfo><streamdetails>：视频/音频/字幕流信息（如有）
+        # - <fileinfo><streamdetails>：视频/音频/字幕流信息（如可获取）
         # uniqueId：番号作为唯一标识
         unique_id = ET.SubElement(root, "uniqueId")
-        unique_id.text = result.code
+        unique_id.text = _g(result, "code")
         unique_id.set("type", "jav")
         unique_id.set("default", "true")
 
         # ratings 评分聚合（Kodi 要求嵌套结构）
-        if result.rating:
+        rating = _g(result, "rating")
+        if rating:
             ratings_elem = ET.SubElement(root, "ratings")
             rating_elem = ET.SubElement(ratings_elem, "rating")
             rating_elem.set("name", "mdcx")
             rating_elem.set("max", "10")
             rating_elem.set("default", "true")
             value_elem = ET.SubElement(rating_elem, "value")
-            value_elem.text = f"{result.rating:.1f}"
+            value_elem.text = f"{rating:.1f}"
             votes_elem = ET.SubElement(rating_elem, "votes")
             votes_elem.text = "0"
 
         # 番号（Kodi 专用 code 字段，与 <id> 并列）
-        self._add_element(root, "code", result.code)
+        self._add_element(root, "code", _g(result, "code"))
 
         # 国家（日本 AV 默认 Japan）
         self._add_element(root, "country", "Japan")
@@ -516,7 +565,7 @@ class NFOGenerator:
             self._add_element(root, "aired", release_date.strftime("%Y-%m-%d"))
 
         # tagline（如有 plot_short 则用之，否则省略）
-        plot_short = getattr(result, "plot_short", None)
+        plot_short = _g(result, "plot_short")
         if plot_short:
             self._add_element(root, "tagline", plot_short)
 
@@ -524,38 +573,39 @@ class NFOGenerator:
         self._add_element(root, "dateadded", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         # playcount / lastplayed（ScrapeResult 可选携带，来自观影历史 PlayHistory）
-        play_count = getattr(result, "play_count", None)
+        play_count = _g(result, "play_count")
         if play_count:
             self._add_element(root, "playcount", str(play_count))
 
-        last_played = self._normalize_date(getattr(result, "last_played_at", None))
+        last_played = self._normalize_date(_g(result, "last_played_at"))
         if last_played:
             self._add_element(root, "lastplayed", last_played.strftime("%Y-%m-%d %H:%M:%S"))
 
         # art 块（Kodi 期望独立 <art> 块，与 <thumb> 并列）
         art_elem = ET.SubElement(root, "art")
-        if result.poster_url:
-            self._add_element(art_elem, "poster", result.poster_url)
-        elif result.cover_url:
-            self._add_element(art_elem, "poster", result.cover_url)
-        if result.sample_images:
-            self._add_element(art_elem, "fanart", result.sample_images[0])
-            if len(result.sample_images) > 1:
-                self._add_element(art_elem, "thumb", result.sample_images[1] if len(result.sample_images) > 1 else result.sample_images[0])
-        if result.cover_url:
-            self._add_element(art_elem, "landscape", result.cover_url)
-            self._add_element(art_elem, "banner", result.cover_url)
-            self._add_element(art_elem, "clearart", result.cover_url)
-            self._add_element(art_elem, "clearlogo", result.cover_url)
+        poster_url = _g(result, "poster_url") or _g(result, "cover_url")
+        if poster_url:
+            self._add_element(art_elem, "poster", poster_url)
+        sample_images = _g(result, "sample_images", []) or []
+        if sample_images:
+            self._add_element(art_elem, "fanart", sample_images[0])
+            if len(sample_images) > 1:
+                self._add_element(art_elem, "thumb", sample_images[1])
+        cover_url = _g(result, "cover_url")
+        if cover_url:
+            self._add_element(art_elem, "landscape", cover_url)
+            self._add_element(art_elem, "banner", cover_url)
+            self._add_element(art_elem, "clearart", cover_url)
+            self._add_element(art_elem, "clearlogo", cover_url)
 
         # fileinfo/streamdetails（通过 ffprobe 解析视频流信息,ffprobe 不可用时跳过）
-        file_path = getattr(result, "file_path", None)
+        file_path = _g(result, "file_path")
         if file_path:
             streamdetails = self._build_streamdetails(file_path)
             if streamdetails is not None:
                 fileinfo = ET.SubElement(root, "fileinfo")
                 fileinfo.append(streamdetails)
-    
+
     def _add_element(
         self,
         parent: ET.Element,

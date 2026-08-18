@@ -80,6 +80,36 @@
             <div class="action-hint" v-else>
               手动触发所有模块的媒体文件扫描任务
             </div>
+
+            <!-- 单独模块扫描 -->
+            <el-divider style="margin: 10px 0">
+              <span style="font-size: 12px; color: #909399">单独模块扫描</span>
+            </el-divider>
+            <div class="module-scan-list" v-loading="modulesLoading">
+              <div
+                v-for="mod in enabledModules"
+                :key="mod.name"
+                class="module-scan-row"
+              >
+                <span class="module-scan-name">
+                  {{ moduleLabel(mod.name) }}
+                  <el-tag size="small" type="info" effect="plain">
+                    {{ mod.media_dirs?.length || 0 }} 目录
+                  </el-tag>
+                </span>
+                <el-button
+                  size="small"
+                  type="primary"
+                  plain
+                  :loading="scanningModule === mod.name"
+                  :disabled="scanStatus?.in_cooldown"
+                  @click="handleModuleScan(mod)"
+                >
+                  扫描
+                </el-button>
+              </div>
+              <div v-if="!enabledModules.length" class="module-scan-empty">无已启用模块</div>
+            </div>
           </div>
         </el-card>
       </el-col>
@@ -191,6 +221,7 @@ import {
 import {
   getScanStatus, triggerManualScan, getScanRecords
 } from '@/api'
+import { getModules } from '@/api/modules'
 
 const loading = ref(false)
 const recordsLoading = ref(false)
@@ -201,6 +232,40 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const filters = reactive({ type: '', status: '' })
+
+// 模块列表（单独模块扫描）
+const modules = ref([])
+const modulesLoading = ref(false)
+const scanningModule = ref('')
+
+// 已启用且有媒体目录的模块
+const enabledModules = computed(() =>
+  (modules.value || []).filter(m => m.enabled && (m.media_dirs?.length || 0) > 0)
+)
+
+// 模块显示名映射
+const MODULE_LABELS = {
+  jav: 'JAV 有码',
+  uncensored: 'JAV 无码',
+  fc2: 'FC2',
+  chinese: '国产',
+  pornhub: 'PORNHUB',
+  western: '欧美',
+  anime: '动漫',
+}
+const moduleLabel = (name) => MODULE_LABELS[name] || name
+
+// 加载模块列表
+const loadModules = async () => {
+  modulesLoading.value = true
+  try {
+    modules.value = await getModules()
+  } catch {
+    modules.value = []
+  } finally {
+    modulesLoading.value = false
+  }
+}
 
 // 自动刷新定时器
 let autoRefreshTimer = null
@@ -288,7 +353,7 @@ const loadRecords = async () => {
 // 加载全部
 const loadAll = async () => {
   loading.value = true
-  await Promise.all([loadStatus(), loadRecords()])
+  await Promise.all([loadStatus(), loadRecords(), loadModules()])
   loading.value = false
 }
 
@@ -304,6 +369,20 @@ const handleManualScan = async () => {
     ElMessage.error('触发扫描失败：' + (e?.response?.data?.detail || e.message || '未知错误'))
   } finally {
     scanning.value = false
+  }
+}
+
+// 单独模块扫描
+const handleModuleScan = async (mod) => {
+  scanningModule.value = mod.name
+  try {
+    const res = await triggerManualScan(mod.name)
+    ElMessage.success(`模块「${moduleLabel(mod.name)}」扫描任务已触发，请在记录列表中查看进度`)
+    await loadAll()
+  } catch (e) {
+    ElMessage.error(`触发「${moduleLabel(mod.name)}」扫描失败：` + (e?.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    scanningModule.value = ''
   }
 }
 
@@ -445,6 +524,40 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: #909399;
   text-align: center;
+}
+
+/* 单独模块扫描 */
+.module-scan-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.module-scan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f5f7fa;
+}
+
+.module-scan-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #303133;
+}
+
+.module-scan-empty {
+  font-size: 12px;
+  color: #909399;
+  text-align: center;
+  padding: 8px 0;
 }
 
 /* 统计 */

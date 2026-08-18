@@ -157,9 +157,13 @@ class ImageProcessor:
                 save_path = Path(save_path)
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 
+                # JavDB CDN 图片可能被 XOR 混淆（key=首字节），写盘前解密还原 JPEG
+                from app.utils.media_helpers import maybe_decrypt_javdb_image
+                content = maybe_decrypt_javdb_image(response.content)
+
                 # 保存图片
                 with open(save_path, "wb") as f:
-                    f.write(response.content)
+                    f.write(content)
                 
                 logger.debug(f"Downloaded: {url} -> {save_path}")
                 return str(save_path)
@@ -203,8 +207,12 @@ class ImageProcessor:
                 if response.status_code != 200:
                     return None
                 
+                # JavDB CDN 图片可能被 XOR 混淆，先解密再让 PIL 打开
+                from app.utils.media_helpers import maybe_decrypt_javdb_image
+                content = maybe_decrypt_javdb_image(response.content)
+
                 # 打开图片
-                image = Image.open(BytesIO(response.content))
+                image = Image.open(BytesIO(content))
                 
                 # 转换为 RGB（去除 alpha 通道）
                 if image.mode in ("RGBA", "P"):

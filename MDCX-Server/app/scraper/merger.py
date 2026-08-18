@@ -66,7 +66,7 @@ class MergeConfig:
     respect_site_avid: bool = True
 
     # JavDB 水印封面策略
-    use_javdb_cover: UseJavDBCover = UseJavDBCover.FALLBACK
+    use_javdb_cover: UseJavDBCover = UseJavDBCover.YES
 
     # 女优别名统一:用 alias 字典把多个艺名归一
     # 例如 "三上悠亚" / "三上悠亞" / "Yua Mikami" 归一为 "三上悠亞"
@@ -330,11 +330,15 @@ class ResultMerger:
         if self.config.respect_site_avid:
             voted_code = self._vote_avid(sorted_results, base.code)
 
-        # 创建合并结果���结果
+        # 创建合并结果
+        merged_title, merged_original_title = self._merge_title(sorted_results)
         merged = ScrapeResult(
             code=voted_code,
-            title=self._merge_field("title", [r.title for r in sorted_results]),
+            title=merged_title,
             source=base.source,
+        )
+        merged.original_title = merged_original_title or self._merge_field(
+            "original_title", [r.original_title for r in sorted_results]
         )
 
         # 合并各个字段
@@ -407,6 +411,70 @@ class ResultMerger:
             }
 
         return merged
+
+    # ============================================
+    # 标题合并（中文优先）
+    # ============================================
+
+    def _merge_title(
+        self, sorted_results: list[ScrapeResult]
+    ) -> tuple[Optional[str], Optional[str]]:
+        """合并标题：中文标题优先，日文/英文标题进 original_title
+
+        各源标题情况：
+        - avmoo:  title = title_cn（中文，优先 title_jp 兜底），original_title = title_jp（日文）
+        - javdb:  title = current-title（locale=zh 下为中文），original_title = origin-title（日文）
+        - javbus: title = 日文标题，无 original_title
+
+        策略：
+        1. 优先取中文源标题（avmoo / javdb / 中文聚合源），按 source_priority 升序；
+           避免 javbus 等日文源（优先级与 javdb 并列 10）抢先覆盖中文标题。
+        2. 无中文源时退回最高优先级源的非空标题（保持旧行为）。
+        3. original_title 取各源已提供的日文/英文原始标题；若最终 title 本身为日文
+           （无中文源可用）且无原始标题，则 original_title = title。
+
+        Returns:
+            (title, original_title)
+        """
+        # 标题为中文的源（含 javdb / avmoo / 各中文聚合源）
+        CHINESE_TITLE_SOURCES = {
+            "avmoo", "javdb",
+            "airav", "iqqtv", "cnmdb", "hdouban",
+            "hscangku", "madouqu", "mdtv", "love6", "lulubar",
+            "cableav", "avsex", "fantastica", "airav_cc",
+        }
+
+        # 1) 中文源标题候选，按 source_priority 升序（数字小优先）
+        cn_candidates = sorted(
+            (
+                r for r in sorted_results
+                if r.title and r.source in CHINESE_TITLE_SOURCES
+            ),
+            key=lambda r: self.config.source_priority.get(r.source, 100),
+        )
+
+        title: Optional[str] = None
+        if cn_candidates:
+            title = cn_candidates[0].title
+        else:
+            # 无中文源：取优先级最高的非空标题（旧行为）
+            for r in sorted_results:
+                if r.title:
+                    title = r.title
+                    break
+
+        # 2) original_title：优先取各源已提供的日文/英文原始标题
+        original: Optional[str] = None
+        for r in sorted_results:
+            if r.original_title:
+                original = r.original_title
+                break
+
+        # 若标题本身是日文（无中文源可用）且无原始标题，则 original_title = title
+        if not original and title and not cn_candidates:
+            original = title
+
+        return title, original
 
     # ============================================
     # 第 4 轮新增方法(借鉴 JavSP)

@@ -350,7 +350,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Monitor, Setting, Refresh, Connection, User, Key, FolderOpened, Plus, Check, Delete } from '@element-plus/icons-vue'
 import {
@@ -390,14 +390,26 @@ const amateurDirs = ref([])
 const savingAmateur = ref(false)
 
 const browseAmateurFolder = async (index) => {
-  const result = await DirectoryBrowser.browse()
-  if (result?.path) {
-    if (index === -1) {
-      amateurDirs.value.push(result.path)
-    } else {
-      amateurDirs.value[index] = result.path
+  // Electron 环境：调用原生文件夹选择器
+  if (window.electronAPI?.selectFolder) {
+    try {
+      const result = await window.electronAPI.selectFolder()
+      if (!result.canceled && result.path) {
+        if (index === -1) {
+          amateurDirs.value.push(result.path)
+        } else {
+          amateurDirs.value[index] = result.path
+        }
+      }
+    } catch (e) {
+      ElMessage.error('选择文件夹失败: ' + e.message)
     }
+    return
   }
+  // 浏览器环境：复用目录浏览器对话框
+  browsingModule.value = '__amateur__'
+  browsingIndex.value = index ?? -1
+  directoryBrowserVisible.value = true
 }
 
 const removeAmateurDir = (index) => {
@@ -524,6 +536,14 @@ function applyFolderSelection(name, index, dirPath) {
 }
 
 function onDirectorySelected(dirPath) {
+  if (browsingModule.value === '__amateur__') {
+    if (browsingIndex.value === -1) {
+      amateurDirs.value.push(dirPath)
+    } else {
+      amateurDirs.value[browsingIndex.value] = dirPath
+    }
+    return
+  }
   applyFolderSelection(browsingModule.value, browsingIndex.value, dirPath)
 }
 

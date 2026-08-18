@@ -1681,7 +1681,7 @@ async def fetch_javdb_aliases_api(
 
 class JavDBMergeScanRequest(BaseModel):
     module: str = Body("jav", description="模块名")
-    max_pages: int = Body(30, ge=1, le=100, description="抓取 JavDB 演员目录页数（每页50人）")
+    max_pages: int = Body(100, ge=1, le=300, description="抓取 JavDB 演员目录页数（每页50人）")
     proxy: str | None = Body(None, description="代理地址（本地测试用，服务器留空走内置代理）")
 
 
@@ -1745,3 +1745,44 @@ async def javdb_merge_apply_api(req: JavDBMergeApplyRequest):
                 "movie_count": r.get("movie_count"),
             })
     return {"applied": len(results), "results": results}
+
+
+# ===== 演员表清理重建 =====
+
+class ActorCleanupRequest(BaseModel):
+    module: str = Body("jav", description="模块名（jav/fc2/uncensored/...）")
+    amateur_dirs: list[str] | None = Body(None, description="素人目录覆盖（默认取模块配置）")
+    company_names: list[str] | None = Body(None, description="素人映射公司名集合覆盖（默认取模块配置）")
+
+
+@router.post("/cleanup/preview")
+async def actor_cleanup_preview_api(req: ActorCleanupRequest):
+    """dry-run 预览：统计将被清理的垃圾/孤儿演员与非素人垃圾名影片，不修改数据"""
+    from app.services.actor_rebuild_service import preview_actor_cleanup
+
+    company = set(req.company_names) if req.company_names else None
+    result = await preview_actor_cleanup(
+        module=req.module,
+        amateur_dirs=req.amateur_dirs,
+        company_names=company,
+    )
+    return result
+
+
+@router.post("/cleanup/rebuild")
+async def actor_cleanup_rebuild_api(req: ActorCleanupRequest):
+    """实际执行：备份 → 删除垃圾/孤儿演员 → 素人影片 actor 置空 → 非素人影片剔除垃圾名 → 从影片重建演员表"""
+    from app.services.actor_rebuild_service import run_actor_cleanup
+
+    company = set(req.company_names) if req.company_names else None
+    try:
+        result = await run_actor_cleanup(
+            module=req.module,
+            amateur_dirs=req.amateur_dirs,
+            company_names=company,
+            backup=True,
+        )
+    except Exception as e:
+        logger.exception("演员表清理重建失败")
+        raise HTTPException(status_code=500, detail=f"清理重建失败: {e}")
+    return result

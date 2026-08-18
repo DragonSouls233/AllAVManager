@@ -688,3 +688,23 @@ def validate_local_path(path_str: Optional[str]) -> bool:
         return False
     p = Path(path_str)
     return p.exists() and (p.is_file() if p.suffix else True)
+
+
+def maybe_decrypt_javdb_image(data: bytes) -> bytes:
+    """JavDB 图片 CDN（spfcas.com 等）对 JPEG 做 XOR 混淆：
+    key = data[0]，其余字节 XOR key，明文以 ff d8 开头（2026-08-18 逆向确认）。
+
+    无损检测：数据本身已是 JPEG 或解密后不是 JPEG 时原样返回，
+    对普通图片零副作用，可安全用于所有图片下载路径。
+
+    性能：用 bytes.translate 查表（C 实现），183KB 图片约 <1ms。
+    """
+    if not data or len(data) < 4:
+        return data
+    if data[:2] == b"\xff\xd8":
+        return data
+    key = data[0]
+    if (data[1] ^ key) != 0xFF or (data[2] ^ key) != 0xD8:
+        return data
+    table = bytes(i ^ key for i in range(256))
+    return data[1:].translate(table)

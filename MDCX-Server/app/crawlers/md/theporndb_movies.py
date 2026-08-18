@@ -105,17 +105,50 @@ class ThePornDBMoviesCrawler(LegacyCrawlerAdapter):
                 logger.error(f"{self.name} scrape error for {code}: {e}")
                 return None
 
+    def _get_api_key(self) -> str:
+        """从全局配置读取 theporndb api key。
+
+        配置路径：module_models.theporndb_api_key
+        （也兼容旧路径 crawler_scrapers.theporndb_api_key）。
+        """
+        try:
+            from app.config.manager import get_config
+
+            cfg = get_config()
+            # 新版位置
+            for path in (
+                ("theporndb_api_key",),
+                ("crawler_scrapers", "theporndb_api_key"),
+            ):
+                cur = cfg
+                try:
+                    for p in path:
+                        cur = getattr(cur, p)
+                    if cur:
+                        return str(cur)
+                except AttributeError:
+                    continue
+        except Exception as e:  # 配置未加载时直接返回空串
+            logger.debug(f"read theporndb api key failed: {e}")
+        return ""
+
     async def _call_mdcx_main(self, code: str, client: AsyncHttpClient) -> Optional[dict]:
         """调用 MDCX 的 main 函数逻辑"""
         try:
             # 通过番号搜索电影
             search_url = f"https://api.theporndb.net/movies/search?q={code}"
+            # 2026-08-18: API 已强制 Authorization Bearer，否则 401。
+            api_key = self._get_api_key()
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            else:
+                logger.debug(f"{self.name} 跳过: 未配置 theporndb_api_key")
 
-            resp = await client.get(search_url)
+            resp = await client.get(search_url, headers=headers)
             if not resp:
                 return None
 

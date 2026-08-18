@@ -1094,10 +1094,12 @@ const loadMovie = async () => {
   loading.value = true
   try {
     const id = route.params.id
+    // module 来源：路由 query 优先，其次主库数据的 module_type 兜底（如 JAV 番号需 /jav/ 前缀）
+    const mod = currentModule.value || movie.value?.module_type
 
-    if (currentModule.value) {
+    if (mod) {
       // 模块数据库：从模块 API 加载
-      movie.value = await getModulePlayInfo(currentModule.value, id)
+      movie.value = await getModulePlayInfo(mod, id)
       ratingInput.value = Number(movie.value.rating) || 0
     } else {
       // 通用 Movie 表
@@ -1203,8 +1205,10 @@ const loadVideo = async () => {
 
   try {
     let url
-    if (currentModule.value) {
-      const res = await getModulePlayUrl(currentModule.value, route.params.id, currentProtocol.value)
+    // module 来源：路由 query 优先，其次主库数据的 module_type 兜底（如 JAV 番号需 /jav/ 前缀）
+    const mod = currentModule.value || movie.value?.module_type
+    if (mod) {
+      const res = await getModulePlayUrl(mod, route.params.id, currentProtocol.value)
       url = res.play_url
     } else if (adaptiveMode.value) {
       const base = getServerBaseUrl()

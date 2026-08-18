@@ -74,14 +74,18 @@ class ScrapeResult:
     trailer_url: Optional[str] = None   # 预告片URL
     sample_images: list[str] = field(default_factory=list)  # 样图URL列表
     extrafanart: list[str] = field(default_factory=list)    # 额外剧照URL列表
-    
+
     # 评分
     rating: Optional[float] = None      # 评分 (0-10)
     votes: Optional[int] = None        # 评分人数
-    
+
     # 原始数据（用于调试）
     raw_data: dict = field(default_factory=dict)
-    
+
+    # JavDB 视频 ID（2026-08-18 显式声明，避免 NFO 写回时 AttributeError；
+    # 旧实现仅放 raw_data["javdb_id"]，读取侧要兜底 getattr）
+    javdb_id: Optional[str] = None
+
     # 元信息
     confidence: float = 1.0             # 结果置信度 (0-1)
     is_exact_match: bool = True         # 是否精确匹配

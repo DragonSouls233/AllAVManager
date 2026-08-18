@@ -100,10 +100,13 @@ async def merge_actors(
         return {"error": "所有 source 演员都不存在"}
 
     # 1) 别名合并（JavBoss 风格：source.name 作为 canonical 别名）
+    #    注意：跳过含逗号的 source.name —— 那类行是「多演员合一名」的脏数据
+    #    （如「春陽モカ,新井リマ」），若拆分写入 alias 会把其他演员名也挂到 canonical 名下，
+    #    导致 canonical 的作品统计把其他演员的片全部算进来。影片 token 迁移不受影响。
     canonical.alias = _merge_alias(
         canonical.alias,
         canonical.name,
-        [s.name for s in source_actors],
+        [s.name for s in source_actors if s.name and "," not in s.name],
         [s.alias for s in source_actors if s.alias],
     )
 

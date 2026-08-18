@@ -270,27 +270,37 @@ class ScanControlService:
     # 手动扫描（不受冷却限制）
     # ============================================
 
-    async def trigger_manual_scan(self) -> dict:
+    async def trigger_manual_scan(self, module_name: str | None = None) -> dict:
         """触发手动扫描
 
-        手动扫描不受冷却限制，立即执行所有模块的扫描。
+        手动扫描不受冷却限制，立即执行。指定 module_name 时只扫描该模块，
+        否则扫描所有启用模块。
+
+        Args:
+            module_name: 模块名（jav/fc2/uncensored/chinese/pornhub/western/anime），None=全部
 
         Returns:
             {record_id, message}
         """
         # 创建扫描记录
-        record_id = await self.create_scan_record(scan_type="manual")
+        record_id = await self.create_scan_record(
+            scan_type="manual", module_name=module_name or "all"
+        )
 
         # 启动后台扫描任务
-        asyncio.create_task(self._run_manual_scan(record_id))
+        asyncio.create_task(self._run_manual_scan(record_id, module_name))
 
+        scope = f"模块 {module_name}" if module_name else "全部模块"
         return {
             "record_id": record_id,
-            "message": "手动扫描已启动，扫描任务在后台执行",
+            "module_name": module_name or "all",
+            "message": f"{scope}手动扫描已启动，扫描任务在后台执行",
         }
 
-    async def _run_manual_scan(self, record_id: int) -> None:
-        """执行手动扫描（在后台运行）"""
+    async def _run_manual_scan(
+        self, record_id: int, module_name: str | None = None
+    ) -> None:
+        """执行手动扫描（在后台运行）。module_name 指定时只扫描该模块，否则扫描全部。"""
         import importlib
         from pathlib import Path
 
@@ -315,12 +325,37 @@ class ScanControlService:
             "anime": ("app.tasks.anime_scanner", "AnimeScanner"),
         }
 
+        # 指定模块名时只扫描该模块（非法模块名直接失败）
+        if module_name is not None and module_name not in module_scanner_map:
+            await self.complete_scan_record(
+                record_id, "failed", error_message=f"未知模块: {module_name}"
+            )
+            return
+
+        # 指定单模块时预检：未启用/无可用目录直接失败，避免任务静默空跑
+        if module_name is not None:
+            mod_cfg = getattr(modules_config, module_name, None)
+            if not (mod_cfg and getattr(mod_cfg, "enabled", False)):
+                await self.complete_scan_record(
+                    record_id, "failed", error_message=f"模块 {module_name} 未启用"
+                )
+                return
+            dirs = getattr(mod_cfg, "media_dirs", None) or []
+            valid_dirs = filter_reachable([str(d) for d in dirs])
+            if not valid_dirs:
+                await self.complete_scan_record(
+                    record_id, "failed", error_message=f"模块 {module_name} 无可用媒体目录"
+                )
+                return
+
         total_all = 0
         added_all = 0
         removed_all = 0
         errors = []
 
         for mod_name, (mod_path, cls_name) in module_scanner_map.items():
+            if module_name is not None and mod_name != module_name:
+                continue
             mod_cfg = getattr(modules_config, mod_name, None)
             if mod_cfg and getattr(mod_cfg, "enabled", False):
                 dirs = getattr(mod_cfg, "media_dirs", None) or []

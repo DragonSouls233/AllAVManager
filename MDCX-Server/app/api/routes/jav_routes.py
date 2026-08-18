@@ -92,31 +92,22 @@ def _avatar_placeholder():
 @router.post("/actors/merge")
 async def api_merge_actors(data: dict):
     """合并演员（将 source_ids 合并到 canonical_id）"""
+    # 注意：merge_actors 内部自建 module session，这里不要再传 session，
+    # 否则会作为位置参数误入 canonical_id（历史 bug：AttributeError/TypeError 500）
     from app.services.actor_merge_service import merge_actors
-    db = get_jav_db()
-    session = await db.get_session()
-    try:
-        result = await merge_actors(
-            session,
-            canonical_id=data.get("canonical_id", 0),
-            source_ids=data.get("source_ids", []),
-        )
-        return result
-    finally:
-        await session.close()
+    result = await merge_actors(
+        canonical_id=data.get("canonical_id", 0),
+        source_ids=data.get("source_ids", []),
+    )
+    return result
 
 
 @router.get("/actors/similar")
 async def api_search_similar_actors(name: str = Query(..., description="搜索相似演员")):
     """搜索名字相似的演员（推荐合并候选）"""
     from app.services.actor_merge_service import search_similar_actors
-    db = get_jav_db()
-    session = await db.get_session()
-    try:
-        result = await search_similar_actors(session, name)
-        return {"items": result, "total": len(result)}
-    finally:
-        await session.close()
+    result = await search_similar_actors(name)
+    return {"items": result, "total": len(result)}
 
 
 @router.get("/actors/{actor_id}/merge-candidates")
@@ -132,7 +123,7 @@ async def api_merge_candidates(actor_id: int):
         actor = await session.get(JavActor, actor_id)
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
-        candidates = await search_similar_actors(session, actor.name)
+        candidates = await search_similar_actors(actor.name)
         return {"actor": {"id": actor.id, "name": actor.name, "alias": actor.alias, "movie_count": actor.movie_count},
                 "candidates": candidates, "total": len(candidates)}
     finally:
@@ -1679,8 +1670,10 @@ async def get_jav_cover_file(movie_id: int):
                                 timeout=15.0,
                             )
                             if resp.status_code == 200 and len(resp.content) > 500:
+                                from app.utils.media_helpers import maybe_decrypt_javdb_image
+                                content = maybe_decrypt_javdb_image(resp.content)
                                 with open(target, "wb") as f:
-                                    f.write(resp.content)
+                                    f.write(content)
                                 # 同时尝试下载 fanart 和 thumb
                                 if attr == "cover_url" and movie.poster_url and movie.poster_url.startswith(("http://", "https://")):
                                     try:
@@ -1692,7 +1685,7 @@ async def get_jav_cover_file(movie_id: int):
                                         if fresp.status_code == 200 and len(fresp.content) > 500:
                                             fanart_target.parent.mkdir(parents=True, exist_ok=True)
                                             with open(fanart_target, "wb") as f:
-                                                f.write(fresp.content)
+                                                f.write(maybe_decrypt_javdb_image(fresp.content))
                                     except Exception:
                                         pass
                                 if fast_file_exists(str(target)):

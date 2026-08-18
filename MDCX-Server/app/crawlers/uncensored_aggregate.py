@@ -198,23 +198,45 @@ class UncensoredAggregateCrawler(BaseCrawler):
         return None
 
     async def _scrape_javdb_generic(self, code: str) -> Optional[ScrapeResult]:
-        """JavDB 通用搜索兜底。"""
-        from app.services.javdb_api_client import create_client_from_config
-        client = await create_client_from_config()
+        """JavDB 通用搜索兜底（匿名 App API，免登录、不绑定 IP）。
+
+        原实现走 javdb_api_client（HMAC + 登录 Token），换节点即失效；
+        改为 javdb_app_client 匿名通道，与主爬虫 javdb.py 保持一致。
+        """
+        from datetime import datetime
+        from app.services.javdb_app_client import JavDBAppClient
+        client = JavDBAppClient()
         try:
-            movie = await client.search_movie(code)
+            movie = await client.search_movie(code, zone="uncensored")
             if movie and movie.title:
+                # App API search 仅返回基础字段；actor/genre 由 avsox 等主通道提供
+                actors = []
+                genres = []
+                for a in (movie.raw.get("actors") or []):
+                    if isinstance(a, dict) and a.get("name"):
+                        actors.append(ActorInfo(name=a["name"]))
+                for g in (movie.raw.get("tags") or []):
+                    if isinstance(g, dict) and g.get("name"):
+                        genres.append(g["name"])
                 result = ScrapeResult()
-                result.code = code.upper()
+                result.code = movie.number or code.upper()
                 result.title = movie.title
-                result.title_cn = movie.title_cn
-                result.cover_url = movie.cover_url
-                result.release_date = movie.date
-                result.duration = movie.duration
-                result.actors = [ActorInfo(name=a) for a in movie.actors]
-                result.genres = movie.genres
-                result.studio = movie.maker or movie.publisher
-                result.source = "javdb"
+                result.original_title = movie.origin_title or ""
+                result.cover_url = movie.cover_url or movie.thumb_url
+                result.release_date = None
+                if movie.release_date:
+                    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"):
+                        try:
+                            result.release_date = datetime.strptime(
+                                movie.release_date.strip(), fmt
+                            ).date()
+                            break
+                        except ValueError:
+                            continue
+                result.duration = movie.duration or None
+                result.actors = actors
+                result.genres = genres
+                result.source = "javdb_app_api"
                 return result
         except Exception as e:
             logger.debug("javdb scrape failed for %s: %s", code, e)
