@@ -176,17 +176,30 @@ class NFOGenerator:
             directors = [d.strip() for d in str(director_field).split(",") if d.strip()]
 
             # 构造 ScrapeResult (注意: ScrapeResult 字段是 dataclass, 必填 code/title/source)
+            # 2026-08-18: 字符串列优先，relationship 仅兜底。
+            # async 环境访问未预加载的 lazy relationship（studio_ref/series_ref）
+            # 会抛 MissingGreenlet（greenlet_spawn has not been called），
+            # 因此包 try/except，优先读同步可靠的字符串列 studio/series。
+            studio = getattr(movie, "studio", None) or None
+            if not studio:
+                try:
+                    studio = getattr(movie.studio_ref, "name", None)
+                except Exception:
+                    studio = None
+            series = getattr(movie, "series", None) or None
+            if not series:
+                try:
+                    series = getattr(movie.series_ref, "name", None)
+                except Exception:
+                    series = None
             result = ScrapeResult(
                 code=getattr(movie, "code", "") or "",
                 title=getattr(movie, "title", "") or getattr(movie, "code", "") or "",
                 source=getattr(movie, "source", None) or "manual",
                 original_title=getattr(movie, "original_title", None) or getattr(movie, "title_jp", None),
-                studio=getattr(movie, "studio_ref", None) and getattr(movie.studio_ref, "name", None),
+                studio=studio,
                 maker=getattr(movie, "maker", None),
-                # 2026-08-18: series_ref 未预加载/未关联时兜底读 series 字符串列，
-                # 否则批量补系列脚本直接写 movie.series 后 NFO 仍缺 <series>
-                series=(getattr(getattr(movie, "series_ref", None), "name", None))
-                       or getattr(movie, "series", None),
+                series=series,
                 release_date=release_date,
                 duration=getattr(movie, "duration", None),
                 plot=getattr(movie, "plot", None),

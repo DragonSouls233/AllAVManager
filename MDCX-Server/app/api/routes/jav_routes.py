@@ -9,6 +9,7 @@ JAV 有码模块 API 路由
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -18,6 +19,64 @@ from app.db.module_db import ModuleDatabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jav", tags=["JAV有码"])
+
+
+# ---- 真演员判定（2026-08-19）----
+# movies.actor 精确 token 集合，用于：
+#   * 列表页只显示真演员（排除单字符/素人称呼/匿名占位/假名短名/孤儿垃圾）
+#   * 详情页对垃圾条目 404（防止 LIKE 子串匹配命中大量无关作品，如 'a' 命中 254 部）
+_real_actor_cache: dict = {"ts": 0.0, "names": None}
+_REAL_ACTOR_TTL = 60.0
+
+# 匿名/占位词：刮削或解析时把"空演员"写成的占位文本，不是真人（佚名=匿名）
+_ANON_WORDS = {
+    "佚名", "匿名", "素人", "無名", "未知",
+    "unknown", "Unknown", "N/A", "n/a",
+    "anonym", "anonymous", "xxx", "XXX",
+}
+# 纯假名短名（1-2 个假名）：素人片匿名角色常见写法，不当作真演员
+_KANA_SHORT_RE = re.compile(r"^[\u3040-\u30ff\u30fc]{1,2}$")
+
+
+async def _real_actor_names(session) -> set:
+    """返回 movies.actor 的全部精确 token 集合（真演员名判定依据）。
+
+    带 60s TTL 缓存，避免列表页分页 / 详情页每次请求都全表扫描。
+    """
+    import time as _time
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie
+    from app.utils.actor_alias import split_alias
+
+    now = _time.monotonic()
+    c = _real_actor_cache
+    if c["names"] is not None and now - c["ts"] < _REAL_ACTOR_TTL:
+        return c["names"]
+    names: set = set()
+    rows = await session.execute(
+        select(JavMovie.actor).where(JavMovie.actor.isnot(None)).distinct()
+    )
+    for (actor_field,) in rows:
+        names.update(split_alias(actor_field))
+    c.update({"ts": now, "names": names})
+    return names
+
+
+def _is_real_actor(actor, real_names: set) -> bool:
+    """真演员判定：排除 1) 单字符解析残留 2) 匿名占位词 3) 素人称呼名
+    4) 名字未完整出现在 movies.actor 的孤儿/短名条目 5) 纯假名短名（素人匿名）"""
+    name = (getattr(actor, "name", None) or "").strip()
+    if len(name) <= 1:
+        return False
+    if name in _ANON_WORDS:
+        return False
+    if name.endswith(("さん", "ちゃん", "くん", "様")):
+        return False
+    if name not in real_names:
+        return False
+    if _KANA_SHORT_RE.match(name):
+        return False
+    return True
 
 
 def _fill_amateur_actor(movie) -> str:
@@ -172,43 +231,44 @@ async def list_actors(
     page: int = Query(1, ge=1),
     page_size: int = Query(60, ge=1, le=240),
 ):
-    """列出有码演员列表（支持作品数分类过滤与分页）"""
+    """列出有码演员列表（只显示真演员；支持作品数分类过滤与分页）"""
     db = get_jav_db()
     session = await db.get_session()
     try:
         from app.db.jav_models import JavActor
-        from sqlalchemy import select, or_, func
-        # 排除刮削时自动创建的占位演员（source=scraper）：本地没有真实作品就不应出现在演员库
-        stmt = (
-            select(JavActor)
-            .where(JavActor.source != "scraper")
-        )
+        from sqlalchemy import select
+        # 真演员过滤（2026-08-19）：排除刮削/文件夹解析产生的垃圾与素人匿名条目。
+        # 1) 单字符名（'a'/'o'/'e'/'杏'/'桜' 等解析残留）
+        # 2) 匿名占位词（佚名/匿名/Unknown 等，movies.actor 里被写成"演员"的占位文本）
+        # 3) 素人称呼名（以 さん/ちゃん/くん/様 结尾，素人匿名角色不当作真演员）
+        # 4) 孤儿/短名条目：名字未完整出现在任何电影 actor 字段（みお/リマ/あやか 等
+        #    实为长名子串误匹配，LIKE 命中几百部但精确 token 0 部）
+        # 5) 纯假名短名（1-2 个假名，素人片匿名角色常见写法）
+        # 规则在 Python 侧统一判定（SQL 无法表达匿名词/假名短名），全量拉取后过滤再分页。
+        # 注意：不按 source 过滤（scraper 来源含 辻井みう/加護亜美 等 48 个真演员）。
+        real_names = await _real_actor_names(session)
+        rows = (await session.execute(select(JavActor))).scalars().all()
+        items = [a for a in rows if _is_real_actor(a, real_names)]
         if search:
-            alias_col = getattr(JavActor, "alias", None)
-            cond = or_(
-                JavActor.name.contains(search),
-                JavActor.name_jp.contains(search),
-                JavActor.name_en.contains(search),
-            )
-            if alias_col is not None:
-                cond = or_(cond, alias_col.contains(search))
-            stmt = stmt.where(cond)
+            key = search.strip().lower()
+            items = [a for a in items if
+                     key in (a.name or "").lower()
+                     or key in (a.name_jp or "").lower()
+                     or key in (a.name_en or "").lower()
+                     or (a.alias and key in a.alias.lower())]
         if movie_count_filter == "multi":
-            stmt = stmt.where(func.coalesce(JavActor.movie_count, 0) >= min_movies)
+            items = [a for a in items if (a.movie_count or 0) >= min_movies]
         elif movie_count_filter == "single":
-            stmt = stmt.where(func.coalesce(JavActor.movie_count, 0) < min_movies)
-        count_stmt = select(func.count()).select_from(stmt.subquery())
-        total = await session.scalar(count_stmt)
-        stmt = stmt.order_by(JavActor.movie_count.desc())
-        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-        result = await session.execute(stmt)
-        actors = result.scalars().all()
+            items = [a for a in items if (a.movie_count or 0) < min_movies]
+        items.sort(key=lambda a: a.movie_count or 0, reverse=True)
+        total = len(items)
+        page_items = items[(page - 1) * page_size: page * page_size]
         # alias / merged_from：让列表页能直观标出「这个演员合并过哪些旧名」
         from app.utils.actor_alias import merged_from_names
-        return {"total": total or 0, "items": [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
+        return {"total": total, "items": [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
                  "module_type": "jav",
                  "alias": a.alias, "merged_from": merged_from_names(a),
-                 "source": a.source, "avatar_url": a.avatar_url} for a in actors]}
+                 "source": a.source, "avatar_url": a.avatar_url} for a in page_items]}
     finally:
         await session.close()
 
@@ -226,7 +286,11 @@ async def get_actor(actor_id: int):
         actor = result.scalar_one_or_none()
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
-        # 作品数实时统计（含 alias 合并进来的旧名），避免 movie_count 列过时
+        # 真演员防护（2026-08-19）：垃圾条目（单字符/素人称呼/孤儿）不再对外展示，
+        # 避免详情页按 LIKE 子串匹配命中大量无关作品（如 'a' 命中 254 部）。
+        real_names = await _real_actor_names(session)
+        if not _is_real_actor(actor, real_names):
+            raise HTTPException(status_code=404, detail="演员不存在")
         from app.db.jav_models import JavMovie
         from app.utils.actor_alias import count_actor_movies, merged_from_names
         real_count = await count_actor_movies(session, JavMovie, actor)
@@ -246,10 +310,17 @@ async def get_actor_movies(
     actor_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
+    starring_first: bool = Query(True, description="主演片（标题含演员名）优先"),
 ):
-    """获取演员作品列表"""
+    """获取演员作品列表
+
+    主演/共演区分（2026-08-19）：
+    - 主演片：标题（title/original_title）含演员任一名变体（如「辻井みう」作品标题直接写她名字）
+    - 共演片：仅 actor 字段含该演员（如 534/535 的大量固定搭档共演片，封面是其他演员，
+      页面看起来"全是各种其他演员"）——默认主演片排前，并返回 is_starring 标记与统计。
+    """
     from app.db.jav_models import JavActor, JavMovie
-    from sqlalchemy import select, func, or_
+    from sqlalchemy import select, func, or_, case
 
     db = get_jav_db()
     session = await db.get_session()
@@ -258,18 +329,57 @@ async def get_actor_movies(
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
 
+        # 真演员防护（2026-08-19）：垃圾条目不返回其"作品列表"（LIKE 子串误匹配）
+        real_names = await _real_actor_names(session)
+        if not _is_real_actor(actor, real_names):
+            raise HTTPException(status_code=404, detail="演员不存在")
+
         offset = (page - 1) * page_size
         # 搜索含有演员名的影片：主名 + alias 全部变体
         # （演员合并后旧名仍残留在 movies.actor 里，只查主名会漏掉被合并演员的作品）
-        from app.utils.actor_alias import actor_movie_condition_for
+        from app.utils.actor_alias import actor_movie_condition_for, actor_name_variants
         cond = actor_movie_condition_for(JavMovie, actor)
-        total_q = select(func.count(JavMovie.id)).where(cond)
-        total = (await session.execute(total_q)).scalar() or 0
+        variants = actor_name_variants(actor)
 
-        stmt = select(JavMovie).where(cond) \
-            .order_by(JavMovie.release_date.desc().nulls_last(), JavMovie.id.desc()) \
-            .offset(offset).limit(page_size)
+        # 主演判定：标题（title/original_title）含任一演员名变体
+        title_cols = [JavMovie.title]
+        if hasattr(JavMovie, "original_title"):
+            title_cols.append(JavMovie.original_title)
+        starring_clauses = []
+        for v in variants:
+            for col in title_cols:
+                starring_clauses.append(col.like(f"%{v}%"))
+        starring_cond = or_(*starring_clauses) if starring_clauses else None
+
+        total = (await session.execute(select(func.count(JavMovie.id)).where(cond))).scalar() or 0
+        if starring_cond is not None:
+            starring_total = (await session.execute(
+                select(func.count(JavMovie.id)).where(cond, starring_cond)
+            )).scalar() or 0
+        else:
+            starring_total = 0
+
+        stmt = select(JavMovie).where(cond)
+        if starring_first and starring_cond is not None:
+            # 主演片排前，其余按日期倒序
+            stmt = stmt.order_by(
+                case((starring_cond, 0), else_=1),
+                JavMovie.release_date.desc().nulls_last(),
+                JavMovie.id.desc(),
+            )
+        else:
+            stmt = stmt.order_by(
+                JavMovie.release_date.desc().nulls_last(), JavMovie.id.desc()
+            )
+        stmt = stmt.offset(offset).limit(page_size)
         rows = (await session.execute(stmt)).scalars().all()
+
+        # 主演标记：标题含演员名（与 starring_cond 同规则）
+        def _is_starring(m) -> bool:
+            texts = [m.title or ""]
+            if hasattr(m, "original_title") and m.original_title:
+                texts.append(m.original_title or "")
+            return any(v and any(v in t for t in texts) for v in variants)
 
         items = []
         for m in rows:
@@ -285,9 +395,14 @@ async def get_actor_movies(
                 "is_leak": m.is_leak,
                 "is_4k": m.is_4k,
                 "module_type": "jav",
+                "is_starring": _is_starring(m),
                 "file_path": m.file_path,
             })
-        return {"items": items, "total": total, "page": page, "page_size": page_size}
+        return {
+            "items": items, "total": total, "page": page, "page_size": page_size,
+            "starring_total": starring_total,
+            "co_star_total": total - starring_total,
+        }
     finally:
         await session.close()
 
@@ -310,6 +425,11 @@ async def get_actor_timeline(actor_id: int):
     try:
         actor = await session.get(JavActor, actor_id)
         if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        # 真演员防护（2026-08-19）：垃圾条目不返回时间线
+        real_names = await _real_actor_names(session)
+        if not _is_real_actor(actor, real_names):
             raise HTTPException(status_code=404, detail="演员不存在")
 
         # 查该演员全部作品（含无日期），用于 total 与完整年份分组

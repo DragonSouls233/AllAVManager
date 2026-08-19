@@ -41,6 +41,8 @@
           </div>
           <div class="profile-meta">
             <el-tag type="primary">{{ movieTotal }} 部作品</el-tag>
+            <el-tag v-if="starringTotal > 0" type="success">主演 {{ starringTotal }}</el-tag>
+            <el-tag v-if="coStarTotal > 0" type="info">共演 {{ coStarTotal }}</el-tag>
             <el-tag v-if="mergedFrom.length" type="warning" effect="dark">含合并</el-tag>
             <el-tag v-if="actor.cup" type="success">{{ actor.cup }} Cup</el-tag>
             <el-tag v-if="actor.height" type="info">{{ actor.height }} cm</el-tag>
@@ -137,6 +139,8 @@
             <div class="movie-cover">
               <img :src="getMovieCover(movie)" :alt="movie.code" @error="(e) => handleCoverError(e, movie)">
               <div class="movie-badges">
+                <span v-if="movie.is_starring" class="movie-badge starring">主演</span>
+                <span v-else class="movie-badge co-star">共演</span>
                 <span v-for="b in movieBadges(movie)" :key="b.text" class="movie-badge" :class="b.cls">{{ b.text }}</span>
               </div>
               <div class="movie-play">
@@ -343,6 +347,8 @@ const moviesLoading = ref(false)
 const actor = ref(null)
 const movies = ref([])
 const movieTotal = ref(0)
+const starringTotal = ref(0)
+const coStarTotal = ref(0)
 const page = ref(1)
 const pageSize = ref(24)
 
@@ -504,6 +510,8 @@ const loadMovies = async () => {
     }, moduleType.value)
     movies.value = res.items || []
     movieTotal.value = res.total || movieTotal.value
+    if (typeof res.starring_total === 'number') starringTotal.value = res.starring_total
+    if (typeof res.co_star_total === 'number') coStarTotal.value = res.co_star_total
   } catch (e) {
     console.error(e)
   } finally {
@@ -979,6 +987,14 @@ onMounted(() => {
   color: #fff;
   letter-spacing: 1px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.movie-badge.starring {
+  background: #2ecc71;
+}
+
+.movie-badge.co-star {
+  background: #7f8c8d;
 }
 
 .movie-badge.chinese {
