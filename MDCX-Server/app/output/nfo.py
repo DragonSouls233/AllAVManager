@@ -404,12 +404,17 @@ class NFOGenerator:
             name_elem.text = _g(result, "series")
 
         # === 标签 ===
-        for genre in _g(result, "genres", []) or []:
+        # 优先级标签（内容类型，如"女仆/护士/人妻"）前置，媒体库展示首要类型
+        # （移植 ref42-Kesuy-mdcx mdcx/core/tag_priority.py；资源缺失时原序输出）
+        from app.utils.tag_priority import prioritize_nfo_tags
+
+        genres = list(_g(result, "genres", []) or [])
+        genres = prioritize_nfo_tags(genres)
+        for genre in genres:
             self._add_element(root, "genre", genre)
             self._add_element(root, "tag", genre)
         # 额外标签
-        genres = _g(result, "genres", []) or []
-        for tag in _g(result, "tags", []) or []:
+        for tag in prioritize_nfo_tags(list(_g(result, "tags", []) or [])):
             if tag not in genres:
                 self._add_element(root, "tag", tag)
 

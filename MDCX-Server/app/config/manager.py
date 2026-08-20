@@ -176,6 +176,23 @@ class ConfigManager:
         # 2. 环境变量覆盖
         config_data = self._load_from_env(config_data)
 
+        # 2.5 配置结构迁移(借鉴 ref42-Kesuy-mdcx mdcx/config/migrations.py)
+        #     旧配置差异在此归一化后再交给 Pydantic 做强校验;有实际变更时
+        #     持锁写回(版本号持久化), 避免下次启动重复迁移。
+        try:
+            from app.config.migrations import migrate_config_data
+
+            before = json.dumps(config_data, ensure_ascii=False, sort_keys=True, default=str)
+            migration_warnings = migrate_config_data(config_data)
+            after = json.dumps(config_data, ensure_ascii=False, sort_keys=True, default=str)
+            if CONFIG_FILE.exists() and after != before:
+                self._save_unlocked(config_data)
+            for w in migration_warnings:
+                logger.warning("配置迁移: %s", w)
+        except Exception as e:
+            errors.append(f"配置迁移失败: {e}")
+            logger.error(f"配置迁移失败: {e}")
+
         # 3. 验证并创建配置对象
         try:
             self._config = Config.model_validate(config_data)

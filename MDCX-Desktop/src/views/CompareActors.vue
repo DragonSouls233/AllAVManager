@@ -42,6 +42,10 @@
         </el-button>
         <el-checkbox v-model="overwriteDetectAll" class="overwrite-check">覆盖已配置</el-checkbox>
 
+        <el-button type="danger" plain :loading="scrapingMovies" @click="handleScrapeMoviesAll">
+          <el-icon><Download /></el-icon> 抓取演员影片
+        </el-button>
+
         <span class="toolbar-hint" v-if="total">共 {{ total }} 个演员</span>
       </div>
     </el-card>
@@ -151,6 +155,16 @@
                 @click="detectUrl(row)"
               >
                 <el-icon><Aim /></el-icon> 探测
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                link
+                :loading="scrapingMoviesId === row.id"
+                @click="scrapeMovies(row)"
+              >
+                <el-icon><Download /></el-icon> 抓影片
               </el-button>
               <el-button
                 size="small"
@@ -370,6 +384,31 @@
         </div>
       </div>
     </el-dialog>
+
+    <!-- 演员影片列表弹窗（P0-1：按演员页抓取） -->
+    <el-dialog v-model="moviesVisible" :title="`${moviesActorName} - 影片列表 (${moviesTotal})`" width="900px" top="6vh">
+      <div class="movies-toolbar">
+        <el-tag v-if="moviesActorUrl" type="info" size="small" class="movies-url">{{ moviesActorUrl }}</el-tag>
+        <span class="movies-hint">基于演员页按演员 ID 抓取完整片单，不依赖标题命中（含合集）。</span>
+      </div>
+      <el-table v-if="moviesItems.length" :data="moviesItems" stripe max-height="560" size="small" v-loading="moviesLoading">
+        <el-table-column prop="code" label="番号" width="120" />
+        <el-table-column prop="date" label="日期" width="100" />
+        <el-table-column prop="title" label="标题" show-overflow-tooltip />
+        <el-table-column label="中字" width="70" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.has_chinese" type="success" size="small">中字</el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" align="center">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" link @click="copyMovieCode(row)">复制番号</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else-if="!moviesLoading" description="未抓到影片（该演员可能没有 javdb 演员页 URL 或无影片）" />
+    </el-dialog>
   </div>
 </template>
 
@@ -377,11 +416,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { UserFilled, Search, Refresh, Edit, Connection, Aim, FolderOpened, Folder, CopyDocument } from '@element-plus/icons-vue'
+import { UserFilled, Search, Refresh, Edit, Connection, Aim, FolderOpened, Folder, CopyDocument, Download } from '@element-plus/icons-vue'
 import {
   getCompareActors, saveActorCompareUrl, scanAllCompareActors,
   detectActorLocalDir, compareOnlineByActor, scrapeByCode, browseDir,
-  detectActorCompareUrl, detectAllCompareUrls, runAllCompareByActor
+  detectActorCompareUrl, detectAllCompareUrls, runAllCompareByActor,
+  scrapeActorMovies, scrapeAllActorMovies
 } from '@/api'
 
 const route = useRoute()
@@ -422,6 +462,14 @@ const loading = ref(false)
 const scanning = ref(false)
 const detectingAll = ref(false)
 const overwriteDetectAll = ref(false)
+const scrapingMovies = ref(false)
+const scrapingMoviesId = ref(null)
+const moviesVisible = ref(false)
+const moviesLoading = ref(false)
+const moviesItems = ref([])
+const moviesTotal = ref(0)
+const moviesActorName = ref('')
+const moviesActorUrl = ref('')
 
 // 编辑状态
 const editingId = ref(null)
@@ -523,6 +571,59 @@ const handleDetectAll = async () => {
     ElMessage.error('批量探测失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     detectingAll.value = false
+  }
+}
+
+const handleScrapeMoviesAll = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `将对「作品数≥${minMovies.value}」且已配置 javdb 演员页 URL 的演员，逐个抓取完整影片列表（每页 50 部，约每 1 秒一个，可能耗时较久）。确定开始？`,
+      '批量抓取演员影片',
+      { confirmButtonText: '开始抓取', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  scrapingMovies.value = true
+  try {
+    const res = await scrapeAllActorMovies({ min_movies: minMovies.value, max_pages: 5, only_with_url: true }, currentModule.value)
+    const data = res.data || res
+    ElMessage.success(`批量抓取完成：${data.actors || 0} 个演员，共 ${data.total_movies || 0} 部影片`)
+  } catch (e) {
+    ElMessage.error('批量抓取失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    scrapingMovies.value = false
+  }
+}
+
+const scrapeMovies = async (row) => {
+  scrapingMoviesId.value = row.id
+  moviesVisible.value = true
+  moviesLoading.value = true
+  moviesItems.value = []
+  moviesTotal.value = 0
+  moviesActorName.value = row.name
+  moviesActorUrl.value = cfgMap(row)['javdb']?.url || ''
+  try {
+    const res = await scrapeActorMovies(row.id, 5, currentModule.value)
+    const data = res.data || res
+    moviesItems.value = data.movies || []
+    moviesTotal.value = data.total || moviesItems.value.length
+  } catch (e) {
+    ElMessage.error('抓取失败: ' + (e.response?.data?.detail || e.message))
+    moviesVisible.value = false
+  } finally {
+    moviesLoading.value = false
+    scrapingMoviesId.value = null
+  }
+}
+
+const copyMovieCode = async (row) => {
+  try {
+    await navigator.clipboard.writeText(row.code)
+    ElMessage.success(`已复制 ${row.code}`)
+  } catch {
+    ElMessage.warning('复制失败')
   }
 }
 

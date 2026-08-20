@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-20",
+  "description": "MDCX-Server 移植来源版本锁定（repo + tag + commit 三元组，概念源自 ref44-AVDC-Next 的 engine-lock.json）。上游引擎更新后若行为破坏，按此记录核对落地模块；与 docs/SOURCES.md（协议逆向溯源）互补。",
+  "engines": [
+    {
+      "name": "Kesuy/mdcx",
+      "repo": "https://github.com/Kesuy/mdcx.git",
+      "tag": "3.8.8",
+      "commit": "7d75f24c0993be42c7c911244b66624ae7c98464",
+      "commit_date": "2026-08-18",
+      "license": "MIT",
+      "local_ref": "ref42-Kesuy-mdcx",
+      "modules": [
+        {
+          "landed": "app/services/network_diag.py",
+          "source": "mdcx/core/network_check.py",
+          "note": "网络诊断语义判定（CF 挑战多 marker / JavDB 封禁及地域限制 / DMM 地域限制 / MGStage 空页面）"
+        },
+        {
+          "landed": "app/config/migrations.py",
+          "source": "mdcx/config/migrations.py",
+          "note": "config 迁移管线（list 类型归一 / 代理 scheme 补全 / 命名模板 {field}->{{ field }} / config_version 版本标记）"
+        },
+        {
+          "landed": "app/utils/tag_priority.py + app/resources/mapping_table/mapping_info.xml",
+          "source": "mdcx/core/tag_priority.py + resources/mapping_table/mapping_info.xml",
+          "note": "NFO 标签优先级排序（M女 区间的 715 个内容类型标签前置，资源缺失时优雅降级）"
+        }
+      ]
+    }
+  ]
+}

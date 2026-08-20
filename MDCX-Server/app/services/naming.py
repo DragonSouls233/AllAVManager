@@ -16,6 +16,7 @@
 """
 
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any, Optional
 
@@ -31,6 +32,26 @@ logger = get_logger(__name__)
 ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 # 目录名非法字符（保留路径分隔符由调用方处理）
 ILLEGAL_DIRNAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+
+# Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9），用于文件名防护
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+# 智能截断优先级：先截断长文本字段，番号 code 最后才截断
+TRUNCATE_PRIORITY = (
+    "original_title",
+    "title",
+    "title_jp",
+    "actor",
+    "series",
+    "studio",
+    "maker",
+    "director",
+    "code",
+)
 
 
 def _make_env() -> SandboxedEnvironment:
@@ -49,6 +70,19 @@ def _make_env() -> SandboxedEnvironment:
     return env
 
 
+def _normalize_nfc(text: str) -> str:
+    """统一为 NFC 规范化（mac 的 NFD 日文文件名在 Windows 上会显示乱码）"""
+    return unicodedata.normalize("NFC", text)
+
+
+def _avoid_windows_reserved_name(segment: str) -> str:
+    """避免 Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）导致创建失败"""
+    name, dot, suffix = segment.partition(".")
+    if name.rstrip(". ").upper() in WINDOWS_RESERVED_NAMES:
+        return f"{name}_{dot}{suffix}"
+    return segment
+
+
 def sanitize_filename(name: str, replace_to_underscore: bool = True) -> str:
     """清理文件名中的非法字符"""
     if not name:
@@ -60,7 +94,9 @@ def sanitize_filename(name: str, replace_to_underscore: bool = True) -> str:
     s = re.sub(r"[_\s]+", " ", s).strip()
     # 去除首尾的点（Windows 不允许）
     s = s.strip(". ")
-    return s
+    # 避免 Windows 保留设备名
+    s = _avoid_windows_reserved_name(s)
+    return _normalize_nfc(s)
 
 
 def sanitize_dirname(name: str, replace_to_underscore: bool = True) -> str:
@@ -84,6 +120,52 @@ def truncate_safe(s: str, max_length: int) -> str:
     if not s:
         return ""
     return s[:max_length].rstrip(". ")
+
+
+def _clip_text(value: str, max_length: int) -> str:
+    """按长度截断文本，去除末尾的残留分隔符/标点"""
+    if max_length <= 0:
+        return ""
+    if len(value) <= max_length:
+        return value
+    return value[:max_length].rstrip(" ,，、;；:：._+-")
+
+
+def _smart_truncate(
+    template_str: str,
+    context: dict,
+    max_length: int,
+) -> str:
+    """智能截断：优先截断长文本字段，最后才截断番号 code
+
+    通过按 TRUNCATE_PRIORITY 顺序缩短字段后重新渲染模板，
+    比直接硬截断（truncate_safe）保留更多有效信息。
+    """
+    text = render_template(template_str, context)
+    if max_length <= 0 or len(text) <= max_length:
+        return text
+
+    mutable = dict(context)
+    for field_name in TRUNCATE_PRIORITY:
+        if len(text) <= max_length:
+            break
+        current = mutable.get(field_name)
+        if current is None or current == "":
+            continue
+        # 计算当前字段需要缩短多少
+        overflow = len(text) - max_length
+        current_len = len(str(current))
+        next_length = max(current_len - overflow, 0)
+        next_value = _clip_text(str(current), next_length)
+        if next_value == str(current):
+            continue
+        mutable[field_name] = next_value
+        text = render_template(template_str, mutable)
+
+    # 兜底：仍超长则硬截断
+    if len(text) > max_length:
+        text = _clip_text(text, max_length)
+    return text
 
 
 def _extract_year(date_str: Optional[str]) -> str:
@@ -215,9 +297,8 @@ def render_filename(
     """
     cfg = get_config().naming
     context = build_template_context(movie_dict, actors)
-    raw = render_template(template_str, context)
-    name = sanitize_filename(raw, cfg.replace_invalid_to_underscore)
-    name = truncate_safe(name, cfg.max_length)
+    name = _smart_truncate(template_str, context, cfg.max_length)
+    name = sanitize_filename(name, cfg.replace_invalid_to_underscore)
     if extension:
         ext = extension.lstrip(".")
         return f"{name}.{ext}"

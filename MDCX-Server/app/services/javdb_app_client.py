@@ -523,6 +523,42 @@ class JavDBAppClient:
             return None
         return await self._request("GET", f"/api/v4/movies/{movie_id}")
 
+    async def fetch_actor_movies(
+        self,
+        actor_id: str,
+        zone: str = "censored",
+        page: int = 1,
+        limit: int = 20,
+    ) -> dict:
+        """按演员页抓取影片列表（/api/v1/movies/tags + filter_by）。
+
+        移植自 ref15-javdb-cli EntityMovies（entity.go / masks.go）：
+        filter_by mask 格式 `{zone}:a:{actor_id}`，其中 zone: censored=0/uncensored=1/western=2/fc2=3，
+        "a" 为 actor 实体字母（EntityLetters）。
+
+        返回 {"movies": [dict...], "current_page": int}；失败返回空 dict。
+        movies 每项含 id/number/title/thumb_url/cover_url/release_date 等字段。
+        """
+        zone_map = {"censored": 0, "uncensored": 1, "western": 2, "fc2": 3}
+        z = zone_map.get((zone or "censored").lower(), 0)
+        if not actor_id:
+            return {}
+        params = {
+            "filter_by": f"{z}:a:{actor_id}",
+            "sort_by": "release",
+            "order_by": "desc",
+            "page": str(max(1, page)),
+            "limit": str(min(50, max(1, limit))),
+        }
+        data = await self._request("GET", "/api/v1/movies/tags", params)
+        if not data:
+            return {}
+        movies = (data.get("movies") or []) if isinstance(data, dict) else []
+        return {
+            "movies": movies,
+            "current_page": int(data.get("current_page") or 0),
+        }
+
     async def fetch_actor_aliases(
         self,
         actor_name: str,

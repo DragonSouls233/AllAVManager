@@ -8,6 +8,7 @@
 import asyncio
 import enum
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -19,6 +20,29 @@ from app.crawlers import get_crawler  # 已有的爬虫注册中心
 from app.services.websocket import emit_log
 
 logger = logging.getLogger(__name__)
+
+
+# 站点级详情页探针路径（比首页更能反映真实可用性，参考 Kesuy-mdcx network_check.py）
+SPECIAL_CHECK_PATHS = {
+    "javdb": "/v/D16Q5?locale=zh",
+    "javbus": "/FSDSS-660",
+    "javlibrary": "/cn/?v=javme2j2tu",
+    "kin8": "/moviepages/3681/index.html",
+}
+
+# Cloudflare 挑战页特征 marker（参考 Kesuy-mdcx network_check.py）
+CF_CHALLENGE_MARKERS = (
+    "challenge",
+    "ray id",
+    "ray-id",
+    "cf-browser-verification",
+    "just a moment",
+    "cf-chl",
+    "cdn-cgi/challenge-platform",
+    "attention required",
+    "enable javascript and cookies",
+    "checking your browser before accessing",
+)
 
 
 class DiagStatus(str, enum.Enum):
@@ -94,6 +118,11 @@ async def check_site_connectivity(
             message=f"未知站点: {site_name}",
         )
 
+    # 优先用详情页探针路径（比首页更能反映真实可用性）
+    probe_path = SPECIAL_CHECK_PATHS.get(site_name, "")
+    if probe_path:
+        url = url.rstrip("/") + probe_path
+
     start = time.time()
     try:
         async with httpx.AsyncClient(
@@ -103,18 +132,15 @@ async def check_site_connectivity(
         ) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
             duration = int((time.time() - start) * 1000)
+            text = resp.text or ""
 
             if resp.status_code == 200:
-                return DiagResult(
-                    name=f"site:{site_name}",
-                    status=DiagStatus.OK,
-                    message=f"HTTP 200 · 响应时间 {duration}ms",
-                    duration_ms=duration,
-                    details={"url": url, "status": 200},
+                return _classify_ok_response(
+                    site_name, text, duration, url, resp.status_code,
                 )
             elif resp.status_code in (403, 503):
-                # 可能是 CF 拦截
-                has_cf = "cloudflare" in resp.text.lower() or "cf-ray" in resp.headers
+                # 可能是 CF 拦截或站点级封禁
+                has_cf = "cloudflare" in text.lower() or "cf-ray" in resp.headers
                 return DiagResult(
                     name=f"site:{site_name}",
                     status=DiagStatus.WARNING if has_cf else DiagStatus.FAILED,
@@ -135,7 +161,7 @@ async def check_site_connectivity(
         return DiagResult(
             name=f"site:{site_name}",
             status=DiagStatus.FAILED,
-            message=f"超时（{timeout}s）",
+            message="连接超时，请检查网络或代理节点",
             duration_ms=duration,
         )
     except Exception as e:
@@ -143,9 +169,151 @@ async def check_site_connectivity(
         return DiagResult(
             name=f"site:{site_name}",
             status=DiagStatus.FAILED,
-            message=f"连接失败: {type(e).__name__}: {e}",
+            message=_classify_error_message(e),
             duration_ms=duration,
         )
+
+
+def _classify_ok_response(
+    site_name: str,
+    text: str,
+    duration: int,
+    url: str,
+    status_code: int,
+) -> DiagResult:
+    """HTTP 200 时的站点级语义判定（参考 Kesuy-mdcx network_check.py）。
+
+    识别 CF 挑战页、JavDB IP 封禁 / 地域限制 / Cookie 有效性、
+    JavBus Cookie 提示、DMM 地域限制、MGStage 空页面。
+    """
+    # 1. Cloudflare 挑战页（多 marker 识别）
+    if _is_cloudflare_challenge(text):
+        return DiagResult(
+            name=f"site:{site_name}",
+            status=DiagStatus.WARNING,
+            message="HTTP 200 但被 Cloudflare 挑战页拦截",
+            duration_ms=duration,
+            details={"url": url, "status": status_code, "cloudflare_challenge": True},
+        )
+
+    # 2. 站点级语义判定
+    cfg = get_config().crawler
+
+    if site_name == "javdb":
+        if "The owner of this website has banned your access based on your browser's behaving" in text:
+            ip_match = re.findall(r"(\d+\.\d+\.\d+\.\d+)", text)
+            ip_text = f"{ip_match[0]} " if ip_match else ""
+            return DiagResult(
+                name=f"site:{site_name}",
+                status=DiagStatus.FAILED,
+                message=f"当前 IP {ip_text}被 JavDB 封禁",
+                duration_ms=duration,
+                details={"url": url, "status": status_code, "ip_banned": True},
+            )
+        if "Due to copyright restrictions" in text or "Access denied" in text:
+            return DiagResult(
+                name=f"site:{site_name}",
+                status=DiagStatus.FAILED,
+                message="当前 IP 被 JavDB 限制，请使用非日本节点",
+                duration_ms=duration,
+                details={"url": url, "status": status_code},
+            )
+        if "/logout" in text:
+            return DiagResult(
+                name=f"site:{site_name}",
+                status=DiagStatus.OK,
+                message=f"HTTP 200 · 响应时间 {duration}ms · Cookie 有效",
+                duration_ms=duration,
+                details={"url": url, "status": status_code, "cookie_valid": True},
+            )
+        if getattr(cfg, "javdb_cookie", ""):
+            return DiagResult(
+                name=f"site:{site_name}",
+                status=DiagStatus.WARNING,
+                message="站点可访问，但 JavDB Cookie 可能无效",
+                duration_ms=duration,
+                details={"url": url, "status": status_code},
+            )
+        return DiagResult(
+            name=f"site:{site_name}",
+            status=DiagStatus.OK,
+            message=f"HTTP 200 · 响应时间 {duration}ms",
+            duration_ms=duration,
+            details={"url": url, "status": status_code},
+        )
+
+    if site_name == "javbus":
+        has_cookie = bool(getattr(cfg, "javbus_cookie", ""))
+        if "lostpasswd" in text and has_cookie:
+            return DiagResult(
+                name=f"site:{site_name}",
+                status=DiagStatus.WARNING,
+                message="站点可访问，但 JavBus Cookie 可能无效",
+                duration_ms=duration,
+                details={"url": url, "status": status_code},
+            )
+        if "lostpasswd" in text:
+            return DiagResult(
+                name=f"site:{site_name}",
+                status=DiagStatus.WARNING,
+                message="当前节点可能需要 JavBus Cookie",
+                duration_ms=duration,
+                details={"url": url, "status": status_code},
+            )
+        return DiagResult(
+            name=f"site:{site_name}",
+            status=DiagStatus.OK,
+            message=f"HTTP 200 · 响应时间 {duration}ms",
+            duration_ms=duration,
+            details={"url": url, "status": status_code},
+        )
+
+    if site_name == "dmm" and "このページはお住まいの地域からご利用になれません" in text:
+        return DiagResult(
+            name=f"site:{site_name}",
+            status=DiagStatus.FAILED,
+            message="DMM 地域限制，请使用日本节点",
+            duration_ms=duration,
+            details={"url": url, "status": status_code, "region_blocked": True},
+        )
+
+    if site_name == "mgstage" and not text.strip():
+        return DiagResult(
+            name=f"site:{site_name}",
+            status=DiagStatus.FAILED,
+            message="MGStage 返回空页面，通常是地域限制，请使用日本节点",
+            duration_ms=duration,
+            details={"url": url, "status": status_code},
+        )
+
+    # 3. 默认：HTTP 200 正常
+    return DiagResult(
+        name=f"site:{site_name}",
+        status=DiagStatus.OK,
+        message=f"HTTP 200 · 响应时间 {duration}ms",
+        duration_ms=duration,
+        details={"url": url, "status": status_code},
+    )
+
+
+def _is_cloudflare_challenge(text: str) -> bool:
+    """识别 Cloudflare 挑战页（多 marker 特征，参考 Kesuy-mdcx）。"""
+    lowered = (text or "").lower()
+    return "cloudflare" in lowered and any(
+        marker in lowered for marker in CF_CHALLENGE_MARKERS
+    )
+
+
+def _classify_error_message(e: Exception) -> str:
+    """将连接异常归类为可读提示（参考 Kesuy-mdcx _message_for_error）。"""
+    lowered = str(e).lower()
+    if "proxy" in lowered or "socks" in lowered or "tunnel" in lowered:
+        return "代理连接失败，请检查代理地址或代理软件"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "连接超时，请检查网络或代理节点"
+    if "dns" in lowered or "resolve" in lowered or "getaddrinfo" in lowered:
+        return "DNS 解析失败"
+    return f"连接失败: {type(e).__name__}: {e}"
 
 
 async def check_proxy(

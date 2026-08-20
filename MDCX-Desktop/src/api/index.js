@@ -364,9 +364,15 @@ export const localDatabaseSummary = () => api.post('/compare/database')
 export const compareSearchDirectories = (actorName, maxDepth = 4) =>
   api.post('/compare/search-directories', { actor_name: actorName, max_depth: maxDepth })
 export const compareOnlineByActor = (actorId, data = {}, module = '') =>
-  api.post('/compare/online-by-actor', { actor_id: actorId, ...data }, { params: module ? { module } : {} })
+  api.post('/compare/online-by-actor', { actor_id: actorId, ...data }, {
+    params: module ? { module } : {},
+    timeout: 240000, // 单源对比可能抓磁力，放宽超时
+  })
 export const runAllCompareByActor = (actorId, data = {}, module = '') =>
-  api.post(`/compare/actors/${actorId}/run-all`, data, { params: module ? { module } : {} })
+  api.post(`/compare/actors/${actorId}/run-all`, data, {
+    params: module ? { module } : {},
+    timeout: 300000, // 多源对比串行抓磁力耗时较长，放宽超时
+  })
 export const getCompareActors = (params) => api.get('/compare/actors', { params })
 export const getActorCompareUrl = (actorId, module = '') => api.get(`/compare/actors/${actorId}/url`, { params: module ? { module } : {} })
 export const saveActorCompareUrl = (actorId, data, module = '') => api.put(`/compare/actors/${actorId}/url`, data, { params: module ? { module } : {} })
@@ -378,6 +384,10 @@ export const detectActorCompareUrl = (actorId, source = 'all', module = '') =>
   api.post(`/compare/actors/${actorId}/detect-url`, null, { params: { source, ...(module ? { module } : {}) } })
 export const detectAllCompareUrls = (data = {}, module = '') =>
   api.post('/compare/actors/detect-all', data, { params: module ? { module } : {}, timeout: 0 })
+export const scrapeActorMovies = (actorId, maxPages = 5, module = '') =>
+  api.post(`/compare/actors/${actorId}/scrape-movies`, null, { params: { max_pages: maxPages, ...(module ? { module } : {}) }, timeout: 0 })
+export const scrapeAllActorMovies = (data = {}, module = '') =>
+  api.post('/compare/actors/scrape-movies-all', data, { params: module ? { module } : {}, timeout: 0 })
 
 // ============================================
 // Favorites 收藏夹

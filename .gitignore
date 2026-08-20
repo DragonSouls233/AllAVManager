@@ -121,3 +121,8 @@ test_dup.js
 test_play.js
 deploy-movies-series.bat
 deploy-frontend.bat
+MDCX-Server/debug_javdb_magnets3.py
+MDCX-Server/debug_actor_movies.py
+MDCX-Server/debug_actor_movies2.py
+MDCX-Server/debug_javdb_magnets.py
+MDCX-Server/debug_javdb_magnets2.py

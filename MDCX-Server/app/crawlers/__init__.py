@@ -14,6 +14,9 @@ from app.crawlers.provider import (
 # 导入原始爬虫以触发注册
 from app.crawlers import javbus, javdb, fc2, avsox, avmoo, javdatabase, javbooks
 
+# TheJavDB 开放 API 爬虫（免 Cookie 绕 CF，见 javdbapi.py 头部版本追踪说明）
+from app.crawlers import javdbapi
+
 # 导入 md 爬虫（包含 fc2ppvdb/fc2club 等，会自动注册）
 from app.crawlers import md
 
@@ -54,6 +57,7 @@ __all__ = [
     # 原始爬虫
     "javbus",
     "javdb",
+    "javdbapi",
     "fc2",
     "avsox",
     "dmm",

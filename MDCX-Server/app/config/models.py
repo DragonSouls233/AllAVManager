@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config.module_models import ModulesConfig
+from app.config.migrations import CURRENT_CONFIG_VERSION
 
 
 class ServerConfig(BaseModel):
@@ -944,6 +945,9 @@ class Config(BaseModel):
 
     # 基础配置
     app_name: str = Field(default="龙魂视频管理系统", title="应用名称")
+    # 配置结构版本（与 app/config/migrations.py 的 CURRENT_CONFIG_VERSION 保持一致，
+    # 旧版配置在加载时由迁移管线归一化并写回）
+    config_version: int = Field(default=CURRENT_CONFIG_VERSION, title="配置版本")
 
     # 嵌套配置
     modules: ModulesConfig = Field(default_factory=ModulesConfig, title="模块管理配置")

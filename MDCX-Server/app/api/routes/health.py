@@ -21,6 +21,7 @@ from app.config.manager import get_config, PROJECT_ROOT
 router = APIRouter()
 
 _VERSION_CACHE: dict | None = None
+_ENGINE_LOCK_CACHE: dict | None = None
 
 
 def _load_version() -> dict:
@@ -36,10 +37,31 @@ def _load_version() -> dict:
     return _VERSION_CACHE
 
 
+def _load_engine_locks() -> list[dict]:
+    """读取 engine-lock.json（移植来源版本锁定清单，带缓存）。
+
+    概念源自 ref44-AVDC-Next：repo+tag+commit 三元组锁定上游引擎版本，
+    供审计与升级决策。文件缺失时返回空列表，不影响服务。
+    """
+    global _ENGINE_LOCK_CACHE
+    if _ENGINE_LOCK_CACHE is not None:
+        return _ENGINE_LOCK_CACHE
+    lpath = PROJECT_ROOT / "engine-lock.json"
+    try:
+        data = json.loads(lpath.read_text(encoding="utf-8"))
+        engines = data.get("engines", []) if isinstance(data, dict) else []
+        _ENGINE_LOCK_CACHE = engines if isinstance(engines, list) else []
+    except Exception:
+        _ENGINE_LOCK_CACHE = []
+    return _ENGINE_LOCK_CACHE
+
+
 @router.get("/version")
 async def version_info():
-    """返回当前版本和已应用补丁列表"""
-    return _load_version()
+    """返回当前版本、已应用补丁列表及移植来源锁定清单"""
+    version = _load_version()
+    version["engine_locks"] = _load_engine_locks()
+    return version
 
 
 @router.get("")

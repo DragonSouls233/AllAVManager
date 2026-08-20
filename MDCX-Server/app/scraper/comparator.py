@@ -126,22 +126,26 @@ def pick_best_magnet(magnets: list[dict]) -> Optional[dict]:
 async def attach_magnets(crawler, items, concurrency: int = 4, limit: int = 30) -> None:
     """并发抓取影片详情页磁力链接，写入 item.magnets（带中文标记）
 
-    - items 可以是 OnlineVideo 或 ChineseMismatch（都需 .url / .magnets 属性）
+    - items 可以是 OnlineVideo（字段 .url）或 ChineseMismatch（字段 .online_url）
     - 只处理前 limit 个（前端/路由已按优先级排序）
     - 单部失败不影响整体
     """
     import asyncio
-    target = [it for it in items if it.url][:limit]
+    target = [
+        it for it in items
+        if (getattr(it, "url", None) or getattr(it, "online_url", None))
+    ][:limit]
     if not target:
         return
     sem = asyncio.Semaphore(concurrency)
 
     async def one(it):
         async with sem:
+            url = getattr(it, "url", None) or getattr(it, "online_url", None)
             try:
-                it.magnets = await crawler._fetch_magnets(it.url)
+                it.magnets = await crawler._fetch_magnets(url)
             except Exception as e:
-                logger.warning(f"抓取磁力失败 {it.url}: {e}")
+                logger.warning(f"抓取磁力失败 {url}: {e}")
 
     await asyncio.gather(*(one(it) for it in target))
 
@@ -994,6 +998,59 @@ class JavDBListCrawler:
                 ))
         return all_videos
 
+    async def scrape_actor_movies(self, actress_url: str, max_pages: int = 10) -> list[OnlineVideo]:
+        """按演员页精确抓取影片列表（基于 actor_id 的完整片单）。
+
+        与 _api_crawl_actress 的区别：
+        - _api_crawl_actress 按「演员名搜索」，标题不含演员名的合集/精选片会被漏掉；
+        - 本方法用 /api/v1/movies/tags + filter_by={zone}:a:{actor_id} 直接按演员 ID
+          抓完整片单（移植自 ref15-javdb-cli EntityMovies），不依赖标题命中。
+
+        支持翻页（每页 limit=50），按上映时间倒序。
+        """
+        m = re.search(r"/(?:actresses|actors)/([A-Za-z0-9]+)", actress_url)
+        if not m:
+            return []
+        actor_id = m.group(1)
+        if not self.api_mode:
+            return []
+        import asyncio
+        client = await self._get_app_client()
+        all_videos: list[OnlineVideo] = []
+        seen_codes: set[str] = set()
+        page = 1
+        while page <= max_pages:
+            data = await client.fetch_actor_movies(actor_id, zone=self._zone(), page=page, limit=50)
+            movies = data.get("movies") or []
+            if not movies:
+                break
+            for mv in movies:
+                if not isinstance(mv, dict):
+                    continue
+                code = (mv.get("number") or "").strip().upper()
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+                base_code = normalize_number(base) if base else code
+                base_code = strip_episode_suffix(base_code)
+                all_videos.append(OnlineVideo(
+                    code=code,
+                    base_code=base_code,
+                    title=(mv.get("title") or mv.get("origin_title") or "").strip()[:200],
+                    url=f"https://javdb.com/v/{mv.get('id') or ''}",
+                    cover=mv.get("cover_url") or mv.get("thumb_url") or "",
+                    date=mv.get("release_date") or "",
+                    has_chinese=bool(mv.get("has_cnsub")),
+                    is_uncensored=self.uncensored,
+                ))
+            # current_page 为空表示无翻页信息，保守多抓一页后结束
+            if data.get("current_page") is None:
+                break
+            page += 1
+            await asyncio.sleep(self.request_delay)
+        return all_videos
+
     async def search_keyword(self, keyword: str) -> list[OnlineVideo]:
         """按关键词搜索 javdb（API 模式优先，降级 HTML 搜索结果页）"""
         import asyncio
@@ -1064,8 +1121,10 @@ class JavDBListCrawler:
     async def _fetch_magnets(self, video_url: str) -> list[dict]:
         """抓取 javdb 影片磁力链接
 
-        API 模式：App API /api/v1/movies/{id}/magnets（cnsub 字段直接判定中字）；
-        失败时降级 HTML 详情页解析。
+        API 模式：App API /api/v1/movies/{id}/magnets（cnsub 字段直接判定中字）。
+        - App API 成功返回 0 条（magnets_count=0）＝javdb 上确实无磁力，跳过 HTML 降级
+          （HTML 被 Cloudflare 403 拦截，降级只会空转产生噪音日志）；
+        - App API 请求异常（返回 None）才降级 HTML 解析。
         """
         if not video_url:
             return []
@@ -1073,7 +1132,11 @@ class JavDBListCrawler:
             magnets = await self._api_fetch_magnets(video_url)
             if magnets:
                 return magnets
-            logger.warning("javdb App API 磁力抓取失败/为空，降级 HTML: %s", video_url)
+            # 区分"无磁力"（API 正常返回空）与"抓取失败"（API 异常）
+            api_failed = await self._api_magnets_failed(video_url)
+            if not api_failed:
+                return []
+            logger.warning("javdb App API 磁力抓取失败，降级 HTML: %s", video_url)
 
         html = await self._fetch(video_url)
         if not html:
@@ -1120,10 +1183,14 @@ class JavDBListCrawler:
                 })
         return magnets
 
-    async def _api_fetch_magnets(self, video_url: str) -> list[dict]:
+    async def _api_fetch_magnets(self, video_url: str) -> Optional[list[dict]]:
         """App API 取磁力：/api/v1/movies/{id}/magnets
 
         cnsub 字段为 JavDB 官方中字标记，比名称/后缀正则更可靠。
+        返回三态：
+        - 非空列表：磁力抓取成功；
+        - []：App API 正常响应但该影片无磁力（magnets_count=0，属正常）；
+        - None：App API 请求异常/失败（调用方应降级 HTML）。
         """
         m = re.search(r"/v/([A-Za-z0-9]+)", video_url)
         if not m:
@@ -1132,7 +1199,7 @@ class JavDBListCrawler:
         try:
             magnets = await client.get_magnets(m.group(1))
         except Exception:
-            return []
+            return None
         out: list[dict] = []
         seen: set[str] = set()
         for mg in magnets:
@@ -1147,6 +1214,27 @@ class JavDBListCrawler:
                 "chinese": bool(mg.cnsub),
             })
         return out
+
+    async def _api_magnets_failed(self, video_url: str) -> bool:
+        """判断 javdb App API 磁力抓取是否属于"请求失败"（而非"无磁力"）。
+
+        通过电影详情 /api/v4/movies/{id} 的 magnets_count 字段判定：
+        - magnets_count>0 但 get_magnets 返回空 → 请求失败（应降级 HTML 兜底）；
+        - magnets_count=0 → javdb 上确实无磁力（跳过 HTML 降级，避免 403 空转）。
+        """
+        m = re.search(r"/v/([A-Za-z0-9]+)", video_url)
+        if not m:
+            return False
+        try:
+            client = await self._get_app_client()
+            detail = await client.get_movie_detail(m.group(1))
+        except Exception:
+            return True
+        if not detail:
+            return True
+        movie = detail.get("movie") or {}
+        count = int(movie.get("magnets_count") or 0)
+        return count > 0
 
     async def detect_actress(self, actor_name: str) -> Optional[tuple[str, str]]:
         """在 javdb 定位该演员的 /actors/{id} 页 URL

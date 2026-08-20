@@ -562,11 +562,14 @@ async def compare_actor_all_sources(
 
     comparator = LocalOnlineComparator()
     sources: dict = {}
-    for source in req.sources:
+    # 各源并行执行（限制并发，避免同时抓取详情页被反爬拦截），
+    # 总耗时从「各源之和」降为「最慢单源」，防止前端超时中断。
+    sem = asyncio.Semaphore(2)
+
+    async def _run_one(source: str):
         source = (source or "").lower().strip()
         if source not in _COMPARE_SOURCES:
-            sources[source] = {"status": "error", "detail": f"未知数据源 {source}"}
-            continue
+            return source, {"status": "error", "detail": f"未知数据源 {source}"}
         try:
             crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module))
             cfg = config_map.get(source)
@@ -577,16 +580,14 @@ async def compare_actor_all_sources(
                 online_videos = await crawler.search_keyword(actor_name)
                 online_source = f"search:{actor_name}"
             else:
-                sources[source] = {"status": "error", "detail": "未配置URL且无演员名"}
-                continue
+                return source, {"status": "error", "detail": "未配置URL且无演员名"}
 
             if not online_videos:
-                sources[source] = {
+                return source, {
                     "status": "empty",
                     "message": f"未能从 {source} 获取到在线视频列表，可能原因：1) Cookie 失效需重新登录 2) 被 Cloudflare 拦截 3) 网络问题 4) 演员页 URL 格式不正确",
                     "online_count": 0,
                 }
-                continue
 
             result = comparator.compare(
                 online_videos, local_codes,
@@ -596,10 +597,17 @@ async def compare_actor_all_sources(
             if req.fetch_magnets:
                 await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
                 await attach_magnets(crawler, result.chinese_mismatch, limit=req.magnet_limit)
-            sources[source] = {"status": "ok", **result.to_dict()}
+            return source, {"status": "ok", **result.to_dict()}
         except Exception as e:
             logger.error(f"[run-all] {source} 对比失败: {e}")
-            sources[source] = {"status": "error", "detail": str(e)}
+            return source, {"status": "error", "detail": str(e)}
+
+    async def _run_limited(source: str):
+        async with sem:
+            return await _run_one(source)
+
+    for k, v in await asyncio.gather(*(_run_limited(s) for s in req.sources)):
+        sources[k] = v
 
     return {"status": "ok", "actress_name": actor_name, "sources": sources}
 
@@ -926,6 +934,116 @@ async def detect_all_compare_urls(
         summary["sources"][source] = st
 
     return {"status": "ok", **summary}
+
+
+@router.post("/actors/{actor_id}/scrape-movies")
+async def scrape_actor_movies(
+    actor_id: int,
+    max_pages: int = Query(5, ge=1, le=20, description="最大抓取页数(每页50部)"),
+    module: str = Query("jav"),
+):
+    """按演员页精确抓取影片列表（P0-1：演员 URL 接入刮削）。
+
+    读取该演员已配置的 javdb /actors/{id} 对比 URL，用 App API
+    /api/v1/movies/tags + filter_by 按演员 ID 抓取完整片单（不依赖标题命中），
+    返回影片列表供前端展示 / 触发刮削。
+    未配置 javdb URL 时返回 400。
+    """
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
+    Actor = get_module_model(module, "actor")
+
+    actor = await session.get(Actor, actor_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="演员不存在")
+
+    cfg = await session.scalar(
+        select(ActorCompareURL).where(
+            ActorCompareURL.actor_id == actor_id,
+            ActorCompareURL.source == "javdb",
+        )
+    )
+    url = (cfg.url if cfg else "") or ""
+    if not url:
+        raise HTTPException(status_code=400, detail=f"{actor.name} 尚未配置 javdb 演员页 URL，请先探测")
+
+    crawler = _get_list_crawler("javdb", max_pages, _crawler_uncensored(module))
+    try:
+        videos = await crawler.scrape_actor_movies(url, max_pages=max_pages)
+    except Exception as e:
+        logger.error(f"抓取演员影片列表失败 {actor.name} ({url}): {e}")
+        raise HTTPException(status_code=502, detail=f"抓取失败: {e}")
+
+    items = [
+        {
+            "code": v.code,
+            "base_code": v.base_code,
+            "title": v.title,
+            "url": v.url,
+            "date": v.date,
+            "has_chinese": v.has_chinese,
+        }
+        for v in videos
+    ]
+    return {
+        "status": "ok",
+        "actor_id": actor_id,
+        "actor_name": actor.name,
+        "actor_url": url,
+        "total": len(items),
+        "movies": items,
+    }
+
+
+@router.post("/actors/scrape-movies-all")
+async def scrape_all_actor_movies(
+    min_movies: int = Query(10, ge=1, le=100, description="最少作品数"),
+    max_pages: int = Query(5, ge=1, le=20, description="每演员最大抓取页数(每页50部)"),
+    only_with_url: bool = Body(True, description="True=仅抓已配置 javdb URL 的演员"),
+    module: str = Query("jav"),
+):
+    """批量按演员页抓取影片列表（仅已配置 javdb URL 的演员）。
+
+    对每个已配置 javdb /actors/{id} URL 的演员，抓取其完整片单。
+    顺序执行（带间隔），单个失败不影响其余。
+    返回每演员的影片数与总数。
+    """
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
+    Actor = get_module_model(module, "actor")
+
+    query = (
+        select(Actor, ActorCompareURL)
+        .join(ActorCompareURL, ActorCompareURL.actor_id == Actor.id)
+        .where(
+            ActorCompareURL.source == "javdb",
+            ActorCompareURL.url.isnot(None),
+            ActorCompareURL.url != "",
+        )
+    )
+    if only_with_url:
+        query = query.where(func.coalesce(Actor.movie_count, 0) >= min_movies)
+    rows = (await session.execute(query)).all()
+
+    crawler = _get_list_crawler("javdb", max_pages, _crawler_uncensored(module))
+    results: list[dict] = []
+    total = 0
+    for actor, cfg in rows:
+        try:
+            videos = await crawler.scrape_actor_movies(cfg.url, max_pages=max_pages)
+            results.append({
+                "actor_id": actor.id,
+                "actor_name": actor.name,
+                "url": cfg.url,
+                "total": len(videos),
+                "status": "ok",
+            })
+            total += len(videos)
+        except Exception as e:
+            logger.warning(f"批量抓取影片 {actor.name} 失败: {e}")
+            results.append({"actor_id": actor.id, "actor_name": actor.name, "url": cfg.url, "total": 0, "status": "failed", "error": str(e)})
+        await asyncio.sleep(1.0)
+    return {"status": "ok", "actors": len(results), "total_movies": total, "results": results}
 
 
 @router.post("/actors/scan")

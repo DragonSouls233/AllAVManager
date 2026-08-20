@@ -19,7 +19,7 @@ from app.db.database import get_db
 # Module-specific models now accessed via get_module_model()
 from app.utils.module_helper import get_module_model, get_module_session
 from app.importer.image_scanner import ImageScanner, MovieImages
-from app.importer.nfo_parser import ImportedMovie, NFOParser
+from app.importer.nfo_parser import ImportedMovie, NFOParser, select_media_for_nfo
 from app.importer.number_matcher import NumberMatcher
 
 logger = logging.getLogger(__name__)
@@ -234,6 +234,17 @@ class ImportSync:
                         result.movie_id = existing_id
                         return result
                     
+                    # NFO ↔ 视频配对消歧：目录含多个视频时，优先将 NFO 对应的视频排到首位
+                    # （_sync_to_db 取 video_files[0] 作为 file_path）
+                    paired_video_files = [str(f) for f in video_files]
+                    if len(video_files) > 1:
+                        matched = select_media_for_nfo(nfo_file, video_files)
+                        if matched is not None and matched in video_files:
+                            paired_video_files = [
+                                str(matched),
+                                *(str(f) for f in video_files if f != matched),
+                            ]
+                    
                     # 同步到数据库
                     # 关键：NFO 分支也要传 video_files，否则 file_path 会为 None 导致播放 404
                     movie_id = await self._sync_to_db(
@@ -242,7 +253,7 @@ class ImportSync:
                         images=images,
                         directory=directory,
                         existing_id=existing_id,
-                        video_files=video_files,
+                        video_files=paired_video_files,
                     )
                     
                     if movie_id:

@@ -541,3 +541,94 @@ def parse_nfo_file(nfo_path: Union[str, Path]) -> Optional[ImportedMovie]:
     """
     parser = NFOParser()
     return parser.parse(nfo_path)
+
+
+# ============================================
+# NFO ↔ 视频文件配对消歧（移植自 Kesuy-mdcx local_nfo_loader）
+# ============================================
+
+def _extract_cd_part(stem: str) -> str:
+    """从文件名提取 CD 后缀（如 ABC-123-CD1.mp4 -> CD1）"""
+    import re
+    m = re.search(r"[-_\s]?(CD\d+|Disc\d+|\d{1,2})$", stem, re.IGNORECASE)
+    return m.group(1) if m else ""
+
+
+def _stem_number(stem: str) -> Optional[str]:
+    """从视频文件名提取番号（复用 number_matcher 的口径）"""
+    from app.scraper.number import extract_number
+    try:
+        result = extract_number(stem)
+        if result and result.number:
+            return result.number.strip().upper().replace("_", "-")
+    except Exception:
+        pass
+    return None
+
+
+def _cd_base_stem(stem: str, cd_part: str) -> str:
+    """去掉 CD 后缀得到基础文件名（ABC-123-CD1 -> ABC-123-）"""
+    if cd_part and stem.casefold().endswith(cd_part.casefold()):
+        return stem[: -len(cd_part)]
+    return stem
+
+
+def select_media_for_nfo(
+    nfo_path: Union[str, Path],
+    video_files: list[Union[str, Path]],
+) -> Optional[Path]:
+    """将 NFO 与同目录视频文件配对（消歧）
+
+    当一个目录含多个视频 + 多个 NFO 时，确定所选 NFO 对应的视频文件。
+    消歧优先级（对齐 Kesuy-mdcx local_nfo_loader）：
+        1. 精确名匹配：视频文件名与 NFO 文件名一致（唯一）
+        2. 唯一候选：目录只有一个视频
+        3. 番号匹配：NFO 番号 == 视频文件提取的番号（唯一）
+        4. CD 分组：多个同番号视频（如 ABC-123-CD1/-CD2）按 NFO 文件名分组匹配
+
+    Args:
+        nfo_path: NFO 文件路径
+        video_files: 同目录下的视频文件列表
+
+    Returns:
+        配对的视频文件路径；无法确定时返回 None
+    """
+    nfo_path = Path(nfo_path)
+    candidates = [(Path(f), Path(f).stem) for f in video_files]
+    if not candidates:
+        return None
+
+    nfo_stem = nfo_path.stem
+
+    # 1. 精确名匹配
+    exact = [p for p, _ in candidates if p.stem.casefold() == nfo_stem.casefold()]
+    if len(exact) == 1:
+        return exact[0]
+
+    # 2. 唯一候选
+    if len(candidates) == 1:
+        return candidates[0][0]
+
+    # 3. 番号匹配
+    parser = NFOParser()
+    movie = parser.parse(nfo_path)
+    nfo_code = (movie.code or "").strip().upper().replace("_", "-") if movie else ""
+
+    if nfo_code:
+        matching = [
+            (p, stem)
+            for p, stem in candidates
+            if _stem_number(stem) == nfo_code
+        ]
+        if len(matching) == 1:
+            return matching[0][0]
+        # 4. CD 分组：多个同番号视频，按 NFO 文件名的分组基名匹配
+        if len(matching) > 1:
+            groups: dict[str, list[tuple[Path, str]]] = {}
+            for p, stem in matching:
+                cd_part = _extract_cd_part(stem)
+                groups.setdefault(_cd_base_stem(stem, cd_part).casefold(), []).append((p, cd_part))
+            if len(groups) == 1:
+                return next(iter(groups.values()))[0][0]
+
+    return None

@@ -16,12 +16,15 @@
 集成 Jinja2 命名模板（复用 app.services.naming）。
 """
 import asyncio
+import ctypes
+import errno
 import hashlib
 import importlib
 import logging
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -320,11 +323,16 @@ class FileOrganizeService:
             elif job_type == OrganizeType.COPY.value:
                 shutil.copy2(source, target)
             elif job_type == OrganizeType.MOVE.value:
-                shutil.move(source, target)
+                # 同卷优先使用原子改名（防覆盖），跨卷回退 shutil.move
+                if _same_fs(Path(source), Path(target)):
+                    _rename_no_replace(Path(source), Path(target))
+                else:
+                    shutil.move(source, target)
             elif job_type == OrganizeType.SYMLINK.value:
                 os.symlink(os.path.abspath(source), target)
             elif job_type == OrganizeType.RENAME.value:
-                shutil.move(source, target)
+                # 原地改名：同步伴生文件（字幕/封面/NFO 等），防覆盖
+                rename_with_companions(source, target)
             else:
                 logger.error(f"未知的整理模式: {job_type}")
                 return False
@@ -424,6 +432,142 @@ def _sha256_of_file(path: str, chunk_size: int = 1024 * 1024) -> str:
         for chunk in iter(lambda: f.read(chunk_size), b""):
             sha.update(chunk)
     return sha.hexdigest()
+
+
+# ============================================
+# v5.0：安全改名原语（移植自 Kesuy-mdcx media_reorganization）
+# ============================================
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def _same_spelling(left: Path, right: Path) -> bool:
+    return os.path.abspath(left) == os.path.abspath(right)
+
+
+def _same_fs(left: Path, right: Path) -> bool:
+    """判断两个路径是否位于同一文件系统/盘符（同卷才可原子改名）"""
+    try:
+        return os.path.normcase(os.path.splitdrive(os.path.abspath(left))[0]) == os.path.normcase(
+            os.path.splitdrive(os.path.abspath(right))[0]
+        )
+    except OSError:
+        return False
+
+
+def _renamed_companion_name(name: str, old_stem: str, new_stem: str) -> str:
+    """计算伴生文件（字幕/封面/NFO 等）在主文件改名后的新文件名。
+
+    仅当伴生文件以 old_stem 开头且紧跟着分隔符（.-_ 空格）时才跟随改名，
+    避免误伤同目录下的其它文件。
+    """
+    if not name.startswith(old_stem) or len(name) == len(old_stem):
+        return name
+    if name[len(old_stem)] not in ".-_ ":
+        return name
+    return new_stem + name[len(old_stem):]
+
+
+def _rename_no_replace(source: Path, target: Path) -> None:
+    """同卷原子改名；若目标在任意时刻已存在则绝不覆盖。
+
+    优先使用系统原子改名原语（Linux renameat2 / macOS renamex_np），
+    兼容平台回退到前置 lexists 防护 + os.rename。
+    """
+    if os.path.lexists(target):
+        raise FileExistsError(errno.EEXIST, "目标已存在", str(target))
+
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        if hasattr(libc, "renameat2"):
+            source_bytes = os.fsencode(source)
+            target_bytes = os.fsencode(target)
+            at_fdcwd = -100
+            rename_noreplace = 1
+            result = libc.renameat2(at_fdcwd, source_bytes, at_fdcwd, target_bytes, rename_noreplace)
+            if result == 0:
+                return
+            error_number = ctypes.get_errno()
+            if error_number not in (errno.ENOSYS, errno.EINVAL):
+                raise OSError(error_number, os.strerror(error_number), str(target))
+
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        if hasattr(libc, "renamex_np"):
+            source_bytes = os.fsencode(source)
+            target_bytes = os.fsencode(target)
+            rename_excl = 0x00000004
+            result = libc.renamex_np(source_bytes, target_bytes, rename_excl)
+            if result == 0:
+                return
+            error_number = ctypes.get_errno()
+            if error_number not in (errno.ENOSYS, errno.EINVAL):
+                raise OSError(error_number, os.strerror(error_number), str(target))
+
+    # Windows 的 os.rename 不覆盖现有目标；未知平台保留前置 lexists 防护。
+    source.rename(target)
+
+
+def _rename_case_safe(source: Path, target: Path) -> None:
+    """大小写改名安全处理：仅大小写不同的改名需经临时名中转，避免平台差异。"""
+    if _same_spelling(source, target):
+        return
+    if os.path.normcase(str(source)) == os.path.normcase(str(target)):
+        temporary = source.with_name(f"{source.name}.MDCx.rename.tmp")
+        counter = 0
+        while temporary.exists():
+            counter += 1
+            temporary = source.with_name(f"{source.name}.MDCx.rename.{counter}.tmp")
+        _rename_no_replace(source, temporary)
+        try:
+            _rename_no_replace(temporary, target)
+        except Exception:
+            _rename_no_replace(temporary, source)
+            raise
+        return
+    _rename_no_replace(source, target)
+
+
+def rename_with_companions(source: str, target: str) -> list[str]:
+    """原地改名并同步伴生文件（字幕/封面/NFO 等）。
+
+    以主文件 old_stem 开头且紧跟分隔符的伴生文件会跟随改名，
+    例如 ABC-123.mp4 改为 DEF-456.mp4 时，ABC-123.srt → DEF-456.srt。
+
+    Returns:
+        实际执行的 (旧路径 -> 新路径) 列表
+    """
+    src_path = Path(source)
+    dst_path = Path(target)
+    old_stem = src_path.stem
+    new_stem = dst_path.stem
+
+    changed: list[str] = []
+    if old_stem == new_stem:
+        return changed
+
+    # 收集待改名的伴生文件（主文件自身 + 所有以 old_stem 开头的伴生文件）
+    siblings = [src_path]
+    try:
+        siblings.extend(
+            path for path in src_path.parent.iterdir()
+            if path.is_file()
+            and not _same_path(path, src_path)  # 排除源文件本身，避免重复处理
+            and _renamed_companion_name(path.name, old_stem, new_stem) != path.name
+        )
+    except OSError:
+        pass
+
+    for sibling in siblings:
+        if _same_path(sibling, src_path):
+            pair = (src_path, dst_path)
+        else:
+            new_name = _renamed_companion_name(sibling.name, old_stem, new_stem)
+            pair = (sibling, sibling.with_name(new_name))
+        _rename_case_safe(pair[0], pair[1])
+        changed.append(f"{pair[0]} -> {pair[1]}")
+    return changed
 
 
 def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
