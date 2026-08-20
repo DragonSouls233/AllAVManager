@@ -59,11 +59,23 @@ class ScanLocalRequest(BaseModel):
 class OnlineCompareRequest(BaseModel):
     actress_url: Optional[str] = Body(None, description="javdb/javbus 演员页 URL")
     keyword: Optional[str] = Body(None, description="搜索关键词（与 actress_url 二选一）")
+    actor_name: Optional[str] = Body(None, description="演员名（javbooks 搜索页 URL 需配合演员名执行搜索）")
     directories: list[str] = Body(default_factory=list, description="本地扫描目录，为空则用配置的媒体目录")
     include_database: bool = Body(True, description="是否把数据库影片计入本地集合")
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数")
     source: str = Body("javbus", description="数据源: javbus / javdb（默认 javbus，无需 cookie；javdb 需有效 cookie）")
     actor_codes: list[str] = Body(default_factory=list, description="演员白名单(番号列表)；非空时只把这些番号当作「本地」，并跳过全盘文件扫描(避免扫多个 SMB 盘浪费数分钟)")
+    fetch_magnets: bool = Body(True, description="对比后是否抓取缺失/中字差异影片的磁力链接（带中文标记）")
+    magnet_limit: int = Body(30, ge=0, le=200, description="抓取磁力的影片数量上限")
+
+
+class RunAllCompareRequest(BaseModel):
+    sources: list[str] = Body(["javbus", "javdb", "javbooks"], description="要对比的数据源列表（每个源独立爬取、独立对比）：javbus / javdb / javbooks / avmoo")
+    directories: list[str] = Body(default_factory=list, description="覆盖的本地目录，为空则用配置的")
+    include_database: bool = Body(True, description="是否计入数据库影片")
+    max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数")
+    fetch_magnets: bool = Body(True, description="是否抓取缺失/中字差异影片的磁力链接")
+    magnet_limit: int = Body(30, ge=0, le=200, description="抓取磁力的影片数量上限")
 
 
 # ===== 辅助函数 =====
@@ -75,6 +87,24 @@ def _resolve_directories(directories: list[str]) -> list[str]:
     manager = get_config_manager()
     media_dirs = manager.config.scraper.media_dirs or []
     return list(media_dirs)
+
+
+def _crawler_uncensored(module: str) -> bool:
+    """是否无码模块：uncensored 模块走 javbus/javdb 的 uncensored 分区"""
+    return (module or "").lower() == "uncensored"
+
+
+# 对比数据源白名单（javbus/javdb/javbooks/avmoo）
+_COMPARE_SOURCES = ("javbus", "javdb", "javbooks", "avmoo")
+
+
+def _get_list_crawler(source: str, max_pages: int, uncensored: bool):
+    """按 source 构建列表爬虫（统一路由，支持 javbus/javdb/javbooks/avmoo）"""
+    from app.scraper.comparator import LIST_CRAWLER_SOURCES
+    factory = LIST_CRAWLER_SOURCES.get(source)
+    if factory is None:
+        raise ValueError(f"未知数据源 {source}")
+    return factory(max_pages=max_pages, uncensored=uncensored)
 
 
 def _find_actor_root_dir(actor_name: str, file_path: str) -> Optional[str]:
@@ -290,15 +320,14 @@ async def compare_online(
 
     # 2. 爬取在线列表
     source = req.source.lower().strip()
-    if source == "javbus":
-        crawler = JavBusListCrawler(max_pages=req.max_pages)
-    else:
-        crawler = JavDBListCrawler(max_pages=req.max_pages)
+    if source not in _COMPARE_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source 必须为 {' / '.join(_COMPARE_SOURCES)}（默认 javbus）")
+    crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module))
     actress_name = ""
 
     try:
         if req.actress_url:
-            online_videos = await crawler.crawl_actress(req.actress_url)
+            online_videos = await crawler.crawl_actress(req.actress_url, actor_name=req.actor_name or "")
             online_source = req.actress_url
             if hasattr(crawler, '_extract_actress_name'):
                 actress_name = crawler._extract_actress_name(req.actress_url)
@@ -310,7 +339,8 @@ async def compare_online(
         raise HTTPException(status_code=502, detail=f"{source} 爬取失败: {e}")
 
     if not online_videos:
-        source_name = "JavBus" if source == "javbus" else "JavDB"
+        from app.scraper.comparator import LIST_CRAWLER_LABELS
+        source_name = LIST_CRAWLER_LABELS.get(source, source)
         return {
             "status": "empty",
             "message": f"未能从 {source_name} 获取到在线视频列表，可能原因：1) Cookie 失效需重新登录 2) 被 Cloudflare 拦截 3) 网络问题 4) 演员页 URL 格式不正确",
@@ -326,6 +356,12 @@ async def compare_online(
         online_source=online_source,
         actress_name=actress_name,
     )
+
+    # 4. 抓取缺失/中字差异影片的磁力链接（带中文标记，供前端一键打开/复制）
+    if req.fetch_magnets:
+        from app.scraper.comparator import attach_magnets
+        await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
+        await attach_magnets(crawler, result.chinese_mismatch, limit=req.magnet_limit)
 
     return {
         "status": "ok",
@@ -361,6 +397,7 @@ async def local_database_summary(
 @router.post("/online-by-actor")
 async def compare_online_by_actor(
     actor_id: int = Body(..., embed=True, description="演员ID"),
+    source: str = Body("", description="指定数据源 javbus/javdb；为空则用已配置的（默认 javbus）"),
     directories: list[str] = Body(default_factory=list, description="覆盖的本地目录，为空则用配置的"),
     include_database: bool = Body(True, description="是否计入数据库影片"),
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数"),
@@ -372,14 +409,25 @@ async def compare_online_by_actor(
     1. 已配置演员页 URL（javdb/javbus）→ 爬该演员页；
     2. 未配置 URL → 回退按演员名关键词搜索，使「对比」按钮无需手动填 URL 也能用；
     3. 连演员名都没有 → 报错提示。
+
+    一个演员可同时配置 javbus/javdb 两个数据源：传 source 指定对比哪个，
+    未传 source 时取已配置的第一个（兼容旧行为）。
     """
     session = await get_module_session(module)
     ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
     Actor = get_module_model(module, "actor")
 
-    config = await session.scalar(
-        select(ActorCompareURL).where(ActorCompareURL.actor_id == actor_id)
-    )
+    if source:
+        config = await session.scalar(
+            select(ActorCompareURL).where(
+                ActorCompareURL.actor_id == actor_id,
+                ActorCompareURL.source == source,
+            )
+        )
+    else:
+        config = await session.scalar(
+            select(ActorCompareURL).where(ActorCompareURL.actor_id == actor_id)
+        )
     actor = await session.get(Actor, actor_id)
     actor_name = actor.name if actor else None
 
@@ -411,6 +459,7 @@ async def compare_online_by_actor(
         "max_pages": max_pages,
         "source": source,
         "actor_codes": actor_codes,
+        "actor_name": actor_name,
     }
 
     if config and config.url:
@@ -431,6 +480,128 @@ async def compare_online_by_actor(
         OnlineCompareRequest(**payload),
         module=module,
     )
+
+
+@router.post("/actors/{actor_id}/run-all")
+async def compare_actor_all_sources(
+    actor_id: int,
+    req: RunAllCompareRequest = Body(default_factory=RunAllCompareRequest),
+    module: str = Query("jav"),
+):
+    """按演员同时对比多个数据源（javbus / javdb），结果按源分组返回
+
+    每个源独立爬取、独立对比、独立容错（一个源失败不影响另一个）。
+    返回结构：
+    {
+      "status": "ok",
+      "actress_name": "...",
+      "sources": {
+        "javbus": {"status": "ok", ...CompareResult.to_dict()},
+        "javdb":  {"status": "error" | "empty" | "ok", ...}
+      }
+    }
+    磁力抓取：对每个源的缺失/中字差异影片抓详情页磁力（带中文标记）。
+    """
+    from app.scraper.comparator import (
+        JavDBListCrawler,
+        JavBusListCrawler,
+        LocalOnlineComparator,
+        LocalScanner,
+        attach_magnets,
+    )
+
+    session = await get_module_session(module)
+    ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
+    Actor = get_module_model(module, "actor")
+
+    actor = await session.get(Actor, actor_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="找不到该演员")
+    actor_name = actor.name or ""
+
+    # 已配置的各源 URL
+    configs = (await session.execute(
+        select(ActorCompareURL).where(ActorCompareURL.actor_id == actor_id)
+    )).scalars().all()
+    config_map = {c.source: c for c in configs}
+
+    # 该演员本地番号白名单（用于过滤本地集合 + 跳过全盘文件扫描）
+    actor_codes: list[str] = []
+    if actor_name:
+        try:
+            Movie = get_module_model(module, "movie")
+            names = [n.strip() for n in actor_name.split(",") if n.strip()]
+            if names:
+                cond = or_(*[Movie.actor.ilike(f"%{n}%") for n in names])
+                rows = await session.execute(
+                    select(Movie.code).where(cond, Movie.code.isnot(None))
+                )
+                actor_codes = sorted({r[0] for r in rows.fetchall() if r[0]})
+        except Exception as e:
+            logger.warning(f"查询演员 {actor_name} 本地番号失败: {e}")
+
+    # 本地集合只算一次（白名单过滤，与 online-by-actor 一致）
+    scanner = LocalScanner()
+    local_codes: list = []
+    try:
+        db_codes = await scanner.scan_database(session, module)
+        if req.directories and not actor_codes:
+            for d in req.directories:
+                try:
+                    db_codes.extend(await asyncio.to_thread(scanner.scan_directory, d))
+                except Exception as e:
+                    logger.warning(f"扫描目录失败 {d}: {e}")
+        local_codes = scanner.merge(db_codes, [])
+        if actor_codes:
+            whitelist = set(actor_codes)
+            before = len(local_codes)
+            local_codes = [c for c in local_codes if c.code in whitelist]
+            logger.info(f"[run-all] 按演员白名单({len(whitelist)}部)过滤本地: {before} -> {len(local_codes)}")
+    except Exception as e:
+        logger.warning(f"[run-all] 本地扫描失败: {e}")
+
+    comparator = LocalOnlineComparator()
+    sources: dict = {}
+    for source in req.sources:
+        source = (source or "").lower().strip()
+        if source not in _COMPARE_SOURCES:
+            sources[source] = {"status": "error", "detail": f"未知数据源 {source}"}
+            continue
+        try:
+            crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module))
+            cfg = config_map.get(source)
+            if cfg and cfg.url:
+                online_videos = await crawler.crawl_actress(cfg.url, actor_name=actor_name)
+                online_source = cfg.url
+            elif actor_name:
+                online_videos = await crawler.search_keyword(actor_name)
+                online_source = f"search:{actor_name}"
+            else:
+                sources[source] = {"status": "error", "detail": "未配置URL且无演员名"}
+                continue
+
+            if not online_videos:
+                sources[source] = {
+                    "status": "empty",
+                    "message": f"未能从 {source} 获取到在线视频列表，可能原因：1) Cookie 失效需重新登录 2) 被 Cloudflare 拦截 3) 网络问题 4) 演员页 URL 格式不正确",
+                    "online_count": 0,
+                }
+                continue
+
+            result = comparator.compare(
+                online_videos, local_codes,
+                online_source=online_source,
+                actress_name=actor_name,
+            )
+            if req.fetch_magnets:
+                await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
+                await attach_magnets(crawler, result.chinese_mismatch, limit=req.magnet_limit)
+            sources[source] = {"status": "ok", **result.to_dict()}
+        except Exception as e:
+            logger.error(f"[run-all] {source} 对比失败: {e}")
+            sources[source] = {"status": "error", "detail": str(e)}
+
+    return {"status": "ok", "actress_name": actor_name, "sources": sources}
 
 
 @router.get("/actors")
@@ -467,15 +638,15 @@ async def list_compare_actors(
     result = await session.execute(query)
     rows = result.fetchall()
 
-    # 获取已有的 compare URL 配置
+    # 获取已有的 compare URL 配置（一个演员可能同时配置 javbus/javdb 多个数据源）
     actor_ids = [row[0].id for row in rows]
-    compare_configs = {}
+    compare_configs: dict[int, list[dict]] = {}
     if actor_ids:
         config_result = await session.execute(
             select(ActorCompareURL).where(ActorCompareURL.actor_id.in_(actor_ids))
         )
         for c in config_result.scalars().all():
-            compare_configs[c.actor_id] = {
+            cfg = {
                 "id": c.id,
                 "source": c.source,
                 "url": c.url,
@@ -483,15 +654,18 @@ async def list_compare_actors(
                 "auto_detected_dir": c.auto_detected_dir,
                 "last_compare_at": c.last_compare_at.isoformat() if c.last_compare_at else None,
             }
+            compare_configs.setdefault(c.actor_id, []).append(cfg)
 
     items = []
     for actor, movie_count in rows:
+        configs = compare_configs.get(actor.id, [])
         items.append({
             "id": actor.id,
             "name": actor.name,
             "name_jp": actor.name_jp,
             "movie_count": movie_count,
-            "compare_config": compare_configs.get(actor.id),
+            "compare_config": configs[0] if configs else None,  # 兼容旧前端
+            "compare_configs": configs,  # 全部数据源配置（每个演员可同时配 javbus/javdb）
         })
 
     return {"total": len(items), "items": items}
@@ -538,8 +712,8 @@ async def save_actor_compare_url(
     ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
     Actor = get_module_model(module, "actor")
 
-    if source not in ("javbus", "javdb"):
-        raise HTTPException(status_code=400, detail="source 必须为 javbus 或 javdb")
+    if source not in _COMPARE_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source 必须为 {' / '.join(_COMPARE_SOURCES)}")
 
     actor = await session.get(Actor, actor_id)
     if not actor:
@@ -599,19 +773,37 @@ async def _upsert_compare_url(session, ActorCompareURL, actor, source: str, url:
     return existing
 
 
+async def _detect_actor_url(crawler, actor_name: str, source: str):
+    """统一探测演员页 URL：javbus 用 detect_actress_star，其余用 detect_actress
+
+    Returns:
+        (url, id) 或 None
+    """
+    if source == "javbus":
+        return await crawler.detect_actress_star(actor_name)
+    return await crawler.detect_actress(actor_name)
+
+
 @router.post("/actors/{actor_id}/detect-url")
 async def detect_actor_compare_url(
     actor_id: int,
-    source: str = Body("javbus", description="探测数据源，默认 javbus（免 cookie）"),
+    source: str = Query("all", description="探测数据源: javbus/javdb/javbooks/avmoo/all(全部探测)"),
     module: str = Query("jav"),
 ):
-    """自动探测该演员在 javbus 的女优页 URL 并保存到对比配置
+    """自动探测该演员在各数据源的女优页 URL 并保存到对比配置
 
-    探测逻辑：javbus /search/{演员名} → 解析页面所有 /star/{id} 女优链接 → 按姓名匹配最佳候选。
-    成功后该演员点「对比」将走精准女优页（crawl_actress），不再用关键词搜索，避免串入同名演员作品。
+    探测逻辑：
+    - javbus：/searchstar/{演员名} → 解析 /star/{id} 女优链接 → 按姓名匹配最佳候选
+    - javdb：App API 演员目录按名反查 / App API 失败降级 /search?q={演员名}&f=actress
+    - javbooks：经 avmoo 反查作品番号 → javbooks 搜索页 → 详情页女优链接 → 匹配
+    - avmoo：/jav/data/api/search 按演员名 → starId → /star/{id}
+    source=all 时全部源都探测，各自成功各自落库。
+    成功后该演员点「对比」将走精准女优页（crawl_actress），不再用关键词搜索。
     """
-    if source != "javbus":
-        raise HTTPException(status_code=400, detail="目前仅支持 javbus 自动探测")
+    sources = list(_COMPARE_SOURCES) if source == "all" else [source]
+    for s in sources:
+        if s not in _COMPARE_SOURCES:
+            raise HTTPException(status_code=400, detail=f"source 必须为 {' / '.join(_COMPARE_SOURCES)} / all")
     session = await get_module_session(module)
     ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
     Actor = get_module_model(module, "actor")
@@ -620,81 +812,118 @@ async def detect_actor_compare_url(
     if not actor or not actor.name:
         raise HTTPException(status_code=404, detail="演员不存在或没有姓名")
 
-    from app.scraper.comparator import JavBusListCrawler
-    crawler = JavBusListCrawler(max_pages=1)
-    try:
-        result = await crawler.detect_actress_star(actor.name)
-    except Exception as e:
-        logger.error(f"探测 {actor.name} 女优页异常: {e}")
-        raise HTTPException(status_code=502, detail=f"探测失败: {e}")
+    results: dict = {}
+    for s in sources:
+        try:
+            crawler = _get_list_crawler(s, 1, _crawler_uncensored(module))
+            result = await _detect_actor_url(crawler, actor.name, s)
+        except Exception as e:
+            logger.error(f"探测 {actor.name} 的 {s} 女优页异常: {e}")
+            results[s] = {"status": "error", "message": str(e)}
+            continue
 
-    if not result:
-        return {"status": "not_found", "actor_id": actor_id, "actor_name": actor.name,
-                "message": f"未能在 javbus 找到与「{actor.name}」匹配的女优页（可能被 Cloudflare 拦截或拼写差异）"}
+        if not result:
+            results[s] = {"status": "not_found", "message": f"未能在 {s} 找到与「{actor.name}」匹配的女优页"}
+            continue
 
-    star_url, star_id = result
-    await _upsert_compare_url(session, ActorCompareURL, actor, "javbus", star_url, auto_detected_dir=True)
+        star_url, _ = result
+        await _upsert_compare_url(session, ActorCompareURL, actor, s, star_url, auto_detected_dir=True)
+        results[s] = {"status": "ok", "url": star_url}
     await session.commit()
-    return {"status": "ok", "actor_id": actor_id, "actor_name": actor.name,
-            "source": "javbus", "url": star_url, "message": f"已保存 {actor.name} 的 javbus 女优页"}
+
+    if all(r.get("status") == "not_found" or r.get("status") == "error" for r in results.values()):
+        first = next(iter(results.values()))
+        return {"status": "not_found", "actor_id": actor_id, "actor_name": actor.name, "results": results,
+                "message": first.get("message", "未找到匹配的女优页")}
+    return {"status": "ok", "actor_id": actor_id, "actor_name": actor.name, "results": results,
+            "message": "探测完成：" + "，".join(f"{s}:{'已保存' if r.get('status')=='ok' else '未找到'}" for s, r in results.items())}
 
 
 @router.post("/actors/detect-all")
 async def detect_all_compare_urls(
     min_movies: int = Body(10, description="仅探测作品数 >= 该值的演员"),
     only_missing: bool = Body(True, description="True=只探测尚未配置 URL 的演员；False=全量重探"),
-    delay: float = Body(1.0, description="每两个演员之间的请求间隔(秒)，避免触发 Cloudflare"),
+    delay: float = Body(1.0, description="每两个探测之间的请求间隔(秒)，避免触发 Cloudflare"),
+    sources: list[str] = Body(["javbus", "javdb", "javbooks", "avmoo"], description="要探测的数据源列表：javbus / javdb / javbooks / avmoo"),
     module: str = Query("jav"),
 ):
-    """批量自动探测所有（或仅缺配置的）演员的 javbus 女优页 URL
+    """批量自动探测所有（或仅缺配置的）演员的各数据源女优页 URL
 
+    按源逐个探测：对每个源，跳过已配置该源 URL 的演员。
     顺序执行（带间隔），每成功一个立即落库，中途失败不影响其余。
-    返回 summary：探测总数 / 成功 / 未找到 / 跳过(已有) / 失败。
+    返回 summary：按源统计 探测总数 / 成功 / 未找到 / 跳过(已有) / 失败。
     """
     session = await get_module_session(module)
     ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
     Actor = get_module_model(module, "actor")
 
+    sources = [s.lower().strip() for s in sources if s.lower().strip() in _COMPARE_SOURCES]
+    if not sources:
+        raise HTTPException(status_code=400, detail=f"sources 必须包含 {' / '.join(_COMPARE_SOURCES)}")
+
     query = select(Actor).where(func.coalesce(Actor.movie_count, 0) >= min_movies)
     rows = (await session.execute(query)).scalars().all()
 
+    # 已配置各源的 actor_id 集合（仅统计 URL 非空的配置；空 URL 视为未配置，会重新探测覆盖）
+    configured_sets: dict[str, set[int]] = {}
     if only_missing:
-        configured = (await session.execute(
-            select(ActorCompareURL.actor_id).where(ActorCompareURL.source == "javbus")
-        )).scalars().all()
-        configured_set = set(configured)
-        targets = [a for a in rows if a.id not in configured_set]
-    else:
-        targets = list(rows)
+        cfg_rows = (await session.execute(
+            select(ActorCompareURL.actor_id, ActorCompareURL.source)
+            .where(ActorCompareURL.url.isnot(None), ActorCompareURL.url != "")
+        )).all()
+        for actor_id, src in cfg_rows:
+            configured_sets.setdefault(src, set()).add(actor_id)
+    targets = list(rows)
 
-    from app.scraper.comparator import JavBusListCrawler
-    crawler = JavBusListCrawler(max_pages=1)
-
-    summary = {"total": len(targets), "detected": 0, "not_found": 0, "failed": 0, "details": []}
-    for actor in targets:
-        if not actor.name:
-            summary["not_found"] += 1
-            continue
+    # 各源爬虫懒加载（探测失败/被拦截不影响其他源）
+    crawlers: dict = {}
+    for source in sources:
         try:
-            result = await crawler.detect_actress_star(actor.name)
+            crawlers[source] = _get_list_crawler(source, 1, _crawler_uncensored(module))
         except Exception as e:
-            logger.warning(f"批量探测 {actor.name} 异常: {e}")
-            summary["failed"] += 1
-            summary["details"].append({"actor_id": actor.id, "actor_name": actor.name, "status": "failed", "error": str(e)})
-            continue
+            logger.warning(f"批量探测 {source} 爬虫初始化失败: {e}")
 
-        if not result:
-            summary["not_found"] += 1
-            summary["details"].append({"actor_id": actor.id, "actor_name": actor.name, "status": "not_found"})
+    summary: dict = {
+        "total": len(targets),
+        "sources": {},
+        "details": [],
+    }
+    for source in sources:
+        st = {"detected": 0, "not_found": 0, "failed": 0, "skipped": 0}
+        crawler = crawlers.get(source)
+        if crawler is None:
+            st["failed"] = len(targets)
+            summary["sources"][source] = st
+            continue
+        for actor in targets:
+            if not actor.name:
+                continue
+            if only_missing and actor.id in configured_sets.get(source, set()):
+                st["skipped"] += 1
+                continue
+            try:
+                result = await _detect_actor_url(crawler, actor.name, source)
+            except Exception as e:
+                logger.warning(f"批量探测 {actor.name} 的 {source} 异常: {e}")
+                st["failed"] += 1
+                summary["details"].append({"actor_id": actor.id, "actor_name": actor.name, "source": source, "status": "failed", "error": str(e)})
+                await asyncio.sleep(delay)
+                continue
+
+            if not result:
+                st["not_found"] += 1
+                summary["details"].append({"actor_id": actor.id, "actor_name": actor.name, "source": source, "status": "not_found"})
+                await asyncio.sleep(delay)
+                continue
+
+            star_url, _ = result
+            await _upsert_compare_url(session, ActorCompareURL, actor, source, star_url, auto_detected_dir=True)
+            await session.commit()
+            st["detected"] += 1
+            summary["details"].append({"actor_id": actor.id, "actor_name": actor.name, "source": source, "status": "ok", "url": star_url})
             await asyncio.sleep(delay)
-            continue
 
-        star_url, _ = result
-        await _upsert_compare_url(session, ActorCompareURL, actor, "javbus", star_url, auto_detected_dir=True)
-        await session.commit()
-        summary["detected"] += 1
-        summary["details"].append({"actor_id": actor.id, "actor_name": actor.name, "status": "ok", "url": star_url})
-        await asyncio.sleep(delay)
+        summary["sources"][source] = st
 
     return {"status": "ok", **summary}
 

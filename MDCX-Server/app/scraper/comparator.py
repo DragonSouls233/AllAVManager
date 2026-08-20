@@ -91,6 +91,61 @@ def _best_star_match(target: str, candidates: list[tuple[str, str]]):
     return None
 
 
+# ===== 磁力链接中文判定 =====
+
+# JavDB 匿名 App API 演员目录缓存（detect_actress 反查用，避免每次全量抓目录）
+_JAVDB_ACTOR_INDEX_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
+_JAVDB_ACTOR_INDEX_TTL = 24 * 3600
+
+def _magnet_is_chinese(link: str, name: str) -> bool:
+    """判定磁力链接是否中文字幕版
+
+    规则（用户约定）：
+    1. 名称/链接含 中文/中文字幕/chinese/chs/cht → 中文
+    2. 番号带后缀 -C / -UC / -CU / -CHS / -CHT（如 ABC-123-C、ABC-123-UC）→ 中文
+    """
+    text = f"{link} {name}".lower()
+    if re.search(r"中文字幕|中文|chinese|chs|cht", text):
+        return True
+    # 番号后缀：ABC-123-C / ABC-123-UC / ABC-123CHS 等（-CH 单独匹配太宽泛，要求 -CH 后跟边界）
+    if re.search(r"[a-z]{2,6}[-_]?\d{2,5}[-_]?(?:uc|cu|chs|cht|ch)\b", text):
+        return True
+    return False
+
+
+def pick_best_magnet(magnets: list[dict]) -> Optional[dict]:
+    """从磁力列表挑最佳：优先中文版，其次第一个"""
+    if not magnets:
+        return None
+    for m in magnets:
+        if m.get("chinese"):
+            return m
+    return magnets[0]
+
+
+async def attach_magnets(crawler, items, concurrency: int = 4, limit: int = 30) -> None:
+    """并发抓取影片详情页磁力链接，写入 item.magnets（带中文标记）
+
+    - items 可以是 OnlineVideo 或 ChineseMismatch（都需 .url / .magnets 属性）
+    - 只处理前 limit 个（前端/路由已按优先级排序）
+    - 单部失败不影响整体
+    """
+    import asyncio
+    target = [it for it in items if it.url][:limit]
+    if not target:
+        return
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(it):
+        async with sem:
+            try:
+                it.magnets = await crawler._fetch_magnets(it.url)
+            except Exception as e:
+                logger.warning(f"抓取磁力失败 {it.url}: {e}")
+
+    await asyncio.gather(*(one(it) for it in target))
+
+
 @dataclass
 class LocalCode:
     """本地番号条目"""
@@ -113,6 +168,7 @@ class OnlineVideo:
     date: Optional[str] = None
     has_chinese: bool = False              # 在线标记为中字（-C 后缀 / 中字标签）
     is_uncensored: bool = False            # 在线标记为破解/无码（-U 后缀）
+    magnets: list[dict] = field(default_factory=list)  # [{"link","name","size","chinese"}] 详情页磁力
 
 
 @dataclass
@@ -125,6 +181,7 @@ class ChineseMismatch:
     local_is_chinese: bool
     local_source: str
     local_file_path: Optional[str] = None
+    magnets: list[dict] = field(default_factory=list)  # 中字版磁力（供下载替换本地非中字）
 
 
 @dataclass
@@ -257,12 +314,14 @@ class JavBusListCrawler:
 
     javbus 演员页 URL 格式：https://www.javbus.com/star/{id}
     翻页格式：https://www.javbus.com/star/{id}/{page}
+    无码分区（uncensored=True）：https://www.javbus.com/uncensored/star/{id}
     """
 
-    def __init__(self, max_pages: int = 10, request_delay: float = 1.0):
+    def __init__(self, max_pages: int = 10, request_delay: float = 1.0, uncensored: bool = False):
         self.max_pages = max_pages
         self.request_delay = request_delay
-        self.base_url = "https://www.javbus.com"
+        self.uncensored = uncensored
+        self.base_url = "https://www.javbus.com/uncensored" if uncensored else "https://www.javbus.com"
 
     async def _fetch(self, url: str, cookie_headers: Optional[dict] = None) -> Optional[str]:
         """使用 AsyncHttpClient 抓取 javbus 页面"""
@@ -310,7 +369,7 @@ class JavBusListCrawler:
             logger.warning(f"JavBus 列表页请求失败 {url}: {e}")
             return None
 
-    async def crawl_actress(self, actress_url: str) -> list[OnlineVideo]:
+    async def crawl_actress(self, actress_url: str, actor_name: str = "") -> list[OnlineVideo]:
         """爬取演员页所有视频（自动翻页）
 
         javbus 演员页 URL 示例：
@@ -322,9 +381,9 @@ class JavBusListCrawler:
 
         actress_url = actress_url.rstrip("/")
         # 提取 star ID（去掉可能的页码）
-        # 格式: https://www.javbus.com/star/xxx 或 https://www.javbus.com/star/xxx/2
+        # 格式: https://www.javbus.com/star/xxx 或 https://www.javbus.com/uncensored/star/xxx 或 .../xxx/2
         star_base = actress_url
-        page_match = re.search(r"^(https?://[^/]+/star/[^/]+)", actress_url)
+        page_match = re.search(r"^(https?://[^/]+/(?:uncensored/)?star/[^/]+)", actress_url)
         if page_match:
             star_base = page_match.group(1)
 
@@ -391,6 +450,52 @@ class JavBusListCrawler:
             await asyncio.sleep(self.request_delay)
 
         return all_videos
+
+    async def _fetch_magnets(self, video_url: str) -> list[dict]:
+        """抓取 javbus 影片详情页的磁力链接
+
+        详情页磁力表结构（<table> 行）：
+        <tr>
+          <td class="magnet-name"><a href="magnet:?xt=urn:btih:...">中文字幕 1080P</a></td>
+          <td class="magnet-size">2.5GB</td>
+          ...
+        </tr>
+        """
+        if not video_url:
+            return []
+        html = await self._fetch(video_url)
+        if not html:
+            return []
+        from lxml import etree
+        try:
+            tree = etree.fromstring(html, etree.HTMLParser())
+        except Exception:
+            return []
+
+        magnets: list[dict] = []
+        seen: set[str] = set()
+        for a in tree.xpath('//a[contains(@href,"magnet:")]'):
+            link = (a.get("href") or "").strip()
+            if not link.startswith("magnet:") or link in seen:
+                continue
+            seen.add(link)
+            name = (a.xpath("string(.)") or "").strip()
+            size = ""
+            # 向上找所在 <tr>，取 magnet-size 单元格
+            tr = a.getparent()
+            while tr is not None and tr.tag != "tr":
+                tr = tr.getparent()
+            if tr is not None:
+                size_tds = tr.xpath('.//td[contains(@class,"size")]/text()')
+                if size_tds:
+                    size = size_tds[0].strip()
+            magnets.append({
+                "link": link,
+                "name": name[:120],
+                "size": size,
+                "chinese": _magnet_is_chinese(link, name),
+            })
+        return magnets
 
     def _parse_star_page(self, tree) -> list[OnlineVideo]:
         """解析 javbus 演员/搜索结果页，提取视频卡片
@@ -643,7 +748,10 @@ class JavBusListCrawler:
 
     @staticmethod
     def _parse_movie_links(html: str) -> list[str]:
-        """从页面 HTML 提取影片详情链接（形如 /ABC-123），用于回退探测女优页"""
+        """从页面 HTML 提取影片详情链接（形如 /ABC-123 或 /uncensored/ABC-123），用于回退探测女优页
+
+        保留路径前缀（/uncensored/...），无码分区详情页才能正确拼接。
+        """
         from lxml import etree
         try:
             tree = etree.fromstring(html, etree.HTMLParser())
@@ -653,11 +761,12 @@ class JavBusListCrawler:
         seen: set[str] = set()
         for a in tree.xpath("//a"):
             href = a.get("href") or ""
-            seg = href.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+            path = href.split("?")[0].split("#")[0].rstrip("/")
+            seg = path.rsplit("/", 1)[-1]
             if re.match(r"^[A-Za-z]{2,6}[-_]?\d{2,5}$", seg):
-                if seg not in seen:
-                    seen.add(seg)
-                    out.append("/" + seg)
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path or "/" + seg)
         return out
 
     async def detect_actress_star(self, actor_name: str) -> Optional[tuple[str, str]]:
@@ -710,13 +819,55 @@ class JavBusListCrawler:
 
 
 class JavDBListCrawler:
-    """javdb 列表爬虫：按演员页或关键词爬取视频列表"""
+    """javdb 列表爬虫：按演员页或关键词爬取视频列表
 
-    def __init__(self, max_pages: int = 10, request_delay: float = 1.5):
+    有码：https://javdb.com/actors/{id}
+    无码分区（uncensored=True）：https://javdb.com/uncensored/actors/{id}
+
+    默认走**匿名 App API**（api.javdb.com 签名方案，免登录、绕 Cloudflare、不封 IP，
+    与刮削模块同一通道）；API 失败时自动降级 HTML 爬虫。
+    """
+
+    def __init__(self, max_pages: int = 10, request_delay: float = 1.5,
+                 uncensored: bool = False, api_mode: bool = True):
         self.max_pages = max_pages
         self.request_delay = request_delay
-        self.base_url = "https://javdb.com"
+        self.uncensored = uncensored
+        self.api_mode = api_mode
+        self.base_url = "https://javdb.com/uncensored" if uncensored else "https://javdb.com"
         self._fetcher = None
+        self._app_client = None
+
+    def _zone(self) -> str:
+        """App API 分区名：censored / uncensored"""
+        return "uncensored" if self.uncensored else "censored"
+
+    async def _get_app_client(self):
+        """懒加载匿名 App API 客户端（与刮削同通道，免登录不封 IP）"""
+        if self._app_client is None:
+            from app.services.javdb_app_client import create_app_client_from_config
+            self._app_client = await create_app_client_from_config()
+        return self._app_client
+
+    async def _actor_index(self) -> dict[str, list[str]]:
+        """获取演员目录 {actor_id: [全部名字]}（App API，24h 缓存）
+
+        用于 detect_actress 按名反查，避免每次探测都全量翻页抓目录。
+        """
+        import time
+        key = self._zone()
+        now = time.time()
+        cached = _JAVDB_ACTOR_INDEX_CACHE.get(key)
+        if cached and now - cached[0] < _JAVDB_ACTOR_INDEX_TTL:
+            return cached[1]
+        client = await self._get_app_client()
+        try:
+            index = await client.fetch_actor_index(zone=key, max_pages=100)
+        except Exception:
+            index = {}
+        if index:
+            _JAVDB_ACTOR_INDEX_CACHE[key] = (now, index)
+        return index
 
     def _get_fetcher(self):
         """复用 JavDBCrawler 的 cloudscraper/stealth 抓取能力"""
@@ -738,9 +889,19 @@ class JavDBListCrawler:
             return None
         return html
 
-    async def crawl_actress(self, actress_url: str) -> list[OnlineVideo]:
-        """爬取演员页所有视频（自动翻页）"""
+    async def crawl_actress(self, actress_url: str, actor_name: str = "") -> list[OnlineVideo]:
+        """爬取演员页所有视频（自动翻页）
+
+        API 模式：App API 按演员名搜索（q=演员名 + movie_type 分区），翻页取全部作品；
+        失败时降级 HTML 演员页。
+        """
         actress_url = actress_url.rstrip("/")
+        if self.api_mode:
+            videos = await self._api_crawl_actress(actress_url)
+            if videos:
+                return videos
+            logger.warning("javdb App API 按演员抓取失败/为空，降级 HTML: %s", actress_url)
+
         # 确保 locale=zh
         if "locale=" not in actress_url:
             actress_url += ("&" if "?" in actress_url else "?") + "locale=zh"
@@ -771,9 +932,77 @@ class JavDBListCrawler:
                 v.title = actress_name
         return all_videos
 
+    async def _api_crawl_actress(self, actress_url: str) -> list[OnlineVideo]:
+        """App API 按演员抓取：actor_id -> 演员名 -> 按名搜索翻页取全部作品"""
+        # 兼容新版 /actors/{id} 与旧版 /actresses/{id}
+        m = re.search(r"/(?:actresses|actors)/([A-Za-z0-9]+)", actress_url)
+        if not m:
+            return []
+        actor_id = m.group(1)
+        client = await self._get_app_client()
+        from app.services.javdb_app_client import ZONES
+        zone_num = ZONES.get(self._zone(), 0)
+
+        # 1. 取演员主名（优先 actor 详情，回退目录索引）
+        name = ""
+        try:
+            detail = await client._request("GET", f"/api/v1/actors/{actor_id}")
+            if detail and isinstance(detail, dict):
+                actor = detail.get("actor") or {}
+                name = str(actor.get("name") or "")
+        except Exception:
+            pass
+        if not name:
+            index = await self._actor_index()
+            names = index.get(actor_id) or []
+            name = names[0] if names else ""
+        if not name:
+            logger.warning("javdb API 未取到演员名: %s", actor_id)
+            return []
+
+        # 2. 按演员名搜索（q 匹配标题含演员名的影片），翻页收集
+        all_videos: list[OnlineVideo] = []
+        seen_codes: set[str] = set()
+        for page in range(1, self.max_pages + 1):
+            data = await client._request("GET", "/api/v2/search", {
+                "q": name, "page": page, "movie_type": zone_num,
+            })
+            movies = []
+            if isinstance(data, dict):
+                movies = data.get("movies") or []
+            if not movies:
+                break
+            for mv in movies:
+                if not isinstance(mv, dict):
+                    continue
+                code = (mv.get("number") or "").strip().upper()
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+                base_code = normalize_number(base) if base else code
+                base_code = strip_episode_suffix(base_code)
+                all_videos.append(OnlineVideo(
+                    code=code,
+                    base_code=base_code,
+                    title=(mv.get("title") or mv.get("origin_title") or "").strip()[:200],
+                    url=f"https://javdb.com/v/{mv.get('id') or ''}",
+                    cover=mv.get("cover_url") or mv.get("thumb_url") or "",
+                    date=mv.get("release_date") or "",
+                    has_chinese=bool(mv.get("has_cnsub")),
+                    is_uncensored=self.uncensored,
+                ))
+        return all_videos
+
     async def search_keyword(self, keyword: str) -> list[OnlineVideo]:
-        """按关键词搜索 javdb（爬取搜索结果列表，自动翻页）"""
+        """按关键词搜索 javdb（API 模式优先，降级 HTML 搜索结果页）"""
         import asyncio
+        if self.api_mode:
+            videos = await self._api_search_keyword(keyword)
+            if videos:
+                return videos
+            logger.warning("javdb App API 关键词搜索失败/为空，降级 HTML: %s", keyword)
+
         search_url = f"{self.base_url}/search?q={quote_plus(keyword)}&f=all&locale=zh"
 
         all_videos: list[OnlineVideo] = []
@@ -793,6 +1022,268 @@ class JavDBListCrawler:
             page += 1
             await asyncio.sleep(self.request_delay)
         return all_videos
+
+    async def _api_search_keyword(self, keyword: str) -> list[OnlineVideo]:
+        """App API 按关键词搜索影片（q + movie_type 分区），翻页收集"""
+        client = await self._get_app_client()
+        from app.services.javdb_app_client import ZONES
+        zone_num = ZONES.get(self._zone(), 0)
+        all_videos: list[OnlineVideo] = []
+        seen_codes: set[str] = set()
+        for page in range(1, self.max_pages + 1):
+            data = await client._request("GET", "/api/v2/search", {
+                "q": keyword, "page": page, "movie_type": zone_num,
+            })
+            movies = []
+            if isinstance(data, dict):
+                movies = data.get("movies") or []
+            if not movies:
+                break
+            for mv in movies:
+                if not isinstance(mv, dict):
+                    continue
+                code = (mv.get("number") or "").strip().upper()
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+                base_code = normalize_number(base) if base else code
+                base_code = strip_episode_suffix(base_code)
+                all_videos.append(OnlineVideo(
+                    code=code,
+                    base_code=base_code,
+                    title=(mv.get("title") or mv.get("origin_title") or "").strip()[:200],
+                    url=f"https://javdb.com/v/{mv.get('id') or ''}",
+                    cover=mv.get("cover_url") or mv.get("thumb_url") or "",
+                    date=mv.get("release_date") or "",
+                    has_chinese=bool(mv.get("has_cnsub")),
+                    is_uncensored=self.uncensored,
+                ))
+        return all_videos
+
+    async def _fetch_magnets(self, video_url: str) -> list[dict]:
+        """抓取 javdb 影片磁力链接
+
+        API 模式：App API /api/v1/movies/{id}/magnets（cnsub 字段直接判定中字）；
+        失败时降级 HTML 详情页解析。
+        """
+        if not video_url:
+            return []
+        if self.api_mode:
+            magnets = await self._api_fetch_magnets(video_url)
+            if magnets:
+                return magnets
+            logger.warning("javdb App API 磁力抓取失败/为空，降级 HTML: %s", video_url)
+
+        html = await self._fetch(video_url)
+        if not html:
+            return []
+        sel = Selector(html)
+        magnets: list[dict] = []
+        seen: set[str] = set()
+
+        blocks = (
+            sel.xpath('//div[contains(@class,"magnet-item")]')
+            or sel.xpath('//div[contains(@class,"magnet")]')
+        )
+        for b in blocks:
+            link = (b.xpath('.//a[contains(@href,"magnet:")]/@href').get() or "").strip()
+            if not link.startswith("magnet:") or link in seen:
+                continue
+            seen.add(link)
+            name = (
+                b.xpath('.//span[contains(@class,"name")]/text()').get()
+                or b.xpath('.//a[contains(@href,"magnet:")]/text()').get()
+                or ""
+            ).strip()
+            size = (b.xpath('.//span[contains(@class,"meta")]/text()').get() or "").strip()
+            magnets.append({
+                "link": link,
+                "name": name[:120],
+                "size": size,
+                "chinese": _magnet_is_chinese(link, name),
+            })
+
+        # 兜底：页面任意 magnet 链接（结构变化时仍可用）
+        if not magnets:
+            for a in sel.xpath('//a[contains(@href,"magnet:")]'):
+                link = (a.xpath('@href').get() or "").strip()
+                if not link.startswith("magnet:") or link in seen:
+                    continue
+                seen.add(link)
+                name = (a.xpath("string(.)").get() or "").strip()
+                magnets.append({
+                    "link": link,
+                    "name": name[:120],
+                    "size": "",
+                    "chinese": _magnet_is_chinese(link, name),
+                })
+        return magnets
+
+    async def _api_fetch_magnets(self, video_url: str) -> list[dict]:
+        """App API 取磁力：/api/v1/movies/{id}/magnets
+
+        cnsub 字段为 JavDB 官方中字标记，比名称/后缀正则更可靠。
+        """
+        m = re.search(r"/v/([A-Za-z0-9]+)", video_url)
+        if not m:
+            return []
+        client = await self._get_app_client()
+        try:
+            magnets = await client.get_magnets(m.group(1))
+        except Exception:
+            return []
+        out: list[dict] = []
+        seen: set[str] = set()
+        for mg in magnets:
+            link = (mg.magnet_uri or "").strip()
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            out.append({
+                "link": link,
+                "name": (mg.name or "")[:120],
+                "size": f"{mg.size} MB" if mg.size else "",
+                "chinese": bool(mg.cnsub),
+            })
+        return out
+
+    async def detect_actress(self, actor_name: str) -> Optional[tuple[str, str]]:
+        """在 javdb 定位该演员的 /actors/{id} 页 URL
+
+        API 模式（默认）：
+        1. 先按 App API 演员目录索引（前 100 页约 5000 人）按名反查；
+        2. 索引未命中时降级「电影搜索反查」：/api/v2/search?q=演员名 → 前几部电影
+           详情（/api/v4/movies/{id}）的 actors 列表匹配演员名 —— 可覆盖索引之外的演员；
+        3. 以上都失败再降级 HTML 搜索页 → 电影详情页反查。
+
+        Returns:
+            (actress_url, actress_id) 或 None
+        """
+        from urllib.parse import quote_plus
+        if not actor_name:
+            return None
+        if self.api_mode:
+            result = await self._api_detect_actress(actor_name)
+            if result:
+                return result
+            result = await self._api_detect_actress_via_movies(actor_name)
+            if result:
+                return result
+            logger.warning("javdb App API 演员探测失败，降级 HTML 搜索: %s", actor_name)
+
+        # HTML 兜底：电影搜索页 → 电影详情页 → 演员链接
+        search_url = f"{self.base_url}/search?q={quote_plus(actor_name)}&locale=zh"
+        logger.info(f"javdb 探测女优页: {search_url}")
+        html = await self._fetch(search_url)
+        if not html:
+            logger.warning(f"javdb 探测失败/被拦截/Cookie 失效: {actor_name}")
+            return None
+        sel = Selector(html)
+        movie_links = list(dict.fromkeys(
+            a for a in sel.xpath('//a[contains(@href, "/v/")]/@href').getall() if a.strip()
+        ))
+        import asyncio
+        for link in movie_links[:5]:
+            if not link.startswith("http"):
+                link = self.base_url + link
+            detail_html = await self._fetch(link)
+            await asyncio.sleep(self.request_delay)
+            if not detail_html:
+                continue
+            dsel = Selector(detail_html)
+            candidates: list[tuple[str, str]] = []
+            # 兼容新版 /actors/ 与旧版 /actresses/ 链接，统一存 /actors/{id}
+            for a in dsel.xpath('//a[contains(@href, "/actresses/") or contains(@href, "/actors/")]'):
+                href = a.xpath("@href").get() or ""
+                m = re.search(r"/(?:actresses|actors)/([^/?]+)", href)
+                if not m:
+                    continue
+                text = (a.xpath("string(.)").get() or "").strip()
+                candidates.append((f"{self.base_url}/actors/{m.group(1)}", text or m.group(1)))
+            if not candidates:
+                continue
+            match = _best_star_match(actor_name, candidates)
+            if match:
+                url, _ = match
+                return url, url.rsplit("/", 1)[-1]
+        logger.info(f"javdb 未找到匹配女优页: {actor_name}")
+        return None
+
+    async def _api_detect_actress_via_movies(self, actor_name: str) -> Optional[tuple[str, str]]:
+        """电影搜索反查演员：/api/v2/search?q={演员名} → 前几部电影详情 → actors 列表匹配
+
+        App API 演员目录索引只翻前 100 页（约 5000 人），索引外的演员用本方法兜底：
+        标题含演员名的影片详情必带该演员，能拿到准确 /actors/{id} URL。
+        """
+        if not actor_name:
+            return None
+        client = await self._get_app_client()
+        data = await client._request("GET", "/api/v2/search", {"q": actor_name, "page": 1})
+        if not data:
+            return None
+        movies = data.get("movies") or []
+        import asyncio
+        seen: set[str] = set()
+        for movie in movies[:5]:
+            mid = (movie.get("id") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            detail = await client.get_movie_detail(mid)
+            if not detail:
+                continue
+            actors = (detail.get("movie") or {}).get("actors") or []
+            candidates: list[tuple[str, str]] = []
+            for actor in actors:
+                if not isinstance(actor, dict):
+                    continue
+                aid = (actor.get("id") or "").strip()
+                nm = (actor.get("name") or "").strip()
+                if aid and nm:
+                    candidates.append((f"{self.base_url}/actors/{aid}", nm))
+            match = _best_star_match(actor_name, candidates)
+            if match:
+                url, _ = match
+                return url, url.rsplit("/", 1)[-1]
+            await asyncio.sleep(self.request_delay)
+        return None
+
+    async def _api_detect_actress(self, actor_name: str) -> Optional[tuple[str, str]]:
+        """App API 按名反查演员：从演员目录索引（主名/繁体名/曾用名）匹配 actor_id"""
+        index = await self._actor_index()
+        if not index:
+            return None
+        # 名 -> actor_id 反查索引（精确优先）
+        name_to_ids: dict[str, list[str]] = {}
+        for aid, names in index.items():
+            for n in names:
+                k = _norm_name(n)
+                if k:
+                    name_to_ids.setdefault(k, []).append(aid)
+        target = _norm_name(actor_name)
+        if not target:
+            return None
+
+        aid = None
+        hits = name_to_ids.get(target)
+        if hits:
+            aid = hits[0]
+        if not aid:
+            # 模糊：双向包含匹配（取名字最短的候选，优先主名页）
+            best = None
+            best_len = 10 ** 9
+            for k, ids in name_to_ids.items():
+                if target in k or k in target:
+                    cand = ids[0]
+                    if len(k) < best_len:
+                        best_len = len(k)
+                        best = cand
+            aid = best
+        if not aid:
+            return None
+        url = f"{self.base_url}/actors/{aid}"
+        return url, aid
 
     def _parse_list_html(self, html_text: str) -> list[OnlineVideo]:
         """解析列表页 HTML，提取视频卡片
@@ -1005,3 +1496,302 @@ class LocalOnlineComparator:
             online_source=online_source,
             actress_name=actress_name,
         )
+
+
+# ===== JavBooks 列表爬虫（对比源 3） =====
+# 女优页 URL: https://javbooks.com/serchinfo_censored/{performer_id}/performerbt_{page}.htm
+# 大陆直连超时，需走代理（AsyncHttpClient 默认取有效代理）。
+
+
+class JavBooksListCrawler:
+    """javbooks 列表爬虫：按演员页(performerbt)或关键词爬取视频列表
+
+    基于 JavBooksCrawler（刮削模块）复用其搜索/解析能力。
+    """
+
+    def __init__(self, max_pages: int = 10, request_delay: float = 1.0, uncensored: bool = False):
+        self.max_pages = max_pages
+        self.request_delay = request_delay
+        self.uncensored = uncensored
+        self.base_url = "https://javbooks.com"
+        self._crawler = None
+
+    def _get_crawler(self):
+        """懒加载刮削模块的 JavBooksCrawler（含代理配置）"""
+        if self._crawler is None:
+            from app.crawlers.javbooks import JavBooksCrawler
+            self._crawler = JavBooksCrawler()
+        return self._crawler
+
+    async def _fetch(self, url: str) -> Optional[str]:
+        """抓取 javbooks 页面"""
+        crawler = self._get_crawler()
+        try:
+            from app.utils.http_client import AsyncHttpClient
+            async with AsyncHttpClient(timeout=30, proxy=crawler._proxy) as client:
+                return await client.get_text(url, headers=crawler._headers())
+        except Exception as e:
+            logger.warning(f"JavBooks 抓取失败 {url}: {e}")
+            return None
+
+    # javbooks 无独立女优页入口（performer 链接藏在作品详情页里），
+    # 探测时统一返回搜索页 URL：POST serch_censored.htm + skey={演员名} 即可列出该演员作品。
+    _SEARCH_PAGE_URL = "https://javbooks.com/serch_censored.htm"
+
+    def _performer_id(self, actress_url: str) -> Optional[str]:
+        """从女优页 URL 提取 performer_id（数字）"""
+        m = re.search(r"/serchinfo_censored/(\d+)", actress_url)
+        return m.group(1) if m else None
+
+    def _is_search_page(self, actress_url: str) -> bool:
+        """是否搜索页 URL（探测保存的通用搜索页）"""
+        return "serch_censored" in (actress_url or "")
+
+    async def crawl_actress(self, actress_url: str, actor_name: str = "") -> list[OnlineVideo]:
+        """爬取该演员的作品列表
+
+        支持两种 URL：
+        1. 女优页 /serchinfo_censored/{performer_id}/performerbt_*.htm —— 按 performer_id 抓全量作品
+        2. 搜索页 /serch_censored.htm —— 探测保存的通用搜索页，需 actor_name 配合 POST skey 搜索
+        """
+        if self._is_search_page(actress_url):
+            if not actor_name:
+                logger.warning(f"JavBooks 搜索页需要 actor_name: {actress_url}")
+                return []
+            movies = await self._search_actor_movies(actor_name)
+        else:
+            performer_id = self._performer_id(actress_url)
+            if not performer_id:
+                logger.warning(f"JavBooks 无法从 URL 提取 performer_id: {actress_url}")
+                return []
+            crawler = self._get_crawler()
+            movies = await crawler.fetch_actress_movies(performer_id, max_pages=self.max_pages)
+        videos: list[OnlineVideo] = []
+        seen: set[str] = set()
+        for m in movies:
+            code = (m.get("code") or "").strip().upper()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+            base_code = normalize_number(base) if base else code
+            base_code = strip_episode_suffix(base_code)
+            url = m.get("url") or ""
+            if url and not url.startswith("http"):
+                url = self.base_url + url
+            videos.append(OnlineVideo(
+                code=code,
+                base_code=base_code,
+                title=(m.get("title") or "").strip()[:200],
+                url=url,
+                date=m.get("date") or "",
+                has_chinese=bool(is_chinese_suffix),
+            ))
+        return videos
+
+    async def _search_actor_movies(self, actor_name: str, max_pages: int = 1) -> list[dict]:
+        """POST javbooks 搜索页 skey={演员名}，解析作品卡片列表
+
+        javbooks 搜索为表单提交（GET 查询参数均无效），响应页含 div.Po_topic 卡片，
+        每张卡片可提取 番号/标题/日期/详情页链接。
+
+        Returns:
+            [{"title": str, "code": str, "date": str, "url": str}, ...]
+        """
+        movies: list[dict] = []
+        crawler = self._get_crawler()
+        import asyncio
+        from app.utils.http_client import AsyncHttpClient
+        for page in range(1, max_pages + 1):
+            url = f"{self.base_url}/serch_censored_{page}.htm" if page > 1 else self._SEARCH_PAGE_URL
+            try:
+                async with AsyncHttpClient(timeout=30, proxy=crawler._proxy) as client:
+                    resp = await client.post(url, data={"skey": actor_name}, headers=crawler._headers())
+                    html_text = resp.text if resp else ""
+            except Exception as e:
+                logger.warning(f"JavBooks 搜索失败 {actor_name}: {e}")
+                break
+            if not html_text:
+                break
+            sel = Selector(html_text)
+            found = 0
+            for topic in sel.css("div.Po_topic"):
+                title = (topic.css("div.Po_topic_title b ::text").get() or "").strip()
+                href = (topic.css("div.Po_topic_title a::attr(href)").get()
+                        or topic.css("div.Po_topicCG a::attr(href)").get() or "")
+                date_serial = (topic.css("div.Po_topic_Date_Serial font ::text").get() or "")
+                parts = [p.strip() for p in date_serial.split("/")]
+                code = parts[0] if parts else ""
+                movie_date = parts[1] if len(parts) > 1 else ""
+                if not title and not code:
+                    continue
+                if href and not href.startswith("http"):
+                    href = self.base_url + href
+                movies.append({"title": title, "code": code, "date": movie_date, "url": href})
+                found += 1
+            if found == 0:
+                break
+            await asyncio.sleep(self.request_delay)
+        return movies
+
+    async def search_keyword(self, keyword: str) -> list[OnlineVideo]:
+        """按关键词搜索：复用刮削模块 search（前缀搜索页精确匹配）"""
+        crawler = self._get_crawler()
+        results = await crawler.search(keyword)
+        videos: list[OnlineVideo] = []
+        seen: set[str] = set()
+        for r in results:
+            code = (r.code or "").strip().upper()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+            base_code = normalize_number(base) if base else code
+            base_code = strip_episode_suffix(base_code)
+            videos.append(OnlineVideo(
+                code=code,
+                base_code=base_code,
+                title=(r.title or "").strip()[:200],
+                url=r.source_url or "",
+                date=r.release_date.isoformat() if r.release_date else "",
+                has_chinese=bool(is_chinese_suffix or r.is_chinese),
+            ))
+        return videos
+
+    async def detect_actress(self, actor_name: str) -> Optional[tuple[str, str]]:
+        """在 javbooks 定位该演员的搜索页 URL
+
+        javbooks 无按女优名的独立演员页，演员页链接只能从某部作品的详情页里找到，
+        无法从演员名直接确定 performer_id。因此改为**必须使用搜索**：
+        POST serch_censored.htm + skey={演员名}，若搜到作品卡片则确认演员存在，
+        返回统一搜索页 URL（对比时 crawl_actress 配合 actor_name 再执行搜索）。
+
+        Returns:
+            (search_page_url, actor_name) 或 None
+        """
+        if not actor_name:
+            return None
+        movies = await self._search_actor_movies(actor_name, max_pages=1)
+        if not movies:
+            logger.info(f"JavBooks 搜索无结果: {actor_name}")
+            return None
+        logger.info(f"JavBooks 探测成功: {actor_name} -> {self._SEARCH_PAGE_URL}（{len(movies)} 部作品）")
+        return self._SEARCH_PAGE_URL, actor_name
+
+    async def _fetch_magnets(self, video_url: str) -> list[dict]:
+        """javbooks 磁力链接为 reurl 混淆编码，无法直接解码，返回空"""
+        return []
+
+
+# ===== Avmoo 列表爬虫（对比源 4） =====
+# 演员页 URL: https://avmoo.shop/tw/actresses/{starId}（存储用；数据经私有 JSON API 获取）
+
+
+class AvmooListCrawler:
+    """avmoo 列表爬虫：按演员页或关键词爬取视频列表（新私有 JSON API）"""
+
+    def __init__(self, max_pages: int = 10, request_delay: float = 1.0, uncensored: bool = False):
+        self.max_pages = max_pages
+        self.request_delay = request_delay
+        self.uncensored = uncensored
+        self.base_url = "https://avmoo.shop"
+        self._crawler = None
+
+    def _get_crawler(self):
+        """懒加载刮削模块的 AvmooCrawler（含 CSRF 会话 + 代理）"""
+        if self._crawler is None:
+            from app.crawlers.avmoo import AvmooCrawler
+            self._crawler = AvmooCrawler()
+        return self._crawler
+
+    def _star_id(self, actress_url: str) -> Optional[str]:
+        """从演员页 URL 提取 starId（兼容新版 /tw/actresses/{id} 与旧版 /star/{id}）"""
+        m = re.search(r"/(?:tw/actresses|star)/([A-Za-z0-9]+)", actress_url or "")
+        return m.group(1) if m else None
+
+    async def crawl_actress(self, actress_url: str, actor_name: str = "") -> list[OnlineVideo]:
+        """按 starId 抓取演员全部作品（getMovies 过滤）"""
+        star_id = self._star_id(actress_url)
+        if not star_id:
+            logger.warning(f"Avmoo 无法从 URL 提取 starId: {actress_url}")
+            return []
+        crawler = self._get_crawler()
+        movies = await crawler.fetch_actress_movies(star_id, max_pages=self.max_pages)
+        videos: list[OnlineVideo] = []
+        seen: set[str] = set()
+        for m in movies:
+            code = (m.get("code") or "").strip().upper()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+            base_code = normalize_number(base) if base else code
+            base_code = strip_episode_suffix(base_code)
+            videos.append(OnlineVideo(
+                code=code,
+                base_code=base_code,
+                title=(m.get("title") or "").strip()[:200],
+                url=m.get("url") or "",
+                date=m.get("date") or "",
+                has_chinese=bool(is_chinese_suffix),
+            ))
+        return videos
+
+    async def search_keyword(self, keyword: str) -> list[OnlineVideo]:
+        """按关键词搜索"""
+        crawler = self._get_crawler()
+        results = await crawler.search(keyword)
+        videos: list[OnlineVideo] = []
+        seen: set[str] = set()
+        for r in results:
+            code = (r.code or "").strip().upper()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            base, is_chinese_suffix, is_mosaic = parse_suffix(code)
+            base_code = normalize_number(base) if base else code
+            base_code = strip_episode_suffix(base_code)
+            videos.append(OnlineVideo(
+                code=code,
+                base_code=base_code,
+                title=(r.title or "").strip()[:200],
+                url=r.source_url or "",
+                date=r.release_date.isoformat() if r.release_date else "",
+                has_chinese=bool(is_chinese_suffix or r.is_chinese),
+            ))
+        return videos
+
+    async def detect_actress(self, actor_name: str) -> Optional[tuple[str, str]]:
+        """按演员名搜索 → starId → 演员页 URL
+
+        Returns:
+            (star_url, star_id) 或 None
+        """
+        if not actor_name:
+            return None
+        crawler = self._get_crawler()
+        star_id = await crawler.search_star_id(actor_name)
+        if not star_id:
+            logger.info(f"Avmoo 未找到匹配女优页: {actor_name}")
+            return None
+        return f"{self.base_url}/tw/actresses/{star_id}", star_id
+
+    async def _fetch_magnets(self, video_url: str) -> list[dict]:
+        """avmoo 详情无磁力链接，返回空"""
+        return []
+
+
+# 对比源注册表：source 名 -> 列表爬虫工厂（供 compare.py 统一路由）
+LIST_CRAWLER_SOURCES = {
+    "javbus": lambda max_pages, uncensored: JavBusListCrawler(max_pages=max_pages, uncensored=uncensored),
+    "javdb": lambda max_pages, uncensored: JavDBListCrawler(max_pages=max_pages, uncensored=uncensored),
+    "javbooks": lambda max_pages, uncensored: JavBooksListCrawler(max_pages=max_pages, uncensored=uncensored),
+    "avmoo": lambda max_pages, uncensored: AvmooListCrawler(max_pages=max_pages, uncensored=uncensored),
+}
+
+LIST_CRAWLER_LABELS = {
+    "javbus": "JavBus",
+    "javdb": "JavDB",
+    "javbooks": "JavBooks",
+    "avmoo": "Avmoo",
+}

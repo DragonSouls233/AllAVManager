@@ -32,6 +32,8 @@ from typing import Iterable, List, Optional
 
 from sqlalchemy import func, or_, select
 
+from app.utils.actor_name_utils import clean_alias_parens
+
 # 别名字段分隔符：英文逗号 / 中文逗号 / 顿号 / 分号 / 竖线 / 斜杠
 _SEP_RE = re.compile(r"[,，、;；|/／]+")
 
@@ -39,13 +41,13 @@ MIN_VARIANT_LEN = 2
 
 
 def split_alias(raw: Optional[str]) -> List[str]:
-    """把 alias 文本切成名称列表（去空白、去重、保序）"""
+    """把 alias 文本切成名称列表（清洗括号噪声、去空白、去重、保序）"""
     if not raw:
         return []
     out: List[str] = []
     seen = set()
     for part in _SEP_RE.split(str(raw)):
-        name = part.strip()
+        name = clean_alias_parens(part.strip())
         if not name:
             continue
         key = name.lower()

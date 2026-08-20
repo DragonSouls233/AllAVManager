@@ -135,6 +135,10 @@
             <el-icon><DataAnalysis /></el-icon>
             <template #title>本地对比</template>
           </el-menu-item>
+          <el-menu-item index="/uncensored/compare-actors">
+            <el-icon><UserFilled /></el-icon>
+            <template #title>对比演员</template>
+          </el-menu-item>
           <el-menu-item index="/uncensored/patch">
             <el-icon><MagicStick /></el-icon>
             <template #title>补丁刮削</template>
@@ -1359,6 +1363,7 @@ const pageTitle = computed(() => {
     '/uncensored/actors': 'JAV 无码 - 演员库',
     '/uncensored/scrape': 'JAV 无码 - 刮削管理',
     '/uncensored/compare': 'JAV 无码 - 本地对比',
+    '/uncensored/compare-actors': 'JAV 无码 - 对比演员',
     '/uncensored/patch': 'JAV 无码 - 补丁刮削',
     // FC2
     '/fc2/movies': 'FC2 - 影片库',

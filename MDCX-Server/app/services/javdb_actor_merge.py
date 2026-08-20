@@ -22,8 +22,13 @@ _CENSORED_LIST_URL = "https://javdb.com/actors/censored?page={page}"
 
 
 def _normalize(name: str) -> str:
-    """名称规范化：去空白、统一大小写，用于匹配"""
-    return re.sub(r"\s+", "", name or "").strip().lower()
+    """名称规范化：NFKC + 繁体/日文异体字统一 + 去空白标点 + 小写，用于匹配。
+
+    移植自 mdcx-diy（ref22-mdcx-diy）`_normalize_actor_name`，解决
+    「亜樹 vs 亞樹」「沢 vs 澤」等异体字写法导致改名演员合并漏匹配的问题。
+    """
+    from app.utils.actor_name_utils import normalize_actor_name
+    return normalize_actor_name(name)
 
 
 def _parse_actor_card(html: str) -> dict[str, list[str]]:

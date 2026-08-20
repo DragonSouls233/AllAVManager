@@ -35,18 +35,23 @@ def _merge_alias(canonical_alias: Optional[str], canonical_name: str, source_nam
 
     注意：不把 canonical_name 自身写进 alias——alias 的语义就是「这些名字合并到了我这里」，
     canonical 主名无需冗余记录。这样前端 merged_from 直接展示 alias 即可得到纯净的合并来源列表。
+    每个别名先清洗括号噪声（如「佐伯晴香(熟女)」→「佐伯晴香」），
+    再按归一化名（NFKC + 繁体/异体字）去重（如「三上悠亜」与「三上悠亞」视为同一人）。
     """
+    from app.utils.actor_name_utils import clean_alias_parens, normalize_actor_name
+
+    canonical_key = normalize_actor_name(canonical_name)
     seen = set()
     out = []
     for item in [canonical_alias, *source_names, *source_aliases]:
         if not item:
             continue
         for part in item.split(","):
-            a = part.strip()
+            a = clean_alias_parens(part.strip())
             if not a:
                 continue
-            key = a.lower()
-            if key == canonical_name.lower():
+            key = normalize_actor_name(a)
+            if not key or key == canonical_key:
                 continue  # 跳过主名自身
             if key in seen:
                 continue

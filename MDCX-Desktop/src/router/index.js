@@ -454,6 +454,11 @@ const routes = [
         component: () => import('@/views/Compare.vue')
       },
       {
+        path: 'uncensored/compare-actors',
+        name: 'UncensoredCompareActors',
+        component: () => import('@/views/CompareActors.vue')
+      },
+      {
         path: 'uncensored/patch',
         name: 'UncensoredPatch',
         component: () => import('@/views/Patch.vue')

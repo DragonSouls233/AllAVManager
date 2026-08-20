@@ -1,7 +1,19 @@
-"""JavDB App JSON API 客户端。
+"""JavDB App JSON API 客户端（HMAC + 登录 Token 方案）。
 
 使用 jdsignature HMAC-SHA256 认证，绕过 Cloudflare 保护。
 支持 jdsignature 自动签名、会话管理、token 自动续期。
+
+================================================================================
+⚠️ JavDB HMAC API 来源与版本追踪（更新前必读）======================================
+上游项目:   JavDB 官方 App 协议 (无开源代码)
+API 域名:   https://api.javdb.com
+认证方式:   jdsignature = HMAC-SHA256(session_token, METHOD + PATH + BODY)
+Token 端点: POST /api/v1/login/sessions  (user.username + user.password)
+失效信号:   401 持续出现 / signature 不被服务端接受
+替代方案:   JavDBAppClient (匿名, https://jdforrepam.com) 或 HTML 爬虫
+复用关系:   本客户端与 javdb_app_client.py 互补不替换——本端需登录用于私有数据；
+            匿名端免登录用于公开元数据 + 磁力。
+================================================================================
 """
 from __future__ import annotations
 
@@ -17,6 +29,19 @@ from urllib.parse import urljoin
 import httpx
 
 from app.config.manager import get_config
+
+# 维护元数据：给后续更新/排障用的集中入口（单点修改）
+JAVDB_API_META = {
+    "source_repo": "JavDB 官方 App 协议 (闭源)",
+    "api_host": "https://api.javdb.com",
+    "auth_scheme": "HMAC-SHA256(session_token, METHOD+PATH+BODY) as jdsignature JV1.{mid}.{sig}.{suffix}",
+    "login_endpoint": "POST /api/v1/login/sessions",
+    "deprecated_after": None,
+    "check_command_hint":
+        "python -c \"import asyncio; from app.services.javdb_api_client import create_client_from_config;"
+        "asyncio.run((lambda c: (print('login?', bool(c._session_token)), c.close()))"
+        "(await create_client_from_config()))\"",
+}
 
 log = logging.getLogger(__name__)
 

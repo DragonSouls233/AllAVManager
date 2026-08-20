@@ -363,15 +363,21 @@ export const compareOnline = (data) => api.post('/compare/online', data)
 export const localDatabaseSummary = () => api.post('/compare/database')
 export const compareSearchDirectories = (actorName, maxDepth = 4) =>
   api.post('/compare/search-directories', { actor_name: actorName, max_depth: maxDepth })
-export const compareOnlineByActor = (actorId, data = {}) => api.post('/compare/online-by-actor', { actor_id: actorId, ...data })
+export const compareOnlineByActor = (actorId, data = {}, module = '') =>
+  api.post('/compare/online-by-actor', { actor_id: actorId, ...data }, { params: module ? { module } : {} })
+export const runAllCompareByActor = (actorId, data = {}, module = '') =>
+  api.post(`/compare/actors/${actorId}/run-all`, data, { params: module ? { module } : {} })
 export const getCompareActors = (params) => api.get('/compare/actors', { params })
-export const getActorCompareUrl = (actorId) => api.get(`/compare/actors/${actorId}/url`)
-export const saveActorCompareUrl = (actorId, data) => api.put(`/compare/actors/${actorId}/url`, data)
-export const scanAllCompareActors = (minMovies = 10) => api.post('/compare/actors/scan', null, { params: { min_movies: minMovies } })
-export const detectActorLocalDir = (actorId) => api.post(`/compare/actors/${actorId}/detect-dir`)
-export const browseDir = (path) => api.post('/compare/browse-dir', { path })
-export const detectActorCompareUrl = (actorId) => api.post(`/compare/actors/${actorId}/detect-url`)
-export const detectAllCompareUrls = (data = {}) => api.post('/compare/actors/detect-all', data)
+export const getActorCompareUrl = (actorId, module = '') => api.get(`/compare/actors/${actorId}/url`, { params: module ? { module } : {} })
+export const saveActorCompareUrl = (actorId, data, module = '') => api.put(`/compare/actors/${actorId}/url`, data, { params: module ? { module } : {} })
+export const scanAllCompareActors = (minMovies = 10, module = '') =>
+  api.post('/compare/actors/scan', null, { params: { min_movies: minMovies, ...(module ? { module } : {}) } })
+export const detectActorLocalDir = (actorId, module = '') => api.post(`/compare/actors/${actorId}/detect-dir`, null, { params: module ? { module } : {} })
+export const browseDir = (path, module = '') => api.post('/compare/browse-dir', { path }, { params: module ? { module } : {} })
+export const detectActorCompareUrl = (actorId, source = 'all', module = '') =>
+  api.post(`/compare/actors/${actorId}/detect-url`, null, { params: { source, ...(module ? { module } : {}) } })
+export const detectAllCompareUrls = (data = {}, module = '') =>
+  api.post('/compare/actors/detect-all', data, { params: module ? { module } : {}, timeout: 0 })
 
 // ============================================
 // Favorites 收藏夹

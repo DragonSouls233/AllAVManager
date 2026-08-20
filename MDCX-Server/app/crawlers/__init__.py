@@ -12,7 +12,7 @@ from app.crawlers.provider import (
 )
 
 # 导入原始爬虫以触发注册
-from app.crawlers import javbus, javdb, fc2, avsox, avmoo, javdatabase
+from app.crawlers import javbus, javdb, fc2, avsox, avmoo, javdatabase, javbooks
 
 # 导入 md 爬虫（包含 fc2ppvdb/fc2club 等，会自动注册）
 from app.crawlers import md
@@ -59,6 +59,7 @@ __all__ = [
     "dmm",
     "avmoo",
     "javdatabase",
+    "javbooks",
     "fc2ppvdb",
     "fc2club",
     # MDCX 迁移爬虫
