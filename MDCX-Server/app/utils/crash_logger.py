@@ -213,6 +213,11 @@ def _asyncio_exception_handler(loop, context: dict) -> None:
     """asyncio 事件循环内未处理异常"""
     exc = context.get("exception")
     message = context.get("message", "")
+    # Windows Proactor 在客户端断开时 _call_connection_lost 抛 ConnectionResetError
+    # (WinError 10054)，属已知无害噪音(run.py 已改用 Selector loop 减少触发)。
+    # 过滤掉以免刷屏 crash.log、掩盖真正的崩溃。
+    if exc is not None and isinstance(exc, ConnectionResetError) and "_call_connection_lost" in message:
+        return
     if exc is not None:
         log_crash(
             type(exc),

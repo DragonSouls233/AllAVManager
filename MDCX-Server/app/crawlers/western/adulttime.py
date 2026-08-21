@@ -380,9 +380,9 @@ class AdultTimeCrawler(BaseCrawler):
         return None
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
-        """跨 30+ 子站搜索"""
+        """跨全部站点搜索"""
         results: list[ScrapeResult] = []
-        for site in ADULTTIME_SITES[:5]:  # 限制前 5 个站点，避免限流
+        for site in ADULTTIME_SITES:
             try:
                 data = await self._algolia_search(site, keyword, page=0)
                 if not data or "results" not in data:
@@ -392,6 +392,8 @@ class AdultTimeCrawler(BaseCrawler):
                     r = self._to_scrape_result(hit)
                     if r and r.is_valid():
                         results.append(r)
+                        if len(results) >= 30:
+                            return results
             except Exception as e:
                 logger.debug(f"AT {site} 搜索失败: {e}")
         return results

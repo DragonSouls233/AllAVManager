@@ -64,10 +64,12 @@ def _parse_theporndb_response(data: dict) -> Optional[ScrapeResult]:
     except (KeyError, TypeError):
         poster_url = data.get("poster") or ""
 
-    # 时长（参考 mdcx: duration / 60 转分钟）
+    # 时长（ThePornDB 返回秒，DB 也存秒）
     duration = None
     try:
-        duration = int(data.get("duration", 0)) // 60
+        duration = int(data.get("duration", 0))
+        if duration <= 0:
+            duration = None
     except (ValueError, TypeError):
         pass
 
@@ -99,7 +101,7 @@ def _parse_theporndb_response(data: dict) -> Optional[ScrapeResult]:
             if name:
                 actor = ActorInfo(name=name)
                 try:
-                    actor.image = performer.get("image") or ""
+                    actor.avatar_url = performer.get("image") or ""
                     actor.extra = {"id": performer.get("id"), "slug": performer.get("slug")}
                 except Exception:
                     pass

@@ -479,12 +479,11 @@ class AyloAPICrawler(BaseCrawler):
                 if resp.status_code == 429:
                     logger.error("Aylo 429 限流")
                     return None
-                data = await resp.json() if hasattr(resp, "json") else None
+                data = resp.json() if hasattr(resp, "json") else None
                 if not data:
                     return None
                 if isinstance(data, list):
-                    logger.error(f"Aylo API 错误: {data}")
-                    return None
+                    return data[0] if data else None
                 return data.get("result") if isinstance(data, dict) else None
             except Exception as e:
                 logger.error(f"Aylo API 请求失败 [{url}]: {e}")
@@ -515,13 +514,21 @@ class AyloAPICrawler(BaseCrawler):
                 self.mark_error()
                 return None
             scene_id, domain = extracted
+            url = f"{AYLO_API_BASE}/releases/{scene_id}"
+            data = await self._api_request(url, domain)
         else:
-            # 纯 ID: 尝试通用 releases 端点
             scene_id = code
-            domain = AYLO_BRANDS[0]  # 默认
-
-        url = f"{AYLO_API_BASE}/releases/{scene_id}"
-        data = await self._api_request(url, domain)
+            url = f"{AYLO_API_BASE}/releases/{scene_id}"
+            domain = None
+            for candidate in AYLO_BRANDS:
+                data = await self._api_request(url, candidate)
+                if data:
+                    domain = candidate
+                    break
+            if not domain:
+                logger.error(f"Aylo 纯 ID {code} 未在任一品牌中找到")
+                self.mark_error()
+                return None
         if not data:
             self.mark_error()
             return None
@@ -542,18 +549,19 @@ class AyloAPICrawler(BaseCrawler):
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """搜索 Aylo 内容（按品牌范围）"""
         results = []
-        for domain in AYLO_BRANDS[:3]:  # 限制最多 3 个品牌，避免限流
+        for domain in AYLO_BRANDS:
             url = f"{AYLO_API_BASE}/releases?q={keyword}"
             data = await self._api_request(url, domain)
             if not data:
                 continue
-            # API 返回可能是 releases 列表
             items = data if isinstance(data, list) else [data]
             for item in items[:10]:
                 r = _parse_scene(item, domain)
                 if r and r.is_valid():
                     results.append(r)
-            await asyncio.sleep(0.5)  # 限流保护
+                if len(results) >= 30:
+                    return results
+            await asyncio.sleep(0.3)
         return results
 
 

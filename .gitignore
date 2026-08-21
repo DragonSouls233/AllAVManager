@@ -126,3 +126,6 @@ MDCX-Server/debug_actor_movies.py
 MDCX-Server/debug_actor_movies2.py
 MDCX-Server/debug_javdb_magnets.py
 MDCX-Server/debug_javdb_magnets2.py
+TEST_FIX_4_MODULES.md
+diag_local_map_bug.py
+diag_base_code.py

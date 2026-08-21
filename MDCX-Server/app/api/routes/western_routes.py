@@ -51,10 +51,11 @@ async def list_movies(
 
         filters = []
         if keyword:
-            kw = f"%{keyword}%"
+            kw = f"%{keyword.replace('%', '').replace('_', '')}%"
             filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actors.like(kw), WesternMovie.site.like(kw)))
         if actor:
-            filters.append(WesternMovie.actors.like(f"%{actor}%"))
+            safe_actor = actor.replace('%', '').replace('_', '')
+            filters.append(WesternMovie.actors.like(f"%{safe_actor}%"))
         if series:
             filters.append(WesternMovie.series == series)
         if maker:
@@ -157,7 +158,7 @@ async def get_western_cover_file(movie_id: int):
                     return FileResponse(str(p), media_type=mt,
                                         headers={"Cache-Control": "public, max-age=86400"})
 
-        # 2) DB 中 cover_url/poster_url/thumb_url 的本地路径
+        # 2) DB 中 cover_url/poster_url/thumb_url
         for attr in ("cover_url", "poster_url", "thumb_url"):
             url = getattr(movie, attr, None)
             if not url:
@@ -172,6 +173,22 @@ async def get_western_cover_file(movie_id: int):
                         mt = "image/webp"
                     return FileResponse(url, media_type=mt,
                                         headers={"Cache-Control": "public, max-age=86400"})
+            elif movie.code:
+                target_path = get_movie_cover_path("western", movie.code)
+                try:
+                    from app.utils.media_helpers import download_image_to_local
+                    saved_path = await download_image_to_local(url, target_path)
+                    if saved_path and fast_file_exists(saved_path):
+                        ext = _Path(saved_path).suffix.lower()
+                        mt = "image/jpeg"
+                        if ext == ".png":
+                            mt = "image/png"
+                        elif ext == ".webp":
+                            mt = "image/webp"
+                        return FileResponse(saved_path, media_type=mt,
+                                            headers={"Cache-Control": "public, max-age=86400"})
+                except Exception:
+                    pass
 
         # 3) 视频目录下
         if movie.file_path:
@@ -302,14 +319,13 @@ async def scrape_western_movie(movie_id: int):
             keyword = clean_title
 
         # 尝试多个 Western 爬虫搜索（带超时控制，避免某个爬虫卡死）
-        from app.crawlers.western.theporndb import ThePornDBCrawler
-        from app.crawlers.western.aylo_api import AyloAPICrawler
+        # 优先 WesternAggregateCrawler（内含 IAFD 全网搜索 + ThePornDB + Aylo）
+        from app.crawlers.western_aggregate import WesternAggregateCrawler
         from app.crawlers.western.vixen_network import VixenNetworkCrawler
         from app.crawlers.western.naughtyamerica import NaughtyAmericaCrawler
 
         scrapers = [
-            (ThePornDBCrawler(), 10),
-            (AyloAPICrawler(), 8),
+            (WesternAggregateCrawler(), 25),
             (VixenNetworkCrawler(), 10),
             (NaughtyAmericaCrawler(), 5),
         ]
@@ -331,45 +347,103 @@ async def scrape_western_movie(movie_id: int):
             return {"status": "error", "message": f"未找到 {keyword} 的匹配数据"}
 
         # 写入模块 DB
+        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+        from app.output.nfo import NFOGenerator
+        old_actors = movie.actors.split(",") if movie.actors else []
         movie.title = matched_result.title
         movie.original_title = matched_result.original_title or matched_result.title
-        if matched_result.cover_url:
+        local_media = await ensure_movie_media_local(
+            module_name="western", code=movie.code,
+            cover_url=matched_result.cover_url,
+            fanart_url=getattr(matched_result, "poster_url", None) or getattr(matched_result, "fanart_url", None),
+            thumb_url=getattr(matched_result, "thumb_url", None),
+            referer=matched_result.cover_url,
+        )
+        if local_media.get("cover"):
+            movie.cover_url = local_media["cover"]
+        elif matched_result.cover_url:
             movie.cover_url = matched_result.cover_url
-        if matched_result.poster_url:
+        if local_media.get("fanart"):
+            movie.poster_url = local_media["fanart"]
+        elif matched_result.poster_url:
             movie.poster_url = matched_result.poster_url
+        if local_media.get("thumb"):
+            movie.thumb_url = local_media["thumb"]
+        if matched_result.studio:
+            movie.studio = matched_result.studio
+        if matched_result.rating:
+            try:
+                movie.rating = float(matched_result.rating)
+            except (ValueError, TypeError):
+                pass
         if matched_result.duration:
             movie.duration = matched_result.duration
-        if matched_result.rating:
-            movie.rating = matched_result.rating
-        if matched_result.plot:
-            movie.plot = matched_result.plot
         if matched_result.release_date:
-            movie.release_date = str(matched_result.release_date)
+            rd = str(matched_result.release_date)
+            movie.release_date = rd[:10] if len(rd) > 10 else rd
+        if matched_result.plot:
+            movie.plot = matched_result.plot[:2000] if len(matched_result.plot) > 2000 else matched_result.plot
         if matched_result.genres:
             movie.genre = ",".join(matched_result.genres)
         if matched_result.tags:
             movie.tag = ",".join(matched_result.tags)
-        if matched_result.studio:
-            movie.studio = matched_result.studio
 
         # 演员
         if matched_result.actors:
+            new_actor_names = set()
             actor_names = [a.name for a in matched_result.actors]
             movie.actors = ",".join(actor_names)
+            from app.db.western_models import WesternActor
             for ai in matched_result.actors:
-                ex = await session.execute(select(WesternActor).where(WesternActor.name == ai.name))
-                a = ex.scalar_one_or_none()
-                if not a:
-                    session.add(WesternActor(name=ai.name, source="scraper", movie_count=1))
-
+                new_actor_names.add(ai.name)
+                actor_stmt = select(WesternActor).where(WesternActor.name == ai.name)
+                actor_result = await session.execute(actor_stmt)
+                existing_actor = actor_result.scalar_one_or_none()
+                if not existing_actor:
+                    new_actor = WesternActor(name=ai.name, source="scraper", movie_count=1)
+                    session.add(new_actor)
+                    if getattr(ai, "avatar_url", None):
+                        local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                        if local_avatar:
+                            new_actor.avatar_url = local_avatar
+                else:
+                    if existing_actor.movie_count < 100:
+                        existing_actor.movie_count += 1
+                    if not existing_actor.avatar_url and getattr(ai, "avatar_url", None):
+                        local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                        existing_actor.avatar_url = local_avatar or ai.avatar_url
+            remove_count = 0
+            for name in old_actors:
+                n = name.strip()
+                if n and n not in new_actor_names:
+                    actor_stmt = select(WesternActor).where(WesternActor.name == n)
+                    actor_result = await session.execute(actor_stmt)
+                    actor_obj = actor_result.scalar_one_or_none()
+                    if actor_obj and actor_obj.movie_count > 0:
+                        actor_obj.movie_count -= 1
+                        if remove_count < 30:
+                            remove_count += 1
         movie.status = "scraped"
         movie.source = matched_result.source
         await session.commit()
-
+        mv_dir = None
+        if hasattr(movie, "output_dir") and movie.output_dir:
+            mv_dir = str(movie.output_dir)
+        elif hasattr(movie, "file_path") and movie.file_path:
+            mv_dir = _os.path.dirname(str(movie.file_path))
+        try:
+            if mv_dir and _os.path.isdir(mv_dir):
+                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
+                NFOGenerator(output_dir=mv_dir).generate_from_movie(
+                    movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                )
+        except Exception as nfo_err:
+            logger.debug(f"Western NFO 生成失败 [{movie.code}]: {nfo_err}")
         return {
             "status": "ok",
             "message": f"刮削成功: {matched_result.title}",
             "source": matched_result.source,
+            "actors": actor_names if matched_result.actors else [],
         }
 
     except HTTPException:
@@ -399,46 +473,129 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
 
     async def _run():
         from app.db.western_models import WesternMovie, WesternActor
+        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+        from app.output.nfo import NFOGenerator
         from sqlalchemy import select
-        from app.crawlers.western.theporndb import ThePornDBCrawler
+        from app.crawlers.western_aggregate import WesternAggregateCrawler
+        from app.crawlers.western.vixen_network import VixenNetworkCrawler
+        from app.crawlers.western.naughtyamerica import NaughtyAmericaCrawler
 
-        crawler = ThePornDBCrawler()
+        scrapers = [
+            (WesternAggregateCrawler(), 25),
+            (VixenNetworkCrawler(), 10),
+            (NaughtyAmericaCrawler(), 5),
+        ]
         success = 0
         failed = 0
         for m in pending:
+            keyword = m.title or ""
+            if not keyword:
+                failed += 1
+                continue
+            import re as _re
+            clean_title = _re.sub(r'\[.*?\]', '', keyword)
+            clean_title = _re.sub(r'[-_]\s*[0-9]+[kK]', '', clean_title)
+            clean_title = _re.sub(r'-C$', '', clean_title)
+            clean_title = clean_title.replace('.', ' ').replace('_', ' ').replace('  ', ' ').strip()
+            search_kw = clean_title or keyword
+
+            matched_result = None
+            for scraper, timeout in scrapers:
+                try:
+                    results = await asyncio.wait_for(scraper.search(search_kw), timeout=timeout)
+                    if results:
+                        matched_result = results[0]
+                        break
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    continue
+
+            if not matched_result:
+                failed += 1
+                continue
+
+            s = await db.get_session()
             try:
-                results = await crawler.search(m.title or "")
-                if results:
-                    s = await db.get_session()
+                mv = (await s.execute(select(WesternMovie).where(WesternMovie.id == m.id))).scalar_one_or_none()
+                if mv:
+                    old_actors = mv.actors.split(",") if mv.actors else []
+                    mv.title = matched_result.title
+                    local_media = await ensure_movie_media_local(
+                        module_name="western", code=mv.code,
+                        cover_url=matched_result.cover_url,
+                        fanart_url=getattr(matched_result, "poster_url", None) or getattr(matched_result, "fanart_url", None),
+                        thumb_url=getattr(matched_result, "thumb_url", None),
+                        referer=matched_result.cover_url,
+                    )
+                    if local_media.get("cover"):
+                        mv.cover_url = local_media["cover"]
+                    elif matched_result.cover_url:
+                        mv.cover_url = matched_result.cover_url
+                    if local_media.get("fanart"):
+                        mv.poster_url = local_media["fanart"]
+                    elif matched_result.poster_url:
+                        mv.poster_url = matched_result.poster_url
+                    if local_media.get("thumb"):
+                        mv.thumb_url = local_media["thumb"]
+                    if matched_result.duration:
+                        mv.duration = matched_result.duration
+                    if matched_result.rating:
+                        mv.rating = matched_result.rating
+                    if matched_result.plot:
+                        mv.plot = matched_result.plot
+                    if matched_result.genres:
+                        mv.genre = ",".join(matched_result.genres)
+                    if matched_result.actors:
+                        new_actor_names = set()
+                        mv.actors = ",".join(a.name for a in matched_result.actors)
+                        for ai in matched_result.actors:
+                            new_actor_names.add(ai.name)
+                            ex = await s.execute(select(WesternActor).where(WesternActor.name == ai.name))
+                            a = ex.scalar_one_or_none()
+                            if not a:
+                                new_a = WesternActor(name=ai.name, source="scraper", movie_count=1)
+                                s.add(new_a)
+                                if getattr(ai, "avatar_url", None):
+                                    local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                                    if local_avatar:
+                                        new_a.avatar_url = local_avatar
+                            else:
+                                if a.movie_count < 100:
+                                    a.movie_count += 1
+                                if not a.avatar_url and getattr(ai, "avatar_url", None):
+                                    local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                                    a.avatar_url = local_avatar or ai.avatar_url
+                        for name in old_actors:
+                            n = name.strip()
+                            if n and n not in new_actor_names:
+                                actor_stmt = select(WesternActor).where(WesternActor.name == n)
+                                actor_result = await s.execute(actor_stmt)
+                                actor_obj = actor_result.scalar_one_or_none()
+                                if actor_obj and actor_obj.movie_count > 0:
+                                    actor_obj.movie_count -= 1
+                    mv.status = "scraped"
+                    mv.source = matched_result.source
+                    await s.commit()
+                    mv_dir = None
+                    if hasattr(mv, "output_dir") and mv.output_dir:
+                        mv_dir = str(mv.output_dir)
+                    elif hasattr(mv, "file_path") and mv.file_path:
+                        mv_dir = _os.path.dirname(str(mv.file_path))
                     try:
-                        mv = (await s.execute(select(WesternMovie).where(WesternMovie.id == m.id))).scalar_one_or_none()
-                        if mv:
-                            r = results[0]
-                            mv.title = r.title
-                            if r.cover_url:
-                                mv.cover_url = r.cover_url
-                            if r.duration:
-                                mv.duration = r.duration
-                            if r.rating:
-                                mv.rating = r.rating
-                            if r.actors:
-                                mv.actors = ",".join(a.name for a in r.actors)
-                                for ai in r.actors:
-                                    ex = await s.execute(select(WesternActor).where(WesternActor.name == ai.name))
-                                    a = ex.scalar_one_or_none()
-                                    if not a:
-                                        s.add(WesternActor(name=ai.name, source="scraper", movie_count=1))
-                            mv.status = "scraped"
-                            mv.source = r.source
-                            await s.commit()
-                            success += 1
-                    finally:
-                        await s.close()
-                else:
-                    failed += 1
+                        if mv_dir and _os.path.isdir(mv_dir):
+                            actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                            NFOGenerator(output_dir=mv_dir).generate_from_movie(
+                                mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                            )
+                    except Exception as nfo_err:
+                        logger.debug(f"Western 批量NFO生成失败 [{mv.code}]: {nfo_err}")
+                    success += 1
             except Exception as e:
                 logger.debug(f"刮削失败 {m.code}: {e}")
                 failed += 1
+            finally:
+                await s.close()
         logger.info(f"Western 批量刮削完成: 成功 {success}, 失败 {failed}")
 
     background_tasks.add_task(_run)

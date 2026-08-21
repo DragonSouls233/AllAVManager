@@ -416,8 +416,9 @@ async def scrape_uncensored_movie(movie_id: int):
         local_media = await ensure_movie_media_local(
             module_name="uncensored", code=movie.code,
             cover_url=scrape_result.cover_url,
-            fanart_url=scrape_result.poster_url,
-            thumb_url=scrape_result.thumb_url,
+            fanart_url=scrape_result.poster_url or scrape_result.cover_url,
+            thumb_url=scrape_result.sample_images[0] if scrape_result.sample_images else scrape_result.thumb_url,
+            referer=scrape_result.cover_url,
         )
         if local_media.get("cover"):
             movie.cover_url = local_media["cover"]
@@ -425,6 +426,9 @@ async def scrape_uncensored_movie(movie_id: int):
             movie.poster_url = local_media["fanart"]
         if local_media.get("thumb"):
             movie.thumb_url = local_media["thumb"]
+        # 样图/剧照保存到数据库(以 JSON 列表格式)
+        if scrape_result.sample_images:
+            movie.sample_images = ",".join(scrape_result.sample_images)
         if not movie.cover_url and scrape_result.cover_url:
             movie.cover_url = scrape_result.cover_url
 
@@ -478,6 +482,23 @@ async def scrape_uncensored_movie(movie_id: int):
                 ) or 0
             await session.commit()
 
+        # ── NFO 生成（回写到影片所在目录，失败不阻断）──
+        try:
+            from app.output.nfo import NFOGenerator
+            out_dir = str(movie.output_dir) if hasattr(movie, "output_dir") and movie.output_dir else (
+                str(_Path(movie.file_path).parent) if movie.file_path else ""
+            )
+            if out_dir:
+                gen = NFOGenerator(output_dir=out_dir)
+                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
+                nfo_path = gen.generate_from_movie(
+                    movie=movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                )
+                if nfo_path:
+                    logger.info(f"无码 NFO 生成成功: {nfo_path}")
+        except Exception as nfo_err:
+            logger.warning(f"无码 NFO 生成失败 [{movie_id}]: {nfo_err}")
+
         return {
             "status": "ok",
             "message": f"刮削成功: {scrape_result.title}",
@@ -515,6 +536,7 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
         from app.db.uncensored_models import UncensoredMovie, UncensoredActor
         from app.scraper.engine import get_scraper_engine
         from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+        from app.output.nfo import NFOGenerator
         from sqlalchemy import select
         engine = get_scraper_engine()
         success = failed = 0
@@ -543,14 +565,20 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
                             local_media = await ensure_movie_media_local(
                                 module_name="uncensored", code=mv.code,
                                 cover_url=sr.cover_url,
-                                fanart_url=sr.poster_url,
+                                fanart_url=sr.poster_url or sr.cover_url,
+                                thumb_url=sr.sample_images[0] if sr.sample_images else sr.thumb_url,
+                                referer=sr.cover_url,
                             )
                             if local_media.get("cover"):
                                 mv.cover_url = local_media["cover"]
+                            elif sr.cover_url:
+                                mv.cover_url = sr.cover_url
                             if local_media.get("fanart"):
                                 mv.poster_url = local_media["fanart"]
-                            if not mv.cover_url and sr.cover_url:
-                                mv.cover_url = sr.cover_url
+                            if local_media.get("thumb"):
+                                mv.thumb_url = local_media["thumb"]
+                            if sr.sample_images:
+                                mv.sample_images = ",".join(sr.sample_images)
 
                             if sr.actors:
                                 mv.actor = ",".join(a.name for a in sr.actors)
@@ -572,6 +600,19 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
                             mv.source = sr.source or "scraper"
                             mv.status = "scraped"
                             await s.commit()
+                            mv_dir = None
+                            if hasattr(mv, "output_dir") and mv.output_dir:
+                                mv_dir = str(mv.output_dir)
+                            elif hasattr(mv, "file_path") and mv.file_path:
+                                mv_dir = _os.path.dirname(str(mv.file_path))
+                            try:
+                                if mv_dir and _os.path.isdir(mv_dir):
+                                    actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                                    NFOGenerator(output_dir=mv_dir).generate_from_movie(
+                                        mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                                    )
+                            except Exception as nfo_err:
+                                logger.debug(f"无码批量NFO生成失败 [{mv.code}]: {nfo_err}")
                             success += 1
                     finally:
                         await s.close()

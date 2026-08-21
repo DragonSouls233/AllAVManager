@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request as
 
 from app.db.module_db import ModuleDatabase
 
+import json
 import os as _os
 from pathlib import Path as _Path
 
@@ -368,8 +369,6 @@ async def scrape_fc2_movie(movie_id: int):
         movie.title = scrape_result.title
         if scrape_result.original_title:
             movie.original_title = scrape_result.original_title
-        if scrape_result.cover_url:
-            movie.cover_url = scrape_result.cover_url
         if scrape_result.release_date:
             movie.release_date = str(scrape_result.release_date)
         if scrape_result.duration:
@@ -380,10 +379,41 @@ async def scrape_fc2_movie(movie_id: int):
             movie.plot = scrape_result.plot
         if scrape_result.studio:
             movie.studio = scrape_result.studio
+        if scrape_result.maker:
+            movie.maker = scrape_result.maker
+        if scrape_result.director:
+            movie.director = scrape_result.director
+        if scrape_result.series:
+            movie.series = scrape_result.series
         if scrape_result.genres:
             movie.genre = ",".join(scrape_result.genres)
         if scrape_result.tags:
             movie.tag = ",".join(scrape_result.tags)
+
+        # ── 资源下载：将远程封面/预览图下载到本地 ──
+        from app.utils.media_helpers import (
+            ensure_movie_media_local,
+            ensure_actor_avatar_local,
+        )
+
+        local_media = await ensure_movie_media_local(
+            module_name="fc2", code=movie.code,
+            cover_url=scrape_result.cover_url,
+            fanart_url=scrape_result.poster_url or scrape_result.cover_url,
+            thumb_url=scrape_result.sample_images[0] if scrape_result.sample_images else scrape_result.thumb_url,
+            referer=scrape_result.cover_url,
+        )
+        if local_media.get("cover"):
+            movie.cover_url = local_media["cover"]
+        if local_media.get("fanart"):
+            movie.poster_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            movie.thumb_url = local_media["thumb"]
+        # 样图/剧照保存到数据库(以 JSON 列表格式，与 NFO 解析器兼容)
+        if scrape_result.sample_images:
+            movie.sample_images = json.dumps(scrape_result.sample_images, ensure_ascii=False)
+        if not movie.cover_url and scrape_result.cover_url:
+            movie.cover_url = scrape_result.cover_url
 
         if scrape_result.actors:
             movie.actor = ",".join(a.name for a in scrape_result.actors)
@@ -391,13 +421,45 @@ async def scrape_fc2_movie(movie_id: int):
                 existing = await session.execute(select(Fc2Actor).where(Fc2Actor.name == actor_info.name))
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
-                    db_actor.movie_count += 1
+                    if not db_actor.avatar_url and actor_info.avatar_url:
+                        local_avatar = await ensure_actor_avatar_local(
+                            actor_info.name, actor_info.avatar_url
+                        )
+                        db_actor.avatar_url = local_avatar or actor_info.avatar_url
                 else:
-                    session.add(Fc2Actor(name=actor_info.name, source="scraper", movie_count=1))
+                    local_avatar = await ensure_actor_avatar_local(
+                        actor_info.name, actor_info.avatar_url
+                    )
+                    session.add(Fc2Actor(
+                        name=actor_info.name,
+                        avatar_url=local_avatar or actor_info.avatar_url,
+                        source="scraper",
+                        source_site=scrape_result.source,
+                        movie_count=0,
+                    ))
 
         movie.source = scrape_result.source or "scraper"
+        if scrape_result.source_url:
+            movie.source_url = scrape_result.source_url
         movie.status = "scraped"
         await session.commit()
+
+        # ── NFO 生成（回写到影片所在目录，失败不阻断）──
+        try:
+            from app.output.nfo import NFOGenerator
+            out_dir = str(movie.output_dir) if hasattr(movie, "output_dir") and movie.output_dir else (
+                str(_Path(movie.file_path).parent) if movie.file_path else ""
+            )
+            if out_dir:
+                gen = NFOGenerator(output_dir=out_dir)
+                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
+                nfo_path = gen.generate_from_movie(
+                    movie=movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                )
+                if nfo_path:
+                    logger.info(f"FC2 NFO 生成成功: {nfo_path}")
+        except Exception as nfo_err:
+            logger.warning(f"FC2 NFO 生成失败 [{movie_id}]: {nfo_err}")
 
         return {"status": "ok", "message": f"刮削成功: {scrape_result.title}"}
 
@@ -430,6 +492,8 @@ async def scrape_all_pending_fc2(background_tasks: BackgroundTasks):
     async def _run():
         from app.db.fc2_models import Fc2Movie, Fc2Actor
         from app.scraper.engine import get_scraper_engine
+        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+        from app.output.nfo import NFOGenerator
         engine = get_scraper_engine()
         success = failed = 0
         for m in pending:
@@ -442,17 +506,102 @@ async def scrape_all_pending_fc2(background_tasks: BackgroundTasks):
                         r = await s.execute(st)
                         mv = r.scalar_one_or_none()
                         if mv:
+                            old_actors = mv.actor.split(",") if mv.actor else []
                             mv.title = sr.title
-                            if sr.cover_url: mv.cover_url = sr.cover_url
+                            if sr.original_title:
+                                mv.original_title = sr.original_title
+                            if sr.release_date:
+                                mv.release_date = str(sr.release_date)
+                            if sr.duration:
+                                mv.duration = sr.duration
+                            if sr.plot:
+                                mv.plot = sr.plot[:2000]
+                            if sr.studio:
+                                mv.studio = sr.studio
+                            if sr.maker:
+                                mv.maker = sr.maker
+                            if sr.director:
+                                mv.director = sr.director
+                            if sr.series:
+                                mv.series = sr.series
+                            if sr.genres:
+                                mv.genre = ",".join(sr.genres)
+                            if sr.tags:
+                                mv.tag = ",".join(sr.tags)
+
+                            local_media = await ensure_movie_media_local(
+                                module_name="fc2", code=mv.code,
+                                cover_url=sr.cover_url,
+                                fanart_url=sr.poster_url or sr.cover_url,
+                                thumb_url=sr.sample_images[0] if sr.sample_images else sr.thumb_url,
+                                referer=sr.cover_url,
+                            )
+                            if local_media.get("cover"):
+                                mv.cover_url = local_media["cover"]
+                            elif sr.cover_url:
+                                mv.cover_url = sr.cover_url
+                            if local_media.get("fanart"):
+                                mv.poster_url = local_media["fanart"]
+                            if local_media.get("thumb"):
+                                mv.thumb_url = local_media["thumb"]
+                            # 样图/剧照(以 JSON 列表格式，与 NFO 解析器兼容)
+                            if sr.sample_images:
+                                mv.sample_images = json.dumps(sr.sample_images, ensure_ascii=False)
                             if sr.actors:
+                                new_actor_names = set()
                                 mv.actor = ",".join(a.name for a in sr.actors)
                                 for ai in sr.actors:
+                                    new_actor_names.add(ai.name)
                                     ex = await s.execute(select(Fc2Actor).where(Fc2Actor.name == ai.name))
-                                    if not ex.scalar_one_or_none():
-                                        s.add(Fc2Actor(name=ai.name, source="scraper", movie_count=1))
+                                    existing = ex.scalar_one_or_none()
+                                    if not existing:
+                                        local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                                        new_actor = Fc2Actor(name=ai.name, source="scraper", movie_count=1)
+                                        new_actor.avatar_url = local_avatar or ai.avatar_url
+                                        s.add(new_actor)
+                                    else:
+                                        if existing.movie_count < 100:
+                                            existing.movie_count += 1
+                                        if not existing.avatar_url and ai.avatar_url:
+                                            local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                                            existing.avatar_url = local_avatar or ai.avatar_url
+                                remove_count = 0
+                                for name in old_actors:
+                                    n = name.strip()
+                                    if n and n not in new_actor_names:
+                                        actor_stmt = select(Fc2Actor).where(Fc2Actor.name == n)
+                                        actor_result = await s.execute(actor_stmt)
+                                        actor_obj = actor_result.scalar_one_or_none()
+                                        if actor_obj and actor_obj.movie_count > 0:
+                                            actor_obj.movie_count -= 1
+                                            if remove_count < 30:
+                                                remove_count += 1
+                            if sr.rating:
+                                try:
+                                    mv.rating = float(sr.rating)
+                                except:
+                                    pass
+                            if sr.year:
+                                mv.year = sr.year
+                            if sr.description:
+                                mv.description = sr.description[:2000]
                             mv.source = sr.source or "scraper"
                             mv.status = "scraped"
                             await s.commit()
+
+                            mv_dir = None
+                            if hasattr(mv, "output_dir") and mv.output_dir:
+                                mv_dir = str(mv.output_dir)
+                            elif hasattr(mv, "file_path") and mv.file_path:
+                                mv_dir = _os.path.dirname(str(mv.file_path))
+                            try:
+                                if mv_dir and _os.path.isdir(mv_dir):
+                                    actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                                    NFOGenerator(output_dir=mv_dir).generate_from_movie(
+                                        mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                                    )
+                            except Exception as nfo_err:
+                                logger.debug(f"FC2 批量NFO生成失败 [{mv.code}]: {nfo_err}")
                             success += 1
                     finally:
                         await s.close()

@@ -218,12 +218,13 @@ class AvmooCrawler(BaseCrawler):
             if not isinstance(items, list) or not items:
                 break
             for it in items:
+                movie_id = it.get("movieId") or ""
                 movies.append({
                     "title": it.get("title_cn") or it.get("title") or "",
                     "code": it.get("movieFanHao") or "",
                     "date": it.get("releaseDate") or "",
-                    "url": f"{self.base_url}/star/{star_id}",
-                    "movieId": it.get("movieId") or "",
+                    "url": f"{self.base_url}/cn/movies/{movie_id}" if movie_id else f"{self.base_url}/star/{star_id}",
+                    "movieId": movie_id,
                 })
             if len(items) < page_size:
                 break

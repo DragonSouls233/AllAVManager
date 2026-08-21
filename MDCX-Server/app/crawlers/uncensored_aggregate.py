@@ -13,6 +13,7 @@
 
 import re
 from typing import Optional
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -70,17 +71,25 @@ class UncensoredAggregateCrawler(BaseCrawler):
     requires_proxy = True
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
-        """刮削无码番号，自动路由到对应站点。"""
-        # 1. 检测是否是无码番号
+        """刮削无码番号，自动路由到对应站点。
+
+        修复:JAVDB 改为首选(匿名 App API 最稳定),AVSOX/站点直连作备用。
+        原顺序 AVSOX→前缀→JAVDB,前两步几乎必死导致大量超时。
+        """
         uncensored = is_uncensored_code(code)
         prefix = uncensored.prefix.upper() if uncensored else ""
 
-        # 2. 尝试 AVSOX 通用搜索
+        # 1. 🔑 JAVDB 匿名 App API 首选(免登录、免代理、绕 Cloudflare)
+        result = await self._scrape_javdb_generic(code)
+        if result:
+            return result
+
+        # 2. AVSOX 搜索(备用,站点可能已挂)
         result = await self._scrape_avsox(code)
         if result:
             return result
 
-        # 3. 按前缀路由到专用站点
+        # 3. 按前缀路由到专用站点(最后尝试)
         if prefix:
             adapter_url = _UNCENSORED_ADAPTERS.get(prefix)
             if adapter_url:
@@ -88,9 +97,7 @@ class UncensoredAggregateCrawler(BaseCrawler):
                 if result:
                     return result
 
-        # 4. JavDB 通用搜索兜底
-        result = await self._scrape_javdb_generic(code)
-        return result
+        return None
 
     async def _scrape_avsox(self, code: str) -> Optional[ScrapeResult]:
         """通过 AVSOX 搜索无码元数据。"""
@@ -114,16 +121,17 @@ class UncensoredAggregateCrawler(BaseCrawler):
                 if not detail_html:
                     return None
 
-                return self._parse_avsox_detail(detail_html, code)
+                return self._parse_avsox_detail(detail_html, code, detail_url)
             except Exception as e:
                 logger.debug("avsox scrape failed for %s: %s", code, e)
         return None
 
-    def _parse_avsox_detail(self, html: str, code: str) -> Optional[ScrapeResult]:
+    def _parse_avsox_detail(self, html: str, code: str, detail_url: str = "") -> Optional[ScrapeResult]:
         """解析 AVSOX 详情页。"""
         soup = BeautifulSoup(html, "html.parser")
-        result = ScrapeResult()
+        result = ScrapeResult(code=code.upper(), title=code.upper(), source="avsox", source_url=detail_url)
         result.code = code.upper()
+        result.source_url = detail_url
 
         title_el = soup.select_one("h3, .movie-title, title")
         result.title = title_el.text.strip() if title_el else code
@@ -131,6 +139,10 @@ class UncensoredAggregateCrawler(BaseCrawler):
         cover_el = soup.select_one("a.bigImage img, .bigImage img, img.video-cover")
         if cover_el:
             result.cover_url = cover_el.get("src") or cover_el.get("href", "")
+            if result.cover_url.startswith("//"):
+                result.cover_url = "https:" + result.cover_url
+            elif result.cover_url.startswith("/"):
+                result.cover_url = f"https://www.avsox.click{result.cover_url}"
 
         # 演员
         actors_section = soup.find(text=re.compile(r"出演|演員|演員"))
@@ -172,9 +184,10 @@ class UncensoredAggregateCrawler(BaseCrawler):
                 for url in search_urls:
                     html = await client.get_text(url, headers={"User-Agent": _USER_AGENT})
                     if html and "404" not in html and len(html) > 500:
-                        result = ScrapeResult()
+                        result = ScrapeResult(code=code.upper(), title=code.upper(), source=prefix.lower(), source_url=url)
                         result.code = code.upper()
                         result.source = prefix.lower()
+                        result.source_url = url
 
                         soup = BeautifulSoup(html, "html.parser")
                         title_el = soup.select_one("h1, title, .title")
@@ -188,8 +201,16 @@ class UncensoredAggregateCrawler(BaseCrawler):
                         if cover_el:
                             if cover_el.name == "meta":
                                 result.cover_url = cover_el.get("content", "")
+                                if result.cover_url.startswith("//"):
+                                    result.cover_url = "https:" + result.cover_url
+                                elif result.cover_url.startswith("/"):
+                                    result.cover_url = urljoin(base_url, result.cover_url)
                             else:
                                 result.cover_url = cover_el.get("src", "")
+                                if result.cover_url.startswith("//"):
+                                    result.cover_url = "https:" + result.cover_url
+                                elif result.cover_url.startswith("/"):
+                                    result.cover_url = urljoin(base_url, result.cover_url)
 
                         result.studio = prefix
                         return result
@@ -214,15 +235,19 @@ class UncensoredAggregateCrawler(BaseCrawler):
                 genres = []
                 for a in (movie.raw.get("actors") or []):
                     if isinstance(a, dict) and a.get("name"):
-                        actors.append(ActorInfo(name=a["name"]))
+                        avatar = a.get("thumb_url") or a.get("cover_url") or a.get("avatar_url") or ""
+                        if avatar and not avatar.startswith("http"):
+                            avatar = urljoin("https://cdn-ccover.jdbstatic.com/", avatar)
+                        actors.append(ActorInfo(name=a["name"], avatar_url=avatar or None))
                 for g in (movie.raw.get("tags") or []):
                     if isinstance(g, dict) and g.get("name"):
                         genres.append(g["name"])
-                result = ScrapeResult()
+                result = ScrapeResult(code=code.upper(), title=code.upper(), source="javdb_app_api")
                 result.code = movie.number or code.upper()
                 result.title = movie.title
                 result.original_title = movie.origin_title or ""
                 result.cover_url = movie.cover_url or movie.thumb_url
+                result.source_url = f"https://javdb.com/v/{movie.id}" if movie.id else ""
                 result.release_date = None
                 if movie.release_date:
                     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"):
@@ -281,9 +306,10 @@ class HeyzoEnhancedCrawler(BaseCrawler):
                 from lxml import etree
                 doc = etree.fromstring(html, etree.HTMLParser())
 
-                result = ScrapeResult()
+                result = ScrapeResult(code=f"HEYZO-{movie_id}", title=code, source="heyzo", source_url=detail_url)
                 result.code = f"HEYZO-{movie_id}"
                 result.source = "heyzo"
+                result.source_url = detail_url
 
                 title_el = doc.xpath("//h1/text() | //title/text()")
                 result.title = title_el[0].strip() if title_el else code
@@ -291,8 +317,12 @@ class HeyzoEnhancedCrawler(BaseCrawler):
                 cover_el = doc.xpath('//img[@class="movie_image"]/@src | //img[contains(@src,"cap")]/@src')
                 if cover_el:
                     result.cover_url = cover_el[0]
-                    if not result.cover_url.startswith("http"):
-                        result.cover_url = self.base_url + result.cover_url
+                    if result.cover_url.startswith("//"):
+                        result.cover_url = "https:" + result.cover_url
+                    elif result.cover_url.startswith("/"):
+                        result.cover_url = f"https://www.heyzo.com{result.cover_url}"
+                    elif not result.cover_url.startswith("http"):
+                        result.cover_url = f"https://www.heyzo.com{result.cover_url}"
 
                 actor_els = doc.xpath('//a[contains(@href,"actor")]/text() | //a[contains(@href,"star")]/text()')
                 result.actors = [ActorInfo(name=a.strip()) for a in actor_els if a.strip()]
@@ -346,9 +376,10 @@ class OnePondoCrawler(BaseCrawler):
                 if not html:
                     return None
 
-                result = ScrapeResult()
+                result = ScrapeResult(code=f"1PONDO-{movie_id}", title=code, source="1pondo", source_url=detail_url)
                 result.code = f"1PONDO-{movie_id}"
                 result.source = "1pondo"
+                result.source_url = detail_url
                 result.studio = "1Pondo"
 
                 from lxml import etree
@@ -359,6 +390,10 @@ class OnePondoCrawler(BaseCrawler):
 
                 cover_el = doc.xpath('//img[contains(@class,"movie_image")]/@src | //meta[@property="og:image"]/@content')
                 result.cover_url = cover_el[0] if cover_el else ""
+                if result.cover_url.startswith("//"):
+                    result.cover_url = "https:" + result.cover_url
+                elif result.cover_url.startswith("/"):
+                    result.cover_url = f"https://www.1pondo.tv{result.cover_url}"
 
                 actor_els = doc.xpath('//a[contains(@href,"actor")]/text() | //a[contains(@href,"model")]/text()')
                 result.actors = [ActorInfo(name=a.strip()) for a in actor_els if a.strip()]

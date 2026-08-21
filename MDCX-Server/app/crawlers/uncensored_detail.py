@@ -1,4 +1,4 @@
-﻿"""
+"""
 无码内容爬虫
 
 支持站点：
@@ -126,6 +126,8 @@ class CaribbeancomCrawler(BaseCrawler):
                 cover_url = cover_elem[0]
                 if cover_url.startswith("//"):
                     cover_url = "https:" + cover_url
+                elif cover_url.startswith("/"):
+                    cover_url = urljoin(self.base_url, cover_url)
 
             # 发行日期
             date_elem = html.xpath('//td[contains(text(), "配信日")]/following-sibling::td/text()')
@@ -281,6 +283,8 @@ class HeyzoCrawler(BaseCrawler):
                 cover_url = cover_elem[0]
                 if cover_url.startswith("//"):
                     cover_url = "https:" + cover_url
+                elif cover_url.startswith("/"):
+                    cover_url = urljoin(self.base_url, cover_url)
 
             # 发行日期
             date_elem = html.xpath('//td[contains(text(), "配信日")]/following-sibling::td/text()')
@@ -421,6 +425,8 @@ class S1StyleCrawler(BaseCrawler):
                 cover_url = cover_elem[0]
                 if cover_url.startswith("//"):
                     cover_url = "https:" + cover_url
+                elif cover_url.startswith("/"):
+                    cover_url = urljoin(self.base_url, cover_url)
 
             # 发行日期
             date_elem = html.xpath('//td[contains(text(), "配信日")]/following-sibling::td/text()')
@@ -561,6 +567,8 @@ class TenMusumeCrawler(BaseCrawler):
                 cover_url = cover_elem[0]
                 if cover_url.startswith("//"):
                     cover_url = "https:" + cover_url
+                elif cover_url.startswith("/"):
+                    cover_url = urljoin(self.base_url, cover_url)
 
             # 发行日期
             date_elem = html.xpath('//td[contains(text(), "配信日")]/following-sibling::td/text()')
@@ -697,6 +705,8 @@ class CaribbeancomprCrawler(BaseCrawler):
                 cover_url = cover_elem[0]
                 if cover_url.startswith("//"):
                     cover_url = "https:" + cover_url
+                elif cover_url.startswith("/"):
+                    cover_url = urljoin(self.base_url, cover_url)
 
             # 演员
             actors = []
@@ -808,6 +818,8 @@ class RagdollCrawler(BaseCrawler):
                 cover_url = cover_elem[0]
                 if cover_url.startswith("//"):
                     cover_url = "https:" + cover_url
+                elif cover_url.startswith("/"):
+                    cover_url = urljoin(self.base_url, cover_url)
 
             # 演员
             actors = []
@@ -867,7 +879,7 @@ class Kin8tengokuCrawler(BaseCrawler):
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
                     return None
-                html = lxml_html.fromstring(html_text)
+                html = etree.fromstring(html_text)
                 return self._parse_detail(html, code, movie_id)
             except Exception as e:
                 logger.debug(f"kin8tengoku 刮削失败 {code}: {e}")
@@ -927,7 +939,7 @@ class PacopacomamaCrawler(BaseCrawler):
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
                     return None
-                html = lxml_html.fromstring(html_text)
+                html = etree.fromstring(html_text)
                 return self._parse_detail(html, code, movie_id)
             except Exception as e:
                 logger.debug(f"pacopacomama 刮削失败 {code}: {e}")
@@ -984,7 +996,7 @@ class GachiCrawler(BaseCrawler):
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
                     return None
-                html = lxml_html.fromstring(html_text)
+                html = etree.fromstring(html_text)
                 return self._parse_detail(html, code, movie_id)
             except Exception as e:
                 logger.debug(f"gachi 刮削失败 {code}: {e}")
@@ -1043,7 +1055,7 @@ class T28Crawler(BaseCrawler):
                 html_text = await client.get_text(detail_url)
                 if not html_text or "404" in html_text:
                     return None
-                html = lxml_html.fromstring(html_text)
+                html = etree.fromstring(html_text)
                 return self._parse_detail(html, code, movie_id)
             except Exception as e:
                 logger.debug(f"t28 刮削失败 {code}: {e}")

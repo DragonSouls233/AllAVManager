@@ -21,8 +21,8 @@ API 端点:
   - 包含 trailer/promo_video_data → 反推封面 URL
 """
 
+import asyncio
 import re
-import time
 from typing import Any, Optional
 
 from app.crawlers.base import (
@@ -194,7 +194,7 @@ class NaughtyAmericaCrawler(BaseCrawler):
                     resp = await client.get(api_url, headers=self._headers)
                     if resp.status_code == 405:
                         logger.debug(f"NA 405 错误 (attempt {attempt}/{max_retries})")
-                        time.sleep(backoff)
+                        await asyncio.sleep(backoff)
                         backoff *= 1.2
                         continue
                     if resp.status_code == 200:

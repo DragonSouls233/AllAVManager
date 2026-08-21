@@ -426,13 +426,29 @@ async def scrape_pornhub_movie(movie_id: int):
         crawler = PornhubCrawler()
         scrape_result = await crawler.scrape(movie.code)
 
+        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+        from app.output.nfo import NFOGenerator
+
         if not scrape_result or not scrape_result.title:
             return {"status": "error", "message": f"刮削失败: 未找到 {movie.code} 的数据"}
 
+        old_actors = movie.actor.split(",") if movie.actor else []
         movie.title = scrape_result.title
         movie.original_title = scrape_result.title
-        if scrape_result.cover_url:
+        local_media = await ensure_movie_media_local(
+            module_name="pornhub", code=movie.code,
+            cover_url=scrape_result.cover_url,
+            fanart_url=scrape_result.poster_url,
+            thumb_url=scrape_result.thumb_url,
+        )
+        if local_media.get("cover"):
+            movie.cover_url = local_media["cover"]
+        elif scrape_result.cover_url:
             movie.cover_url = scrape_result.cover_url
+        if local_media.get("fanart"):
+            movie.fanart_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            movie.thumb_url = local_media["thumb"]
         if scrape_result.duration:
             movie.duration = scrape_result.duration
         if scrape_result.rating:
@@ -449,32 +465,62 @@ async def scrape_pornhub_movie(movie_id: int):
             movie.plot = scrape_result.plot
 
         if scrape_result.actors:
+            new_actor_names = set()
             actor_names = [a.name for a in scrape_result.actors]
             movie.actor = ",".join(actor_names)
 
             for actor_info in scrape_result.actors:
+                new_actor_names.add(actor_info.name)
                 existing = await session.execute(
                     select(PornhubActor).where(PornhubActor.name == actor_info.name)
                 )
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
-                    # 按 movie.actor LIKE 重算，与扫描口径一致，避免重复刮削累加
                     db_actor.movie_count = await _recount_actor_movie_count(session, actor_info.name)
+                    if not db_actor.avatar_url and getattr(actor_info, "avatar_url", None):
+                        local_avatar = await ensure_actor_avatar_local(actor_info.name, actor_info.avatar_url)
+                        db_actor.avatar_url = local_avatar or actor_info.avatar_url
                 else:
-                    session.add(PornhubActor(
+                    new_actor = PornhubActor(
                         name=actor_info.name,
                         source="scraper",
                         movie_count=1,
-                    ))
+                    )
+                    session.add(new_actor)
+                    if getattr(actor_info, "avatar_url", None):
+                        local_avatar = await ensure_actor_avatar_local(actor_info.name, actor_info.avatar_url)
+                        if local_avatar:
+                            new_actor.avatar_url = local_avatar
+            for name in old_actors:
+                n = name.strip()
+                if n and n not in new_actor_names:
+                    actor_stmt = select(PornhubActor).where(PornhubActor.name == n)
+                    actor_result = await session.execute(actor_stmt)
+                    actor_obj = actor_result.scalar_one_or_none()
+                    if actor_obj and actor_obj.movie_count > 0:
+                        actor_obj.movie_count -= 1
 
         movie.status = "scraped"
         movie.source = "pornhub"
         await session.commit()
+        mv_dir = None
+        if hasattr(movie, "output_dir") and movie.output_dir:
+            mv_dir = str(movie.output_dir)
+        elif hasattr(movie, "file_path") and movie.file_path:
+            mv_dir = _os.path.dirname(str(movie.file_path))
+        try:
+            if mv_dir and _os.path.isdir(mv_dir):
+                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
+                NFOGenerator(output_dir=mv_dir).generate_from_movie(
+                    movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                )
+        except Exception as nfo_err:
+            pass
 
         return {
             "status": "ok",
             "message": f"刮削成功: {scrape_result.title}",
-            "actors": [a.name for a in scrape_result.actors] if scrape_result.actors else [],
+            "actors": actor_names if scrape_result.actors else [],
         }
 
     except HTTPException:
@@ -507,6 +553,8 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
     async def _run():
         from app.crawlers.pornhub import PornhubCrawler
         from app.db.pornhub_models import PornhubMovie, PornhubActor
+        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+        from app.output.nfo import NFOGenerator
         from sqlalchemy import select
 
         crawler = PornhubCrawler()
@@ -522,9 +570,22 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
                         r = await s.execute(st)
                         mv = r.scalar_one_or_none()
                         if mv:
+                            old_actors = mv.actor.split(",") if mv.actor else []
                             mv.title = result.title
-                            if result.cover_url:
+                            local_media = await ensure_movie_media_local(
+                                module_name="pornhub", code=mv.code,
+                                cover_url=result.cover_url,
+                                fanart_url=result.poster_url,
+                                thumb_url=result.thumb_url,
+                            )
+                            if local_media.get("cover"):
+                                mv.cover_url = local_media["cover"]
+                            elif result.cover_url:
                                 mv.cover_url = result.cover_url
+                            if local_media.get("fanart"):
+                                mv.fanart_url = local_media["fanart"]
+                            if local_media.get("thumb"):
+                                mv.thumb_url = local_media["thumb"]
                             if result.duration:
                                 mv.duration = result.duration
                             if result.rating:
@@ -538,18 +599,48 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
                             if result.tags:
                                 mv.tag = ",".join(result.tags)
                             if result.actors:
+                                new_actor_names = set()
                                 mv.actor = ",".join(a.name for a in result.actors)
                                 for ai in result.actors:
+                                    new_actor_names.add(ai.name)
                                     ex = await s.execute(select(PornhubActor).where(PornhubActor.name == ai.name))
                                     a = ex.scalar_one_or_none()
                                     if a:
-                                        # 按 movie.actor LIKE 重算，与扫描/单部刮削口径一致
                                         a.movie_count = await _recount_actor_movie_count(s, ai.name)
+                                        if not a.avatar_url and getattr(ai, "avatar_url", None):
+                                            local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                                            a.avatar_url = local_avatar or ai.avatar_url
                                     else:
-                                        s.add(PornhubActor(name=ai.name, source="scraper", movie_count=1))
+                                        new_a = PornhubActor(name=ai.name, source="scraper", movie_count=1)
+                                        s.add(new_a)
+                                        if getattr(ai, "avatar_url", None):
+                                            local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                                            if local_avatar:
+                                                new_a.avatar_url = local_avatar
+                                for name in old_actors:
+                                    n = name.strip()
+                                    if n and n not in new_actor_names:
+                                        actor_stmt = select(PornhubActor).where(PornhubActor.name == n)
+                                        actor_result = await s.execute(actor_stmt)
+                                        actor_obj = actor_result.scalar_one_or_none()
+                                        if actor_obj and actor_obj.movie_count > 0:
+                                            actor_obj.movie_count -= 1
                             mv.status = "scraped"
                             mv.source = "pornhub"
                             await s.commit()
+                            mv_dir = None
+                            if hasattr(mv, "output_dir") and mv.output_dir:
+                                mv_dir = str(mv.output_dir)
+                            elif hasattr(mv, "file_path") and mv.file_path:
+                                mv_dir = _os.path.dirname(str(mv.file_path))
+                            try:
+                                if mv_dir and _os.path.isdir(mv_dir):
+                                    actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                                    NFOGenerator(output_dir=mv_dir).generate_from_movie(
+                                        mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                                    )
+                            except Exception as nfo_err:
+                                pass
                             success += 1
                     finally:
                         await s.close()
@@ -756,34 +847,29 @@ async def generate_pornhub_movie_cover(movie_id: int):
         output_dir.mkdir(parents=True, exist_ok=True)
         cover_path = output_dir / "poster.jpg"
 
-        # 用 ffmpeg 在视频 30% 位置截取一帧
-        result = subprocess.run(
-            [
+        # 用 ffmpeg 在视频 5s 位置截取一帧（异步避免阻塞事件循环）
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg, "-y",
+            "-ss", "00:00:05",
+            "-i", file_path,
+            "-vframes", "1",
+            "-vf", "scale=480:-1",
+            str(cover_path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0 or not cover_path.exists():
+            proc2 = await asyncio.create_subprocess_exec(
                 ffmpeg, "-y",
-                "-ss", "00:00:05",
                 "-i", file_path,
                 "-vframes", "1",
                 "-vf", "scale=480:-1",
                 str(cover_path),
-            ],
-            capture_output=True, text=True, timeout=60,
-            encoding="utf-8", errors="replace",
-        )
-
-        if result.returncode != 0 or not cover_path.exists():
-            # 回退：截取第一帧
-            result2 = subprocess.run(
-                [
-                    ffmpeg, "-y",
-                    "-i", file_path,
-                    "-vframes", "1",
-                    "-vf", "scale=480:-1",
-                    str(cover_path),
-                ],
-                capture_output=True, text=True, timeout=60,
-                encoding="utf-8", errors="replace",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            if result2.returncode != 0 or not cover_path.exists():
+            _, _ = await proc2.communicate()
+            if proc2.returncode != 0 or not cover_path.exists():
                 return {"status": "error", "message": "截图生成失败"}
 
         movie.cover_url = str(cover_path)

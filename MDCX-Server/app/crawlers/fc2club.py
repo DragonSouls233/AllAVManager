@@ -204,8 +204,12 @@ class FC2ClubCrawler(BaseCrawler):
 
     def _get_mosaic(self, html: etree._Element) -> Optional[bool]:
         """获取是否有码（无码=True）"""
-        result = html.xpath('//h5/strong[contains(text(), "资源参数")]/../text()')
-        if result:
-            text = str(result)
-            return "无码" in text
+        results = html.xpath('//h5/strong[contains(text(), "资源参数")]/../text()')
+        if results:
+            for item in results:
+                text = str(item).strip()
+                if "无码" in text:
+                    return True
+                if "有码" in text:
+                    return False
         return None

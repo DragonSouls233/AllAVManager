@@ -146,31 +146,41 @@ class ScraperWorkflow:
         # 4. 下载图片
         if self.download_images and result.cover_url:
             logger.info("正在下载图片")
-            
+
+            _referer = getattr(result, "source_url", None)
+            if not _referer:
+                _origin_map = {
+                    "fc2": "https://adult.contents.fc2.com",
+                    "javdb": "https://javdb.com",
+                    "javbus": "https://www.javbus.com",
+                    "avsox": "https://avsox.click",
+                }
+                _referer = _origin_map.get(result.source)
+
             async with ImageProcessor(str(movie_dir)) as processor:
                 # 下载封面
                 poster_path = await processor.download_cover(
                     result.cover_url,
                     str(movie_dir),
-                    referer=result.source,
+                    referer=_referer,
                 )
-                
+
                 if poster_path:
                     logger.info(f"海报已保存: {poster_path}")
-                
+
                 # 下载背景图（使用封面）
                 fanart_path = await processor.download_fanart(
                     result.cover_url,
                     str(movie_dir),
-                    referer=result.source,
+                    referer=_referer,
                 )
-                
+
                 # 下载样图
                 if result.sample_images:
                     sample_paths = await processor.download_samples(
                         result.sample_images,
                         str(movie_dir),
-                        referer=result.source,
+                        referer=_referer,
                     )
                     logger.info(f"已下载 {len(sample_paths)} 张预览图")
         

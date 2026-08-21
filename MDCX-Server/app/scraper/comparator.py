@@ -896,11 +896,15 @@ class JavDBListCrawler:
     async def crawl_actress(self, actress_url: str, actor_name: str = "") -> list[OnlineVideo]:
         """爬取演员页所有视频（自动翻页）
 
-        API 模式：App API 按演员名搜索（q=演员名 + movie_type 分区），翻页取全部作品；
-        失败时降级 HTML 演员页。
+        API 模式：优先按 actor_id 全量抓取（filter_by，标题不含演员名的合集/精选也收录）；
+        失败时降级按演员名搜索（q=演员名），再失败降级 HTML 演员页。
         """
         actress_url = actress_url.rstrip("/")
         if self.api_mode:
+            videos = await self.scrape_actor_movies(actress_url, max_pages=self.max_pages)
+            if videos:
+                return videos
+            logger.warning("javdb App API 按演员ID抓取失败/为空，降级按演员名搜索: %s", actress_url)
             videos = await self._api_crawl_actress(actress_url)
             if videos:
                 return videos
@@ -1646,7 +1650,7 @@ class JavBooksListCrawler:
             if not actor_name:
                 logger.warning(f"JavBooks 搜索页需要 actor_name: {actress_url}")
                 return []
-            movies = await self._search_actor_movies(actor_name)
+            movies = await self._search_actor_movies(actor_name, max_pages=self.max_pages)
         else:
             performer_id = self._performer_id(actress_url)
             if not performer_id:

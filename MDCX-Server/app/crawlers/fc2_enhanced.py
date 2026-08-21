@@ -73,7 +73,7 @@ class FC2DMMCrawler(BaseCrawler):
                 if not r:
                     return None
 
-                result = ScrapeResult()
+                result = ScrapeResult(code=f"FC2-PPV-{clean_code}", title=f"FC2-PPV-{clean_code}", source="fc2_enhanced")
                 result.code = f"FC2-PPV-{clean_code}"
                 result.source = "fc2_enhanced"
                 result.title = f"FC2-PPV-{clean_code}"
@@ -84,9 +84,9 @@ class FC2DMMCrawler(BaseCrawler):
                 if title_m:
                     result.title = title_m.group(1).strip()
 
-                # 提取磁力链接
+                # 提取磁力链接（存入raw_data["magnets"]，NFO生成器从此读取）
                 magnet_m = re.findall(r'href="(magnet:\?xt=urn:btih:[^"]+)"', r)
-                result.metadata["magnets"] = magnet_m[:3]
+                result.raw_data["magnets"] = magnet_m[:3]
 
                 return result
             except Exception as e:
@@ -94,7 +94,7 @@ class FC2DMMCrawler(BaseCrawler):
         return None
 
     def _parse_dmm(self, html: str, code: str, clean_code: str) -> Optional[ScrapeResult]:
-        result = ScrapeResult()
+        result = ScrapeResult(code=code.upper(), title=code.upper(), source="fc2_enhanced")
         result.code = code.upper()
         result.source = "fc2_enhanced"
         result.studio = "FC2"

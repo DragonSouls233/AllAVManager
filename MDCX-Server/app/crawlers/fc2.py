@@ -62,7 +62,7 @@ class FC2Crawler(BaseCrawler):
                     return None
                 
                 # 解析详情页
-                result = await self._parse_detail_page(html, code, number_id, client)
+                result = await self._parse_detail_page(html, code, number_id, client, detail_url)
                 
                 if result:
                     self.mark_success()
@@ -113,6 +113,7 @@ class FC2Crawler(BaseCrawler):
         code: str,
         number_id: str,
         client: AsyncHttpClient,
+        detail_url: str = "",
     ) -> Optional[ScrapeResult]:
         """解析详情页 - 参考 mdcx fc2.py"""
         try:
@@ -157,12 +158,13 @@ class FC2Crawler(BaseCrawler):
             
             # 小图
             poster_url = self._get_poster(html)
-            
+
             return ScrapeResult(
                 code=code,
                 title=title,
                 original_title=title,
                 source=self.name,
+                source_url=detail_url,
                 studio=studio,
                 maker=studio,
                 series="FC2系列",
@@ -202,7 +204,18 @@ class FC2Crawler(BaseCrawler):
         if cover_result:
             # 第一个通常是封面
             cover_url = cover_result[0]
-            sample_images = [url for url in cover_result[1:] if url]
+            if cover_url.startswith("//"):
+                cover_url = "https:" + cover_url
+            elif cover_url.startswith("/"):
+                cover_url = self.base_url + cover_url
+            sample_images = []
+            for url in cover_result[1:]:
+                if url:
+                    if url.startswith("//"):
+                        url = "https:" + url
+                    elif url.startswith("/"):
+                        url = self.base_url + url
+                    sample_images.append(url)
             return cover_url, sample_images
         
         return None, []
@@ -298,10 +311,17 @@ class FC2Crawler(BaseCrawler):
         try:
             api_url = f"{self.base_url}/api/v2/videos/{number_id}/sample"
             response_text = await client.get_text(api_url)
-            
+
             data = json.loads(response_text)
-            return data.get("path")
-        
+            path = data.get("path")
+            if path:
+                if path.startswith("http"):
+                    return path
+                elif path.startswith("/"):
+                    return self.base_url + path
+                return self.base_url + "/" + path
+            return None
+
         except Exception:
             return None
 
@@ -313,11 +333,18 @@ class FC2Crawler(BaseCrawler):
         return None
 
     def _get_is_uncensored(self, html: etree._Element, genres: list[str], title: str) -> Optional[bool]:
-        """判断是否有码/无码 - 参考 mdcx fc2.py getMosaic"""
+        """
+        FC2 PPV 内容绝大多数为无码(無修正)。
+        默认标记为无码，仅当页面明确出现"有码"标记时才反向标记。
+        """
         tag_str = ",".join(genres)
-        if "無修正" in tag_str or "無修正" in title:
-            return True
-        return False
+        # 显式有码标记
+        mosaic_keywords = ["有码", "修正", "モザイク"]
+        for kw in mosaic_keywords:
+            if kw in tag_str or kw in title:
+                return False
+        # FC2 默认无码
+        return True
 
     def _get_poster(self, html: etree._Element) -> Optional[str]:
         """获取小图 - 参考 mdcx fc2.py getCoverSmall"""

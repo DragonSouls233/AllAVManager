@@ -22,9 +22,10 @@ API 端点：
 """
 import asyncio
 import importlib
+import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +34,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.manager import get_config_manager
+from app.config.manager import get_config_manager, DATA_DIR
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ class RunAllCompareRequest(BaseModel):
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数")
     fetch_magnets: bool = Body(True, description="是否抓取缺失/中字差异影片的磁力链接")
     magnet_limit: int = Body(30, ge=0, le=200, description="抓取磁力的影片数量上限")
+    force_refresh: bool = Body(False, description="强制重新全量对比（忽略 DATA/compare_cache 缓存）")
 
 
 # ===== 辅助函数 =====
@@ -96,6 +98,60 @@ def _crawler_uncensored(module: str) -> bool:
 
 # 对比数据源白名单（javbus/javdb/javbooks/avmoo）
 _COMPARE_SOURCES = ("javbus", "javdb", "javbooks", "avmoo")
+
+
+# ===== 对比结果缓存（DATA/compare_cache） =====
+# 首次对比全量爬取后写入缓存，后续点击直接读缓存秒回，
+# 避免每次对比都重新全量爬取（慢、易超时、易被反爬）。
+# 需要最新结果时前端传 force_refresh=true 强制重新全量。
+
+_COMPARE_CACHE_DIR = DATA_DIR / "compare_cache"
+
+
+def _cache_key(module: str, actor_id: int, source: str) -> str:
+    """缓存文件名键：{module}_{actor_id}_{source}，多源用 'all'"""
+    src = (source or "all").lower().strip() or "all"
+    return f"{module}_{actor_id}_{src}"
+
+
+def _cache_path(key: str) -> Path:
+    return _COMPARE_CACHE_DIR / f"{key}.json"
+
+
+def _read_cache(key: str) -> Optional[dict]:
+    """读取对比缓存，不存在/损坏返回 None"""
+    p = _cache_path(key)
+    try:
+        if not p.exists():
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"读取对比缓存失败 {p}: {e}")
+        return None
+
+
+def _write_cache(key: str, data: dict) -> None:
+    """写入对比缓存（带缓存时间）"""
+    try:
+        _COMPARE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        out = dict(data)
+        out["_cached_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with open(_cache_path(key), "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"写入对比缓存失败: {e}")
+
+
+def _serve_cached(key: str) -> Optional[dict]:
+    """读取缓存并附加缓存来源标记；无缓存返回 None"""
+    cached = _read_cache(key)
+    if cached is None:
+        return None
+    data = {k: v for k, v in cached.items() if not k.startswith("_")}
+    data["from_cache"] = True
+    data["cached_at"] = cached.get("_cached_at")
+    return data
 
 
 def _get_list_crawler(source: str, max_pages: int, uncensored: bool):
@@ -401,6 +457,7 @@ async def compare_online_by_actor(
     directories: list[str] = Body(default_factory=list, description="覆盖的本地目录，为空则用配置的"),
     include_database: bool = Body(True, description="是否计入数据库影片"),
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数"),
+    force_refresh: bool = Body(False, description="强制重新全量对比（忽略 DATA/compare_cache 缓存）"),
     module: str = Query("jav"),
 ):
     """按演员对比URL配置执行在线对比
@@ -453,6 +510,14 @@ async def compare_online_by_actor(
     # 仅当用户显式配置了 javdb 且持有有效 cookie 时才用 javdb。
     source = config.source if (config and config.source) else "javbus"
 
+    # 单源对比缓存：首次全量后写 DATA/compare_cache，后续直接读缓存秒回
+    cache_key = _cache_key(module, actor_id, source)
+    if not force_refresh:
+        cached = _serve_cached(cache_key)
+        if cached is not None:
+            logger.info(f"演员 {actor_name} 命中单源对比缓存 {cache_key}")
+            return cached
+
     payload = {
         "directories": directories,
         "include_database": include_database,
@@ -476,10 +541,14 @@ async def compare_online_by_actor(
         payload["directories"] = [config.local_directory]
 
     # 复用原有在线对比逻辑
-    return await compare_online(
+    result = await compare_online(
         OnlineCompareRequest(**payload),
         module=module,
     )
+    # 只有对比成功才写缓存（empty/error 不缓存，下次点击仍会重试全量）
+    if result.get("status") == "ok":
+        _write_cache(cache_key, result)
+    return result
 
 
 @router.post("/actors/{actor_id}/run-all")
@@ -518,6 +587,14 @@ async def compare_actor_all_sources(
     if not actor:
         raise HTTPException(status_code=404, detail="找不到该演员")
     actor_name = actor.name or ""
+
+    # 对比缓存：首次全量后写 DATA/compare_cache，后续直接读缓存秒回
+    cache_key = _cache_key(module, actor_id, "all")
+    if not req.force_refresh:
+        cached = _serve_cached(cache_key)
+        if cached is not None:
+            logger.info(f"[run-all] 演员 {actor_name} 命中多源对比缓存 {cache_key}")
+            return cached
 
     # 已配置的各源 URL
     configs = (await session.execute(
@@ -609,7 +686,11 @@ async def compare_actor_all_sources(
     for k, v in await asyncio.gather(*(_run_limited(s) for s in req.sources)):
         sources[k] = v
 
-    return {"status": "ok", "actress_name": actor_name, "sources": sources}
+    result = {"status": "ok", "actress_name": actor_name, "sources": sources}
+    # 至少一个源成功才写缓存（全部失败时不缓存，下次点击仍会重试全量）
+    if any(v.get("status") == "ok" for v in sources.values()):
+        _write_cache(cache_key, result)
+    return result
 
 
 @router.get("/actors")

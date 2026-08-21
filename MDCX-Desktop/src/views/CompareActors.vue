@@ -210,6 +210,21 @@
     <!-- 对比结果弹窗 -->
     <el-dialog v-model="resultVisible" title="对比结果" width="94%" top="4vh">
       <template v-if="compareResult">
+        <!-- 结果工具条：缓存状态 + 强制刷新 -->
+        <div class="result-toolbar">
+          <el-tag v-if="compareResult.from_cache" type="info" size="small" class="cache-tag">
+            <el-icon><Clock /></el-icon> 缓存结果{{ compareResult.cached_at ? ' · ' + formatCacheTime(compareResult.cached_at) : '' }}
+          </el-tag>
+          <el-button
+            size="small"
+            type="warning"
+            plain
+            :loading="refreshing"
+            @click="refreshCompare"
+          >
+            <el-icon><Refresh /></el-icon> 重新全量对比
+          </el-button>
+        </div>
         <!-- ===== 单源模式头部统计 ===== -->
         <el-row v-if="!compareResult.sources" :gutter="16" class="stat-row">
           <el-col :span="6">
@@ -416,7 +431,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { UserFilled, Search, Refresh, Edit, Connection, Aim, FolderOpened, Folder, CopyDocument, Download } from '@element-plus/icons-vue'
+import { UserFilled, Search, Refresh, Edit, Connection, Aim, FolderOpened, Folder, CopyDocument, Download, Clock } from '@element-plus/icons-vue'
 import {
   getCompareActors, saveActorCompareUrl, scanAllCompareActors,
   detectActorLocalDir, compareOnlineByActor, scrapeByCode, browseDir,
@@ -489,6 +504,8 @@ const resultVisible = ref(false)
 const resultTab = ref('missing')
 const sourceTab = ref('javbus')
 const compareResult = ref(null)
+const refreshing = ref(false)
+const currentRow = ref(null) // 当前对比的演员行（供「重新全量对比」使用）
 
 // 当前展示的面板：单源=整个结果；双源=当前选中源的结果
 const activePane = computed(() => {
@@ -770,16 +787,23 @@ const selectCurrentBrowserDir = () => {
 }
 
 const runCompare = async (row, source = '') => {
+  currentRow.value = row
+  await doRunCompare(row, source, false)
+}
+
+const doRunCompare = async (row, source = '', force = false) => {
   comparingId.value = row.id
   comparingSource.value = source
   comparing.value = true
   resultVisible.value = true
   compareResult.value = null
   try {
-    const res = await compareOnlineByActor(row.id, { source }, currentModule.value)
+    const res = await compareOnlineByActor(row.id, { source, force_refresh: force }, currentModule.value)
     const data = res.items ? res : res.data || res
     compareResult.value = data
-    if (data.status === 'empty') {
+    if (data.from_cache) {
+      ElMessage.info('已加载缓存对比结果，如需最新请点「重新全量对比」')
+    } else if (data.status === 'empty') {
       ElMessage.warning(data.message || '未获取到在线列表，请检查Cookie是否有效')
     } else {
       ElMessage.success(`对比完成：未更新 ${data.missing_count || 0}，中字差异 ${data.chinese_mismatch_count || 0}`)
@@ -797,6 +821,11 @@ const runCompare = async (row, source = '') => {
 
 // ===== 双源对比 =====
 const runCompareAll = async (row) => {
+  currentRow.value = row
+  await doRunCompareAll(row, false)
+}
+
+const doRunCompareAll = async (row, force = false) => {
   comparingAllId.value = row.id
   resultVisible.value = true
   compareResult.value = null
@@ -807,10 +836,13 @@ const runCompareAll = async (row) => {
       sources: ALL_SOURCES,
       fetch_magnets: true,
       magnet_limit: 30,
+      force_refresh: force,
     }, currentModule.value)
     const data = res.data || res
     compareResult.value = data
-    if (data.sources) {
+    if (data.from_cache) {
+      ElMessage.info('已加载缓存对比结果，如需最新请点「重新全量对比」')
+    } else if (data.sources) {
       const okParts = []
       const failParts = []
       for (const [s, r] of Object.entries(data.sources)) {
@@ -830,6 +862,31 @@ const runCompareAll = async (row) => {
     resultVisible.value = false
   } finally {
     comparingAllId.value = null
+  }
+}
+
+// ===== 重新全量对比（忽略缓存） =====
+const refreshCompare = async () => {
+  const row = currentRow.value
+  if (!row || refreshing.value) return
+  refreshing.value = true
+  try {
+    if (compareResult.value?.sources) {
+      await doRunCompareAll(row, true)
+    } else {
+      await doRunCompare(row, comparingSource.value || '', true)
+    }
+  } finally {
+    refreshing.value = false
+  }
+}
+
+const formatCacheTime = (iso) => {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return ''
   }
 }
 
@@ -1019,6 +1076,8 @@ onMounted(() => {
 }
 
 .stat-row { margin-bottom: 12px; }
+.result-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.cache-tag { display: inline-flex; align-items: center; gap: 4px; }
 .stat-item { text-align: center; padding: 8px; border-radius: 6px; background: var(--el-fill-color-light); }
 .stat-item.stat-warning { background: #fdf6ec; }
 .stat-item.stat-danger { background: #fef0f0; }

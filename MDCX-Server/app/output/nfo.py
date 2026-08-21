@@ -7,6 +7,7 @@ plot/outline/originalplot 使用 CDATA 包裹,避免特殊字符破坏 XML。
 """
 
 import logging
+import os
 import xml.etree.ElementTree as ET
 from datetime import date, datetime
 from pathlib import Path
@@ -585,7 +586,7 @@ class NFOGenerator:
         # tagline（如有 plot_short 则用之，否则省略）
         plot_short = _g(result, "plot_short")
         if plot_short:
-            self._add_element(root, "tagline", plot_short)
+            self._add_cdata_element(root, "tagline", plot_short)
 
         # dateadded（入库时间，ISO 8601）
         self._add_element(root, "dateadded", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
