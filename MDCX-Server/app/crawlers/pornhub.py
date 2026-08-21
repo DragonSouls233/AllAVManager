@@ -139,7 +139,7 @@ class PornhubCrawler(BaseCrawler):
             client = ctx.http_client
             need_close = False
         else:
-            from app.utils.proxy_manager import get_effective_proxy_url
+            from app.services.proxy_manager import get_effective_proxy_url
             proxy = get_effective_proxy_url()
             client = AsyncHttpClient(proxy=proxy)
             await client.init_session()

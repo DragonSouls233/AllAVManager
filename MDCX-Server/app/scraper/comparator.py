@@ -1,4 +1,4 @@
-"""
+﻿"""
 本地与在线对比服务
 
 参考 .参考/javdb 的 ChineseComparator，对比本地视频（文件 + 数据库）与在线 javdb 数据：
@@ -194,11 +194,10 @@ class CompareResult:
     online_count: int = 0
     local_count: int = 0
     matched_count: int = 0
-    missing_videos: list[OnlineVideo] = field(default_factory=list)        # 在线有、本地无（未更新）
-    chinese_mismatch: list[ChineseMismatch] = field(default_factory=list)   # 在线中字、本地非中字
-    local_only: list[LocalCode] = field(default_factory=list)              # 本地有、在线无
-    local_summary: dict = field(default_factory=dict)                      # 本地汇总
-    online_source: str = ""                                                # online 来源描述
+    missing_videos: list[OnlineVideo] = field(default_factory=list)
+    local_only: list[LocalCode] = field(default_factory=list)
+    local_summary: dict = field(default_factory=dict)
+    online_source: str = ""
     actress_name: str = ""
 
     def to_dict(self) -> dict:
@@ -207,10 +206,8 @@ class CompareResult:
             "local_count": self.local_count,
             "matched_count": self.matched_count,
             "missing_count": len(self.missing_videos),
-            "chinese_mismatch_count": len(self.chinese_mismatch),
             "local_only_count": len(self.local_only),
             "missing_videos": [asdict(v) for v in self.missing_videos],
-            "chinese_mismatch": [asdict(m) for m in self.chinese_mismatch],
             "local_only": [asdict(c) for c in self.local_only],
             "local_summary": self.local_summary,
             "online_source": self.online_source,
@@ -833,11 +830,12 @@ class JavDBListCrawler:
     """
 
     def __init__(self, max_pages: int = 10, request_delay: float = 1.5,
-                 uncensored: bool = False, api_mode: bool = True):
+                 uncensored: bool = False, api_mode: bool = True, solo_only: bool = False):
         self.max_pages = max_pages
         self.request_delay = request_delay
         self.uncensored = uncensored
         self.api_mode = api_mode
+        self.solo_only = solo_only
         self.base_url = "https://javdb.com/uncensored" if uncensored else "https://javdb.com"
         self._fetcher = None
         self._app_client = None
@@ -845,6 +843,26 @@ class JavDBListCrawler:
     def _zone(self) -> str:
         """App API 分区名：censored / uncensored"""
         return "uncensored" if self.uncensored else "censored"
+
+    @staticmethod
+    def _is_compilation(title: str) -> bool:
+        """判断影片是否为合集/精选/总集编/BEST（按标题关键词粗筛）"""
+        if not title:
+            return False
+        t = title.lower()
+        COMPILE_KEYWORDS = [
+            "best", "総集編", "总集编", "まとめ", "总合", "精选", "best", "best ", " BEST ",
+            "complete", "完全版", "comprehensive", "selection", "アンソロジー", "anthology",
+            "anthology", "anthology ", "コンプ", "complete edition", "best of", "bestver",
+            "bestver", "bestver", "special", "deluxe", "mega", "super", "ultra", "grand",
+        ]
+        return any(k in t for k in COMPILE_KEYWORDS)
+
+    def _filter_solo(self, videos: list[OnlineVideo]) -> list[OnlineVideo]:
+        """solo_only=True 时排除合集/BEST/总集编"""
+        if not self.solo_only:
+            return videos
+        return [v for v in videos if not self._is_compilation(v.title)]
 
     async def _get_app_client(self):
         """懒加载匿名 App API 客户端（与刮削同通道，免登录不封 IP）"""
@@ -903,11 +921,11 @@ class JavDBListCrawler:
         if self.api_mode:
             videos = await self.scrape_actor_movies(actress_url, max_pages=self.max_pages)
             if videos:
-                return videos
+                return self._filter_solo(videos)
             logger.warning("javdb App API 按演员ID抓取失败/为空，降级按演员名搜索: %s", actress_url)
             videos = await self._api_crawl_actress(actress_url)
             if videos:
-                return videos
+                return self._filter_solo(videos)
             logger.warning("javdb App API 按演员抓取失败/为空，降级 HTML: %s", actress_url)
 
         # 确保 locale=zh
@@ -934,11 +952,10 @@ class JavDBListCrawler:
             page += 1
             await asyncio.sleep(self.request_delay)
 
-        # 填充演员名
         for v in all_videos:
             if not v.title:
                 v.title = actress_name
-        return all_videos
+        return self._filter_solo(all_videos)
 
     async def _api_crawl_actress(self, actress_url: str) -> list[OnlineVideo]:
         """App API 按演员抓取：actor_id -> 演员名 -> 按名搜索翻页取全部作品"""
@@ -1533,12 +1550,11 @@ class LocalOnlineComparator:
         online_source: str = "",
         actress_name: str = "",
     ) -> CompareResult:
-        """对比在线视频与本地番号集合"""
+        """对比在线视频与本地番号集合（纯番号对比，不看标题）"""
         local_map: dict[str, LocalCode] = {lc.code: lc for lc in local_codes}
 
         matched_count = 0
         missing_videos: list[OnlineVideo] = []
-        chinese_mismatch: list[ChineseMismatch] = []
         online_codes_seen: set[str] = set()
 
         for video in online_videos:
@@ -1548,31 +1564,13 @@ class LocalOnlineComparator:
 
             if local:
                 matched_count += 1
-                # 中字差异：在线中字、本地非中字
-                if video.has_chinese and not local.is_chinese:
-                    chinese_mismatch.append(ChineseMismatch(
-                        code=key,
-                        online_title=video.title,
-                        online_url=video.url,
-                        online_has_chinese=True,
-                        local_is_chinese=False,
-                        local_source=local.source,
-                        local_file_path=local.file_path,
-                    ))
             else:
                 missing_videos.append(video)
 
-        # 本地有、在线无
         local_only = [lc for code, lc in local_map.items() if code not in online_codes_seen]
 
-        # 本地汇总
-        local_chinese_count = sum(1 for lc in local_codes if lc.is_chinese)
-        local_uncensored_count = sum(1 for lc in local_codes if lc.is_uncensored)
         local_summary = {
             "total": len(local_codes),
-            "chinese": local_chinese_count,
-            "non_chinese": len(local_codes) - local_chinese_count,
-            "uncensored": local_uncensored_count,
             "from_file": sum(1 for lc in local_codes if lc.source == "file"),
             "from_database": sum(1 for lc in local_codes if lc.source == "database"),
         }
@@ -1582,7 +1580,6 @@ class LocalOnlineComparator:
             local_count=len(local_codes),
             matched_count=matched_count,
             missing_videos=missing_videos,
-            chinese_mismatch=chinese_mismatch,
             local_only=local_only,
             local_summary=local_summary,
             online_source=online_source,
@@ -1875,10 +1872,10 @@ class AvmooListCrawler:
 
 # 对比源注册表：source 名 -> 列表爬虫工厂（供 compare.py 统一路由）
 LIST_CRAWLER_SOURCES = {
-    "javbus": lambda max_pages, uncensored: JavBusListCrawler(max_pages=max_pages, uncensored=uncensored),
-    "javdb": lambda max_pages, uncensored: JavDBListCrawler(max_pages=max_pages, uncensored=uncensored),
-    "javbooks": lambda max_pages, uncensored: JavBooksListCrawler(max_pages=max_pages, uncensored=uncensored),
-    "avmoo": lambda max_pages, uncensored: AvmooListCrawler(max_pages=max_pages, uncensored=uncensored),
+    "javbus": lambda max_pages, uncensored, solo_only=False: JavBusListCrawler(max_pages=max_pages, uncensored=uncensored),
+    "javdb": lambda max_pages, uncensored, solo_only=False: JavDBListCrawler(max_pages=max_pages, uncensored=uncensored, solo_only=solo_only),
+    "javbooks": lambda max_pages, uncensored, solo_only=False: JavBooksListCrawler(max_pages=max_pages, uncensored=uncensored),
+    "avmoo": lambda max_pages, uncensored, solo_only=False: AvmooListCrawler(max_pages=max_pages, uncensored=uncensored),
 }
 
 LIST_CRAWLER_LABELS = {
@@ -1887,3 +1884,4 @@ LIST_CRAWLER_LABELS = {
     "javbooks": "JavBooks",
     "avmoo": "Avmoo",
 }
+

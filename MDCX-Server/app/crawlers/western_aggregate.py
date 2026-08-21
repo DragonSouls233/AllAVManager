@@ -246,9 +246,8 @@ class WesternAggregateCrawler(BaseCrawler):
 
     def __init__(self):
         super().__init__()
-        from app.config.manager import get_config
-        cfg = get_config()
-        self._proxy = cfg.proxy.http or cfg.proxy.socks5 or None
+        from app.services.proxy_manager import get_effective_proxy_url
+        self._proxy = get_effective_proxy_url()
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
         """按标题/URL 刮削欧美场景。
@@ -300,6 +299,11 @@ class WesternBulkSearcher(BaseCrawler):
     description = "欧美批量搜索（IAFD + ThePornDB 并行）"
     language = "en"
     requires_proxy = True
+
+    def __init__(self):
+        super().__init__()
+        from app.services.proxy_manager import get_effective_proxy_url
+        self._proxy = get_effective_proxy_url()
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
         return None

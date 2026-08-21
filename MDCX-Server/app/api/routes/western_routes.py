@@ -91,6 +91,50 @@ async def list_movies(
         await session.close()
 
 
+@router.get("/studios")
+async def list_studios(search: Optional[str] = Query(None, description="按名字搜索")):
+    """列出欧美厂商列表"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import Studio
+        from sqlalchemy import select, or_
+        stmt = select(Studio)
+        if search:
+            cond = or_(
+                Studio.name.contains(search),
+            )
+            alias_col = getattr(Studio, "alias", None)
+            if alias_col is not None:
+                cond = or_(cond, alias_col.contains(search))
+            stmt = stmt.where(cond)
+        stmt = stmt.order_by(Studio.movie_count.desc())
+        result = await session.execute(stmt)
+        studios = result.scalars().all()
+        return [{"id": s.id, "name": s.name, "name_jp": s.name_jp, "movie_count": s.movie_count, "module_type": "western"} for s in studios]
+    finally:
+        await session.close()
+
+
+@router.get("/studios/{studio_id}")
+async def get_studio(studio_id: int):
+    """获取欧美厂商详情"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import Studio
+        from sqlalchemy import select
+        stmt = select(Studio).where(Studio.id == studio_id)
+        result = await session.execute(stmt)
+        studio = result.scalars().first()
+        if not studio:
+            raise HTTPException(status_code=404, detail="厂商不存在")
+        return {"id": studio.id, "name": studio.name, "name_jp": studio.name_jp,
+                "movie_count": studio.movie_count, "module_type": "western"}
+    finally:
+        await session.close()
+
+
 @router.get("/movies/{movie_id}")
 async def get_movie(movie_id: int):
     """获取欧美影片详情"""

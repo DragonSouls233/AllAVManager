@@ -66,7 +66,8 @@ class OnlineCompareRequest(BaseModel):
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数")
     source: str = Body("javbus", description="数据源: javbus / javdb（默认 javbus，无需 cookie；javdb 需有效 cookie）")
     actor_codes: list[str] = Body(default_factory=list, description="演员白名单(番号列表)；非空时只把这些番号当作「本地」，并跳过全盘文件扫描(避免扫多个 SMB 盘浪费数分钟)")
-    fetch_magnets: bool = Body(True, description="对比后是否抓取缺失/中字差异影片的磁力链接（带中文标记）")
+    solo_only: bool = Body(False, description="javdb 对比时只取单体作品（排除 BEST/精选/总集编/合集）")
+    fetch_magnets: bool = Body(True, description="对比后是否抓取缺失影片的磁力链接")
     magnet_limit: int = Body(30, ge=0, le=200, description="抓取磁力的影片数量上限")
 
 
@@ -75,7 +76,8 @@ class RunAllCompareRequest(BaseModel):
     directories: list[str] = Body(default_factory=list, description="覆盖的本地目录，为空则用配置的")
     include_database: bool = Body(True, description="是否计入数据库影片")
     max_pages: int = Body(10, ge=1, le=50, description="最大爬取页数")
-    fetch_magnets: bool = Body(True, description="是否抓取缺失/中字差异影片的磁力链接")
+    solo_only: bool = Body(False, description="javdb 对比时只取单体作品（排除 BEST/精选/总集编/合集）")
+    fetch_magnets: bool = Body(True, description="是否抓取缺失影片的磁力链接")
     magnet_limit: int = Body(30, ge=0, le=200, description="抓取磁力的影片数量上限")
     force_refresh: bool = Body(False, description="强制重新全量对比（忽略 DATA/compare_cache 缓存）")
 
@@ -154,13 +156,13 @@ def _serve_cached(key: str) -> Optional[dict]:
     return data
 
 
-def _get_list_crawler(source: str, max_pages: int, uncensored: bool):
+def _get_list_crawler(source: str, max_pages: int, uncensored: bool, solo_only: bool = False):
     """按 source 构建列表爬虫（统一路由，支持 javbus/javdb/javbooks/avmoo）"""
     from app.scraper.comparator import LIST_CRAWLER_SOURCES
     factory = LIST_CRAWLER_SOURCES.get(source)
     if factory is None:
         raise ValueError(f"未知数据源 {source}")
-    return factory(max_pages=max_pages, uncensored=uncensored)
+    return factory(max_pages=max_pages, uncensored=uncensored, solo_only=solo_only)
 
 
 def _find_actor_root_dir(actor_name: str, file_path: str) -> Optional[str]:
@@ -330,7 +332,6 @@ async def compare_online(
 
     返回：
     - missing_videos：未更新（在线有、本地无）
-    - chinese_mismatch：中字差异（在线中字、本地非中字）
     - local_only：本地有、在线无
     - local_summary：本地汇总
     """
@@ -378,7 +379,7 @@ async def compare_online(
     source = req.source.lower().strip()
     if source not in _COMPARE_SOURCES:
         raise HTTPException(status_code=400, detail=f"source 必须为 {' / '.join(_COMPARE_SOURCES)}（默认 javbus）")
-    crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module))
+    crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module), solo_only=req.solo_only)
     actress_name = ""
 
     try:
@@ -417,7 +418,6 @@ async def compare_online(
     if req.fetch_magnets:
         from app.scraper.comparator import attach_magnets
         await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
-        await attach_magnets(crawler, result.chinese_mismatch, limit=req.magnet_limit)
 
     return {
         "status": "ok",
@@ -648,7 +648,7 @@ async def compare_actor_all_sources(
         if source not in _COMPARE_SOURCES:
             return source, {"status": "error", "detail": f"未知数据源 {source}"}
         try:
-            crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module))
+            crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module), solo_only=req.solo_only)
             cfg = config_map.get(source)
             if cfg and cfg.url:
                 online_videos = await crawler.crawl_actress(cfg.url, actor_name=actor_name)
@@ -673,7 +673,6 @@ async def compare_actor_all_sources(
             )
             if req.fetch_magnets:
                 await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
-                await attach_magnets(crawler, result.chinese_mismatch, limit=req.magnet_limit)
             return source, {"status": "ok", **result.to_dict()}
         except Exception as e:
             logger.error(f"[run-all] {source} 对比失败: {e}")
