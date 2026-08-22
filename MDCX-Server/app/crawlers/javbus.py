@@ -79,7 +79,6 @@ class JavBusCrawler(BaseCrawler):
         try:
             html_text = await client.get_text(detail_url, headers=headers)
 
-            # 检查是否遇到driver验证或Cloudflare拦截
             if "driver-verify" in html_text.lower() or "cloudflare" in html_text.lower():
                 logger.debug(f"JavBus {code}: 遇到验证拦截，跳过")
                 self.mark_error()
@@ -87,14 +86,14 @@ class JavBusCrawler(BaseCrawler):
 
             html = etree.fromstring(html_text, etree.HTMLParser())
 
-            # 检查是否找到页面
             if self._is_not_found(html):
                 return None
 
-            # 解析数据
             result = self._parse_detail_page(html, code)
 
             if result:
+                # 异步抓取磁力链接（通过 uncledatoolsbyajax API）
+                await self._fetch_and_attach_magnets(client, code, html_text, result, headers)
                 self.mark_success()
             else:
                 self.mark_error()
@@ -154,6 +153,7 @@ class JavBusCrawler(BaseCrawler):
             result = self._parse_detail_page(html, code)
 
             if result:
+                await self._fetch_and_attach_magnets(client, code, html_text, result, headers)
                 self.mark_success()
             else:
                 self.mark_error()
@@ -189,6 +189,88 @@ class JavBusCrawler(BaseCrawler):
         error_msg = html.xpath("//div[@class='error']")
         return len(error_msg) > 0
     
+    # JavBus 详情页已不再包含静态 magnet: 链接（已迁移至磁力搜索页 / AJAX 动态加载），
+    # 此方法保留为兼容占位。实际磁力链接通过 _fetch_and_attach_magnets 获取。
+    @staticmethod
+    def _extract_magnets(html):
+        return []
+
+    @staticmethod
+    def _extract_gid_uc(html_text: str):
+        """从详情页 HTML 中提取 gid 和 uc 参数"""
+        gid_match = re.search(r"var\s+gid\s*=\s*(\d+)", html_text)
+        uc_match = re.search(r"var\s+uc\s*=\s*(\d+)", html_text)
+        gid = gid_match.group(1) if gid_match else None
+        uc = uc_match.group(1) if uc_match else None
+        return gid, uc
+
+    async def _fetch_and_attach_magnets(self, client, code: str, html_text: str, result, headers: dict):
+        """通过 JavBus 的 uncledatoolsbyajax API 获取磁力链接并写入 raw_data"""
+        gid, uc = self._extract_gid_uc(html_text)
+        if not gid or not uc:
+            return
+
+        api_url = f"{self.base_url}/ajax/uncledatoolsbyajax.php?lang=zh&gid={gid}&uc={uc}"
+        mag_headers = dict(headers or {})
+        mag_headers["Referer"] = f"{self.base_url}/{code}"
+        mag_headers["X-Requested-With"] = "XMLHttpRequest"
+
+        try:
+            resp_text = await client.get_text(api_url, headers=mag_headers)
+            magnets = self._parse_magnets_from_ajax(resp_text)
+            if magnets:
+                result.raw_data["magnets"] = magnets
+        except Exception as e:
+            logger.debug(f"JavBus {code} 磁力链接获取失败: {e}")
+
+    @staticmethod
+    def _parse_magnets_from_ajax(html_text: str) -> list[dict]:
+        """从 uncledatoolsbyajax 返回的 HTML 表格中解析磁力链接列表"""
+        magnets = []
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html_text, re.DOTALL)
+        for row in rows:
+            magnet_match = re.search(r'href="(magnet:\?xt=urn:btih:[^"]+)"', row)
+            if not magnet_match:
+                continue
+            magnet = magnet_match.group(1)
+
+            # 标题：magnet <a> 标签内的文本，过滤掉嵌套的 <a> 徽章标签
+            title = ""
+            title_match = re.search(r'href="magnet:\?xt=urn:btih:[^"]+"[^>]*>(.*?)</a>', row, re.DOTALL)
+            if title_match:
+                raw_text = title_match.group(1)
+                badges = re.findall(r'<a[^>]*>(.*?)</a>', raw_text, re.DOTALL)
+                badge_texts = []
+                for b in badges:
+                    badge_clean = re.sub(r"<[^>]+>", "", b).strip()
+                    if badge_clean:
+                        badge_texts.append(badge_clean)
+                name_part = re.sub(r"<[^>]+>", "", raw_text).strip()
+                if badge_texts:
+                    title = f"{name_part} {''.join(badge_texts)}"
+                else:
+                    title = name_part
+
+            # 大小
+            size = ""
+            size_match = re.search(r"(\d[\d,]*(?:\.\d+)?\s*(?:KB|MB|GB|TB))", row, re.IGNORECASE)
+            if size_match:
+                size = size_match.group(1).strip()
+
+            # 日期
+            date_str = ""
+            date_match = re.search(r"(\d{4}-\d{2}-\d{2})", row)
+            if date_match:
+                date_str = date_match.group(1)
+
+            magnets.append({
+                "magnet": magnet,
+                "title": title,
+                "size": size,
+                "date": date_str,
+            })
+        return magnets
+
     def _parse_detail_page(self, html: etree._Element, code: str) -> Optional[ScrapeResult]:
         """解析详情页"""
         try:
@@ -272,6 +354,7 @@ class JavBusCrawler(BaseCrawler):
                 is_mosaic=is_mosaic,
                 raw_data={
                     "director": director,
+                    "magnets": self._extract_magnets(html),
                 },
             )
         

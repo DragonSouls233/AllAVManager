@@ -39,6 +39,12 @@ _SEP_RE = re.compile(r"[,，、;；|/／]+")
 
 MIN_VARIANT_LEN = 2
 
+# 纯假名变体最小安全长度：纯假名 3 字以下极易产生误匹配
+# （例：「みう」仅 2 假名，LIKE '%みう%' 会命中包含「みう」的其它演员名变体）
+# 汉字+假名混合名 2 字即可（例：「杏美」），纯假名则需 4 字以上才安全
+_MIN_KANA_ONLY_LEN = 4
+_KANA_RE = re.compile(r"^[\u3040-\u30ff\u30fc]+$")
+
 
 def split_alias(raw: Optional[str]) -> List[str]:
     """把 alias 文本切成名称列表（清洗括号噪声、去空白、去重、保序）"""
@@ -65,12 +71,17 @@ def _prune_redundant(names: Iterable[str]) -> List[str]:
     是 LIKE '%A%'（短名，含 A 即命中）的子集，所以必须**保留长的、丢弃短的**。
     否则主名「新井リマ」会被别名「リマ」覆盖丢弃，导致作品统计过度聚合
     （把任何含「リマ」的其他演员作品都算进来）。
+
+    此外剔除纯假名短变体（≤3 字）：「みう」2 假名作为 LIKE 关键词极易误匹配
+    其它含「みう」子串的记录。
     """
     uniq: List[str] = []
     seen = set()
     for n in names:
         n = (n or "").strip()
         if len(n) < MIN_VARIANT_LEN:
+            continue
+        if _KANA_RE.match(n) and len(n) < _MIN_KANA_ONLY_LEN:
             continue
         key = n.lower()
         if key in seen:

@@ -406,7 +406,7 @@ async def scrape_fc2_movie(movie_id: int):
 
         from app.scraper.engine import get_scraper_engine
         engine = get_scraper_engine()
-        scrape_result = await engine.scrape_number(movie.code)
+        scrape_result = await engine.scrape_number(movie.code, module="fc2")
 
         if not scrape_result or not scrape_result.title:
             return {"status": "error", "message": f"刮削失败: 未找到 {movie.code} 的数据"}

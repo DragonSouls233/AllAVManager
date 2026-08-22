@@ -126,39 +126,47 @@ class JavBooksCrawler(BaseCrawler):
     async def _find_detail_url(self, prefix: str, code: str) -> Optional[str]:
         """在搜索页中查找番号精确匹配的详情页 URL。
 
-        搜索页按番号前缀组织：serchinfo_censored/{prefix}/serialbt_1.htm
+        搜索页按番号前缀组织：serchinfo_censored/{prefix}/serialbt_N.htm
         （serialbt 磁力列表页条目最全；若找不到再试 serialall 全部影片页）
+        支持翻页，最多翻 5 页，确保 IPZZ 等靠后的番号也能找到。
         """
         code_norm = code.replace("_", "-").upper()
+        max_pages = 20
         for page_kind in ("serialbt", "serialall"):
-            search_url = (
-                f"{self.base_url}/serchinfo_censored/{prefix}/{page_kind}_1.htm"
-            )
-            try:
-                async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
-                    html_text = await client.get_text(
-                        search_url, headers=self._headers()
-                    )
-                if not html_text:
-                    continue
-
-                sel = Selector(html_text)
-                for topic in sel.css("div.Po_topic"):
-                    date_serial = topic.css(
-                        "div.Po_topic_Date_Serial font ::text"
-                    ).get() or ""
-                    topic_code = date_serial.split("/")[0].strip().upper()
-                    if topic_code and topic_code != code_norm:
+            for page_num in range(1, max_pages + 1):
+                search_url = (
+                    f"{self.base_url}/serchinfo_censored/{prefix}/{page_kind}_{page_num}.htm"
+                )
+                try:
+                    async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
+                        html_text = await client.get_text(
+                            search_url, headers=self._headers()
+                        )
+                    if not html_text:
                         continue
-                    href = topic.css(
-                        "div.Po_topic_title a::attr(href)"
-                    ).get() or topic.css("div.Po_topicCG a::attr(href)").get()
-                    if href and "/content_censored/" in href:
-                        if not href.startswith("http"):
-                            href = self.base_url + href
-                        return href
-            except Exception as e:
-                logger.debug(f"JavBooks 搜索页失败 [{search_url}]: {e}")
+                    sel = Selector(html_text)
+                    found_any = False
+                    for topic in sel.css("div.Po_topic"):
+                        found_any = True
+                        date_serial = topic.css(
+                            "div.Po_topic_Date_Serial font ::text"
+                        ).get() or ""
+                        topic_code = date_serial.split("/")[0].strip().upper()
+                        if topic_code and topic_code != code_norm:
+                            continue
+                        href = topic.css(
+                            "div.Po_topic_title a::attr(href)"
+                        ).get() or topic.css("div.Po_topicCG a::attr(href)").get()
+                        if href and "/content_censored/" in href:
+                            if not href.startswith("http"):
+                                href = self.base_url + href
+                            return href
+                    # 本页无任何条目，停止翻页
+                    if not found_any:
+                        break
+                except Exception as e:
+                    logger.debug(f"JavBooks 搜索页失败 [{search_url}]: {e}")
+                    break
         return None
 
     # ------------------------------------------------------------------

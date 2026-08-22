@@ -34,8 +34,12 @@ _ANON_WORDS = {
     "unknown", "Unknown", "N/A", "n/a",
     "anonym", "anonymous", "xxx", "XXX",
 }
-# 纯假名短名（1-2 个假名）：素人片匿名角色常见写法，不当作真演员
-_KANA_SHORT_RE = re.compile(r"^[\u3040-\u30ff\u30fc]{1,2}$")
+# 纯假名正则（无空格）
+_KANA_PURE_RE = re.compile(r"^[\u3040-\u30ff\u30fc]+$")
+# 含空格的假名：如「かな み」—— 去空格后若 ≤3 假名则为垃圾（真演员 3+ 假名名极少含空格）
+_KANA_WITH_SPACE_RE = re.compile(r"^[\u3040-\u30ff\u30fc][\s\u3000][\u3040-\u30ff\u30fc]+$")
+# 纯半角拉丁单字符：扫描器兜底产生的垃圾（如 'a'/'o'/'e'）
+_LATIN_SINGLE_RE = re.compile(r"^[a-zA-Z]$")
 
 
 async def _real_actor_names(session) -> set:
@@ -64,7 +68,9 @@ async def _real_actor_names(session) -> set:
 
 def _is_real_actor(actor, real_names: set) -> bool:
     """真演员判定：排除 1) 单字符解析残留 2) 匿名占位词 3) 素人称呼名
-    4) 名字未完整出现在 movies.actor 的孤儿/短名条目 5) 纯假名短名（素人匿名）"""
+    4) 名字未完整出现在 movies.actor 的孤儿/短名条目 5) 纯假名短名（≤2假名无空格）
+    6) 含空格的纯假名（去空格后 ≤3假名，如「かな み」「うみ う」）
+    7) 纯半角拉丁单字符（扫描器兜底垃圾）"""
     name = (getattr(actor, "name", None) or "").strip()
     if len(name) <= 1:
         return False
@@ -74,8 +80,22 @@ def _is_real_actor(actor, real_names: set) -> bool:
         return False
     if name not in real_names:
         return False
-    if _KANA_SHORT_RE.match(name):
+    if _LATIN_SINGLE_RE.match(name):
         return False
+    # 含空格的纯假名 → 去空格后若 ≤3 假名，判垃圾（真演员极少用 3 假名+空格的写法）
+    if _KANA_WITH_SPACE_RE.match(name):
+        name_no_space = name.replace(" ", "").replace("\u3000", "")
+        if len(name_no_space) <= 3:
+            return False
+    # 无空格的纯假名 ≤2 → 判垃圾（きこ、み 等）
+    if _KANA_PURE_RE.match(name) and len(name) <= 2:
+        return False
+    # 纯假名 3 字（うみう）且作品数为 0 → 判垃圾
+    # 注：真演员 3 假名名（まゆみ/ゆきこ）通常有 ≥1 部作品
+    if _KANA_PURE_RE.match(name) and len(name) == 3:
+        mc = getattr(actor, "movie_count", None)
+        if mc is not None and mc == 0:
+            return False
     return True
 
 
@@ -595,6 +615,7 @@ async def list_movies(
     code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
     is_chinese: Optional[int] = Query(None, description="1=仅中文"),
     is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
+    solo: Optional[int] = Query(None, description="1=仅单人作品（actor 字段恰好一个演员）"),
     info_state: Optional[str] = Query(None, description="complete=信息全 / incomplete=信息不全（NFO+封面+预览图）"),
     sort: Optional[str] = Query(None, description="排序字段: created_at, release_date, duration, rating, code。前缀-表示降序；code 为番号自然排序（ABC-001 < ABC-002 < ABC-010）"),
 ):
@@ -632,6 +653,13 @@ async def list_movies(
             filters.append(JavMovie.is_chinese == 1)
         if is_uncensored:
             filters.append(JavMovie.is_uncensored == 1)
+        if solo:
+            # v3.1 单人筛选：actor 字段非空且不含分隔符（不靠 MovieActor 表，其恒为空）
+            filters.append(JavMovie.actor.isnot(None))
+            filters.append(JavMovie.actor != "")
+            filters.append(~JavMovie.actor.contains(","))
+            filters.append(~JavMovie.actor.contains("，"))
+            filters.append(~JavMovie.actor.contains("、"))
 
         if info_state in ("complete", "incomplete"):
             # 信息全/不全筛选：需要文件系统检查 NFO，无法纯 SQL 完成。

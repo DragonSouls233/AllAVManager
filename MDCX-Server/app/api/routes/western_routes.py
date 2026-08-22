@@ -366,12 +366,16 @@ async def scrape_western_movie(movie_id: int):
         # 优先 WesternAggregateCrawler（内含 IAFD 全网搜索 + ThePornDB + Aylo）
         from app.crawlers.western_aggregate import WesternAggregateCrawler
         from app.crawlers.western.vixen_network import VixenNetworkCrawler
-        from app.crawlers.western.naughtyamerica import NaughtyAmericaCrawler
+        from app.crawlers.western.theporndb import ThePornDBCrawler
+        from app.crawlers.western.aylo_api import AyloAPICrawler
+        from app.crawlers.western.adulttime import AdultTimeCrawler
 
         scrapers = [
             (WesternAggregateCrawler(), 25),
             (VixenNetworkCrawler(), 10),
-            (NaughtyAmericaCrawler(), 5),
+            (ThePornDBCrawler(), 10),
+            (AyloAPICrawler(), 10),
+            (AdultTimeCrawler(), 10),
         ]
 
         matched_result = None
@@ -477,7 +481,7 @@ async def scrape_western_movie(movie_id: int):
             mv_dir = _os.path.dirname(str(movie.file_path))
         try:
             if mv_dir and _os.path.isdir(mv_dir):
-                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
+                actor_names = [a.strip() for a in (movie.actors or "").split(",") if a.strip()]
                 NFOGenerator(output_dir=mv_dir).generate_from_movie(
                     movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
                 )
@@ -522,12 +526,16 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
         from sqlalchemy import select
         from app.crawlers.western_aggregate import WesternAggregateCrawler
         from app.crawlers.western.vixen_network import VixenNetworkCrawler
-        from app.crawlers.western.naughtyamerica import NaughtyAmericaCrawler
+        from app.crawlers.western.theporndb import ThePornDBCrawler
+        from app.crawlers.western.aylo_api import AyloAPICrawler
+        from app.crawlers.western.adulttime import AdultTimeCrawler
 
         scrapers = [
             (WesternAggregateCrawler(), 25),
             (VixenNetworkCrawler(), 10),
-            (NaughtyAmericaCrawler(), 5),
+            (ThePornDBCrawler(), 10),
+            (AyloAPICrawler(), 10),
+            (AdultTimeCrawler(), 10),
         ]
         success = 0
         failed = 0
@@ -628,7 +636,7 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
                         mv_dir = _os.path.dirname(str(mv.file_path))
                     try:
                         if mv_dir and _os.path.isdir(mv_dir):
-                            actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                            actor_names = [a.strip() for a in (mv.actors or "").split(",") if a.strip()]
                             NFOGenerator(output_dir=mv_dir).generate_from_movie(
                                 mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
                             )

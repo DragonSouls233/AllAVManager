@@ -242,12 +242,10 @@ const loadingDb = ref(false)
 const result = ref(null)
 const activeTab = ref('missing')
 
-// 按演员名搜索本地目录
 const actorDirName = ref('')
 const searchingDirs = ref(false)
 const dirSearchCount = ref(null)
 
-// 正在刮削的番号集合
 const scrapingCodes = ref([])
 
 const loadConfig = async () => {
@@ -359,7 +357,6 @@ const searchDirsByActor = async () => {
     const dirs = data.directories || []
     dirSearchCount.value = data.matched_count ?? dirs.length
     if (dirs.length) {
-      // 合并进已选目录（去重）
       const merged = Array.from(new Set([...directories.value, ...dirs]))
       directories.value = merged
       ElMessage.success(`匹配到 ${dirs.length} 个目录，已加入扫描范围`)
@@ -381,7 +378,6 @@ const scrapeOne = async (code) => {
     const data = res.data || res
     if (data.status === 'ok') {
       ElMessage.success(`刮削成功：${code}（来源 ${data.source || '未知'}）`)
-      // 从「未更新」列表移除已刮削项
       if (result.value?.missing_videos) {
         result.value.missing_videos = result.value.missing_videos.filter(v => v.code !== code)
         result.value.missing_count = result.value.missing_videos.length

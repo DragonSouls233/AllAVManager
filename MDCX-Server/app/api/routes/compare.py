@@ -71,6 +71,16 @@ class OnlineCompareRequest(BaseModel):
     magnet_limit: int = Body(30, ge=0, le=200, description="抓取磁力的影片数量上限")
 
 
+class ByCodeCompareRequest(BaseModel):
+    """精确番号逐个比对请求：对本地每个番号，4 个数据源各自独立 scrape 详情+磁力"""
+    codes: list[str] = Body(default_factory=list, description="手动指定番号列表；非空时跳过目录/数据库扫描，只比对这些番号")
+    directories: list[str] = Body(default_factory=list, description="本地扫描目录，为空则用配置的媒体目录")
+    include_database: bool = Body(True, description="是否把数据库影片计入本地集合")
+    sources: list[str] = Body(["javbus", "javdb", "javbooks"], description="要搜索的数据源列表（avmoo 无磁力，不纳入比对）")
+    magnet_limit: int = Body(10, ge=0, le=50, description="每个番号每个源最多返回的磁力数量")
+    concurrency: int = Body(4, ge=1, le=10, description="并发请求上限（避免反爬）")
+
+
 class RunAllCompareRequest(BaseModel):
     sources: list[str] = Body(["javbus", "javdb", "javbooks"], description="要对比的数据源列表（每个源独立爬取、独立对比）：javbus / javdb / javbooks / avmoo")
     directories: list[str] = Body(default_factory=list, description="覆盖的本地目录，为空则用配置的")
@@ -344,6 +354,15 @@ async def compare_online(
         LocalOnlineComparator,
         LocalScanner,
     )
+    from app.scraper.number import parse_suffix, normalize_number, strip_episode_suffix
+
+    def _norm_code(raw: str) -> str:
+        if not raw:
+            return raw
+        base, _is_ch, _ = parse_suffix(raw)
+        code = normalize_number(base) if base else raw.upper().replace("_", "-")
+        code = strip_episode_suffix(code)
+        return code
 
     # 1. 采集本地集合（文件 + 数据库）
     import asyncio
@@ -369,8 +388,10 @@ async def compare_online(
     local_codes = scanner.merge(file_codes, db_codes)
 
     # 【按演员对比】演员白名单过滤：非空时只保留白名单内的番号
+    # v3.1: 白名单来自 raw Movie.code（可能带 -C/-U 后缀），local_codes 是标准化基础番号，
+    # 必须先把白名单标准化再比较，否则恒匹配不上、本地集被误清空 → 所有在线影片都报"未匹配"。
     if req.actor_codes:
-        whitelist = set(req.actor_codes)
+        whitelist = {_norm_code(c) for c in req.actor_codes if _norm_code(c)}
         before = len(local_codes)
         local_codes = [c for c in local_codes if c.code in whitelist]
         logger.info(f"按演员白名单({len(whitelist)}部)过滤本地: {before} -> {len(local_codes)} 部")
@@ -379,7 +400,8 @@ async def compare_online(
     source = req.source.lower().strip()
     if source not in _COMPARE_SOURCES:
         raise HTTPException(status_code=400, detail=f"source 必须为 {' / '.join(_COMPARE_SOURCES)}（默认 javbus）")
-    crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module), solo_only=req.solo_only)
+    # v3.1: 比对阶段取消单人/多人作品限制，solo_only 统一为 False，仅以番号匹配。
+    crawler = _get_list_crawler(source, req.max_pages, _crawler_uncensored(module), solo_only=False)
     actress_name = ""
 
     try:
@@ -414,10 +436,25 @@ async def compare_online(
         actress_name=actress_name,
     )
 
-    # 4. 抓取缺失/中字差异影片的磁力链接（带中文标记，供前端一键打开/复制）
+    # 4. 抓取缺失影片的磁力链接（带中文标记，供前端一键打开/复制）
     if req.fetch_magnets:
-        from app.scraper.comparator import attach_magnets
+        from app.scraper.comparator import attach_magnets, _magnet_is_chinese, pick_best_magnet
         await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
+
+        # 5. v3.1: has_chinese 完全由磁力属性决定，用抓取到的磁力回填
+        for v in result.missing_videos:
+            magnets = getattr(v, "magnets", [])
+            if not magnets:
+                v.has_chinese = False
+                continue
+            best = pick_best_magnet(magnets) or magnets[0]
+            link = best.get("link") or ""
+            name = best.get("name") or ""
+            # 若该条磁力自身已经带 chinese 标记（magnet_classifier 四分类产物），优先采用
+            if isinstance(best.get("chinese"), bool):
+                v.has_chinese = bool(best.get("chinese"))
+            else:
+                v.has_chinese = _magnet_is_chinese(link, name)
 
     return {
         "status": "ok",
@@ -491,6 +528,16 @@ async def compare_online_by_actor(
     # 【按演员对比】查该演员在本地 DB 里的番号集，作为白名单传给 compare_online。
     # 这样本地对比只针对该演员(避免把整个 jav 库 8000+ 部都拿来比)，并跳过全盘文件扫描。
     # 注意：合并后的演员 name 可能形如 "葵つかさ,新ありな"，需要按每个名字 OR 匹配。
+    from app.scraper.number import parse_suffix, normalize_number, strip_episode_suffix
+
+    def _norm_code(raw: str) -> str:
+        if not raw:
+            return raw
+        base, _is_ch, _ = parse_suffix(raw)
+        code = normalize_number(base) if base else raw.upper().replace("_", "-")
+        code = strip_episode_suffix(code)
+        return code
+
     actor_codes: list[str] = []
     if actor_name:
         try:
@@ -501,7 +548,8 @@ async def compare_online_by_actor(
                 rows = await session.execute(
                     select(Movie.code).where(cond, Movie.code.isnot(None))
                 )
-                actor_codes = sorted({r[0] for r in rows.fetchall() if r[0]})
+                raw_codes = {r[0] for r in rows.fetchall() if r[0]}
+                actor_codes = sorted({c for c in (_norm_code(x) for x in raw_codes) if c})
             logger.info(f"演员 {actor_name} 本地已关联影片 {len(actor_codes)} 部, 将以此过滤本地对比集")
         except Exception as e:
             logger.warning(f"查询演员 {actor_name} 本地番号失败: {e}")
@@ -603,6 +651,16 @@ async def compare_actor_all_sources(
     config_map = {c.source: c for c in configs}
 
     # 该演员本地番号白名单（用于过滤本地集合 + 跳过全盘文件扫描）
+    from app.scraper.number import parse_suffix, normalize_number, strip_episode_suffix
+
+    def _norm_code(raw: str) -> str:
+        if not raw:
+            return raw
+        base, _is_ch, _ = parse_suffix(raw)
+        code = normalize_number(base) if base else raw.upper().replace("_", "-")
+        code = strip_episode_suffix(code)
+        return code
+
     actor_codes: list[str] = []
     if actor_name:
         try:
@@ -613,7 +671,8 @@ async def compare_actor_all_sources(
                 rows = await session.execute(
                     select(Movie.code).where(cond, Movie.code.isnot(None))
                 )
-                actor_codes = sorted({r[0] for r in rows.fetchall() if r[0]})
+                raw_codes = {r[0] for r in rows.fetchall() if r[0]}
+                actor_codes = sorted({c for c in (_norm_code(x) for x in raw_codes) if c})
         except Exception as e:
             logger.warning(f"查询演员 {actor_name} 本地番号失败: {e}")
 
@@ -672,7 +731,20 @@ async def compare_actor_all_sources(
                 actress_name=actor_name,
             )
             if req.fetch_magnets:
+                from app.scraper.comparator import _magnet_is_chinese, pick_best_magnet
                 await attach_magnets(crawler, result.missing_videos, limit=req.magnet_limit)
+                for v in result.missing_videos:
+                    magnets = getattr(v, "magnets", [])
+                    if not magnets:
+                        v.has_chinese = False
+                        continue
+                    best = pick_best_magnet(magnets) or magnets[0]
+                    link = best.get("link") or ""
+                    name = best.get("name") or ""
+                    if isinstance(best.get("chinese"), bool):
+                        v.has_chinese = bool(best.get("chinese"))
+                    else:
+                        v.has_chinese = _magnet_is_chinese(link, name)
             return source, {"status": "ok", **result.to_dict()}
         except Exception as e:
             logger.error(f"[run-all] {source} 对比失败: {e}")
@@ -1292,3 +1364,224 @@ async def browse_directory(
         raise HTTPException(status_code=403, detail="权限不足")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# 精确番号逐个比对：对本地每个番号，各数据源独立 scrape 详情 + 磁力
+# =====================================================================
+
+def _extract_magnets_from_scrapesource(result):
+    """统一从 ScrapeResult 提取磁力列表，返回 [{'link','name','size','chinese'}]。
+
+    - javbus 详情页自带磁力 <a href="magnet:">（comparator._fetch_magnets 已抓到 raw_data）
+    - javdb App API：raw_data["magnets"] 含 magnet_uri
+    - javbooks：raw_data["magnets"] 含 name/size/date（链接已混淆，无 magnet link）
+    - avmoo：无磁力
+    """
+    from app.scraper.comparator import _magnet_is_chinese
+    magnets: list[dict] = []
+    raw = getattr(result, "raw_data", {}) or {}
+    src_magnets = raw.get("magnets") if isinstance(raw, dict) else None
+    if not isinstance(src_magnets, list):
+        return []
+    for m in src_magnets:
+        if not isinstance(m, dict):
+            continue
+        link = m.get("link") or m.get("magnet_uri") or m.get("magnet") or ""
+        name = m.get("name") or ""
+        size = m.get("size") or ""
+        chinese = m.get("chinese")
+        if not isinstance(chinese, bool) and link:
+            chinese = _magnet_is_chinese(link, name)
+        magnet = {"name": str(name)[:120], "size": str(size)}
+        if link:
+            magnet["link"] = link
+        if isinstance(chinese, bool):
+            magnet["chinese"] = chinese
+        if m.get("date"):
+            magnet["date"] = str(m["date"])
+        if m.get("hash"):
+            magnet["hash"] = str(m["hash"])
+        if m.get("cnsub") is not None:
+            magnet["cnsub"] = bool(m["cnsub"])
+        if m.get("hd") is not None:
+            magnet["hd"] = bool(m["hd"])
+        magnets.append(magnet)
+    return magnets
+
+
+def _extract_actors_from_scrapesource(result) -> list[str]:
+    actors = getattr(result, "actors", []) or []
+    names = []
+    for a in actors:
+        if hasattr(a, "name") and a.name:
+            names.append(str(a.name))
+        elif isinstance(a, str):
+            names.append(a)
+    return names
+
+
+@router.post("/by-code")
+async def compare_by_code(
+    req: ByCodeCompareRequest,
+    module: str = Query("jav"),
+):
+    """
+    精确番号逐个比对：
+    - 采集本地番号集合（文件 + 数据库；如请求中 codes 非空，则跳过本地扫描直接用指定列表）
+    - 对每个本地番号，遍历指定数据源，各源独立 scrape 详情 + 磁力
+    - 返回：per_code 列表，每条含本地信息 + 4 源各自的结果（找到的标题/封面/演员/磁力/是否中字）
+    """
+    # 0. 校验 sources
+    sources = [s.lower().strip() for s in req.sources]
+    sources = [s for s in sources if s in _COMPARE_SOURCES]
+    if not sources:
+        raise HTTPException(status_code=400, detail=f"sources 必须包含 {_COMPARE_SOURCES[0]} / {_COMPARE_SOURCES[1]} / {_COMPARE_SOURCES[2]} / {_COMPARE_SOURCES[3]}")
+
+    # 1. 采集本地番号集合（如手动指定 codes，跳过本地扫描）
+    local_codes = []
+    if req.codes:
+        # 手动指定番号列表，做基础标准化
+        from app.scraper.number import parse_suffix, normalize_number, strip_episode_suffix
+        for raw in req.codes:
+            if not raw:
+                continue
+            base, _is_ch, _ = parse_suffix(raw)
+            code = normalize_number(base) if base else raw.upper().replace("_", "-")
+            code = strip_episode_suffix(code)
+            if code:
+                local_codes.append({"code": code, "source": "manual", "file_path": None})
+    else:
+        import asyncio
+        from app.scraper.comparator import LocalScanner
+        scanner = LocalScanner()
+        directories = _resolve_directories(req.directories)
+        for d in directories:
+            try:
+                codes = await asyncio.to_thread(scanner.scan_directory, d)
+                local_codes.extend([{"code": c.code, "source": c.source, "file_path": c.file_path} for c in codes])
+            except Exception as e:
+                logger.warning(f"扫描目录失败 {d}: {e}")
+        if req.include_database:
+            try:
+                session = await get_module_session(module)
+                db_codes = await scanner.scan_database(session, module)
+                local_codes.extend([{"code": c.code, "source": c.source, "file_path": c.file_path} for c in db_codes])
+            except Exception as e:
+                logger.warning(f"扫描数据库失败: {e}")
+
+    # 去重（保留首个，保留 file_path 非空优先）
+    seen = {}
+    for lc in local_codes:
+        code = lc["code"]
+        if code not in seen:
+            seen[code] = lc
+        elif seen[code]["file_path"] is None and lc["file_path"] is not None:
+            seen[code] = lc
+    local_codes = list(seen.values())
+
+    if not local_codes:
+        return {
+            "status": "ok",
+            "message": "本地无番号可比较",
+            "sources": sources,
+            "per_code": [],
+            "total_codes": 0,
+        }
+
+    # 2. 获取各源爬虫实例
+    from app.crawlers.provider import get_crawler
+    crawlers = {}
+    for s in sources:
+        crawler = get_crawler(s)
+        if crawler is not None:
+            crawlers[s] = crawler
+
+    # 3. 按番号并发调用各源 scrape
+    import asyncio
+
+    semaphore = asyncio.Semaphore(req.concurrency)
+
+    async def _scrape_one(code: str, source: str):
+        crawler = crawlers.get(source)
+        if not crawler:
+            return None
+        async with semaphore:
+            try:
+                if source == "javbus":
+                    # JavBusCrawler.scrape() 已内置磁力提取（_extract_magnets 写入 raw_data["magnets"]）
+                    result = await crawler.scrape(code)
+                elif source == "avmoo":
+                    # Avmoo scrape 签名: async def scrape(self, code: str, ctx=None)
+                    result = await crawler.scrape(code)
+                else:
+                    # javdb / javbooks：scrape(code)
+                    result = await crawler.scrape(code)
+                return result
+            except Exception as e:
+                logger.debug(f"{source} scrape {code} 失败: {e}")
+                return None
+
+    async def _fetch_source_tasks(code: str):
+        tasks = [asyncio.create_task(_scrape_one(code, s)) for s in sources]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return results
+
+    per_code = []
+    for lc in local_codes:
+        code = lc["code"]
+        raw_results = await _fetch_source_tasks(code)
+
+        sources_dict = {}
+        for idx, source in enumerate(sources):
+            item = raw_results[idx]
+            if isinstance(item, Exception):
+                sources_dict[source] = {
+                    "found": False,
+                    "error": str(item)[:200],
+                }
+                continue
+            if item is None:
+                sources_dict[source] = {
+                    "found": False,
+                    "error": "not found",
+                }
+                continue
+            magnets = _extract_magnets_from_scrapesource(item)
+            if req.magnet_limit > 0 and len(magnets) > req.magnet_limit:
+                magnets = magnets[:req.magnet_limit]
+            has_link = any(m.get("link") for m in magnets) if magnets else False
+            has_cn = any(m.get("chinese") for m in magnets) if magnets else False
+            sources_dict[source] = {
+                "found": True,
+                "title": getattr(item, "title", "") or code,
+                "original_title": getattr(item, "original_title", None) or None,
+                "cover_url": getattr(item, "cover_url", None) or None,
+                "poster_url": getattr(item, "poster_url", None) or None,
+                "actors": _extract_actors_from_scrapesource(item),
+                "release_date": str(getattr(item, "release_date", "") or "") or None,
+                "duration": getattr(item, "duration", None),
+                "genres": list(getattr(item, "genres", []) or []),
+                "is_uncensored": getattr(item, "is_uncensored", None),
+                "source_url": getattr(item, "source_url", None) or None,
+                "magnet_count": len(magnets),
+                "has_magnet_link": has_link,
+                "has_chinese": has_cn,
+                "magnets": magnets,
+            }
+
+        per_code.append({
+            "code": code,
+            "source": lc["source"],
+            "file_path": lc["file_path"],
+            "sources": sources_dict,
+        })
+
+    total_found = sum(1 for p in per_code if any(p["sources"].get(s, {}).get("found") for s in sources))
+    return {
+        "status": "ok",
+        "sources": sources,
+        "total_codes": len(local_codes),
+        "total_found": total_found,
+        "per_code": per_code,
+    }

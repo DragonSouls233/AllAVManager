@@ -453,48 +453,105 @@ class JavBusListCrawler:
         return all_videos
 
     async def _fetch_magnets(self, video_url: str) -> list[dict]:
-        """抓取 javbus 影片详情页的磁力链接
+        """抓取 javbus 影片磁力链接（走 AJAX API，不依赖 HTML 解析）
 
-        详情页磁力表结构（<table> 行）：
-        <tr>
-          <td class="magnet-name"><a href="magnet:?xt=urn:btih:...">中文字幕 1080P</a></td>
-          <td class="magnet-size">2.5GB</td>
-          ...
-        </tr>
+        javbus 详情页磁力链接由 AJAX 注入，不写死在 HTML 里。
+        调用 /ajax/uncledatoolsbyajax.php?gid={gid}&uc={uc} 获取。
         """
         if not video_url:
             return []
-        html = await self._fetch(video_url)
-        if not html:
-            return []
-        from lxml import etree
+        return await self._ajax_fetch_magnets(video_url)
+
+    @staticmethod
+    def _extract_gid_uc(video_url: str) -> tuple[str, str]:
+        """从 javbus 详情页 URL 提取 gid 和 uc
+        URL 格式: https://www.javbus.com/VJ150-c-174599-372944.html  -> gid=174599
+        """
+        from urllib.parse import urlparse
         try:
-            tree = etree.fromstring(html, etree.HTMLParser())
+            path = urlparse(video_url).path
+            parts = path.strip("/").split("-c-")
+            if len(parts) < 2:
+                return "", "0"
+            gid = parts[1].split("-")[0]
+            if not gid.isdigit():
+                return "", "0"
+            remaining = "-".join(parts[1].split("-")[1:])
+            uc = remaining.replace(".html", "").strip() or "0"
+            return gid, uc
         except Exception:
+            return "", "0"
+
+    async def _ajax_fetch_magnets(self, video_url: str) -> list[dict]:
+        """通过 javbus AJAX API 获取磁力链接（不依赖 HTML 解析）
+
+        接口: GET /ajax/uncledatoolsbyajax.php?gid={gid}&uc={uc}
+        返回 JSON: [{magnet, title, size, date}, ...]
+        """
+        gid, uc = self._extract_gid_uc(video_url)
+        if not gid:
+            return []
+
+        import json as _json
+        import urllib.parse as _parse
+
+        ajax_url = "https://www.javbus.com/ajax/uncledatoolsbyajax.php"
+        params = _parse.urlencode({"gid": gid, "uc": uc})
+        ajax_url_full = ajax_url + "?" + params
+
+        cookie_headers = {}
+        try:
+            from app.utils.cookie_manager import get_cookie_headers
+            ch = get_cookie_headers("javbus")
+            if ch and ch.get("cookie"):
+                cookie_headers["cookie"] = ch["cookie"]
+        except Exception:
+            pass
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": video_url,
+        }
+        headers.update(cookie_headers)
+
+        try:
+            import asyncio as _asyncio
+            from app.utils.http_client import AsyncHttpClient
+
+            async with AsyncHttpClient() as client:
+                resp = await _asyncio.wait_for(
+                    client.get_text(ajax_url_full, headers=headers),
+                    timeout=10,
+                )
+                if not resp:
+                    return []
+                try:
+                    data = _json.loads(resp)
+                except _json.JSONDecodeError:
+                    logger.warning(f"JavBus AJAX 磁力返回非 JSON: {resp[:200]}")
+                    return []
+        except Exception as e:
+            logger.warning(f"JavBus AJAX 磁力获取失败: {e}")
+            return []
+
+        if not data or not isinstance(data, list):
             return []
 
         magnets: list[dict] = []
         seen: set[str] = set()
-        for a in tree.xpath('//a[contains(@href,"magnet:")]'):
-            link = (a.get("href") or "").strip()
-            if not link.startswith("magnet:") or link in seen:
+        for item in data:
+            magnet_link = (item.get("magnet") or "").strip()
+            if not magnet_link.startswith("magnet:") or magnet_link in seen:
                 continue
-            seen.add(link)
-            name = (a.xpath("string(.)") or "").strip()
-            size = ""
-            # 向上找所在 <tr>，取 magnet-size 单元格
-            tr = a.getparent()
-            while tr is not None and tr.tag != "tr":
-                tr = tr.getparent()
-            if tr is not None:
-                size_tds = tr.xpath('.//td[contains(@class,"size")]/text()')
-                if size_tds:
-                    size = size_tds[0].strip()
+            seen.add(magnet_link)
+            title = (item.get("title") or "").strip()
+            size = (item.get("size") or "").strip()
             magnets.append({
-                "link": link,
-                "name": name[:120],
+                "link": magnet_link,
+                "name": title[:120],
                 "size": size,
-                "chinese": _magnet_is_chinese(link, name),
+                "chinese": _magnet_is_chinese(magnet_link, title),
             })
         return magnets
 
@@ -596,10 +653,9 @@ class JavBusListCrawler:
         if href:
             url = urljoin(self.base_url, href)
 
-        # 中字检测：1) 番号后缀 2) 标题关键词 3) 从标题/卡片文本扫描带后缀番号
-        has_chinese = bool(is_chinese)
-        if not has_chinese:
-            has_chinese = self._detect_chinese_in_text(title_text, card_text)
+        # v3.1: has_chinese 不再从番号后缀/标题/卡片文本推断，统一初始为 False。
+        # 最终 has_chinese 由 attach_magnets 抓取详情页磁力后、再依据磁力属性回填（完全以磁力为准）。
+        has_chinese = False
 
         # 破解/无码检测：1) 番号后缀 2) 标题关键词 3) 从标题/卡片文本扫描带后缀番号
         is_uncensored = is_mosaic is False
@@ -1014,7 +1070,7 @@ class JavDBListCrawler:
                     url=f"https://javdb.com/v/{mv.get('id') or ''}",
                     cover=mv.get("cover_url") or mv.get("thumb_url") or "",
                     date=mv.get("release_date") or "",
-                    has_chinese=bool(mv.get("has_cnsub")),
+                    has_chinese=False,
                     is_uncensored=self.uncensored,
                 ))
         return all_videos
@@ -1062,7 +1118,7 @@ class JavDBListCrawler:
                     url=f"https://javdb.com/v/{mv.get('id') or ''}",
                     cover=mv.get("cover_url") or mv.get("thumb_url") or "",
                     date=mv.get("release_date") or "",
-                    has_chinese=bool(mv.get("has_cnsub")),
+                    has_chinese=False,
                     is_uncensored=self.uncensored,
                 ))
             # current_page 为空表示无翻页信息，保守多抓一页后结束
@@ -1134,7 +1190,7 @@ class JavDBListCrawler:
                     url=f"https://javdb.com/v/{mv.get('id') or ''}",
                     cover=mv.get("cover_url") or mv.get("thumb_url") or "",
                     date=mv.get("release_date") or "",
-                    has_chinese=bool(mv.get("has_cnsub")),
+                    has_chinese=False,
                     is_uncensored=self.uncensored,
                 ))
         return all_videos
@@ -1491,12 +1547,8 @@ class JavDBListCrawler:
         full_text = (item.get() or "").lower()
 
         # 中字检测
-        has_chinese = bool(suffix_chinese)
-        if not has_chinese:
-            if any(kw in tag_text for kw in CHINESE_SUB_KEYWORDS):
-                has_chinese = True
-            elif "中文字幕" in full_text or "中字" in full_text or "chs" in full_text or "cht" in full_text:
-                has_chinese = True
+        # v3.1: 不再从卡片标签/番号后缀/卡片文本推断，统一初始为 False。
+        has_chinese = False
 
         # 破解/无码检测
         is_uncensored = suffix_mosaic is False
@@ -1674,7 +1726,7 @@ class JavBooksListCrawler:
                 title=(m.get("title") or "").strip()[:200],
                 url=url,
                 date=m.get("date") or "",
-                has_chinese=bool(is_chinese_suffix),
+                has_chinese=False,
             ))
         return videos
 
@@ -1743,7 +1795,7 @@ class JavBooksListCrawler:
                 title=(r.title or "").strip()[:200],
                 url=r.source_url or "",
                 date=r.release_date.isoformat() if r.release_date else "",
-                has_chinese=bool(is_chinese_suffix or r.is_chinese),
+                has_chinese=False,
             ))
         return videos
 

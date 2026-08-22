@@ -59,6 +59,7 @@
         <el-radio-button value="">全部</el-radio-button>
         <el-radio-button value="chinese">中文</el-radio-button>
         <el-radio-button value="uncensored">无码</el-radio-button>
+        <el-radio-button value="solo">单人</el-radio-button>
         <el-radio-button value="complete">信息全</el-radio-button>
         <el-radio-button value="incomplete">信息不全</el-radio-button>
       </el-radio-group>
@@ -226,6 +227,7 @@ async function loadMovies() {
   if (sortBy.value) params.sort = sortBy.value
   if (infoTab.value === 'chinese') params.is_chinese = 1
   else if (infoTab.value === 'uncensored') params.is_uncensored = 1
+  else if (infoTab.value === 'solo') params.solo = 1
   else if (infoTab.value === 'complete' || infoTab.value === 'incomplete') params.info_state = infoTab.value
   await store.loadMovies(params)
 }
