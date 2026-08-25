@@ -59,6 +59,10 @@
             <el-icon><FolderOpened /></el-icon>
             <template #title>文件夹归属</template>
           </el-menu-item>
+          <el-menu-item index="/jav/covers/problems">
+            <el-icon><WarningFilled /></el-icon>
+            <template #title>封面问题修复</template>
+          </el-menu-item>
           <el-menu-item index="/jav/studios">
             <el-icon><OfficeBuilding /></el-icon>
             <template #title>制片厂</template>
@@ -1357,6 +1361,7 @@ const pageTitle = computed(() => {
     '/jav/studio-merge': 'JAV 有码 - 片商合并',
     '/jav/code-test': 'JAV 有码 - 番号提取测试',
     '/jav/categories': 'JAV 有码 - 类别',
+    '/jav/covers/problems': 'JAV 有码 - 封面问题修复',
     // JAV 无码
     '/uncensored/movies': 'JAV 无码 - 影片库',
     '/uncensored/categories': 'JAV 无码 - 类别',

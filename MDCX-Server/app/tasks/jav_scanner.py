@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags, find_local_cover
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -176,13 +176,19 @@ class JavScanner(BaseScanner):
                     studio = self._detect_studio(code, dir_path, media_dir)
 
                     # 从同目录查找本地封面图片
+                    # 兼容通用名（poster.jpg）与番号命名（{code}-poster.jpg）两类
                     cover_url = None
-                    dir_path_obj = file_path.parent
-                    for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg"]:
-                        img_path = dir_path_obj / img_name
-                        if img_path.exists():
-                            cover_url = str(img_path)
-                            break
+                    try:
+                        cover_url = find_local_cover(file_path, code)
+                    except Exception:
+                        pass
+                    if not cover_url:
+                        dir_path_obj = file_path.parent
+                        for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg"]:
+                            img_path = dir_path_obj / img_name
+                            if img_path.exists():
+                                cover_url = str(img_path)
+                                break
 
                     # 写入新影片记录
                     new_movie = JavMovie(

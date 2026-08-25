@@ -85,6 +85,17 @@
             <span v-else>-</span>
           </dd>
 
+          <dt>版本</dt><dd>
+            <div class="version-badges">
+              <el-tag v-if="movie.is_4k" size="small" type="warning" effect="dark">4K</el-tag>
+              <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
+              <el-tag v-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
+              <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="dark">中文</el-tag>
+              <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="dark">无码</el-tag>
+              <span v-if="!movie.is_4k && !movie.is_leak && !movie.is_chinese && !movie.is_uncensored">-</span>
+            </div>
+          </dd>
+
           <dt>类别</dt><dd>
             <a v-for="(g, idx) in displayGenres" :key="idx" class="link-tag genre-link" @click="goFilteredList('genre', g)">{{ g }}</a>
             <span v-if="!displayGenres.length">-</span>
@@ -184,6 +195,13 @@
       <el-button @click="reloadNfo" :loading="reloadingNfo">
         <el-icon><DocumentCopy /></el-icon> 从 NFO 重新导入
       </el-button>
+      <el-divider direction="vertical" />
+      <el-button @click="refillImages" :loading="refilling" type="success" plain>
+        <el-icon><PictureRounded /></el-icon> 重新下载图片
+      </el-button>
+      <el-button @click="generatePoster" :loading="generatingPoster" type="warning" plain>
+        <el-icon><VideoCamera /></el-icon> 视频截图生成海报
+      </el-button>
     </div>
 
     <!-- TA們還出演過 -->
@@ -263,7 +281,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ArrowLeft, VideoPlay, Star, StarFilled, MagicStick,
-  PictureFilled, Loading, Edit, DocumentCopy, Refresh
+  PictureFilled, PictureRounded, VideoCamera, Loading, Edit, DocumentCopy, Refresh
 } from '@element-plus/icons-vue'
 import { getMovieCoverUrl, defaultCover, getFileProxyUrl, getServerBaseUrl } from '@/utils/media'
 import http from '@/api'
@@ -295,6 +313,8 @@ async function loadApi () {
       update: m.updateJavMovie,
       scrape: m.scrapeJavMovie ?? m.scrapeMovie,
       reloadNfo: m.reloadJavMovieNfo ?? m.reloadMovieNfo,
+      refillImages: m.refillMovieImages,
+      generatePoster: m.generateMoviePoster,
     }
   } else if (name === 'fc2') {
     const m = await import('@/api/fc2')
@@ -671,6 +691,59 @@ const reloadNfo = async () => {
   } finally { reloadingNfo.value = false }
 }
 
+// 重新下载图片（封面/背景/缩略图）—— 后台执行，轮询状态
+const refilling = ref(false)
+const refillImages = async () => {
+  const api = apiRef.value
+  if (!api?.refillImages) {
+    ElMessage.warning('当前模块暂不支持该操作')
+    return
+  }
+  refilling.value = true
+  try {
+    const res = await api.refillImages(movieId.value, false)
+    const broken = res?.broken_files || []
+    if (broken.length) {
+      ElMessage.info(`检测到损坏图片 ${broken.length} 个，已在后台重新下载: ${broken.join(', ')}`)
+    } else {
+      ElMessage.info('已在后台重新下载图片（一般 10-30 秒）')
+    }
+    // 后台异步执行，1.5s 后轮询一次让详情刷新
+    setTimeout(() => {
+      load().catch(() => {})
+    }, 1500)
+  } catch (e) {
+    ElMessage.error(`失败: ${e?.response?.data?.detail || e?.message}`)
+  } finally {
+    refilling.value = false
+  }
+}
+
+// 视频截图生成海报
+const generatingPoster = ref(false)
+const generatePoster = async () => {
+  const api = apiRef.value
+  if (!api?.generatePoster) {
+    ElMessage.warning('当前模块暂不支持该操作')
+    return
+  }
+  generatingPoster.value = true
+  try {
+    const res = await api.generatePoster(movieId.value, false)
+    if (res?.status === 'skipped') {
+      ElMessage.info('已存在 poster.jpg，未覆盖')
+    } else {
+      const sec = res?.screenshot_at_sec ?? '?'
+      ElMessage.success(`已从视频 ${sec}s 处截取海报`)
+      await load()
+    }
+  } catch (e) {
+    ElMessage.error(`失败: ${e?.response?.data?.detail || e?.message}`)
+  } finally {
+    generatingPoster.value = false
+  }
+}
+
 // ---------- 编辑 ----------
 const editDialogVisible = ref(false)
 const saving = ref(false)
@@ -774,6 +847,7 @@ onMounted(() => { load() })
 .code-parts { display: inline-flex; align-items: baseline; gap: 0; }
 .stars { color: #e6a23c; letter-spacing: 1px; }
 .rating-num { color: var(--el-text-color-secondary); font-size: 13px; margin-left: 6px; }
+.version-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .play-box { display: inline-flex; align-items: center; gap: 8px; padding: 10px 28px; background: var(--el-color-primary); color: #fff; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: 600; transition: opacity .2s; margin-top: 8px; }
 .play-box:hover { opacity: .85; }
 .play-icon { font-size: 22px; }

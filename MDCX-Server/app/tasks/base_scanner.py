@@ -103,22 +103,16 @@ def _resolve_asset_target(src_name: str, code: str) -> str | None:
 
 
 def detect_version_flags(file_name: str) -> dict:
-    """从视频文件名统一识别版本后缀，供各模块扫描器落库使用。
+    """从视频文件名识别版本标记，供各模块扫描器落库使用。
 
-    与 nfo_parser._detect_version_suffix 口径保持一致，映射规则：
-      -C / -CH / -CN / -中字   → is_chinese=True
-      -U / -Uncensored / -无码  → is_uncensored=True
-      -UC（复合，无码+中字）    → is_chinese=True 且 is_uncensored=True
-      -Leak / -流出 / -破解     → is_leak=True
-      -4K / -UHD                → is_4k=True
+    支持两种模式：
+    1) 全文扫描（优先）：文件名任意位置含 中文/中字/中文字幕/C/CH/CN/UC/U/破解/Leak/4K 等
+    2) 尾部后缀（回退）：文件末尾 -C/-CH/-CN/-U/-UC 等
 
-    返回 {"is_chinese", "is_uncensored", "is_leak", "is_4k"} 四个布尔标记。
+    与 nfo_parser._detect_version_suffix 口径保持一致。
     """
     stem = Path(file_name).stem
-    # 尾部版本后缀（允许 - / _ / 空格 / 无分隔符，兼容 JAV 常见命名）
-    m = re.search(r"[-_.\s]?([A-Za-z0-9\u4e00-\u9fff]{1,12})$", stem)
-    suffix = m.group(1) if m else ""
-    low = suffix.lower()
+    low = stem.lower()
 
     flags = {
         "is_chinese": False,
@@ -126,24 +120,43 @@ def detect_version_flags(file_name: str) -> dict:
         "is_leak": False,
         "is_4k": False,
     }
-    if not low:
+
+    # ---- 全文扫描（覆盖 [中字]、（中文）、中文字幕版 等常见命名习惯） ----
+    if any(k in low for k in ("chinese", "中文字幕", "中文", "中字", "chs", "cht")):
+        flags["is_chinese"] = True
+
+    # 破解/无码（排除 UHD 误匹配）
+    if "uhd" not in low and any(k in low for k in ("无码", "無碼", "uncensored", "破解", "leak", "流出", "rip")):
+        flags["is_uncensored"] = True
+        flags["is_leak"] = True
+
+    if "4k" in low or "uhd" in low:
+        flags["is_4k"] = True
+
+    # ---- 尾部后缀（兼容传统命名） ----
+    # 尾部版本后缀（允许 - / _ / 空格 / 无分隔符）
+    m = re.search(r"[-_.\s]?([A-Za-z0-9\u4e00-\u9fff]{1,12})$", stem)
+    suffix = m.group(1) if m else ""
+    sl = suffix.lower()
+
+    if not sl:
         return flags
 
     # 复合后缀优先：UC = 无码 + 中字
-    if low == "uc":
+    if sl == "uc":
         flags["is_chinese"] = True
         flags["is_uncensored"] = True
         return flags
 
-    # 4K 判定前置：UHD 含 "u"，必须先判 4K 再判无码，否则 -UHD 会被误判为无码
-    if "4k" in low or "uhd" in low:
+    if "4k" in sl or "uhd" in sl:
         flags["is_4k"] = True
-    if any(k in low for k in ("c", "ch", "cn", "中字", "中文")):
+    if not flags["is_chinese"] and any(k in sl for k in ("c", "ch", "cn", "中字", "中文")):
         flags["is_chinese"] = True
-    if "uhd" not in low and any(k in low for k in ("u", "unc", "uncensored", "无码", "無碼")):
+    if not flags["is_uncensored"] and "uhd" not in sl and any(k in sl for k in ("u", "unc", "uncensored", "无码", "無碼")):
         flags["is_uncensored"] = True
-    if any(k in low for k in ("leak", "流出", "破解", "rip")):
+    if not flags["is_leak"] and any(k in sl for k in ("leak", "流出", "破解", "rip")):
         flags["is_leak"] = True
+
     return flags
 
 

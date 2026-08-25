@@ -141,6 +141,7 @@
 
     <!-- 影片瀑布流（虚拟滚动） -->
     <VirtualScroll
+      ref="virtualScrollRef"
       v-if="movies.length > 0"
       :items="movies"
       :item-height="cardSize.height"
@@ -268,6 +269,7 @@ const gridHeight = computed(() => Math.max(400, window.innerHeight - 320))
 
 // 虚拟滚动事件转发:接近底部时触发加载下一页（保留 800px 提前量）
 const onVirtualScroll = ({ scrollTop }) => {
+  lastScrollTop = scrollTop
   const virtualScrollEl = document.querySelector('.virtual-scroll')
   if (!virtualScrollEl) return
   const scrollHeight = virtualScrollEl.scrollHeight
@@ -300,6 +302,11 @@ const randomSeed = ref(null)
 const sentinelRef = ref(null)
 let ioObserver = null
 const hasMore = computed(() => movies.value.length < total.value)
+
+// 虚拟滚动实例（用于恢复滚动位置）
+const virtualScrollRef = ref(null)
+// 最近一次滚动位置（px），详情页返回时恢复到该位置
+let lastScrollTop = 0
 
 // 字母导航
 const alphabet = ref([])
@@ -334,6 +341,27 @@ const openCoverPreview = (movie) => {
   coverPreviewSrc.value = getMovieCoverUrl(movie)
   coverPreviewTitle.value = movie.code || ''
   coverPreviewVisible.value = true
+}
+
+// ============== 状态缓存（sessionStorage） ==============
+// 缓存 key 基于所有筛选条件生成，条件变化时自动失效
+const cacheKey = () =>
+  `mv:${keyword.value}:${selectedLetter.value}:${seriesFilter.value}:${makerFilter.value}:${studioFilter.value}:${genreFilter.value}:${codePrefixFilter.value}:${selectedTags.value.map(t => t.id || t).join(',')}:${sortBy.value}:${isRandom.value}:${minRating.value}:${maxRating.value}:${onlyFavorite.value}:${pageSize.value}`
+
+const _cache = () => {
+  try {
+    return JSON.parse(sessionStorage.getItem(cacheKey())) || null
+  } catch { return null }
+}
+
+const _saveCache = () => {
+  try {
+    const items = movies.value.map(({ _imgIndex, _fav, _tags, _tagsExpanded, ...m }) => m)
+    sessionStorage.setItem(
+      cacheKey(),
+      JSON.stringify({ items, page: page.value, total: total.value, scrollTop: lastScrollTop })
+    )
+  } catch { /* quota exceeded → 忽略 */ }
 }
 
 // ============== 计算属性 ==============
@@ -705,6 +733,27 @@ onMounted(async () => {
     const ids = String(route.query.tag_ids).split(',').map(Number).filter(n => n > 0)
     selectedTags.value = ids.map(id => allTags.value.find(t => t.id === id)).filter(Boolean)
   }
+  // 优先恢复本地缓存（从详情页返回时保留已浏览页码/数据/滚动位置）
+  const cached = _cache()
+  if (cached && cached.items.length) {
+    movies.value = cached.items.map(m => ({ ...m, _imgIndex: 0, _fav: false, _tags: [], _tagsExpanded: false }))
+    page.value = cached.page || 1
+    total.value = cached.total || 0
+    // 恢复滚动位置：等 VirtualScroll 渲染出足够高度后再滚回原位置
+    const restoreTop = cached.scrollTop || 0
+    lastScrollTop = restoreTop
+    nextTick(() => {
+      nextTick(() => {
+        if (virtualScrollRef.value && restoreTop > 0) {
+          virtualScrollRef.value.scrollTo(restoreTop)
+        }
+      })
+    })
+    loadFavoriteStates(false)
+    loadMovieTags()
+    loadAlphabet()
+    return
+  }
   loadMovies()
   loadAlphabet()
 })
@@ -729,6 +778,11 @@ watch(() => route.query, (q) => {
   loadMovies()
 })
 
+// 无限滚动新数据加载完毕后也更新缓存
+watch(page, (newPage) => {
+  if (movies.value.length) _saveCache()
+})
+
 // 哨兵元素出现后设置 observer
 watch([total, sentinelRef], () => {
   nextTick(() => setupObserver())
@@ -739,6 +793,7 @@ onBeforeUnmount(() => {
     ioObserver.disconnect()
     ioObserver = null
   }
+  _saveCache()
 })
 </script>
 

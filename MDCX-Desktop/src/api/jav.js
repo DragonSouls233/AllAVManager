@@ -42,6 +42,16 @@ export async function scrapeMediaRefill(data = {}) {
   return api.post('/movies/scrape-media-refill', data)
 }
 
+// 单部影片重新下载图片（封面/背景图/缩略图），后台异步执行
+export async function refillMovieImages(movieId, force = false) {
+  return api.post(`/movies/${movieId}/refill-images`, null, { params: { force } })
+}
+
+// 单部影片从视频截取一帧生成 poster.jpg
+export async function generateMoviePoster(movieId, overwrite = false) {
+  return api.post(`/movies/${movieId}/generate-poster`, null, { params: { overwrite } })
+}
+
 export async function importJavNfo(params = {}) {
   return api.post('/jav/movies/import-nfo', null, { params })
 }
@@ -118,4 +128,16 @@ export async function getJavFolderCheck(params = {}) {
 
 export async function fillJavFolderCheck(data = {}) {
   return api.post('/jav/folder-check/fill', data)
+}
+
+// ===== 封面问题检测与批量修复 =====
+
+// 全量扫描 JAV 封面，返回本地存在但损坏/乱码的图片列表
+export async function getCoverProblems(params = {}) {
+  return api.get('/jav/covers/problems', { params })
+}
+
+// 批量修复问题封面（后台执行）：就地 XOR 解密 + 解密后仍损坏的自动重下
+export async function fixCoverProblems(data = {}) {
+  return api.post('/jav/covers/fix', data, { timeout: 60000 })
 }

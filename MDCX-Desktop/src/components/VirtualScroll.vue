@@ -204,6 +204,12 @@ defineExpose({
   scrollToTop: () => {
     if (containerRef.value) containerRef.value.scrollTop = 0
   },
+  // 按像素恢复滚动位置（详情页返回时恢复之前浏览位置）
+  scrollTo: (top) => {
+    if (!containerRef.value) return
+    containerRef.value.scrollTop = Math.max(0, top)
+  },
+  getScrollTop: () => (containerRef.value ? containerRef.value.scrollTop : 0),
   getVisibleCount: () => visibleItems.value.length,
   isIntersecting: () => isVisible.value
 })

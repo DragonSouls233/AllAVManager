@@ -535,6 +535,12 @@ const routes = [
         component: () => import('@/views/jav/CodeTest.vue')
       },
       {
+        path: 'jav/covers/problems',
+        name: 'JavCoverProblems',
+        component: () => import('@/views/jav/CoverProblems.vue'),
+        meta: { title: 'JAV 有码 · 封面问题修复' }
+      },
+      {
         path: 'jav/leaderboard',
         name: 'JavLeaderboard',
         component: () => import('@/views/jav/Leaderboard.vue'),

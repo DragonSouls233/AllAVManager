@@ -28,6 +28,9 @@ router = APIRouter(prefix="/jav", tags=["JAV有码"])
 _real_actor_cache: dict = {"ts": 0.0, "names": None}
 _REAL_ACTOR_TTL = 60.0
 
+# 演员作品数缓存：列表页 60s 内不再重复计算（详情页 / 合并操作后自动失效）
+_movie_count_cache: dict = {"ts": 0.0, "counts": None}  # {actor_id: real_count}
+
 # 匿名/占位词：刮削或解析时把"空演员"写成的占位文本，不是真人（佚名=匿名）
 _ANON_WORDS = {
     "佚名", "匿名", "素人", "無名", "未知",
@@ -66,11 +69,15 @@ async def _real_actor_names(session) -> set:
     return names
 
 
-def _is_real_actor(actor, real_names: set) -> bool:
+def _is_real_actor(actor, real_names: set, real_counts: dict = None) -> bool:
     """真演员判定：排除 1) 单字符解析残留 2) 匿名占位词 3) 素人称呼名
     4) 名字未完整出现在 movies.actor 的孤儿/短名条目 5) 纯假名短名（≤2假名无空格）
     6) 含空格的纯假名（去空格后 ≤3假名，如「かな み」「うみ う」）
-    7) 纯半角拉丁单字符（扫描器兜底垃圾）"""
+    7) 纯半角拉丁单字符（扫描器兜底垃圾）
+
+    real_counts: {actor_id: real_count} 传入后可用实时作品数判断 3-假名垃圾；
+    不传时回退到 actor.movie_count（可能过时，但 3-假名+0 作品的垃圾仍可拦）。
+    """
     name = (getattr(actor, "name", None) or "").strip()
     if len(name) <= 1:
         return False
@@ -93,8 +100,10 @@ def _is_real_actor(actor, real_names: set) -> bool:
     # 纯假名 3 字（うみう）且作品数为 0 → 判垃圾
     # 注：真演员 3 假名名（まゆみ/ゆきこ）通常有 ≥1 部作品
     if _KANA_PURE_RE.match(name) and len(name) == 3:
-        mc = getattr(actor, "movie_count", None)
-        if mc is not None and mc == 0:
+        cnt = real_counts.get(actor.id) if real_counts else None
+        if cnt is None:
+            cnt = getattr(actor, "movie_count", None)
+        if cnt is not None and cnt == 0:
             return False
     return True
 
@@ -255,20 +264,35 @@ async def list_actors(
     db = get_jav_db()
     session = await db.get_session()
     try:
-        from app.db.jav_models import JavActor
+        from app.db.jav_models import JavActor, JavMovie
         from sqlalchemy import select
+        from app.utils.actor_alias import count_actor_movies
+
         # 真演员过滤（2026-08-19）：排除刮削/文件夹解析产生的垃圾与素人匿名条目。
         # 1) 单字符名（'a'/'o'/'e'/'杏'/'桜' 等解析残留）
-        # 2) 匿名占位词（佚名/匿名/Unknown 等，movies.actor 里被写成"演员"的占位文本）
-        # 3) 素人称呼名（以 さん/ちゃん/くん/様 结尾，素人匿名角色不当作真演员）
-        # 4) 孤儿/短名条目：名字未完整出现在任何电影 actor 字段（みお/リマ/あやか 等
-        #    实为长名子串误匹配，LIKE 命中几百部但精确 token 0 部）
-        # 5) 纯假名短名（1-2 个假名，素人片匿名角色常见写法）
+        # 2) 匿名占位词（佚名/匿名/Unknown 等）
+        # 3) 素人称呼名（以 さん/ちゃん/くん/様 结尾）
+        # 4) 孤儿/短名条目：名字未完整出现在任何电影 actor 字段
+        # 5) 纯假名短名（≤2 假名，素人片匿名角色常见写法）
         # 规则在 Python 侧统一判定（SQL 无法表达匿名词/假名短名），全量拉取后过滤再分页。
-        # 注意：不按 source 过滤（scraper 来源含 辻井みう/加護亜美 等 48 个真演员）。
         real_names = await _real_actor_names(session)
         rows = (await session.execute(select(JavActor))).scalars().all()
-        items = [a for a in rows if _is_real_actor(a, real_names)]
+
+        # 作品数实时计算（2026-08-19）：先算全部（垃圾也在内），再过滤。
+        # 60s TTL 缓存；详情页 / 合并操作后自动失效。
+        import time as _tm
+        now = _tm.monotonic()
+        c = _movie_count_cache
+        counts_map = c["counts"]
+        if counts_map is None or now - c["ts"] >= _REAL_ACTOR_TTL:
+            counts_map = {}
+            for a in rows:
+                cnt = await count_actor_movies(session, JavMovie, a)
+                counts_map[a.id] = cnt
+            c.update({"ts": now, "counts": counts_map})
+
+        # 真演员过滤（传入 real_counts 供 3-假名规则使用）
+        items = [a for a in rows if _is_real_actor(a, real_names, counts_map)]
         if search:
             key = search.strip().lower()
             items = [a for a in items if
@@ -276,16 +300,19 @@ async def list_actors(
                      or key in (a.name_jp or "").lower()
                      or key in (a.name_en or "").lower()
                      or (a.alias and key in a.alias.lower())]
+
+        # 用实时数过滤 + 排序（降序：作品多的在前）
         if movie_count_filter == "multi":
-            items = [a for a in items if (a.movie_count or 0) >= min_movies]
+            items = [a for a in items if counts_map.get(a.id, 0) >= min_movies]
         elif movie_count_filter == "single":
-            items = [a for a in items if (a.movie_count or 0) < min_movies]
-        items.sort(key=lambda a: a.movie_count or 0, reverse=True)
+            items = [a for a in items if counts_map.get(a.id, 0) < min_movies]
+        items.sort(key=lambda a: counts_map.get(a.id, 0), reverse=True)
+
         total = len(items)
         page_items = items[(page - 1) * page_size: page * page_size]
         # alias / merged_from：让列表页能直观标出「这个演员合并过哪些旧名」
         from app.utils.actor_alias import merged_from_names
-        return {"total": total, "items": [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
+        return {"total": total, "items": [{"id": a.id, "name": a.name, "movie_count": counts_map.get(a.id, 0),
                  "module_type": "jav",
                  "alias": a.alias, "merged_from": merged_from_names(a),
                  "source": a.source, "avatar_url": a.avatar_url} for a in page_items]}
@@ -319,7 +346,7 @@ async def get_actor(actor_id: int):
                     "module_type": "jav",
                     "avatar_url": actor.avatar_url, "source": actor.source,
                     "source_site": actor.source_site,
-                    "movie_count": real_count or actor.movie_count,
+                    "movie_count": real_count,
                     "created_at": str(actor.created_at)}
     finally:
         await session.close()
@@ -760,7 +787,10 @@ async def list_movies(
                  "source_platform": m.source,
                  "series": m.series,
                  "cover_url": m.cover_url, "actor": _fill_amateur_actor(m),
-                 "file_path": m.file_path, "status": m.status}
+                 "file_path": m.file_path, "status": m.status,
+                 # 版本标识（列表页 badge 依赖）：中文/无码/4K/流出
+                 "is_chinese": m.is_chinese, "is_uncensored": m.is_uncensored,
+                 "is_4k": m.is_4k, "is_leak": m.is_leak}
                 for m in movies
             ],
         }
@@ -1129,6 +1159,12 @@ async def scrape_jav_movie(movie_id: int):
             fanart_url=scrape_result.poster_url,
             thumb_url=scrape_result.thumb_url,
         )
+        # 封面统一裁剪为竖版 2:3 人物海报（横向大图/过窄图就地主裁）
+        try:
+            from app.utils.media_helpers import crop_cover_to_portrait, get_movie_cover_path
+            crop_cover_to_portrait(get_movie_cover_path("jav", movie.code))
+        except Exception:
+            pass
         # 存本地路径到数据库
         if local_media.get("cover"):
             movie.cover_url = local_media["cover"]
@@ -1158,6 +1194,36 @@ async def scrape_jav_movie(movie_id: int):
             movie.is_uncensored = scrape_result.is_uncensored
         if scrape_result.is_chinese is not None:
             movie.is_chinese = scrape_result.is_chinese
+
+        # 兜底：爬虫未提取出 is_chinese/is_uncensored（如 JavDB 不写 is_chinese）时，
+        # 从视频文件名/目录名后缀（[中字] / -C / -UC / -无码 等）补全。仅做加法，不覆盖已有 True。
+        try:
+            from app.tasks.base_scanner import detect_version_flags
+            from pathlib import Path
+            _name_candidates = []
+            if getattr(movie, "file_path", None):
+                _fp = str(movie.file_path)
+                _name_candidates.append(_fp)
+                _parent = Path(_fp).parent.name
+                if _parent:
+                    _name_candidates.append(_parent)
+            if getattr(movie, "code", None):
+                _name_candidates.append(str(movie.code))
+            for _cand in _name_candidates:
+                try:
+                    _flags = detect_version_flags(_cand)
+                except Exception:
+                    continue
+                if not movie.is_chinese and _flags.get("is_chinese"):
+                    movie.is_chinese = True
+                if not movie.is_uncensored and _flags.get("is_uncensored"):
+                    movie.is_uncensored = True
+                if not getattr(movie, "is_leak", None) and _flags.get("is_leak"):
+                    movie.is_leak = True
+                if not getattr(movie, "is_4k", None) and _flags.get("is_4k"):
+                    movie.is_4k = True
+        except Exception:
+            pass
         if scrape_result.genres:
             movie.genre = ",".join(scrape_result.genres)
         if scrape_result.tags:
@@ -1739,7 +1805,7 @@ from fastapi import Request as _Request
 
 
 @router.get("/movies/{movie_id}/cover/file")
-async def get_jav_cover_file(movie_id: int):
+async def get_jav_cover_file(movie_id: int, decrypt: int = Query(0, description="1=返回前就地 XOR 解密（预览乱码封面用）")):
     """获取 JAV 模块影片封面图片文件
 
     纯本地查找，绝不连接外网。
@@ -1748,6 +1814,9 @@ async def get_jav_cover_file(movie_id: int):
     2. DB 中 cover_url/poster_url/thumb_url 的本地路径
     3. 视频所在目录下的 poster.jpg/cover.jpg 等
     4. 内置 SVG 占位图
+
+    decrypt=1 时对返回文件就地 XOR 解密（JavDB CDN 混淆），
+    用于「封面问题修复」页预览乱码封面的修复效果。
     """
     from fastapi.responses import FileResponse, Response
     from app.utils.media_helpers import (
@@ -1756,6 +1825,25 @@ async def get_jav_cover_file(movie_id: int):
         get_movie_fanart_path,
         get_movie_thumb_path,
     )
+
+    def _resp(path, media_type, cache=True):
+        """返回本地文件；decrypt=1 时先读入内存做 XOR 解密再返回"""
+        if decrypt:
+            try:
+                from app.utils.media_helpers import maybe_decrypt_javdb_image
+                data = maybe_decrypt_javdb_image(_Path(path).read_bytes())
+                return Response(
+                    content=data,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "no-cache"},
+                )
+            except Exception:
+                pass
+        return FileResponse(
+            str(path),
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=86400"} if cache else {"Cache-Control": "no-cache"},
+        )
 
     db = get_jav_db()
     session = await db.get_session()
@@ -1774,11 +1862,7 @@ async def get_jav_cover_file(movie_id: int):
             for get_path in (get_movie_cover_path, get_movie_fanart_path, get_movie_thumb_path):
                 p = get_path("jav", movie.code)
                 if fast_file_exists(str(p)):
-                    return FileResponse(
-                        str(p),
-                        media_type=_image_media_type(str(p)),
-                        headers={"Cache-Control": "public, max-age=86400"},
-                    )
+                    return _resp(p, _image_media_type(str(p)))
 
         # 2) DB 中 cover_url/poster_url/thumb_url 的本地路径
         for attr in ("cover_url", "poster_url", "thumb_url"):
@@ -1787,11 +1871,7 @@ async def get_jav_cover_file(movie_id: int):
                 continue
             if not url.startswith(("http://", "https://", "/")):
                 if fast_file_exists(url):
-                    return FileResponse(
-                        url,
-                        media_type=_image_media_type(url),
-                        headers={"Cache-Control": "public, max-age=86400"},
-                    )
+                    return _resp(url, _image_media_type(url))
 
         # 2.5) DB 中 cover_url/poster_url/thumb_url 是远程 URL 时，尝试下载到规范目录
         if movie.code:
@@ -1837,11 +1917,7 @@ async def get_jav_cover_file(movie_id: int):
                                     except Exception:
                                         pass
                                 if fast_file_exists(str(target)):
-                                    return FileResponse(
-                                        str(target),
-                                        media_type=_image_media_type(str(target)),
-                                        headers={"Cache-Control": "public, max-age=86400"},
-                                    )
+                                    return _resp(target, _image_media_type(str(target)))
                     except Exception:
                         pass
                     break  # 只尝试第一个有效的远程 URL
@@ -1856,11 +1932,7 @@ async def get_jav_cover_file(movie_id: int):
                         asyncio.to_thread(lambda p=img_path: p.exists() and p.is_file()),
                         timeout=3.0,
                     ):
-                        return FileResponse(
-                            str(img_path),
-                            media_type=_image_media_type(img_name),
-                            headers={"Cache-Control": "public, max-age=86400"},
-                        )
+                        return _resp(img_path, _image_media_type(img_name))
             except asyncio.TimeoutError:
                 logger.debug(f"JAV封面: 扫描视频目录超时 [movie_id={movie_id}]")
 
@@ -2093,3 +2165,323 @@ async def folder_check_fill(data: FolderFillRequest, background_tasks: Backgroun
 
     background_tasks.add_task(_run)
     return {"status": "started", "actor": actor_filter}
+
+
+# ========== 封面问题检测与批量修复 ==========
+# 背景：JavDB 等 CDN 对 JPEG 做 XOR 混淆（key=data[0]），旧下载链路未解密，
+# 导致大量封面落盘为乱码（文件头 CE-31-16-... 而非 FFD8），图片无法打开。
+# 本模块提供：
+#   1) GET /jav/covers/problems —— 全量扫描，列出本地存在但损坏/乱码的封面
+#   2) POST /jav/covers/fix     —— 批量修复（就地 XOR 解密 + 解密后仍损坏的自动重下）
+
+# 封面文件规约（规范目录 {data_base}/movies/jav/{code}/ 下）
+_COVER_NAMES = ("poster.jpg", "fanart.jpg", "thumb.jpg", "cover.jpg")
+
+# 刮削来源 → 详情页基址（构造防盗链 Referer，与 movies.py 保持一致）
+_SOURCE_DETAIL_BASE_JAV = {
+    "javbus": "https://www.javbus.com",
+    "javdb": "https://javdb.com",
+    "javdatabase": "https://javdatabase.com",
+    "avmoo": "https://avmoo.shop",
+    "avsox": "https://avsox.click",
+    "fanart": "https://fanart.tv",
+}
+
+# 问题类型 → 中文说明（前端展示用）
+_COVER_PROBLEM_LABELS = {
+    "xor_garbled": "CDN 混淆乱码（可解密修复）",
+    "decoded_broken": "解码失败/半截文件",
+    "too_small": "文件过小（下载残留）",
+}
+
+
+def _inspect_cover_problem(path) -> Optional[str]:
+    """检测单个封面文件的问题类型。
+
+    Returns:
+        None             = 图片正常
+        "xor_garbled"    = JavDB XOR 混淆乱码（maybe_decrypt_javdb_image 可原地修复）
+        "decoded_broken" = 非混淆但 PIL 无法解码（半截下载/格式损坏）
+        "too_small"      = 体积过小或分辨率过低（下载残留/占位图）
+    """
+    try:
+        p = _Path(path)
+        if not p.exists() or not p.is_file():
+            return None  # 缺失文件不在本次范围（由缺图补刮流程处理）
+        if p.stat().st_size < 2000:
+            return "too_small"
+        with open(p, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return "decoded_broken"
+    # XOR 混淆特征：key = data[0]，且 data[1]^key=0xFF、data[2]^key=0xD8
+    if len(head) >= 3 and head[:2] != b"\xff\xd8" and (
+        (head[1] ^ head[0]) == 0xFF and (head[2] ^ head[0]) == 0xD8
+    ):
+        return "xor_garbled"
+    # 其余交给通用完整性检测（PIL verify+load / 分辨率）
+    from app.utils.media_helpers import _is_image_broken
+    if not _is_image_broken(p):
+        return None
+    return "decoded_broken"
+
+
+def _decrypt_file_inplace(path) -> bool:
+    """就地 XOR 解密单个封面文件，返回是否实际解密（内容被改写）。"""
+    from app.utils.media_helpers import maybe_decrypt_javdb_image
+    try:
+        p = _Path(path)
+        data = p.read_bytes()
+        new_data = maybe_decrypt_javdb_image(data)
+        if new_data == data:
+            return False
+        p.write_bytes(new_data)
+        return True
+    except OSError:
+        return False
+
+
+async def _scan_cover_problems(type_filter: Optional[str] = None, limit: int = 2000):
+    """全量扫描 JAV 规范目录下的问题封面。
+
+    只检查「文件存在但不完整」的图（缺失图由缺图补刮流程处理）。
+    Returns: (problems, type_counts)
+    """
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie
+    from app.utils.media_helpers import get_module_movies_dir
+
+    # 1) 先查库建 code 索引（关闭会话后再做慢速磁盘扫描）
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        rows = await session.execute(
+            select(
+                JavMovie.id, JavMovie.code, JavMovie.title,
+                JavMovie.cover_url, JavMovie.poster_url,
+            )
+        )
+        movie_by_code: dict[str, dict] = {}
+        for mid, code, title, cover_url, poster_url in rows:
+            if not code:
+                continue
+            movie_by_code[code] = {
+                "movie_id": mid,
+                "code": code,
+                "title": title or code,
+                "cover_url": cover_url or poster_url or "",
+            }
+    finally:
+        await session.close()
+
+    # 2) 遍历规范目录检测文件
+    problems: list[dict] = []
+    type_counts = {"xor_garbled": 0, "decoded_broken": 0, "too_small": 0}
+    base = get_module_movies_dir("jav")
+    if base.exists():
+        for entry in base.iterdir():
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            code = entry.name
+            files: list[dict] = []
+            for name in _COVER_NAMES:
+                p = entry / name
+                if not p.exists():
+                    continue
+                t = _inspect_cover_problem(p)
+                if not t:
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                files.append({"name": name, "type": t, "size": size})
+            if not files:
+                continue
+            movie = movie_by_code.get(code)
+            for f in files:
+                type_counts[f["type"]] = type_counts.get(f["type"], 0) + 1
+            problems.append({
+                "movie_id": movie["movie_id"] if movie else None,
+                "code": code,
+                "title": movie["title"] if movie else code,
+                "cover_url": movie["cover_url"] if movie else "",
+                "files": files,
+            })
+
+    if type_filter:
+        problems = [
+            it for it in problems
+            if any(f["type"] == type_filter for f in it["files"])
+        ]
+    problems.sort(key=lambda it: it["code"])
+    return problems, type_counts
+
+
+@router.get("/covers/problems")
+async def list_cover_problems(
+    type_filter: Optional[str] = Query(None, description="按问题类型过滤：xor_garbled / decoded_broken / too_small"),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    """全量扫描 JAV 封面，列出本地存在但损坏/乱码的图片"""
+    problems, type_counts = await _scan_cover_problems(type_filter=type_filter, limit=limit)
+    return {
+        "total": len(problems),
+        "type_counts": type_counts,
+        "problems": problems[:limit],
+    }
+
+
+class CoverFixRequest(BaseModel):
+    codes: Optional[list[str]] = Field(None, description="要修复的番号列表；空 = 自动扫描全部有问题的")
+    decrypt: bool = Field(True, description="先就地 XOR 解密乱码封面（纯本地，不联网）")
+    redownload: bool = Field(True, description="解密后仍损坏的文件自动重新下载")
+
+
+async def _redownload_one_images(movie, code: str) -> str:
+    """对单部影片重下封面：刮削 → DB URL 兜底 → 落盘（含解密）→ 竖版裁剪。
+
+    Returns:
+        "ok" / "no_url" / "error"
+    """
+    from app.scraper.engine import ScraperEngine
+    from app.utils.media_helpers import (
+        ensure_movie_media_local,
+        crop_cover_to_portrait,
+        get_movie_cover_path,
+    )
+    try:
+        engine = ScraperEngine()
+        result = await engine.scrape_number(code, module="jav")
+        if result and result.is_valid() and not getattr(result, "cover_url", None):
+            fb = await engine.scrape_number(
+                code, sources=["javdb", "avmoo", "avsox", "dmm_web"], module="jav"
+            )
+            if fb and fb.is_valid() and getattr(fb, "cover_url", None):
+                result = fb
+
+        cover_url = fanart_url = thumb_url = None
+        referer = None
+        if result and result.is_valid():
+            cover_url = getattr(result, "cover_url", None) or getattr(result, "poster_url", None)
+            fanart_url = getattr(result, "fanart_url", None)
+            thumb_url = getattr(result, "thumb_url", None)
+            src = getattr(result, "source", None)
+            base = _SOURCE_DETAIL_BASE_JAV.get(src or "")
+            if base and code:
+                referer = f"{base}/{code}"
+        # 刮削拿不到图 → 回退 DB 里已有的远程 URL（来源 URL 往往有效，重下即可修复）
+        if not cover_url:
+            cover_url = getattr(movie, "cover_url", None) or getattr(movie, "poster_url", None)
+        if not referer and cover_url:
+            from urllib.parse import urlparse
+            p = urlparse(cover_url)
+            if p.scheme and p.netloc:
+                referer = f"{p.scheme}://{p.netloc}"
+        if not cover_url:
+            return "no_url"
+
+        await ensure_movie_media_local(
+            module_name="jav",
+            code=code,
+            cover_url=cover_url,
+            fanart_url=fanart_url or cover_url,
+            thumb_url=thumb_url or cover_url,
+            referer=referer,
+        )
+        crop_cover_to_portrait(get_movie_cover_path("jav", code))
+
+        # 回写数据库封面 URL
+        if cover_url:
+            from sqlalchemy import select
+            from app.db.jav_models import JavMovie
+            s2 = await get_jav_db().get_session()
+            try:
+                m = (await s2.execute(select(JavMovie).where(JavMovie.id == movie.id))).scalar_one_or_none()
+                if m is not None:
+                    m.cover_url = cover_url
+                    m.poster_url = cover_url
+                    await s2.commit()
+            finally:
+                await s2.close()
+        return "ok"
+    except Exception as e:
+        logger.warning(f"封面重下失败 {code}: {e}")
+        return "error"
+
+
+@router.post("/covers/fix")
+async def fix_cover_problems(data: CoverFixRequest, background_tasks: BackgroundTasks):
+    """批量修复问题封面（后台执行）
+
+    每部影片：
+    1. 就地 XOR 解密乱码文件（decrypt=True，纯本地秒级完成）
+    2. 解密后仍损坏的文件自动重下（redownload=True，走刮削 + DB URL 兜底）
+    """
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie
+    from app.utils.media_helpers import get_movie_local_dir
+
+    codes = [c.strip() for c in (data.codes or []) if c and c.strip()]
+    if not codes:
+        problems, _ = await _scan_cover_problems()
+        codes = [p["code"] for p in problems]
+
+    async def _run():
+        total = len(codes)
+        for idx, code in enumerate(codes, start=1):
+            try:
+                movie_dir = get_movie_local_dir("jav", code)
+                fixed_decrypt = 0
+                remaining: list[dict] = []
+
+                # 1) 就地 XOR 解密乱码封面 + 复查
+                if movie_dir.exists():
+                    for name in _COVER_NAMES:
+                        p = movie_dir / name
+                        if not p.exists():
+                            continue
+                        t = _inspect_cover_problem(p)
+                        if t == "xor_garbled" and data.decrypt and _decrypt_file_inplace(p):
+                            fixed_decrypt += 1
+                        t2 = _inspect_cover_problem(p)
+                        if t2:
+                            remaining.append({"name": name, "type": t2})
+
+                # 2) 解密后仍损坏 → 自动重下
+                redownloaded = False
+                if remaining and data.redownload:
+                    s2 = await get_jav_db().get_session()
+                    try:
+                        movie = (await s2.execute(
+                            select(JavMovie).where(JavMovie.code == code)
+                        )).scalar_one_or_none()
+                    finally:
+                        await s2.close()
+                    if movie:
+                        await _redownload_one_images(movie, code)
+                        redownloaded = True
+                        remaining = []
+                        if movie_dir.exists():
+                            for name in _COVER_NAMES:
+                                p = movie_dir / name
+                                if p.exists():
+                                    t = _inspect_cover_problem(p)
+                                    if t:
+                                        remaining.append({"name": name, "type": t})
+
+                logger.info(
+                    "封面修复 %s：解密 %s 个，重下=%s，仍损坏=%s（%s/%s）",
+                    code, fixed_decrypt, redownloaded,
+                    [f["name"] for f in remaining], idx, total,
+                )
+            except Exception as e:
+                logger.warning(f"封面修复失败 {code}: {e}")
+
+    if not codes:
+        return {"status": "no_problems", "accepted": 0, "codes": []}
+    background_tasks.add_task(_run)
+    return {"status": "started", "accepted": len(codes), "codes": codes}

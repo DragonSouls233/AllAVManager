@@ -27,6 +27,7 @@ from app.utils.media_helpers import (
     get_movie_local_dir, get_module_movies_dir,
 )
 from app.utils.media_helpers import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
+from app.utils.media_helpers import _is_image_broken
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -2996,6 +2997,36 @@ async def _apply_scrape_result(session, movie, result, module: str = "jav") -> d
     if result.sample_images:
         movie.sample_images = json.dumps(sample_local or result.sample_images, ensure_ascii=False)
 
+    # 兜底：若爬虫未从详情页提取出 is_chinese/is_uncensored（如 JavDB 不写 is_chinese），
+    # 从视频文件名/目录名后缀（[中字] / -C / -UC / -无码 等）补全。仅作加法（True→True），
+    # 绝不覆盖爬虫已识别的 True 为 False。
+    try:
+        from app.tasks.base_scanner import detect_version_flags
+        _name_candidates: list[str] = []
+        if getattr(movie, "file_path", None):
+            fp = str(movie.file_path)
+            _name_candidates.append(fp)
+            parent = Path(fp).parent.name if "/" in fp.replace("\\", "/") or "\\" in fp else ""
+            if parent:
+                _name_candidates.append(parent)
+        if getattr(movie, "code", None):
+            _name_candidates.append(str(movie.code))
+        for cand in _name_candidates:
+            try:
+                flags = detect_version_flags(cand)
+            except Exception:
+                continue
+            if not movie.is_chinese and flags.get("is_chinese"):
+                movie.is_chinese = True
+            if not movie.is_uncensored and flags.get("is_uncensored"):
+                movie.is_uncensored = True
+            if not getattr(movie, "is_leak", None) and flags.get("is_leak"):
+                movie.is_leak = True
+            if not getattr(movie, "is_4k", None) and flags.get("is_4k"):
+                movie.is_4k = True
+    except Exception:
+        pass
+
     actor_names = list(result.all_actors) if result.all_actors else [
         a.name for a in (result.actors or []) if getattr(a, "name", None)
     ]
@@ -3408,6 +3439,315 @@ async def scrape_media_refill(
         "total": len(pending),
         "queued": len(pending),
     }
+
+
+# ============================================
+# 重新下载图片（单部影片）
+# ============================================
+# _is_image_broken 已上移为 app.utils.media_helpers 公共函数，此处直接复用。
+
+def _pick_screenshot_sec(duration: float) -> int:
+    """根据视频时长挑选一帧截屏点（10% 处，避开前 5 秒片头黑屏）"""
+    if duration <= 0:
+        return 10
+    target = max(10, int(duration * 0.10))
+    target = min(target, int(duration * 0.5) if duration > 60 else int(duration) - 1)
+    return max(5, target)
+
+
+@router.post("/{movie_id}/refill-images")
+async def refill_movie_images(
+    movie_id: int,
+    background_tasks: BackgroundTasks,
+    module: str = Query("jav", description="模块库"),
+    force: bool = Query(False, description="强制重新下载（即使本地图片看起来完好）"),
+):
+    """单部影片重新下载图片（封面/背景图/缩略图）
+
+    流程：
+    1. 删除本地已存在但损坏/不完整的图片
+    2. 重新跑刮削（强制）获取最新封面/背景图 URL
+    3. 兑底来源（javdb/avmoo/avsox/dmm_web）补一轮
+    4. 重新落盘到 data/movies/{module}/{code}/poster.jpg 等
+
+    后台执行，立即返回 202。
+    """
+    session = await get_module_session(module)
+    MovieModel = _get_mod_model(module, "movie")
+    try:
+        movie = await session.get(MovieModel, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        if not movie.code:
+            raise HTTPException(status_code=400, detail="影片没有番号，无法重新刮削图片")
+
+        code = movie.code
+
+        # 快照 DB 里的远程封面 URL（后台任务运行时 session 已关闭，
+        # 避免访问已释放的 ORM 对象触发 lazy load 报错）
+        db_cover_url = getattr(movie, "cover_url", None) or getattr(movie, "poster_url", None)
+
+        # 先检查本地图片状态，方便接口返回
+        safe_code = re.sub(r'[<>:"/\\|?*]', '', code)
+        movie_dir = get_movie_local_dir(module, safe_code)
+        broken_files: list[str] = []
+        for name in ("poster.jpg", "fanart.jpg", "thumb.jpg", "cover.jpg"):
+            p = movie_dir / name
+            if p.exists() and _is_image_broken(p):
+                broken_files.append(name)
+
+        async def _run():
+            from app.scraper.engine import ScraperEngine
+            from app.utils.media_helpers import (
+                ensure_movie_media_local,
+                crop_cover_to_portrait,
+            )
+
+            try:
+                # 1) 先删除损坏/不完整的本地图片
+                if force or broken_files:
+                    for name in ("poster.jpg", "fanart.jpg", "thumb.jpg", "cover.jpg"):
+                        p = movie_dir / name
+                        if p.exists() and (force or _is_image_broken(p)):
+                            try:
+                                p.unlink()
+                            except Exception:
+                                pass
+
+                # 2) 强制重刮获取最新 URL
+                engine = ScraperEngine()
+                result = await engine.scrape_number(code, module=module)
+                if result and result.is_valid() and not getattr(result, "cover_url", None):
+                    # 兑底来源再补一轮
+                    fb = await engine.scrape_number(
+                        code, sources=_REFILL_FALLBACK_SOURCES, module=module
+                    )
+                    if fb and fb.is_valid() and fb.cover_url:
+                        result = fb
+
+                cover_url = None
+                fanart_url = None
+                thumb_url = None
+                referer = None
+                if result and result.is_valid():
+                    cover_url = getattr(result, "cover_url", None) or getattr(result, "poster_url", None)
+                    fanart_url = getattr(result, "fanart_url", None)
+                    thumb_url = getattr(result, "thumb_url", None)
+                    referer = _detail_referer(getattr(result, "source", None), code)
+
+                # 3) 刮削拿不到图时，回退到 DB 里已有的远程 URL。
+                #    「图片没下载完」的根源是网络中断，来源 URL 本身往往有效，
+                #    直接用它重下一次即可修复，无需依赖刮削引擎。
+                if not cover_url:
+                    cover_url = db_cover_url
+                if not referer and cover_url:
+                    from urllib.parse import urlparse
+                    p = urlparse(cover_url)
+                    if p.scheme and p.netloc:
+                        referer = f"{p.scheme}://{p.netloc}"
+
+                if not cover_url:
+                    logger.info(f"重新下载图片 {code}：无可用封面 URL（刮削与 DB 均无）")
+                    return
+
+                # 4) 落盘（fanart/thumb 缺省时复用封面 URL 兜底）
+                await ensure_movie_media_local(
+                    module_name=module,
+                    code=code,
+                    cover_url=cover_url,
+                    fanart_url=fanart_url or cover_url,
+                    thumb_url=thumb_url or cover_url,
+                    referer=referer,
+                )
+
+                # 5) 封面裁剪为竖版 2:3 人物海报（横向大图/过窄图就地主裁）
+                from app.utils.media_helpers import get_movie_cover_path
+                crop_cover_to_portrait(get_movie_cover_path(module, safe_code))
+
+                # 6) 同步更新数据库 cover_url
+                async with await get_module_session(module) as s:
+                    m = await s.get(MovieModel, movie_id)
+                    if m is not None:
+                        if cover_url:
+                            m.cover_url = cover_url
+                            m.poster_url = cover_url
+                        await s.commit()
+                _cache.invalidate("movies:")
+                logger.info(f"重新下载图片 {code} 完成")
+            except Exception as e:
+                logger.warning(f"重新下载图片失败 {code}: {e}")
+
+        background_tasks.add_task(_run)
+        return {
+            "status": "ok",
+            "message": f"影片 {code} 图片重新下载已启动（后台执行）",
+            "code": code,
+            "broken_files": broken_files,
+            "force": force,
+        }
+    finally:
+        await session.close()
+
+
+# ============================================
+# 视频截图生成海报（单部影片）
+# ============================================
+
+@router.post("/{movie_id}/generate-poster")
+async def generate_movie_poster(
+    movie_id: int,
+    module: str = Query("jav", description="模块库"),
+    overwrite: bool = Query(False, description="是否覆盖已有 poster.jpg"),
+):
+    """从视频文件截取一帧作为海报（poster.jpg）
+
+    适用场景：素人/无码影片无封面时，从视频 10% 位置截取一帧。
+    优先从 movie.file_path 截取；若 file_path 为空但有规范目录，则在目录内搜索视频。
+    """
+    session = await get_module_session(module)
+    MovieModel = _get_mod_model(module, "movie")
+    try:
+        movie = await session.get(MovieModel, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        code = movie.code or ""
+        safe_code = re.sub(r'[<>:"/\\|?*]', '', code)
+        movie_dir = get_movie_local_dir(module, safe_code)
+        movie_dir.mkdir(parents=True, exist_ok=True)
+        poster_path = movie_dir / "poster.jpg"
+
+        if poster_path.exists() and not overwrite:
+            return {
+                "status": "skipped",
+                "message": "已存在 poster.jpg（未覆盖）",
+                "code": code,
+                "poster": str(poster_path),
+            }
+
+        # 定位视频文件
+        video_path: Path | None = None
+        if movie.file_path and Path(movie.file_path).exists():
+            video_path = Path(movie.file_path)
+        else:
+            # 在 movie_dir 或其同目录找视频
+            candidates: list[Path] = []
+            if movie_dir.exists():
+                for ext in _VIDEO_EXTENSIONS:
+                    candidates += list(movie_dir.glob(f"*{ext}"))
+                    candidates += list(movie_dir.glob(f"*.{ext.upper()}"))
+            # 也尝试从规范目录的同 parent 找（即 "原视频" 所在目录）
+            if movie.file_path:
+                fp_dir = Path(movie.file_path).parent
+                if fp_dir.exists():
+                    for ext in _VIDEO_EXTENSIONS:
+                        candidates += list(fp_dir.glob(f"*{ext}"))
+                        candidates += list(fp_dir.glob(f"*.{ext.upper()}"))
+            # 去重，取第一个
+            seen = set()
+            for c in candidates:
+                if str(c) not in seen:
+                    seen.add(str(c))
+                    video_path = c
+                    break
+
+        if not video_path or not video_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="未找到视频文件，请确认该影片已关联 file_path 或在规范目录/影片目录中有视频",
+            )
+
+        # 用 ffmpeg 截图
+        from app.utils.bin_tools import get_ffmpeg_path, get_ffprobe_path
+        ffmpeg = get_ffmpeg_path()
+        if not os.path.isfile(ffmpeg):
+            raise HTTPException(status_code=500, detail="ffmpeg 未安装或不可用")
+
+        # 获取时长
+        ffprobe = get_ffprobe_path()
+        duration = 0.0
+        if os.path.isfile(ffprobe):
+            try:
+                import subprocess
+                proc = subprocess.run(
+                    [
+                        ffprobe, "-v", "quiet",
+                        "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1",
+                        str(video_path),
+                    ],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if proc.returncode == 0:
+                    duration = float(proc.stdout.strip() or 0)
+            except Exception:
+                duration = 0.0
+
+        ss = _pick_screenshot_sec(duration)
+
+        # 截取一帧
+        import subprocess
+        tmp_path = poster_path.with_suffix(".tmp.jpg")
+        try:
+            proc = subprocess.run(
+                [
+                    ffmpeg,
+                    "-ss", str(ss),
+                    "-i", str(video_path),
+                    "-frames:v", "1",
+                    "-q:v", "2",  # 高质量
+                    "-vf", "scale=1280:-1",  # 海报宽度 1280，长边等比
+                    "-y",
+                    str(tmp_path),
+                ],
+                capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size < 2000:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"ffmpeg 截图失败: {proc.stderr[:200] if proc.stderr else '未知错误'}",
+                )
+            tmp_path.replace(poster_path)
+
+            # 截图通常为横向画面，裁剪为竖版 2:3 人物海报（人脸优先/左裁兜底）
+            try:
+                from app.utils.media_helpers import crop_cover_to_portrait
+                crop_cover_to_portrait(poster_path)
+            except Exception:
+                pass
+        except HTTPException:
+            if tmp_path.exists():
+                try: tmp_path.unlink()
+                except Exception: pass
+            raise
+        except subprocess.TimeoutExpired:
+            if tmp_path.exists():
+                try: tmp_path.unlink()
+                except Exception: pass
+            raise HTTPException(status_code=500, detail="ffmpeg 截图超时")
+        except Exception as e:
+            if tmp_path.exists():
+                try: tmp_path.unlink()
+                except Exception: pass
+            raise HTTPException(status_code=500, detail=f"截图异常: {e}")
+
+        # 同步更新数据库
+        movie.poster_url = None  # 标记为本地生成，清空远程链接
+        movie.cover_url = None
+        await session.commit()
+        _cache.invalidate("movies:")
+
+        return {
+            "status": "ok",
+            "message": f"已从视频 {ss}s 处截取海报",
+            "code": code,
+            "poster": str(poster_path),
+            "video": str(video_path),
+            "screenshot_at_sec": ss,
+            "duration": duration,
+        }
+    finally:
+        await session.close()
 
 
 @router.get("/{movie_id}", response_model=MovieResponse)

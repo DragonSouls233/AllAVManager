@@ -773,33 +773,53 @@ async def list_compare_actors(
     """获取可配置对比URL的演员列表（作品数>=min_movies）
 
     返回每个演员的ID、名称、作品数、已有的对比URL配置、本地目录。
+    作品数改用 count_actor_movies 实时计算（actors.movie_count 已过时）。
+    垃圾名（单字符/纯假名短名/匿名占位）不再出现在对比演员列表。
     """
+    from app.utils.actor_alias import count_actor_movies
+
     session = await get_module_session(module)
     ActorCompareURL = _get_mod_cls(module, "ActorCompareURL")
     Actor = get_module_model(module, "actor")
     Movie = get_module_model(module, "movie")
-    MovieActor = _get_mod_cls(module, "MovieActor")
 
-    # 作品数直接取自 actors.movie_count 列（扫描器维护）；
-    # MovieActor 关联表在所有模块均为空，不可靠，故不再 join 它。
-    # 搜索模式：用户想快速定位并编辑某个演员的配置，放宽作品数下限，
-    # 否则 movie_count<10 的演员（库里约 110/531 为 0）永远搜不到、无法编辑。
-    if search:
-        query = select(Actor, func.coalesce(Actor.movie_count, 0)).where(
-            Actor.name.ilike(f"%{search}%")
-        )
-    else:
-        query = (
-            select(Actor, func.coalesce(Actor.movie_count, 0))
-            .where(func.coalesce(Actor.movie_count, 0) >= min_movies)
-        )
+    # 作品数使用 count_actor_movies 实时计算，不再读 actors.movie_count
+    # 全部演员拉取 → 逐人算数（数量可控）→ 过滤 → 排序
+    all_actors = (await session.execute(select(Actor))).scalars().all()
 
-    query = query.order_by(func.coalesce(Actor.movie_count, 0).desc())
-    result = await session.execute(query)
-    rows = result.fetchall()
+    real_counts = {}
+    for a in all_actors:
+        # 快速跳过明显垃圾名（单字符 / 纯假名短名 / 匿名占位）
+        name = (a.name or "").strip()
+        if len(name) <= 1:
+            continue
+        name_lower = name.lower()
+        if name_lower in {"佚名", "匿名", "素人", "無名", "未知",
+                          "unknown", "n/a", "anonym", "anonymous", "xxx"}:
+            continue
+        if name.endswith(("さん", "ちゃん", "くん", "様")):
+            continue
+        cnt = await count_actor_movies(session, Movie, a)
+        real_counts[a.id] = cnt
 
-    # 获取已有的 compare URL 配置（一个演员可能同时配置 javbus/javdb 多个数据源）
-    actor_ids = [row[0].id for row in rows]
+    items = []
+    for a in all_actors:
+        if a.id not in real_counts:
+            continue
+        movie_count = real_counts[a.id]
+        if movie_count < min_movies and not search:
+            continue
+        if search and search.lower() not in (a.name or "").lower():
+            continue
+        items.append({
+            "id": a.id,
+            "name": a.name,
+            "name_jp": a.name_jp,
+            "movie_count": movie_count,
+        })
+
+    # 获取已有的 compare URL 配置
+    actor_ids = [it["id"] for it in items]
     compare_configs: dict[int, list[dict]] = {}
     if actor_ids:
         config_result = await session.execute(
@@ -816,18 +836,12 @@ async def list_compare_actors(
             }
             compare_configs.setdefault(c.actor_id, []).append(cfg)
 
-    items = []
-    for actor, movie_count in rows:
-        configs = compare_configs.get(actor.id, [])
-        items.append({
-            "id": actor.id,
-            "name": actor.name,
-            "name_jp": actor.name_jp,
-            "movie_count": movie_count,
-            "compare_config": configs[0] if configs else None,  # 兼容旧前端
-            "compare_configs": configs,  # 全部数据源配置（每个演员可同时配 javbus/javdb）
-        })
+    for item in items:
+        configs = compare_configs.get(item["id"], [])
+        item["compare_config"] = configs[0] if configs else None
+        item["compare_configs"] = configs
 
+    items.sort(key=lambda x: x["movie_count"], reverse=True)
     return {"total": len(items), "items": items}
 
 

@@ -88,6 +88,15 @@
       <div class="movie-code" @dblclick.stop="copyCode" title="双击复制番号">{{ movie.code }}</div>
       <div class="movie-title" :title="movie.title || '未命名'">{{ movie.title || '未命名' }}</div>
 
+      <!-- 中文/无码 badge（直接读 is_chinese / is_uncensored 字段，不依赖 _tags） -->
+      <div class="movie-badges" v-if="movie.is_4k || movie.is_leak || movie.is_chinese || movie.is_uncensored">
+        <el-tag v-if="movie.is_4k" size="small" type="warning" effect="dark">4K</el-tag>
+        <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
+        <el-tag v-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
+        <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="dark">中文</el-tag>
+        <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="dark">无码</el-tag>
+      </div>
+
       <!-- 标签：用户标签=emerald / 抓取标签=orange（紧凑模式隐藏） -->
       <div class="movie-tags" v-if="movie._tags && movie._tags.length && viewMode !== 'compact'">
         <template v-if="!movie._tagsExpanded">
@@ -171,6 +180,14 @@
         <span v-if="movie.release_date"><el-icon><Calendar /></el-icon> {{ movie.release_date }}</span>
         <span v-if="movie.duration"><el-icon><Clock /></el-icon> {{ formatDuration(movie.duration) }}</span>
         <span v-if="movie.studio"><el-icon><OfficeBuilding /></el-icon> {{ movie.studio }}</span>
+      </div>
+
+      <div class="movie-badges" v-if="viewMode !== 'compact'">
+        <el-tag v-if="movie.is_4k" size="small" type="success" effect="dark">4K</el-tag>
+        <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
+        <el-tag v-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
+        <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="plain">中文</el-tag>
+        <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="plain">无码</el-tag>
       </div>
     </div>
   </div>
@@ -647,6 +664,13 @@ const copyCode = async () => {
   display: flex;
   align-items: center;
   gap: 3px;
+}
+
+.movie-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 2px;
 }
 
 /* 演员悬浮卡 */

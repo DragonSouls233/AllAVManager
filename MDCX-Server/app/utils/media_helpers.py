@@ -6,6 +6,7 @@
 import logging
 import os
 import re
+import shutil
 import threading
 from pathlib import Path
 from typing import Optional, Set
@@ -564,6 +565,40 @@ def get_actor_avatar_path(actor_name: str) -> Path:
     return _get_data_base_dir() / "avatars" / f"{actor_name}.jpg"
 
 
+def _is_image_broken(path) -> bool:
+    """判断本地图片是否损坏/不完整
+
+    覆盖三类问题：
+    1. 文件不存在
+    2. 体积过小（< 2KB，典型下载失败残留）
+    3. PIL 无法完整解码（半截 JPEG：verify 通过但 load 报错，
+       或分辨率过小（<100px，多为破损/占位图））
+
+    供下载/复制前的本地文件校验复用（下载链路、本地预览图优先逻辑共用）。
+    """
+    try:
+        p = Path(path)
+        if not p.exists():
+            return True
+        if p.stat().st_size < 2000:
+            return True
+    except OSError:
+        return True
+    try:
+        from PIL import Image
+        with Image.open(p) as im:
+            im.verify()
+        # 二次完整解码：半截下载的 JPEG 常在 verify 后仍无法完整解码
+        with Image.open(p) as im:
+            im.load()
+            w, h = im.size
+        if w < 100 or h < 100:
+            return True
+        return False
+    except Exception:
+        return True
+
+
 async def download_image_to_local(
     url: str,
     local_path: Path,
@@ -584,10 +619,17 @@ async def download_image_to_local(
     if not url or not url.startswith(("http://", "https://")):
         return None
     try:
+        local_path = Path(local_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        # 如果本地已有文件则直接返回
+        # 已存在且完整则直接返回；损坏/不完整（下载残留、乱码）则删除重下，
+        # 否则乱码文件体积 >0 会被一直跳过，刮削永远无法修复。
         if local_path.exists() and local_path.stat().st_size > 0:
-            return str(local_path)
+            if not _is_image_broken(local_path):
+                return str(local_path)
+            try:
+                local_path.unlink()
+            except OSError:
+                pass
         import aiohttp
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -600,11 +642,62 @@ async def download_image_to_local(
                 if resp.status == 200:
                     data = await resp.read()
                     if data:
+                        # JavDB 等 CDN 对 JPEG 做 XOR 混淆（key=data[0]），
+                        # 落盘前解密，否则文件头是乱码、图片无法打开。
+                        # 函数内部无损检测：本身已是 JPEG 时原样返回。
+                        data = maybe_decrypt_javdb_image(data)
                         Path(str(local_path)).write_bytes(data)
                         return str(local_path)
     except Exception as e:
         logger.warning(f"下载远程图片失败 [{url[:60]}]: {e}")
     return None
+
+
+def _adopt_local_preview_images(module_name: str, code: str) -> dict:
+    """本地预览图优先：视频目录已有本地图时直接复用，不依赖远程下载。
+
+    用户目录里常自带番号命名的预览图（如 {code}-poster.jpg / {code}-thumb.jpg），
+    这些图通常可用且完整；而远程刮削下载可能因 CDN 混淆/网络中断产出
+    「无法打开」的乱码文件。本函数扫描视频目录，把有效的本地图复制为
+    规范文件名（poster.jpg / thumb.jpg / fanart.jpg），优先采用。
+
+    Returns:
+        {"poster": str|None, "fanart": str|None, "thumb": str|None}
+        已就位的规范文件绝对路径；本地没有对应图时对应项为 None。
+    """
+    movie_dir = get_movie_local_dir(module_name, code)
+    if not movie_dir.exists():
+        return {}
+    try:
+        from app.tasks.base_scanner import _resolve_asset_target
+    except Exception:
+        _resolve_asset_target = None
+    ready: dict[str, str] = {}
+    try:
+        for src in movie_dir.iterdir():
+            if not src.is_file():
+                continue
+            # 本地图本身损坏则不采用，交给远程下载兜底
+            if _is_image_broken(src):
+                continue
+            dst_name = _resolve_asset_target(src.name, code) if _resolve_asset_target else None
+            if dst_name not in ("poster.jpg", "thumb.jpg", "fanart.jpg"):
+                continue
+            dst = movie_dir / dst_name
+            if src.resolve() == dst.resolve():
+                ready[dst_name] = str(dst)
+                continue
+            if dst.exists() and not _is_image_broken(dst):
+                ready[dst_name] = str(dst)
+                continue
+            try:
+                shutil.copy2(src, dst)
+                ready[dst_name] = str(dst)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return ready
 
 
 async def ensure_movie_media_local(
@@ -622,6 +715,9 @@ async def ensure_movie_media_local(
     - 背景图存到 {data_base}/movies/{module}/{code}/fanart.jpg
     - 缩略图存到 {data_base}/movies/{module}/{code}/thumb.jpg
 
+    本地预览图优先：视频目录已存在有效的本地图（{code}-poster.jpg 等）
+    时直接复用，不走远程下载（避免下载结果无法打开）；没有才下载。
+
     Args:
         module_name: 模块名称
         code: 番号
@@ -634,6 +730,19 @@ async def ensure_movie_media_local(
         {"cover": 本地路径或None, "fanart": ..., "thumb": ...}
     """
     result = {"cover": None, "fanart": None, "thumb": None}
+
+    # 0) 本地预览图优先：{code}-poster.jpg / {code}-thumb.jpg 等本地图直接复用
+    local = _adopt_local_preview_images(module_name, code)
+    if local.get("poster.jpg"):
+        result["cover"] = local["poster.jpg"]
+        cover_url = None
+    if local.get("fanart.jpg"):
+        result["fanart"] = local["fanart.jpg"]
+        fanart_url = None
+    if local.get("thumb.jpg"):
+        result["thumb"] = local["thumb.jpg"]
+        thumb_url = None
+
     if cover_url:
         dst = get_movie_cover_path(module_name, code)
         result["cover"] = await download_image_to_local(cover_url, dst, referer=referer)
@@ -708,3 +817,81 @@ def maybe_decrypt_javdb_image(data: bytes) -> bytes:
         return data
     table = bytes(i ^ key for i in range(256))
     return data[1:].translate(table)
+
+
+# ========== 封面竖版裁剪 ==========
+
+# 左侧保留比例（与 cover_refill 保持一致）：裁剪后剩余宽度 = w * (1 - _POSTER_CROP_LEFT)
+_POSTER_CROP_LEFT: float = 0.5375
+# 竖版海报比例下限/上限（w/h）：落在区间内视为已是竖版，跳过裁剪
+_POSTER_MIN_RATIO: float = 1.20
+_POSTER_MAX_RATIO: float = 1.60
+# 目标海报比例（2:3）
+_POSTER_TARGET_RATIO: float = 2.0 / 3.0
+
+
+def crop_cover_to_portrait(path) -> bool:
+    """把横向/超宽/过窄的封面裁剪为竖版 2:3 人物海报。
+
+    JAV 等模块的封面规范为竖版人物海报；部分来源（DMM 宣传图等）给出
+    横向大图或奇怪比例，直接落盘会导致列表页封面显示整张横图（“没裁剪”）。
+    此函数就地改写图片文件：
+
+    1. 已是竖版（1.20 <= w/h < 1.60）→ 不处理
+    2. 横向大图 → 优先按人脸定位裁剪 2:3 竖版；未检测到人脸时
+       保留右侧 2:3 区域（JAV 官方横图人物通常在右侧）
+    3. 过窄竖条 → 中心裁剪到 2:3
+
+    Args:
+        path: 图片路径
+
+    Returns:
+        是否执行了裁剪（True 表示文件已被改写）
+    """
+    try:
+        from PIL import Image
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return False
+        with Image.open(p) as im:
+            w, h = im.size
+            if not w or not h:
+                return False
+            ratio = w / h
+            if _POSTER_MIN_RATIO <= ratio < _POSTER_MAX_RATIO:
+                return False  # 已是竖版海报
+            img = im.convert("RGB")
+
+        target_w = int(h * _POSTER_TARGET_RATIO)
+
+        # 优先：人脸定位裁剪（仅横向/超宽图尝试）
+        if ratio >= _POSTER_MAX_RATIO:
+            try:
+                from app.utils.face_crop import get_face_cropper
+                faces = get_face_cropper().detect_faces(str(p))
+                if faces and target_w < w:
+                    face = faces[0]
+                    cx = (face.left + face.right) // 2
+                    left = max(0, min(cx - target_w // 2, w - target_w))
+                    img.crop((left, 0, left + target_w, h)).save(p, "JPEG", quality=90)
+                    logger.info("封面按人脸裁剪为竖版: %s", p)
+                    return True
+            except Exception:
+                pass
+
+            # 兜底：保留右侧（w * (1 - 0.5375) 比例区域），对齐 cover_refill 行为
+            left = int(w * _POSTER_CROP_LEFT)
+            img.crop((left, 0, w, h)).save(p, "JPEG", quality=90)
+            logger.info("封面左裁为竖版: %s", p)
+            return True
+
+        # 过窄竖条：中心裁剪到 2:3
+        if target_w < w:
+            left = (w - target_w) // 2
+            img.crop((left, 0, left + target_w, h)).save(p, "JPEG", quality=90)
+            logger.info("封面中心裁剪到 2:3: %s", p)
+            return True
+        return False
+    except Exception as e:
+        logger.debug("封面裁剪失败，保留原图 %s: %s", path, e)
+        return False

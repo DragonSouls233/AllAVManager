@@ -147,7 +147,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useJavStore } from '@/stores/jav'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -160,6 +160,30 @@ const store = useJavStore()
 const keyword = ref('')
 const scanning = ref(false)
 const sortBy = ref('')
+
+// ============== 状态缓存（sessionStorage） ==============
+// 从详情页返回时恢复用户之前浏览的页码和数据
+const _CACHE_KEY = 'jav_movies_cache'
+function _cacheKey() {
+  const p = routeFilterParams()
+  return `${_CACHE_KEY}:${keyword.value}:${sortBy.value}:${store.statusFilter}:${infoTab.value}:${Object.keys(p).sort().map(k => `${k}:${p[k]}`).join('|')}:${store.pageSize}`
+}
+function _cache() {
+  try { return JSON.parse(sessionStorage.getItem(_cacheKey())) || null } catch { return null }
+}
+function _saveCache() {
+  try {
+    sessionStorage.setItem(_cacheKey(), JSON.stringify({ items: store.movies, page: store.page, total: store.total }))
+  } catch { /* quota exceeded */ }
+}
+function _restoreCache() {
+  const c = _cache()
+  if (!c || !c.items.length) return false
+  store.movies = c.items
+  store.page = c.page || 1
+  store.total = c.total || 0
+  return true
+}
 
 // 2026-08-08: 详情页跳转筛选（系列/片商/类别/番号前缀）
 function routeFilterParams() {
@@ -236,8 +260,41 @@ function goDetail(id) {
   router.push(`/jav/movies/${id}`)
 }
 
-// 路由 query 变化（详情页点系列/片商/类别跳转）时重新加载
-watch(() => route.query, () => { store.page = 1; loadMovies() }, { deep: true })
+// 路由 query 变化（详情页点系列/片商/类别跳转）时重新加载。
+// 仅当 query 内容实际变化才重置页码：进入详情页/从详情页返回时
+// route.query 引用会变化但内容相同，若无条件重置会导致页码被刷回第一页。
+let _lastQueryKey = JSON.stringify(route.query)
+watch(() => route.query, (val) => {
+  const key = JSON.stringify(val)
+  if (key !== _lastQueryKey) {
+    store.page = 1
+    loadMovies()
+  }
+  _lastQueryKey = key
+}, { deep: true })
+
+// 键盘左右方向键快速换页
+function onKeydown(e) {
+  if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'TEXTAREA' ||
+      e.target?.tagName === 'SELECT' || e.target?.isContentEditable) return
+  const totalPages = Math.max(1, Math.ceil((store.total || 0) / (store.pageSize || 20)))
+  if (e.key === 'ArrowRight' && store.page < totalPages) {
+    e.preventDefault()
+    store.page += 1
+    loadMovies()
+  } else if (e.key === 'ArrowLeft' && store.page > 1) {
+    e.preventDefault()
+    store.page -= 1
+    loadMovies()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  if (!_restoreCache()) {
+    loadMovies()
+  }
+})
 
 async function startScan() {
   scanning.value = true
@@ -350,7 +407,13 @@ function onCoverError(e) {
   e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 150"><rect fill="%23333" width="100" height="150"/><text x="50" y="80" text-anchor="middle" fill="%23666" font-size="12">无封面</text></svg>'
 }
 
-onMounted(() => loadMovies())
+watch(store.movies, () => _saveCache(), { deep: true })
+
+// 组件卸载前兜底保存缓存（进入详情页时确保页码/数据已写入），并移除键盘监听
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  _saveCache()
+})
 </script>
 
 <style scoped>
