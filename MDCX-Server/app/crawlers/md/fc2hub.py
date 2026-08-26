@@ -4,6 +4,7 @@ FC2Hub 爬虫 - 从 MDCX 迁移
 原始文件: fc2hub.py
 """
 
+import json
 import logging
 import re
 import time
@@ -23,17 +24,17 @@ logger = logging.getLogger(__name__)
 
 def getTitle(html):  # 获取标题
     result = html.xpath("//h1/text()")
-    result = result[1] if result else ""
-    return result
+    return result[1] if len(result) > 1 else (result[0] if result else "")
 
 def getNum(html):  # 获取番号
     result = html.xpath("//h1/text()")
-    result = result[0] if result else ""
-    return result
+    return result[0] if result else ""
 
 def getCover(html):  # 获取封面
     result = html.xpath('//a[@data-fancybox="gallery"]/@href')
-    result = result[0] if result else ""
+    if not result:
+        return ""
+    result = result[0]
     result = "https:" + result if result.startswith("//") else result
     return result
 
@@ -173,9 +174,9 @@ async def main(
             )
             LogBuffer.info().write(web_info + debug_info)
             if trailer:
-                signal.add_log("🟡 FC2Hub 预告片链接带时效参数，仅适合立即下载，不建议长期复用远程链接。")
+                LogBuffer.info().write("🟡 FC2Hub 预告片链接带时效参数，仅适合立即下载，不建议长期复用远程链接。")
             mosaic = getMosaic(tag, title)
-            actor = studio if FieldRule.FC2_SELLER in manager.config.fields_rule else ""
+            actor = studio
 
             try:
                 dic = {

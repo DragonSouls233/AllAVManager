@@ -363,7 +363,6 @@ class OnePondoCrawler(BaseCrawler):
     requires_proxy = True
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
-        # 格式: 1PONDO-111111-111 → 提取 111111-111
         m = re.search(r"(\d{6,8})-(\d{2,5})", code)
         if not m:
             return None
@@ -376,20 +375,24 @@ class OnePondoCrawler(BaseCrawler):
                 if not html:
                     return None
 
-                result = ScrapeResult(code=f"1PONDO-{movie_id}", title=code, source="1pondo", source_url=detail_url)
-                result.code = f"1PONDO-{movie_id}"
-                result.source = "1pondo"
-                result.source_url = detail_url
-                result.studio = "1Pondo"
-
                 from lxml import etree
                 doc = etree.fromstring(html, etree.HTMLParser())
 
                 title_el = doc.xpath("//h1/text() | //title/text()")
-                result.title = title_el[0].strip() if title_el else code
+                title_text = title_el[0].strip() if title_el else code
+                if "404" in title_text or "Not Found" in title_text:
+                    return None
 
                 cover_el = doc.xpath('//img[contains(@class,"movie_image")]/@src | //meta[@property="og:image"]/@content')
-                result.cover_url = cover_el[0] if cover_el else ""
+                if not cover_el:
+                    return None
+
+                result = ScrapeResult(code=f"1PONDO-{movie_id}", title=title_text, source="1pondo", source_url=detail_url)
+                result.code = f"1PONDO-{movie_id}"
+                result.source = "1pondo"
+                result.source_url = detail_url
+                result.studio = "1Pondo"
+                result.cover_url = cover_el[0]
                 if result.cover_url.startswith("//"):
                     result.cover_url = "https:" + result.cover_url
                 elif result.cover_url.startswith("/"):

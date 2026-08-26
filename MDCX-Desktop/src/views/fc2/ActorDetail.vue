@@ -29,14 +29,11 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useFc2Store } from '@/stores/fc2'
-import defaultAvatar from '@/assets/default-avatar.png'
-import defaultCover from '@/assets/default-cover.png'
-import { getAvatarSrc, getCoverSrc } from '@/utils/media'
+import { getFc2Actors, getFc2Movies } from '@/api/fc2'
+import { getCoverSrc, getAvatarSrc } from '@/utils/media'
 
 const route = useRoute()
 const router = useRouter()
-const store = useFc2Store()
 const actor = ref(null)
 const movies = ref([])
 const loading = ref(true)
@@ -45,15 +42,20 @@ function goBack() { router.push('/fc2/actors') }
 function goMovieDetail(id) { router.push(`/fc2/movies/${id}`) }
 
 function handleAvatarError(e) {
-  e.target.src = defaultAvatar(e.target.alt || '?')
+  e.target.src = defaultAvatar
 }
 
 onMounted(async () => {
   try {
-    const actors = await store.loadActors()
-    actor.value = actors.find(a => a.id === Number(route.params.id))
-    await store.loadMovies()
-    movies.value = store.movies
+    const id = Number(route.params.id)
+    const actorList = await getFc2Actors()
+    actor.value = actorList.find(a => a.id === id)
+    if (actor.value) {
+      const res = await getFc2Movies({ actor: actor.value.name })
+      movies.value = res.items || []
+    }
+  } catch (e) {
+    console.error('加载演员详情失败:', e)
   } finally {
     loading.value = false
   }

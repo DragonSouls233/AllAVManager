@@ -88,6 +88,7 @@ class ScraperEngine:
         max_concurrent: int = 5,
         timeout: int = 60,
         retry_count: int = 3,
+        sem_wait_timeout: int = 15,
     ):
         """
         初始化刮削引擎
@@ -96,10 +97,14 @@ class ScraperEngine:
             max_concurrent: 最大并发数
             timeout: 单个任务超时时间（秒）
             retry_count: 失败重试次数
+            sem_wait_timeout: 等待并发信号量的超时时间（秒）。
+                若 curl_cffi 等原生阻塞调用导致僵尸协程长期占着并发名额，
+                后续任务最多等这么久即放弃该源，避免整批被信号量饿死。
         """
         self.max_concurrent = max_concurrent
         self.timeout = timeout
         self.retry_count = retry_count
+        self.sem_wait_timeout = sem_wait_timeout
         
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._progress = ScrapeProgress()
@@ -209,14 +214,24 @@ class ScraperEngine:
     ) -> Optional[ScrapeResult]:
         """使用指定爬虫刮削
 
-        Args:
-            crawler: BaseCrawler 实例
-            number: 番号
-            ctx: 单次刮削共享上下文（可选，向后兼容）
+        信号量获取改为可超时（wait_for acquire）：curl_cffi 原生阻塞等无法协作
+        取消的调用可能让僵尸协程长期占着并发名额，导致后续 scrape 在
+        `async with self._semaphore` 永久等待（表现为批量任务运行一段时间后
+        进度冻结且无任何日志）。这里最多等 sem_wait_timeout 秒即放弃该源。
         """
-        async with self._semaphore:
+        try:
+            await asyncio.wait_for(
+                self._semaphore.acquire(), timeout=self.sem_wait_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"信号量等待超时 {self.sem_wait_timeout}s，放弃爬虫 "
+                f"{crawler.name} 刮削 {number}"
+            )
+            return None
+        try:
             started = time.monotonic()
-            logger.debug(f"爬虫 {crawler.name} 开始刮削 {number}")
+            logger.info(f"爬虫 {crawler.name} 开始刮削 {number}")
             try:
                 # 检测 crawler 是否支持 ctx 参数（已迁移的 scraper 复用共享 client）
                 if ctx is not None and _scrape_accepts_ctx(crawler):
@@ -230,8 +245,9 @@ class ScraperEngine:
                         crawler.scrape(number),
                         timeout=self.timeout,
                     )
-                logger.debug(
-                    f"爬虫 {crawler.name} 刮削 {number} 完成，耗时 {time.monotonic() - started:.1f}s"
+                logger.info(
+                    f"爬虫 {crawler.name} 刮削 {number} 完成，耗时 "
+                    f"{time.monotonic() - started:.1f}s"
                 )
                 return result
 
@@ -248,6 +264,8 @@ class ScraperEngine:
                     f"{type(e).__name__}: {e}"
                 )
                 return None
+        finally:
+            self._semaphore.release()
     
     async def scrape_file(
         self,

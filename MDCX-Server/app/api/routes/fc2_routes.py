@@ -426,8 +426,8 @@ async def scrape_fc2_movie(movie_id: int):
             movie.studio = scrape_result.studio
         if scrape_result.maker:
             movie.maker = scrape_result.maker
-        if scrape_result.director:
-            movie.director = scrape_result.director
+        if scrape_result.directors:
+            movie.director = ",".join(scrape_result.directors)
         if scrape_result.series:
             movie.series = scrape_result.series
         if scrape_result.genres:
@@ -467,17 +467,23 @@ async def scrape_fc2_movie(movie_id: int):
                 db_actor = existing.scalar_one_or_none()
                 if db_actor:
                     if not db_actor.avatar_url and actor_info.avatar_url:
-                        local_avatar = await ensure_actor_avatar_local(
-                            actor_info.name, actor_info.avatar_url
-                        )
-                        db_actor.avatar_url = local_avatar or actor_info.avatar_url
+                        try:
+                            local_avatar = await ensure_actor_avatar_local(
+                                actor_info.name, actor_info.avatar_url
+                            )
+                            db_actor.avatar_url = local_avatar or actor_info.avatar_url
+                        except Exception as e:
+                            logger.warning(f"FC2 actor avatar download failed for {actor_info.name}: {e}")
                 else:
-                    local_avatar = await ensure_actor_avatar_local(
-                        actor_info.name, actor_info.avatar_url
-                    )
+                    avatar_url = actor_info.avatar_url
+                    try:
+                        local_avatar = await ensure_actor_avatar_local(actor_info.name, avatar_url)
+                        avatar_url = local_avatar or avatar_url
+                    except Exception as e:
+                        logger.warning(f"FC2 actor avatar download failed for {actor_info.name}: {e}")
                     session.add(Fc2Actor(
                         name=actor_info.name,
-                        avatar_url=local_avatar or actor_info.avatar_url,
+                        avatar_url=avatar_url,
                         source="scraper",
                         source_site=scrape_result.source,
                         movie_count=0,
@@ -814,5 +820,315 @@ async def get_fc2_external_play_url(movie_id: int, request: _Request, protocol: 
             return {"protocol": "http", "play_url": play_url, "player_command": play_url, "copy_text": play_url}
         else:
             return {"protocol": "direct", "play_url": movie.file_path, "player_command": movie.file_path, "copy_text": movie.file_path}
+    finally:
+        await session.close()
+
+
+# ========== 编辑影片 ==========
+
+
+@router.patch("/movies/{movie_id}")
+async def update_fc2_movie(movie_id: int, body: dict):
+    """编辑 FC2 影片数据"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Movie, Fc2Actor
+        from sqlalchemy import select
+
+        stmt = select(Fc2Movie).where(Fc2Movie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 番号唯一性校验
+        if "code" in body and body["code"] and body["code"] != movie.code:
+            code_stmt = select(Fc2Movie).where(Fc2Movie.code == body["code"])
+            code_result = await session.execute(code_stmt)
+            if code_result.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail=f"番号 {body['code']} 已被占用")
+
+        text_fields = ["title", "original_title", "release_date", "director", "maker", "studio", "series", "plot", "file_path"]
+        for f in text_fields:
+            if f in body:
+                setattr(movie, f, body[f] if body[f] else None)
+
+        if "duration" in body and body["duration"]:
+            try:
+                movie.duration = int(body["duration"])
+            except (ValueError, TypeError):
+                pass
+        if "rating" in body and body["rating"] is not None:
+            try:
+                movie.rating = max(0, min(10, float(body["rating"])))
+            except (ValueError, TypeError):
+                pass
+
+        if "genre" in body and body["genre"]:
+            val = body["genre"]
+            if isinstance(val, list):
+                movie.genre = ", ".join(str(v) for v in val if v)
+            else:
+                movie.genre = str(val)
+        if "tag" in body:
+            movie.tag = body["tag"] if body["tag"] else None
+
+        if "actor" in body:
+            new_names = [n.strip() for n in str(body["actor"]).split(",") if n.strip() and len(n.strip()) >= 1]
+            movie.actor = ",".join(new_names)
+
+        sync_nfo = body.get("sync_nfo", True)
+        await session.commit()
+
+        # NFO 回写
+        if sync_nfo:
+            try:
+                from app.output.nfo import NFOGenerator
+                out_dir = str(movie.output_dir) if hasattr(movie, "output_dir") and movie.output_dir else (
+                    str(_Path(movie.file_path).parent) if movie.file_path else ""
+                )
+                if out_dir and _os.path.isdir(out_dir):
+                    actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
+                    NFOGenerator(output_dir=out_dir).generate_from_movie(
+                        movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                    )
+            except Exception as nfo_err:
+                logger.warning(f"FC2 NFO 回写失败 [{movie_id}]: {nfo_err}")
+
+        return {
+            "id": movie.id, "code": movie.code, "title": movie.title,
+            "actor": movie.actor, "studio": movie.studio, "status": "ok",
+        }
+    finally:
+        await session.close()
+
+
+@router.post("/movies/{movie_id}/reload-nfo")
+async def reload_fc2_movie_nfo(movie_id: int):
+    """从本地 NFO 文件重新导入 FC2 影片元数据"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Movie
+        from sqlalchemy import select
+
+        stmt = select(Fc2Movie).where(Fc2Movie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 定位 NFO 文件
+        search_dirs = []
+        if hasattr(movie, "output_dir") and movie.output_dir:
+            search_dirs.append(str(movie.output_dir))
+        if movie.file_path:
+            search_dirs.append(str(_Path(movie.file_path).parent))
+
+        nfo_path = None
+        for d in search_dirs:
+            for name in ("movie.nfo", f"{movie.code}.nfo"):
+                p = _Path(d) / name
+                if p.exists():
+                    nfo_path = str(p)
+                    break
+            if nfo_path:
+                break
+
+        if not nfo_path:
+            raise HTTPException(status_code=404, detail="未找到 NFO 文件")
+
+        try:
+            from app.importer.nfo_parser import NFOParser
+            nfo_data = NFOParser().parse_to_dict(nfo_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"NFO 解析失败: {e}")
+
+        if not nfo_data:
+            raise HTTPException(status_code=400, detail="NFO 内容为空")
+
+        applied = []
+
+        if "code" in nfo_data and nfo_data["code"]:
+            movie.code = nfo_data["code"]
+            applied.append("code")
+        for field in ("title", "original_title", "plot", "director", "maker", "studio", "series", "release_date", "cover_url", "poster_url", "thumb_url", "trailer_url", "source_url"):
+            if field in nfo_data and nfo_data[field]:
+                setattr(movie, field, nfo_data[field])
+                applied.append(field)
+        if "duration" in nfo_data and nfo_data["duration"]:
+            try:
+                movie.duration = int(nfo_data["duration"])
+                applied.append("duration")
+            except (ValueError, TypeError):
+                pass
+        if "rating" in nfo_data and nfo_data["rating"]:
+            try:
+                movie.rating = max(0, min(10, float(nfo_data["rating"])))
+                applied.append("rating")
+            except (ValueError, TypeError):
+                pass
+
+        # genre / tag
+        if "genre" in nfo_data and nfo_data["genre"]:
+            val = nfo_data["genre"]
+            movie.genre = ", ".join(val) if isinstance(val, list) else str(val)
+            applied.append("genre")
+        if "tag" in nfo_data and nfo_data["tag"]:
+            val = nfo_data["tag"]
+            movie.tag = ", ".join(val) if isinstance(val, list) else str(val)
+            applied.append("tag")
+
+        # actor
+        if "actor" in nfo_data and nfo_data["actor"]:
+            actors = nfo_data["actor"]
+            if isinstance(actors, dict):
+                actors = [actors]
+            if isinstance(actors, list):
+                names = [str(a.get("name", "")) for a in actors if isinstance(a, dict) and a.get("name")]
+                if names:
+                    movie.actor = ",".join(names)
+                    applied.append("actor")
+            else:
+                movie.actor = str(actors)
+                applied.append("actor")
+
+        movie.status = "scraped"
+        await session.commit()
+
+        return {"status": "ok", "nfo_source": nfo_path, "applied_fields": applied,
+                "message": f"已从 {nfo_path} 重新导入"}
+    finally:
+        await session.close()
+
+
+@router.post("/movies/{movie_id}/face-crop")
+async def fc2_face_crop(movie_id: int, body: dict = {}):
+    """FC2 影片 AI 人脸裁剪封面"""
+    from app.utils.module_helper import get_module_model, get_module_session
+    from app.services.face_crop import crop_movie_poster
+
+    session = await get_module_session("fc2")
+    MovieModel = get_module_model("fc2", "movie")
+    movie = await session.get(MovieModel, movie_id)
+    if not movie:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    source = body.get("source_url") or movie.cover_url
+    if not source:
+        raise HTTPException(status_code=400, detail="影片无封面图，无法裁剪")
+
+    # 远程图先下载
+    local_source = source
+    if source.startswith("http"):
+        import httpx
+        import tempfile
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(source)
+                if resp.status_code != 200:
+                    raise HTTPException(status_code=400, detail=f"下载源图失败: HTTP {resp.status_code}")
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                    f.write(resp.content)
+                    local_source = f.name
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"下载源图失败: {e}")
+    elif not _os.path.isabs(local_source):
+        from app.config.manager import get_config
+        cfg = get_config()
+        local_source = _os.path.join(cfg.scraper.output_dir, local_source)
+
+    from app.config.manager import get_config
+    output_dir = _os.path.join(get_config().scraper.output_dir, "posters")
+    _os.makedirs(output_dir, exist_ok=True)
+    output_path = _os.path.join(output_dir, f"{movie.code}_poster.jpg")
+
+    task_id = f"face-crop-fc2-{movie.id}"
+    ok = await crop_movie_poster(movie.id, local_source, output_path, task_id=task_id)
+
+    if ok:
+        movie.poster_url = output_path
+        await session.commit()
+        await session.close()
+        return {"status": "ok", "movie_id": movie.id, "poster_path": output_path}
+    else:
+        await session.close()
+        raise HTTPException(status_code=500, detail="裁剪失败")
+
+
+@router.get("/movies/{movie_id}/previews")
+async def get_fc2_previews(movie_id: int):
+    """获取 FC2 影片预览图列表"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Movie
+        from sqlalchemy import select
+
+        stmt = select(Fc2Movie).where(Fc2Movie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        items = []
+        if movie.sample_images:
+            try:
+                imgs = json.loads(movie.sample_images)
+                if isinstance(imgs, list):
+                    items = [str(u) for u in imgs]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if movie.thumb_url and movie.thumb_url not in items:
+            items.append(movie.thumb_url)
+        return {"items": items}
+    finally:
+        await session.close()
+
+
+@router.post("/movies/{movie_id}/scrape-actor")
+async def fc2_scrape_actor(movie_id: int):
+    """补全 FC2 影片中的演员资料"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Movie
+        from sqlalchemy import select
+
+        stmt = select(Fc2Movie).where(Fc2Movie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        if not movie.actor:
+            return {"status": "ok", "message": "影片暂无演员信息"}
+
+        from app.utils.media_helpers import ensure_actor_avatar_local
+        actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
+        updated = []
+        for name in actor_names:
+            from app.db.fc2_models import Fc2Actor
+            ex = await session.execute(select(Fc2Actor).where(Fc2Actor.name == name))
+            existing = ex.scalar_one_or_none()
+            if existing and not existing.avatar_url:
+                # 尝试从本地缓存查找头像
+                avatar_path = Path("data/actors") / f"{name}.jpg"
+                if avatar_path.exists():
+                    existing.avatar_url = str(avatar_path.resolve())
+                    updated.append({"name": name, "status": "avatar_local", "avatar": str(avatar_path.resolve())})
+                else:
+                    updated.append({"name": name, "status": "exists"})
+            elif existing:
+                updated.append({"name": name, "status": "exists"})
+            else:
+                session.add(Fc2Actor(name=name, source="manual", movie_count=0))
+                updated.append({"name": name, "status": "created"})
+
+        await session.commit()
+        return {"status": "ok", "actors": updated}
     finally:
         await session.close()

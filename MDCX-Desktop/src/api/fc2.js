@@ -43,3 +43,38 @@ export async function getRelatedMovies(movieId) {
 export async function getMovieActors(movieId) {
   return api.get(`/fc2/movies/${movieId}/actors`)
 }
+
+// ===== 预览图 =====
+export async function getFc2Previews(movieId, refresh = false) {
+  return api.get(`/fc2/movies/${movieId}/previews`, { params: refresh ? { refresh: true } : undefined })
+}
+
+// ===== 封面裁剪 =====
+export async function fc2FaceCrop(movieId, data = {}) {
+  return api.post(`/fc2/movies/${movieId}/face-crop`, data, { timeout: 120000 })
+}
+
+// ===== 演员资料补全 =====
+export async function fc2ScrapeActor(movieId) {
+  return api.post(`/fc2/movies/${movieId}/scrape-actor`)
+}
+
+// ===== 封面文件代理 =====
+export function getFc2CoverUrl(movieId) {
+  return `/api/v1/fc2/movies/${movieId}/cover/file`
+}
+
+// ===== 视频文件代理 =====
+export function getFc2PlayFileUrl(movieId) {
+  return `/api/v1/fc2/movies/${movieId}/play/file`
+}
+
+// ===== 扫描 =====
+export async function triggerFc2Scan() {
+  return api.post('/fc2/scan')
+}
+
+// ===== 批量刮削 =====
+export async function scrapeAllPendingFc2() {
+  return api.post('/fc2/movies/scrape-all-pending')
+}

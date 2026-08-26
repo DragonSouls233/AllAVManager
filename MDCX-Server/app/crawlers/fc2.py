@@ -1,8 +1,17 @@
 """
-FC2 爬虫
+FC2 PPV 爬虫
+
+使用多级反爬策略（cf_bypass）：
+1. curl_cffi Chrome 120 指纹模拟
+2. Cloudflare Worker 代理转发
+3. FlareSolverr 真实浏览器渲染
+4. httpx 直连缓存兜底
+
+全流程刮削：标题、封面、样图、简介、标签、发行日期、时长、演员、评分、预告片、卖家（厂商）、有无码
 """
 
 import json
+import logging
 import re
 from datetime import date
 from typing import Optional
@@ -17,86 +26,129 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
+from app.utils.cf_bypass import get_cf_bypass
 from app.utils.http_client import AsyncHttpClient
+
+logger = logging.getLogger(__name__)
 
 
 @register_crawler
 class FC2Crawler(BaseCrawler):
-    """FC2 爬虫"""
-    
+    """FC2 PPV 官方站点爬虫"""
+
     name = "fc2"
-    display_name = "FC2"
+    display_name = "FC2 PPV"
     base_url = "https://adult.contents.fc2.com"
-    
+
     priority = CrawlerPriority.HIGH
     supported_types = ["fc2"]
     supported_prefixes = ["FC2", "FC2-"]
-    description = "FC2 PPV 内容站点"
+    description = "FC2 PPV 内容站点（含多级反爬）"
     language = "ja"
     requires_proxy = False
-    
+
+    def _extract_number_id(self, code: str) -> Optional[str]:
+        """从番号中提取纯数字 ID（如 FC2-123456 → 123456）"""
+        if not code:
+            return None
+        code = code.strip()
+        m = re.search(r'(\d{5,7})', code)
+        return m.group(1) if m else None
+
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
         """
-        刮削指定番号
-        
+        刮削指定番号，使用 cf_bypass 全流程反爬
+
         Args:
-            code: 番号（如 FC2-123456）
-            
-        Returns:
-            ScrapeResult 刮削结果
+            code: 番号（如 FC2-123456 / 123456）
         """
-        # 提取纯数字ID
         number_id = self._extract_number_id(code)
         if not number_id:
             return None
-        
-        async with AsyncHttpClient() as client:
-            try:
-                detail_url = f"{self.base_url}/article/{number_id}/"
-                
-                html_text = await client.get_text(detail_url)
-                html = etree.fromstring(html_text, etree.HTMLParser())
-                
-                # 检查是否找到页面
-                if self._is_not_found(html):
-                    return None
-                
-                # 解析详情页
-                result = await self._parse_detail_page(html, code, number_id, client, detail_url)
-                
-                if result:
-                    self.mark_success()
-                else:
+
+        detail_url = f"{self.base_url}/article/{number_id}/"
+
+        html_text = None
+        # 优先使用 cf_bypass 绕过 Cloudflare
+        try:
+            bypass_result = await get_cf_bypass().fetch(detail_url, timeout=45, max_retries=3)
+            if bypass_result.success and bypass_result.html:
+                html_text = bypass_result.html
+                logger.info(f"FC2 cf_bypass 获取成功 [{code}], 策略={bypass_result.strategy}")
+            else:
+                logger.warning(f"FC2 cf_bypass 失败 [{code}]: {bypass_result.error}，降级到 httpx")
+        except Exception as e:
+            logger.warning(f"FC2 cf_bypass 异常 [{code}]: {e}，降级到 httpx")
+
+        # 降级：直接使用 AsyncHttpClient
+        if not html_text:
+            async with AsyncHttpClient() as client:
+                try:
+                    html_text = await client.get_text(detail_url)
+                except Exception as e:
                     self.mark_error()
-                
-                return result
-            
-            except Exception as e:
-                self.mark_error()
-                raise e
-    
+                    logger.error(f"FC2 页面获取失败 [{code}]: {e}")
+                    return None
+
+        try:
+            html = etree.fromstring(html_text.encode("utf-8"), etree.HTMLParser())
+        except Exception:
+            self.mark_error()
+            return None
+
+        if self._is_not_found(html):
+            logger.info(f"FC2 未找到内容 [{code}]")
+            return None
+
+        result = await self._parse_detail_page(html, code, number_id, detail_url)
+
+        if result:
+            self.mark_success()
+        else:
+            self.mark_error()
+
+        return result
+
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """
-        搜索番号
+        通过 FC2 站内搜索或番号精确查找
         
-        Args:
-            keyword: 搜索关键词
-            
-        Returns:
-            搜索结果列表
+        支持：
+        - 纯数字番号：直接跳转到详情页
+        - 关键词：使用站内 /search/ 接口
         """
-        # FC2 搜索功能暂不实现
-        return []
-    
-    def _extract_number_id(self, code: str) -> Optional[str]:
-        """从番号提取纯数字ID"""
-        code = code.upper()
-        code = code.replace("FC2PPV", "").replace("FC2-PPV-", "").replace("FC2-", "").replace("-", "").strip()
-        
-        if code.isdigit():
-            return code
-        
-        return None
+        results = []
+
+        # 尝试提取番号
+        number_id = self._extract_number_id(keyword)
+        if number_id:
+            result = await self.scrape(keyword)
+            if result:
+                results.append(result)
+            return results
+
+        # 关键词搜索（使用站内搜索页面）
+        search_url = f"{self.base_url}/search/?keyword={keyword}"
+        try:
+            bypass_result = await get_cf_bypass().fetch(search_url, timeout=30, max_retries=2)
+            if not bypass_result.success or not bypass_result.html:
+                return results
+
+            html = etree.fromstring(bypass_result.html.encode("utf-8"), etree.HTMLParser())
+            # 提取搜索结果链接
+            search_items = html.xpath('//a[contains(@href, "/article/")]/@href')
+            for href in search_items[:20]:
+                match = re.search(r"/article/(\d+)/", href)
+                if match:
+                    num = match.group(1)
+                    full_code = f"FC2-{num}"
+                    result = await self.scrape(full_code)
+                    if result:
+                        results.append(result)
+        except Exception as e:
+            logger.warning(f"FC2 搜索失败 [{keyword}]: {e}")
+
+        return results
     
     def _is_not_found(self, html: etree._Element) -> bool:
         """检查是否为未找到页面"""
@@ -112,51 +164,27 @@ class FC2Crawler(BaseCrawler):
         html: etree._Element,
         code: str,
         number_id: str,
-        client: AsyncHttpClient,
         detail_url: str = "",
     ) -> Optional[ScrapeResult]:
         """解析详情页 - 参考 mdcx fc2.py"""
         try:
-            # 标题
             title = self._get_title(html)
             if not title:
                 return None
-            
-            # 封面和样图
+
             cover_url, sample_images = self._get_cover_and_samples(html)
-            
-            # 简介
             plot = self._get_plot(html)
-            
-            # 标签
             genres = self._get_genres(html)
-            
-            # 发行日期
             release_date = self._get_release_date(html)
-            
-            # 时长
             duration = self._get_duration(html)
-            
-            # 演员
             actors = self._get_actors(html)
-            
-            # 评分（从JSON-LD提取）
             rating = self._get_rating(html)
-            
-            # 预告片（通过API获取）
-            trailer_url = await self._get_trailer(client, number_id)
-            
-            # 卖家作为厂商 - 参考 mdcx fc2.py
+            trailer_url = await self._get_trailer(number_id)
             studio = self._get_studio(html)
-            
-            # 有码/无码判断 - 参考 mdcx fc2.py getMosaic
+            seller = self._get_seller(html)
             is_uncensored = self._get_is_uncensored(html, genres, title)
             is_mosaic = not is_uncensored if is_uncensored is not None else None
-            
-            # 过滤标签中的"無修正"
             genres = [g for g in genres if g != "無修正"]
-            
-            # 小图
             poster_url = self._get_poster(html)
 
             return ScrapeResult(
@@ -181,9 +209,11 @@ class FC2Crawler(BaseCrawler):
                 rating=rating,
                 is_uncensored=is_uncensored,
                 is_mosaic=is_mosaic,
+                raw_data={"seller": seller},
             )
-        
-        except Exception:
+
+        except Exception as e:
+            logger.error(f"FC2 详情页解析失败 [{code}]: {e}")
             return None
     
     def _get_title(self, html: etree._Element) -> str:
@@ -306,11 +336,16 @@ class FC2Crawler(BaseCrawler):
         
         return None
     
-    async def _get_trailer(self, client: AsyncHttpClient, number_id: str) -> Optional[str]:
-        """通过API获取预告片"""
+    async def _get_trailer(self, number_id: str) -> Optional[str]:
+        """通过 FC2 sample API 获取预告片，使用 cf_bypass 反爬"""
+        api_url = f"{self.base_url}/api/v2/videos/{number_id}/sample"
         try:
-            api_url = f"{self.base_url}/api/v2/videos/{number_id}/sample"
-            response_text = await client.get_text(api_url)
+            bypass_result = await get_cf_bypass().fetch(api_url, timeout=30, max_retries=2)
+            if bypass_result.success and bypass_result.html:
+                response_text = bypass_result.html
+            else:
+                logger.warning(f"FC2 预告片 API cf_bypass 失败 [{number_id}]")
+                return None
 
             data = json.loads(response_text)
             path = data.get("path")
@@ -322,12 +357,23 @@ class FC2Crawler(BaseCrawler):
                 return self.base_url + "/" + path
             return None
 
-        except Exception:
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"FC2 预告片获取失败 [{number_id}]: {e}")
             return None
 
     def _get_studio(self, html: etree._Element) -> Optional[str]:
         """获取卖家作为厂商 - 参考 mdcx fc2.py getStudio"""
         result = html.xpath('//div[@class="items_article_headerInfo"]/ul/li[last()]/a/text()')
+        if result:
+            return result[0].strip()
+        return None
+
+    def _get_seller(self, html: etree._Element) -> Optional[str]:
+        """获取卖家信息"""
+        result = html.xpath('//div[@class="items_article_headerInfo"]/ul/li[last()]/a/text()')
+        if result:
+            return result[0].strip()
+        result = html.xpath('//span[contains(@class, "seller")]/text()')
         if result:
             return result[0].strip()
         return None

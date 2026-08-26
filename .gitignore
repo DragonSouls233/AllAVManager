@@ -136,3 +136,4 @@ dump_rows.py
 inspect_actors.py
 list_tables.py
 source_dist.py
+fc2_scrape_test.py

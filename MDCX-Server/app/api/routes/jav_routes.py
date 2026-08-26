@@ -2581,7 +2581,41 @@ _nfo_refill_state: dict = {
     "running": False, "done": 0, "total": 0,
     "scraped": 0, "no_source": 0, "failed": 0,
     "local_only": 0, "started_at": 0.0,
+    "failed_list": [],     # 失败的番号清单：[{"code":..., "reason":...}, ...]，含 no_source/failed
+    "failed_file": None,   # 任务结束后失败清单落盘路径（txt，每行 code | reason）
 }
+
+
+# ---- 刮削源熔断状态 ----
+# JAVBUS 等站点被反爬限流/CDN 挂起时，curl_cffi 请求可能长时间不返回甚至
+# 原生阻塞无法取消。连续失败达到阈值即临时熔断该源，后续补全自动跳过它，
+# 优先使用 JAVDB API 等健康源，避免整批任务被一个坏源拖死。
+_source_fail_streak: dict[str, int] = {}
+_source_blackout_until: dict[str, float] = {}
+_SOURCE_FAIL_THRESHOLD = 3       # 连续失败 N 次触发熔断
+_SOURCE_BLACKOUT_SECS = 600      # 熔断时长（秒）
+
+
+def _source_in_blackout(src: str) -> bool:
+    import time as _t
+    return _source_blackout_until.get(src, 0.0) > _t.monotonic()
+
+
+def _record_source_result(src: str, ok: bool) -> None:
+    """记录单源刮削结果；连续失败达到阈值即熔断该源一段时间。"""
+    import time as _t
+    if ok:
+        _source_fail_streak[src] = 0
+        _source_blackout_until.pop(src, None)
+        return
+    _source_fail_streak[src] = _source_fail_streak.get(src, 0) + 1
+    if _source_fail_streak[src] >= _SOURCE_FAIL_THRESHOLD:
+        _source_blackout_until[src] = _t.monotonic() + _SOURCE_BLACKOUT_SECS
+        logger.warning(
+            f"源 {src} 连续失败 {_SOURCE_FAIL_THRESHOLD} 次，熔断 "
+            f"{_SOURCE_BLACKOUT_SECS}s（后续补全自动切到其余源，优先 JAVDB API）"
+        )
+        _source_fail_streak[src] = 0
 
 
 class RefillNfoCacheRequest(BaseModel):
@@ -2600,8 +2634,8 @@ class RefillNfoCacheRequest(BaseModel):
     )
     concurrency: int = Field(5, ge=1, le=20, description="刮削并发度")
     sources: list[str] = Field(
-        default_factory=lambda: ["javdbapi", "javbus", "avmoo", "javbooks", "javdatabase", "avsox", "dmm_web"],
-        description="限定使用的爬虫名列表（默认 3 重点 javdbapi/javbus/avmoo + 4 辅助 javbooks/javdatabase/avsox/dmm_web，避开无效源）",
+        default_factory=lambda: ["javbus", "javdbapi", "avmoo", "javbooks", "javdatabase", "avsox", "dmm_web"],
+        description="刮削源优先级顺序：JAVBUS → JAVDB API → AVMOO → 4 辅助。按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，连续失败自动熔断 10 分钟",
     )
 
 
@@ -2779,6 +2813,8 @@ async def refill_nfo_cache(
         "running": True, "done": 0, "total": len(targets),
         "scraped": 0, "no_source": 0, "failed": 0, "local_only": 0,
         "cancel_requested": False,
+        "failed_list": [],
+        "failed_file": None,
         "started_at": _time.time(),
     })
 
@@ -2820,37 +2856,88 @@ async def refill_nfo_cache(
             else:
                 prefetch[mid] = None
 
-        engine = ScraperEngine()
         sem = _asyncio.Semaphore(data.concurrency)
         _counters = {"scraped": 0, "no_source": 0, "failed": 0, "local_only": 0}
 
         async def _refill_one(mid, code, video_dir):
+            _start_t = _time.monotonic()
             try:
                 movie_dir = get_movie_local_dir("jav", code)
 
-                # 步骤 1：复制视频目录的番号预览图到数据目录
+                # 步骤 1：复制视频目录的番号预览图到数据目录（to_thread + 可放弃超时）
                 if data.local_first and video_dir is not None:
-                    _copy_local_previews(video_dir, code)
+                    try:
+                        _ctask = _asyncio.create_task(
+                            _asyncio.to_thread(_copy_local_previews, video_dir, code)
+                        )
+                        _cdone, _crest = await _asyncio.wait({_ctask}, timeout=20.0)
+                        if _ctask not in _cdone:
+                            _ctask.cancel()
+                            logger.warning(f"[refill] 复制本地预览图超时 20s {code}")
+                        else:
+                            try:
+                                _ctask.result()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.warning(f"[refill] 复制本地预览图失败 {code}: {e}")
 
                 # 步骤 2：若数据目录缺 fanart/thumb（或任意缺图） 且 scrape=True → 强制远程刮削
-                # nfo_cache 影片即使 NFO 在，因导入时没走远程，poster/fanart/thumb URL 可能是空或过期
+                # 按源优先级顺序尝试（默认 JAVDB API 第一），首个有效结果即返回。
+                # 每个源用独立 ScraperEngine + task/`asyncio.wait` 实现「可放弃超时」：
+                # curl_cffi 原生阻塞等不可协作取消的调用会让 wait_for 的取消链挂住，
+                # 这里超时后直接丢弃等待，让僵尸协程后台自灭，worker 继续下一个源。
+                # JAVBUS 连续失败自动熔断（_record_source_result），避免整批被坏源拖死。
                 if data.scrape and not _movie_has_full_preview_set(movie_dir):
-                    async with sem:
-                        # engine.scrape_number 直接走爬虫，绕过 movies.py 的 NFO 缓存短路
-                        # 单部硬超时 60s：Javbus/Javdb 等站点被反爬限流时 1 部卡死不该堵住整批
-                        try:
-                            result = await _asyncio.wait_for(
-                                engine.scrape_number(
-                                    code, module="jav", sources=data.sources
-                                ),
-                                timeout=60.0,
+                    result = None
+                    for src in data.sources:
+                        if _source_in_blackout(src):
+                            logger.info(f"[refill] {code} 跳过熔断中的源 {src}")
+                            continue
+                        async with sem:
+                            _t0 = _time.monotonic()
+                            try:
+                                task = _asyncio.create_task(
+                                    ScraperEngine().scrape_number(
+                                        code, module="jav", sources=[src]
+                                    )
+                                )
+                                done, _pend = await _asyncio.wait(
+                                    {task}, timeout=60.0
+                                )
+                                if task in done:
+                                    r = task.result()
+                                else:
+                                    task.cancel()  # 不等待取消生效，僵尸任务后台自灭
+                                    r = None
+                                    _record_source_result(src, False)
+                                    logger.warning(
+                                        f"[refill] 源 {src} 刮削 {code} 超时 60s（已放弃等待，跳到下一源）"
+                                    )
+                            except Exception as e:
+                                r = None
+                                _record_source_result(src, False)
+                                logger.warning(
+                                    f"[refill] 源 {src} 刮削 {code} 异常: "
+                                    f"{type(e).__name__}: {e}"
+                                )
+                            _dt = _time.monotonic() - _t0
+                        if r and r.is_valid():
+                            result = r
+                            _record_source_result(src, True)
+                            logger.info(
+                                f"[refill] {code} 刮削成功 source={src} 耗时 {_dt:.1f}s"
                             )
-                        except _asyncio.TimeoutError:
-                            logger.warning(f"scrape {code} 超时 60s")
-                            _counters["no_source"] += 1
-                            return "no_source"
-                    if not (result and result.is_valid()):
+                            break
+                        _record_source_result(src, False)
+                        logger.warning(
+                            f"[refill] {code} 源 {src} 无有效结果 {_dt:.1f}s"
+                        )
+                    if not result:
                         _counters["no_source"] += 1
+                        _nfo_refill_state["failed_list"].append(
+                            {"code": code, "reason": "no_source: 全部刮削源无有效结果"}
+                        )
                         return "no_source"
 
                     s = await db.get_session()
@@ -2858,6 +2945,9 @@ async def refill_nfo_cache(
                         m = await s.get(JavMovie, mid)
                         if m is None:
                             _counters["failed"] += 1
+                            _nfo_refill_state["failed_list"].append(
+                                {"code": code, "reason": "failed: DB 记录不存在"}
+                            )
                             return "failed"
                         resp = await _apply_scrape_result(s, m, result, "jav")
                         if resp.get("status") == "ok":
@@ -2865,6 +2955,9 @@ async def refill_nfo_cache(
                         else:
                             await s.rollback()
                             _counters["failed"] += 1
+                            _nfo_refill_state["failed_list"].append(
+                                {"code": code, "reason": f"failed: {resp.get('message', '写入失败')}"}
+                            )
                             return "failed"
                     finally:
                         await s.close()
@@ -2874,22 +2967,31 @@ async def refill_nfo_cache(
                         # 图片映射：poster=竖版封面(frontcover)，fanart=横版大图(fullcover)，thumb=缩略图
                         # javdbapi 把 fullcover_url 放 cover_url、frontcover_url 放 poster_url，
                         # 这里统一用 poster_url 做竖版、cover_url 做横版大图，避免三图同一张
-                        # 下载纳入 sem + 90s 总超时：netcdn.space 等 CDN 反爬时(HTTP 521)
+                        # 下载纳入 sem + 90s 可放弃超时：netcdn.space 等 CDN 反爬时(HTTP 521)
                         # 单张图重试可能卡 2-3 分钟，必须整体限时避免整批 worker 挂起。
                         async with sem:
-                            try:
-                                await _asyncio.wait_for(
-                                    ensure_movie_media_local(
-                                        module_name="jav",
-                                        code=code,
-                                        cover_url=getattr(result, "poster_url", None) or getattr(result, "cover_url", None),
-                                        fanart_url=getattr(result, "cover_url", None),
-                                        thumb_url=getattr(result, "thumb_url", None) or getattr(result, "poster_url", None) or getattr(result, "cover_url", None),
-                                    ),
-                                    timeout=90.0,
+                            _t0 = _time.monotonic()
+                            _mtask = _asyncio.create_task(
+                                ensure_movie_media_local(
+                                    module_name="jav",
+                                    code=code,
+                                    cover_url=getattr(result, "poster_url", None) or getattr(result, "cover_url", None),
+                                    fanart_url=getattr(result, "cover_url", None),
+                                    thumb_url=getattr(result, "thumb_url", None) or getattr(result, "poster_url", None) or getattr(result, "cover_url", None),
                                 )
-                            except _asyncio.TimeoutError:
+                            )
+                            _mdone, _mrest = await _asyncio.wait({_mtask}, timeout=90.0)
+                            if _mtask not in _mdone:
+                                _mtask.cancel()  # 不等待取消生效，僵尸下载后台自灭
                                 logger.warning(f"下载媒体超时 90s {code}")
+                            else:
+                                try:
+                                    _mtask.result()
+                                except Exception:
+                                    pass  # 内部已记录日志，仅避免异常无人检索
+                            logger.info(
+                                f"[refill] {code} 下载媒体阶段 耗时 {_time.monotonic() - _t0:.1f}s"
+                            )
                     except Exception as e:
                         logger.warning(f"下载封面失败 {code}: {e}")
 
@@ -2939,7 +3041,21 @@ async def refill_nfo_cache(
                                                     _dst_f.write_bytes(_f.read_bytes())
                                                 except OSError:
                                                     pass
-                            await _asyncio.to_thread(_write_previews_to_video_dir)
+                            # 写视频目录用 to_thread（同步 IO），且用可放弃超时包裹：
+                            # 网络盘/异常目录下同步文件 IO 可能永久挂起，to_thread 无法被
+                            # wait_for 取消，只能等超时后丢弃该任务，worker 继续前进。
+                            _wtask = _asyncio.create_task(
+                                _asyncio.to_thread(_write_previews_to_video_dir)
+                            )
+                            _wdone, _wrest = await _asyncio.wait({_wtask}, timeout=30.0)
+                            if _wtask not in _wdone:
+                                _wtask.cancel()
+                                logger.warning(f"写视频目录番号预览图超时 30s {code}")
+                            else:
+                                try:
+                                    _wtask.result()
+                                except Exception:
+                                    pass
                         except Exception as e:
                             logger.warning(f"写视频目录番号预览图失败 {code}: {e}")
 
@@ -2967,11 +3083,21 @@ async def refill_nfo_cache(
             except Exception as e:
                 logger.warning(f"补全 nfo_cache 失败 {code}: {e}")
                 _counters["failed"] += 1
+                _nfo_refill_state["failed_list"].append(
+                    {"code": code, "reason": f"failed: {type(e).__name__}: {e}"}
+                )
                 return "failed"
 
         # 用 gather 并发执行，避免 7000 部串行；sem 控制并发度
         async def _worker(idx: int, mid, code):
+            _st = _time.monotonic()
             status = await _refill_one(mid, code, prefetch.get(mid))
+            logger.info(
+                f"[refill] {code} 完成 status={status} "
+                f"耗时 {_time.monotonic() - _st:.1f}s "
+                f"(done={idx + 1}/{total} scraped={_counters['scraped']} "
+                f"local_only={_counters['local_only']} no_source={_counters['no_source']})"
+            )
             # 每部完成后立刻推进进度（避免 200 一批才更新导致前端长时间看到 0）
             _nfo_refill_state["done"] = idx + 1
             _nfo_refill_state["scraped"] = _counters["scraped"]

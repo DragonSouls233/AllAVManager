@@ -1,0 +1,22 @@
+=== /api/v1/uncensored/crawlers/stats ===
+Status: 200
+Total crawlers: 15
+  javbus | priority=0
+  javdb | priority=5
+  pacopacomama | priority=50
+  caribbeancom | priority=50
+  s1style | priority=50
+  ragdoll | priority=50
+  uncensored_aggregate | priority=50
+  10musume | priority=50
+  kin8tengoku | priority=50
+  heyzo_enhanced | priority=50
+  heyzo | priority=50
+  avsox | priority=50
+  1pondo | priority=50
+  caribbeancompr | priority=50
+  javdatabase | priority=50
+
+=== /api/v1/scraper/crawlers ===
+Status: 404
+Total crawlers: 0
