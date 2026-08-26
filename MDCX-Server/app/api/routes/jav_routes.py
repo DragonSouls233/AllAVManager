@@ -640,6 +640,7 @@ async def list_movies(
     maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
     genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
     code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
+    source_filter: Optional[str] = Query(None, alias="source", description="按刮削来源过滤（nfo_cache/javbus/javdb/local 等）"),
     is_chinese: Optional[int] = Query(None, description="1=仅中文"),
     is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
     solo: Optional[int] = Query(None, description="1=仅单人作品（actor 字段恰好一个演员）"),
@@ -676,6 +677,8 @@ async def list_movies(
             filters.append(JavMovie.genre.contains(genre))
         if code_prefix:
             filters.append(JavMovie.code.startswith(code_prefix))
+        if source_filter:
+            filters.append(JavMovie.source == source_filter)
         if is_chinese:
             filters.append(JavMovie.is_chinese == 1)
         if is_uncensored:
@@ -749,7 +752,7 @@ async def list_movies(
             }
             if sort in ("code", "-code"):
                 dash = func.instr(JavMovie.code, "-")
-                alpha = func.upper(func.case((dash > 1, func.substr(JavMovie.code, 1, dash - 1)), else_=""))
+                alpha = func.upper(case((dash > 1, func.substr(JavMovie.code, 1, dash - 1)), else_=""))
                 num = func.cast(func.substr(JavMovie.code, func.max(dash + 1, 1)), Integer)
                 if sort == "-code":
                     stmt = stmt.order_by(alpha.desc().nulls_last(), num.desc().nulls_last(),
@@ -934,7 +937,9 @@ async def update_jav_movie(movie_id: int, body: dict):
             else:
                 names = [str(x).strip() for x in raw] if isinstance(raw, list) \
                     else [p.strip() for p in str(raw).split(",")]
-            names = [n for n in names if n]
+            # 防污染（2026-08-26）：拒绝长度 ≤2 的短名，防止 "AI"/"あさみ"/"しずく" 等
+            # 短名被当作演员后，在 LIKE 查询中会误匹配大量无关影片。
+            names = [n for n in names if n and len(n) >= 3]
             new_names = set(names)
             movie.actor = ", ".join(names) if names else None
 
@@ -2203,6 +2208,9 @@ def _inspect_cover_problem(path) -> Optional[str]:
         "xor_garbled"    = JavDB XOR 混淆乱码（maybe_decrypt_javdb_image 可原地修复）
         "decoded_broken" = 非混淆但 PIL 无法解码（半截下载/格式损坏）
         "too_small"      = 体积过小或分辨率过低（下载残留/占位图）
+
+    性能：只用 read(8) 做快速预筛——XOR 混淆与「头非 JPEG」类问题无需 PIL，
+    仅对头正常（FFD8）的 JPEG 才做完整解码校验，避免网络盘全量 PIL 解码。
     """
     try:
         p = _Path(path)
@@ -2214,13 +2222,19 @@ def _inspect_cover_problem(path) -> Optional[str]:
             head = f.read(8)
     except OSError:
         return "decoded_broken"
+    if len(head) < 3:
+        return "decoded_broken"
     # XOR 混淆特征：key = data[0]，且 data[1]^key=0xFF、data[2]^key=0xD8
-    if len(head) >= 3 and head[:2] != b"\xff\xd8" and (
+    if head[:2] != b"\xff\xd8" and (
         (head[1] ^ head[0]) == 0xFF and (head[2] ^ head[0]) == 0xD8
     ):
         return "xor_garbled"
-    # 其余交给通用完整性检测（PIL verify+load / 分辨率）
+    # 头不是 JPEG（FFD8）→ 大概率损坏（乱码/半截），交给 PIL 兜底判定
+    # （PNG 等其它合法格式头也非 FFD8，PIL 能解码则视为正常）
     from app.utils.media_helpers import _is_image_broken
+    if head[:2] != b"\xff\xd8":
+        return "decoded_broken" if _is_image_broken(p) else None
+    # JPEG 头正常 → 完整解码校验（verify+load，兜住半截 JPEG）
     if not _is_image_broken(p):
         return None
     return "decoded_broken"
@@ -2241,76 +2255,107 @@ def _decrypt_file_inplace(path) -> bool:
         return False
 
 
-async def _scan_cover_problems(type_filter: Optional[str] = None, limit: int = 2000):
+# 封面扫描结果缓存（避免筛选/刷新时反复全量扫描网络盘）
+_cover_scan_cache: dict = {"ts": 0.0, "problems": None, "type_counts": None}
+_COVER_SCAN_TTL = 120.0
+
+# 封面批量修复进度（后台任务写入，前端轮询显示实时进度）
+_cover_fix_state: dict = {
+    "running": False, "done": 0, "total": 0,
+    "failed": 0, "no_url": 0, "started_at": 0.0,
+}
+
+
+def _scan_cover_dir_sync(entry, movie_by_code: dict) -> Optional[dict]:
+    """同步扫描单个番号目录的问题封面（放入线程池并发执行）。
+
+    返回 None = 该目录没有问题封面。
+    """
+    code = entry.name
+    files: list[dict] = []
+    for name in _COVER_NAMES:
+        p = entry / name
+        if not p.exists():
+            continue
+        t = _inspect_cover_problem(p)
+        if not t:
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        files.append({"name": name, "type": t, "size": size})
+    if not files:
+        return None
+    movie = movie_by_code.get(code)
+    return {
+        "movie_id": movie["movie_id"] if movie else None,
+        "code": code,
+        "title": movie["title"] if movie else code,
+        "cover_url": movie["cover_url"] if movie else "",
+        "files": files,
+    }
+
+
+async def _scan_cover_problems(type_filter: Optional[str] = None, limit: int = 2000, force: bool = False):
     """全量扫描 JAV 规范目录下的问题封面。
 
     只检查「文件存在但不完整」的图（缺失图由缺图补刮流程处理）。
+    性能优化：
+    1. 快速预筛免 PIL（_inspect_cover_problem 只 read 文件头）
+    2. asyncio.to_thread 并发扫描目录（网络盘 I/O 并行）
+    3. 结果 TTL 缓存（120s），前端刷新/筛选不再重复全量扫描
     Returns: (problems, type_counts)
     """
+    import time as _time
     from sqlalchemy import select
     from app.db.jav_models import JavMovie
     from app.utils.media_helpers import get_module_movies_dir
 
-    # 1) 先查库建 code 索引（关闭会话后再做慢速磁盘扫描）
-    db = get_jav_db()
-    session = await db.get_session()
-    try:
-        rows = await session.execute(
-            select(
-                JavMovie.id, JavMovie.code, JavMovie.title,
-                JavMovie.cover_url, JavMovie.poster_url,
+    now = _time.monotonic()
+    cache = _cover_scan_cache
+    if not force and cache["problems"] is not None and now - cache["ts"] < _COVER_SCAN_TTL:
+        problems, type_counts = cache["problems"], cache["type_counts"]
+    else:
+        # 1) 先查库建 code 索引（关闭会话后再做慢速磁盘扫描）
+        db = get_jav_db()
+        session = await db.get_session()
+        try:
+            rows = await session.execute(
+                select(
+                    JavMovie.id, JavMovie.code, JavMovie.title,
+                    JavMovie.cover_url, JavMovie.poster_url,
+                )
             )
-        )
-        movie_by_code: dict[str, dict] = {}
-        for mid, code, title, cover_url, poster_url in rows:
-            if not code:
-                continue
-            movie_by_code[code] = {
-                "movie_id": mid,
-                "code": code,
-                "title": title or code,
-                "cover_url": cover_url or poster_url or "",
-            }
-    finally:
-        await session.close()
+            movie_by_code: dict[str, dict] = {}
+            for mid, code, title, cover_url, poster_url in rows:
+                if not code:
+                    continue
+                movie_by_code[code] = {
+                    "movie_id": mid,
+                    "code": code,
+                    "title": title or code,
+                    "cover_url": cover_url or poster_url or "",
+                }
+        finally:
+            await session.close()
 
-    # 2) 遍历规范目录检测文件
-    problems: list[dict] = []
-    type_counts = {"xor_garbled": 0, "decoded_broken": 0, "too_small": 0}
-    base = get_module_movies_dir("jav")
-    if base.exists():
-        for entry in base.iterdir():
-            try:
-                if not entry.is_dir():
-                    continue
-            except OSError:
-                continue
-            code = entry.name
-            files: list[dict] = []
-            for name in _COVER_NAMES:
-                p = entry / name
-                if not p.exists():
-                    continue
-                t = _inspect_cover_problem(p)
-                if not t:
-                    continue
-                try:
-                    size = p.stat().st_size
-                except OSError:
-                    size = 0
-                files.append({"name": name, "type": t, "size": size})
-            if not files:
-                continue
-            movie = movie_by_code.get(code)
-            for f in files:
+        # 2) 收集全部番号目录，并发检测（网络盘 I/O 是主要瓶颈）
+        base = get_module_movies_dir("jav")
+        problems: list[dict] = []
+        if base.exists():
+            entries = [e for e in base.iterdir() if e.is_dir()]
+            results = await asyncio.gather(
+                *(asyncio.to_thread(_scan_cover_dir_sync, e, movie_by_code) for e in entries)
+            )
+            problems = [r for r in results if r is not None]
+
+        # 3) 统计 + 缓存
+        type_counts = {"xor_garbled": 0, "decoded_broken": 0, "too_small": 0}
+        for it in problems:
+            for f in it["files"]:
                 type_counts[f["type"]] = type_counts.get(f["type"], 0) + 1
-            problems.append({
-                "movie_id": movie["movie_id"] if movie else None,
-                "code": code,
-                "title": movie["title"] if movie else code,
-                "cover_url": movie["cover_url"] if movie else "",
-                "files": files,
-            })
+        cache.update({"ts": now, "problems": problems, "type_counts": type_counts})
 
     if type_filter:
         problems = [
@@ -2325,9 +2370,10 @@ async def _scan_cover_problems(type_filter: Optional[str] = None, limit: int = 2
 async def list_cover_problems(
     type_filter: Optional[str] = Query(None, description="按问题类型过滤：xor_garbled / decoded_broken / too_small"),
     limit: int = Query(500, ge=1, le=5000),
+    force: bool = Query(False, description="True=跳过缓存强制重新全量扫描"),
 ):
     """全量扫描 JAV 封面，列出本地存在但损坏/乱码的图片"""
-    problems, type_counts = await _scan_cover_problems(type_filter=type_filter, limit=limit)
+    problems, type_counts = await _scan_cover_problems(type_filter=type_filter, limit=limit, force=force)
     return {
         "total": len(problems),
         "type_counts": type_counts,
@@ -2339,41 +2385,54 @@ class CoverFixRequest(BaseModel):
     codes: Optional[list[str]] = Field(None, description="要修复的番号列表；空 = 自动扫描全部有问题的")
     decrypt: bool = Field(True, description="先就地 XOR 解密乱码封面（纯本地，不联网）")
     redownload: bool = Field(True, description="解密后仍损坏的文件自动重新下载")
+    fast: bool = Field(True, description="重下时跳过刮削，直接使用数据库已有的远程 URL（快；无 URL 才回退刮削）")
 
 
-async def _redownload_one_images(movie, code: str) -> str:
+async def _redownload_one_images(movie, code: str, fast: bool = True) -> str:
     """对单部影片重下封面：刮削 → DB URL 兜底 → 落盘（含解密）→ 竖版裁剪。
+
+    fast=True（默认）：跳过刮削，直接用 DB 里已有的 cover/poster URL 重下，
+    半截文件（decoded_broken）多为 CDN 下载中断，重下即可修复，无需重新刮削；
+    DB 无 URL 时才回退刮削。
 
     Returns:
         "ok" / "no_url" / "error"
     """
-    from app.scraper.engine import ScraperEngine
     from app.utils.media_helpers import (
         ensure_movie_media_local,
         crop_cover_to_portrait,
         get_movie_cover_path,
     )
     try:
-        engine = ScraperEngine()
-        result = await engine.scrape_number(code, module="jav")
-        if result and result.is_valid() and not getattr(result, "cover_url", None):
-            fb = await engine.scrape_number(
-                code, sources=["javdb", "avmoo", "avsox", "dmm_web"], module="jav"
-            )
-            if fb and fb.is_valid() and getattr(fb, "cover_url", None):
-                result = fb
-
+        # 1) fast 模式：直接用 DB 已有远程 URL（无需刮削，批量修复快）
         cover_url = fanart_url = thumb_url = None
         referer = None
-        if result and result.is_valid():
-            cover_url = getattr(result, "cover_url", None) or getattr(result, "poster_url", None)
-            fanart_url = getattr(result, "fanart_url", None)
-            thumb_url = getattr(result, "thumb_url", None)
-            src = getattr(result, "source", None)
-            base = _SOURCE_DETAIL_BASE_JAV.get(src or "")
-            if base and code:
-                referer = f"{base}/{code}"
-        # 刮削拿不到图 → 回退 DB 里已有的远程 URL（来源 URL 往往有效，重下即可修复）
+        if fast:
+            cover_url = getattr(movie, "cover_url", None) or getattr(movie, "poster_url", None)
+            fanart_url = getattr(movie, "fanart_url", None)
+            thumb_url = getattr(movie, "thumb_url", None)
+
+        # 2) 快速直下拿不到 URL → 回退刮削
+        if not cover_url:
+            from app.scraper.engine import ScraperEngine
+            engine = ScraperEngine()
+            result = await engine.scrape_number(code, module="jav")
+            if result and result.is_valid() and not getattr(result, "cover_url", None):
+                fb = await engine.scrape_number(
+                    code, sources=["javdb", "avmoo", "avsox", "dmm_web"], module="jav"
+                )
+                if fb and fb.is_valid() and getattr(fb, "cover_url", None):
+                    result = fb
+
+            if result and result.is_valid():
+                cover_url = getattr(result, "cover_url", None) or getattr(result, "poster_url", None)
+                fanart_url = getattr(result, "fanart_url", None)
+                thumb_url = getattr(result, "thumb_url", None)
+                src = getattr(result, "source", None)
+                base = _SOURCE_DETAIL_BASE_JAV.get(src or "")
+                if base and code:
+                    referer = f"{base}/{code}"
+        # 3) 刮削拿不到图 → 回退 DB 里已有的远程 URL（来源 URL 往往有效，重下即可修复）
         if not cover_url:
             cover_url = getattr(movie, "cover_url", None) or getattr(movie, "poster_url", None)
         if not referer and cover_url:
@@ -2429,6 +2488,14 @@ async def fix_cover_problems(data: CoverFixRequest, background_tasks: Background
     if not codes:
         problems, _ = await _scan_cover_problems()
         codes = [p["code"] for p in problems]
+    if not codes:
+        return {"status": "no_problems", "accepted": 0, "codes": []}
+
+    import time as _time
+    _cover_fix_state.update({
+        "running": True, "done": 0, "total": len(codes),
+        "failed": 0, "no_url": 0, "started_at": _time.time(),
+    })
 
     async def _run():
         total = len(codes)
@@ -2462,7 +2529,7 @@ async def fix_cover_problems(data: CoverFixRequest, background_tasks: Background
                     finally:
                         await s2.close()
                     if movie:
-                        await _redownload_one_images(movie, code)
+                        ret = await _redownload_one_images(movie, code, fast=data.fast)
                         redownloaded = True
                         remaining = []
                         if movie_dir.exists():
@@ -2472,6 +2539,8 @@ async def fix_cover_problems(data: CoverFixRequest, background_tasks: Background
                                     t = _inspect_cover_problem(p)
                                     if t:
                                         remaining.append({"name": name, "type": t})
+                        if ret == "no_url":
+                            _cover_fix_state["no_url"] += 1
 
                 logger.info(
                     "封面修复 %s：解密 %s 个，重下=%s，仍损坏=%s（%s/%s）",
@@ -2480,8 +2549,595 @@ async def fix_cover_problems(data: CoverFixRequest, background_tasks: Background
                 )
             except Exception as e:
                 logger.warning(f"封面修复失败 {code}: {e}")
+                _cover_fix_state["failed"] += 1
+            _cover_fix_state["done"] = idx
+        # 修复完成 → 失效扫描缓存，下次查询自动重新全量扫描
+        _cover_fix_state["running"] = False
+        _cover_scan_cache["ts"] = 0.0
 
-    if not codes:
-        return {"status": "no_problems", "accepted": 0, "codes": []}
     background_tasks.add_task(_run)
     return {"status": "started", "accepted": len(codes), "codes": codes}
+
+
+@router.get("/covers/fix/status")
+async def cover_fix_status():
+    """批量封面修复的后台任务进度"""
+    return _cover_fix_state
+
+
+# ---- 全量补全 nfo_cache ----
+# 根因：movies.py 的 scrape_by_code/scrape_movie 遇到 NFO 缓存就直接返回
+# source="nfo_cache"，从不请求外部站点。导致 NFO 导入的影片元数据不全、
+# 番号预览图（{code}-poster/fanart/thumb.jpg）缺失。
+#
+# 本端点对每部 nfo_cache 影片执行：
+#   ① 强制远程刮削（绕过 NFO 缓存），拿最新元数据 + 高清封面 URL
+#   ② 下载封面到规范数据目录 poster.jpg/fanart.jpg/thumb.jpg（含 XOR 解密）
+#   ③ 写番号预览图到视频源目录（复用 cover_refill._write_covers）
+#   ④ 更新 DB：source / scraped_at / cover_url / 演员 / 系列 / NFO 等
+# 前端通过 /jav/scrape/refill-nfo-cache/status 轮询实时进度。
+
+_nfo_refill_state: dict = {
+    "running": False, "done": 0, "total": 0,
+    "scraped": 0, "no_source": 0, "failed": 0,
+    "local_only": 0, "started_at": 0.0,
+}
+
+
+class RefillNfoCacheRequest(BaseModel):
+    codes: Optional[list[str]] = Field(
+        None,
+        description="要补全的番号列表；不传则自动选择所有 source=nfo_cache 的影片",
+    )
+    limit: int = Field(200, ge=1, le=5000, description="自动选择时的最大数量")
+    local_first: bool = Field(
+        True,
+        description="先尝试复制视频目录已有的番号预览图到数据目录（纯本地，秒级，不联网）",
+    )
+    scrape: bool = Field(
+        True,
+        description="复制本地图后仍缺封面/preview 的影片强制远程刮削",
+    )
+    concurrency: int = Field(5, ge=1, le=20, description="刮削并发度")
+    sources: list[str] = Field(
+        default_factory=lambda: ["javdbapi", "javbus", "avmoo", "javbooks", "javdatabase", "avsox", "dmm_web"],
+        description="限定使用的爬虫名列表（默认 3 重点 javdbapi/javbus/avmoo + 4 辅助 javbooks/javdatabase/avsox/dmm_web，避开无效源）",
+    )
+
+
+async def _is_movie_nfo_only(session, movie) -> bool:
+    """判定影片是否仅走 NFO 缓存（source=nfo_cache 且 DB 里没封面 URL）。"""
+    src = getattr(movie, "source", None)
+    if src != "nfo_cache":
+        return False
+    if getattr(movie, "cover_url", None) or getattr(movie, "poster_url", None):
+        return False
+    return True
+
+
+def _pick_video_dir(movie) -> Path | None:
+    """取影片所在视频目录（DB file_path 的 parent）。"""
+    fp = getattr(movie, "file_path", None)
+    if not fp:
+        return None
+    fp = str(fp)
+    if fp == "N/A" or not fp:
+        return None
+    p = Path(fp)
+    if not p.exists() or not p.parent.exists():
+        return None
+    return p.parent
+
+
+def _copy_local_previews(video_dir: Path, code: str) -> int:
+    """把视频目录的 {code}-*.jpg 复制到数据目录（规范名）。
+
+    Returns: 复制成功的文件数（0/1/2/3 对应 poster/fanart/thumb）
+    """
+    from pathlib import Path as _Path
+    import shutil
+    from app.utils.media_helpers import get_movie_local_dir, _is_image_broken
+    from app.tasks.base_scanner import _resolve_asset_target
+
+    movie_dir = get_movie_local_dir("jav", code)
+    if not movie_dir.exists():
+        try:
+            movie_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return 0
+    if not video_dir.exists():
+        return 0
+
+    ready = 0
+    try:
+        for src in video_dir.iterdir():
+            if not src.is_file():
+                continue
+            stem = src.name
+            suffix = src.suffix.lower()
+            if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+                continue
+            if _is_image_broken(src):
+                continue
+            dst_name = _resolve_asset_target(stem, code)
+            if dst_name not in ("poster.jpg", "fanart.jpg", "thumb.jpg"):
+                continue
+            dst = movie_dir / dst_name
+            if dst.exists() and not _is_image_broken(dst):
+                if dst_name in ("poster.jpg", "fanart.jpg", "thumb.jpg"):
+                    ready += 1
+                continue
+            try:
+                shutil.copy2(src, dst)
+                ready += 1
+            except OSError:
+                continue
+        # 反向：视频目录的 extrafanart 预览图复制到数据目录
+        src_ex = video_dir / "extrafanart"
+        if src_ex.is_dir():
+            dst_ex = movie_dir / "extrafanart"
+            dst_ex.mkdir(parents=True, exist_ok=True)
+            for f in src_ex.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+                    continue
+                df = dst_ex / f.name
+                if df.exists():
+                    continue
+                try:
+                    shutil.copy2(f, df)
+                    ready += 1
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return ready
+
+
+def _movie_has_local_media(movie_dir: Path) -> bool:
+    try:
+        if not movie_dir.is_dir():
+            return False
+        for f in movie_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _movie_has_full_preview_set(movie_dir: Path) -> bool:
+    """三张预览图 poster/fanart/thumb 全部存在且不损坏，且 extrafanart 有样图。
+
+    用户：预览图就是番号文件夹里的 extrafanart。若 extrafanart 为空，
+    即使三张主图齐全也视为未补全，触发远程刮削重新下载样图。
+    """
+    try:
+        if not movie_dir.is_dir():
+            return False
+        from app.utils.media_helpers import _is_image_broken
+        for name in ("poster.jpg", "fanart.jpg", "thumb.jpg"):
+            p = movie_dir / name
+            if not p.is_file() or _is_image_broken(p):
+                return False
+        # extrafanart 至少 1 张有效样图
+        ex = movie_dir / "extrafanart"
+        if ex.is_dir():
+            for f in ex.iterdir():
+                if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+@router.post("/scrape/refill-nfo-cache")
+async def refill_nfo_cache(
+    data: RefillNfoCacheRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量补全 nfo_cache 影片（后台执行）。
+
+    每部影片：
+      1) 若 local_first：把视频目录已有的 {code}-*.jpg 复制到数据目录
+      2) 若数据目录仍缺封面 且 scrape：强制远程刮削 + 下载 + 写番号预览图 + 落库
+    不处理已走远程刮削的影片（source != nfo_cache 或 DB 已有 cover_url）。
+    """
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        if data.codes:
+            q = select(JavMovie).where(JavMovie.code.in_(data.codes))
+        else:
+            q = select(JavMovie).where(JavMovie.source == "nfo_cache").order_by(JavMovie.id)
+        rows = (await session.execute(q)).scalars().all()
+    finally:
+        await session.close()
+
+    targets = []
+    for m in rows:
+        if m.code:
+            targets.append((m.id, m.code))
+        if len(targets) >= data.limit:
+            break
+
+    if not targets:
+        return {"status": "ok", "message": "没有需要补全的 nfo_cache 影片", "total": 0, "queued": 0}
+
+    if _nfo_refill_state.get("running"):
+        return {
+            "status": "busy",
+            "message": "已有任务在跑，请先 /cancel 再发起新任务",
+            "total": _nfo_refill_state.get("total", 0),
+            "queued": 0,
+        }
+
+    import time as _time
+    _nfo_refill_state.update({
+        "running": True, "done": 0, "total": len(targets),
+        "scraped": 0, "no_source": 0, "failed": 0, "local_only": 0,
+        "cancel_requested": False,
+        "started_at": _time.time(),
+    })
+
+    async def _run():
+        import asyncio as _asyncio
+        from app.scraper.engine import ScraperEngine
+        from app.utils.media_helpers import get_movie_local_dir
+        from app.api.routes.movies import _apply_scrape_result
+        from sqlalchemy import select as _select
+        from app.db.jav_models import JavMovie
+
+        # 一次性 SQL 取全 file_path，避免 7000+ 次单独 DB 查询
+        mid_to_fp: dict[int, str] = {}
+        if targets:
+            db2 = get_jav_db()
+            s2 = await db2.get_session()
+            try:
+                rows = (await s2.execute(
+                    _select(JavMovie.id, JavMovie.file_path).where(JavMovie.id.in_([t[0] for t in targets]))
+                )).all()
+                for r in rows:
+                    mid_to_fp[r[0]] = r[1]
+            finally:
+                await s2.close()
+
+        # 预取 video_dir（同步 O(1) 计算，Path 检查放 worker 内）
+        prefetch: dict[int, Path | None] = {}
+        for mid, _code in targets:
+            fp = mid_to_fp.get(mid)
+            if fp and fp != "N/A":
+                try:
+                    p = Path(fp)
+                    if p.parent.exists():
+                        prefetch[mid] = p.parent
+                    else:
+                        prefetch[mid] = None
+                except Exception:
+                    prefetch[mid] = None
+            else:
+                prefetch[mid] = None
+
+        engine = ScraperEngine()
+        sem = _asyncio.Semaphore(data.concurrency)
+        _counters = {"scraped": 0, "no_source": 0, "failed": 0, "local_only": 0}
+
+        async def _refill_one(mid, code, video_dir):
+            try:
+                movie_dir = get_movie_local_dir("jav", code)
+
+                # 步骤 1：复制视频目录的番号预览图到数据目录
+                if data.local_first and video_dir is not None:
+                    _copy_local_previews(video_dir, code)
+
+                # 步骤 2：若数据目录缺 fanart/thumb（或任意缺图） 且 scrape=True → 强制远程刮削
+                # nfo_cache 影片即使 NFO 在，因导入时没走远程，poster/fanart/thumb URL 可能是空或过期
+                if data.scrape and not _movie_has_full_preview_set(movie_dir):
+                    async with sem:
+                        # engine.scrape_number 直接走爬虫，绕过 movies.py 的 NFO 缓存短路
+                        # 单部硬超时 60s：Javbus/Javdb 等站点被反爬限流时 1 部卡死不该堵住整批
+                        try:
+                            result = await _asyncio.wait_for(
+                                engine.scrape_number(
+                                    code, module="jav", sources=data.sources
+                                ),
+                                timeout=60.0,
+                            )
+                        except _asyncio.TimeoutError:
+                            logger.warning(f"scrape {code} 超时 60s")
+                            _counters["no_source"] += 1
+                            return "no_source"
+                    if not (result and result.is_valid()):
+                        _counters["no_source"] += 1
+                        return "no_source"
+
+                    s = await db.get_session()
+                    try:
+                        m = await s.get(JavMovie, mid)
+                        if m is None:
+                            _counters["failed"] += 1
+                            return "failed"
+                        resp = await _apply_scrape_result(s, m, result, "jav")
+                        if resp.get("status") == "ok":
+                            await s.commit()
+                        else:
+                            await s.rollback()
+                            _counters["failed"] += 1
+                            return "failed"
+                    finally:
+                        await s.close()
+
+                    try:
+                        from app.utils.media_helpers import ensure_movie_media_local
+                        # 图片映射：poster=竖版封面(frontcover)，fanart=横版大图(fullcover)，thumb=缩略图
+                        # javdbapi 把 fullcover_url 放 cover_url、frontcover_url 放 poster_url，
+                        # 这里统一用 poster_url 做竖版、cover_url 做横版大图，避免三图同一张
+                        # 下载纳入 sem + 90s 总超时：netcdn.space 等 CDN 反爬时(HTTP 521)
+                        # 单张图重试可能卡 2-3 分钟，必须整体限时避免整批 worker 挂起。
+                        async with sem:
+                            try:
+                                await _asyncio.wait_for(
+                                    ensure_movie_media_local(
+                                        module_name="jav",
+                                        code=code,
+                                        cover_url=getattr(result, "poster_url", None) or getattr(result, "cover_url", None),
+                                        fanart_url=getattr(result, "cover_url", None),
+                                        thumb_url=getattr(result, "thumb_url", None) or getattr(result, "poster_url", None) or getattr(result, "cover_url", None),
+                                    ),
+                                    timeout=90.0,
+                                )
+                            except _asyncio.TimeoutError:
+                                logger.warning(f"下载媒体超时 90s {code}")
+                    except Exception as e:
+                        logger.warning(f"下载封面失败 {code}: {e}")
+
+                    # 步骤 3：写视频目录番号预览图（{code}-poster/-fanart/-thumb）
+                    if video_dir is not None:
+                        try:
+                            from app.services.cover_refill import _make_poster
+                            movie_dir_for_write = get_movie_local_dir("jav", code)
+                            src_map: dict[str, str] = {
+                                "poster": "poster.jpg",
+                                "fanart": "fanart.jpg",
+                                "thumb": "thumb.jpg",
+                            }
+                            # 用同步 IO 写文件，避免异步上下文里混用
+                            def _write_previews_to_video_dir() -> None:
+                                for kind, fname in src_map.items():
+                                    src = movie_dir_for_write / fname
+                                    if not src.is_file():
+                                        continue
+                                    try:
+                                        data = src.read_bytes()
+                                    except Exception:
+                                        continue
+                                    if kind == "poster":
+                                        # 2:3 竖版裁切（与 _write_covers 一致）
+                                        try:
+                                            data = _make_poster(data, code)
+                                        except Exception:
+                                            pass
+                                    out_name = f"{code}-{kind}.jpg"
+                                    out_path = video_dir / out_name
+                                    if not out_path.is_file():
+                                        try:
+                                            out_path.write_bytes(data)
+                                        except OSError:
+                                            pass
+                                # 同步 extrafanart 预览图到视频目录（用户：番号文件夹里的 extrafanart 是存放预览图的地方）
+                                _src_ex = movie_dir_for_write / "extrafanart"
+                                _dst_ex = video_dir / "extrafanart"
+                                if _src_ex.is_dir():
+                                    _dst_ex.mkdir(parents=True, exist_ok=True)
+                                    for _f in _src_ex.iterdir():
+                                        if _f.is_file() and _f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                                            _dst_f = _dst_ex / _f.name
+                                            if not _dst_f.exists():
+                                                try:
+                                                    _dst_f.write_bytes(_f.read_bytes())
+                                                except OSError:
+                                                    pass
+                            await _asyncio.to_thread(_write_previews_to_video_dir)
+                        except Exception as e:
+                            logger.warning(f"写视频目录番号预览图失败 {code}: {e}")
+
+                    _counters["scraped"] += 1
+                    return "scraped"
+                else:
+                    # 已补全（三图齐全且有样图，无需远程刮削）
+                    # → 标记 source=local，使其离开 nfo_cache 待补全队列（下次统计/查询不再出现）
+                    if _movie_has_full_preview_set(movie_dir):
+                        try:
+                            s = await db.get_session()
+                            try:
+                                m = await s.get(JavMovie, mid)
+                                if m is not None and m.source == "nfo_cache":
+                                    m.source = "local"
+                                    m.status = "scraped"
+                                    await s.commit()
+                            finally:
+                                await s.close()
+                        except Exception as e:
+                            logger.warning(f"标记 local 失败 {code}: {e}")
+                    _counters["local_only"] += 1
+                    return "local_only"
+
+            except Exception as e:
+                logger.warning(f"补全 nfo_cache 失败 {code}: {e}")
+                _counters["failed"] += 1
+                return "failed"
+
+        # 用 gather 并发执行，避免 7000 部串行；sem 控制并发度
+        async def _worker(idx: int, mid, code):
+            status = await _refill_one(mid, code, prefetch.get(mid))
+            # 每部完成后立刻推进进度（避免 200 一批才更新导致前端长时间看到 0）
+            _nfo_refill_state["done"] = idx + 1
+            _nfo_refill_state["scraped"] = _counters["scraped"]
+            _nfo_refill_state["no_source"] = _counters["no_source"]
+            _nfo_refill_state["failed"] = _counters["failed"]
+            _nfo_refill_state["local_only"] = _counters["local_only"]
+            return status
+
+        total = len(targets)
+        tasks = [_worker(i, mid, code) for i, (mid, code) in enumerate(targets)]
+        batch_size = 200
+        for i in range(0, total, batch_size):
+            if _nfo_refill_state.get("cancel_requested"):
+                logger.info("refill-nfo-cache: cancel requested at batch %d", i)
+                break
+            batch = tasks[i : i + batch_size]
+            await _asyncio.gather(*batch, return_exceptions=True)
+            _nfo_refill_state["done"] = min(i + len(batch), total)
+            _nfo_refill_state["scraped"] = _counters["scraped"]
+            _nfo_refill_state["no_source"] = _counters["no_source"]
+            _nfo_refill_state["failed"] = _counters["failed"]
+            _nfo_refill_state["local_only"] = _counters["local_only"]
+
+        _nfo_refill_state["running"] = False
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "message": f"已排队补全 {len(targets)} 部 nfo_cache 影片（后台执行）",
+        "total": len(targets),
+        "queued": len(targets),
+    }
+
+
+@router.get("/scrape/refill-nfo-cache/status")
+async def refill_nfo_cache_status():
+    """批量补全 nfo_cache 的后台任务进度"""
+    return _nfo_refill_state
+
+
+@router.post("/scrape/refill-nfo-cache/cancel")
+async def refill_nfo_cache_cancel():
+    """请求取消正在跑的批量补全任务（已启动的批会跑完，新批不再启动）。"""
+    _nfo_refill_state["cancel_requested"] = True
+    return {"status": "cancel_requested", "running": _nfo_refill_state.get("running", False)}
+
+
+# ---- 本地预览图兜底（仅复制，不联网）----
+_local_sync_state: dict = {
+    "running": False, "done": 0, "total": 0,
+    "copied": 0, "no_video_dir": 0, "failed": 0, "started_at": 0.0,
+}
+
+
+class LocalSyncRequest(BaseModel):
+    codes: Optional[list[str]] = Field(
+        None,
+        description="要复制的番号列表；不传则自动扫描全部 source=nfo_cache 的影片",
+    )
+    limit: int = Field(500, ge=1, le=5000, description="自动选择时的最大数量")
+
+
+@router.post("/covers/sync-local")
+async def sync_local_previews(
+    data: LocalSyncRequest,
+    background_tasks: BackgroundTasks,
+):
+    """把视频目录已有的番号预览图（{code}-*.jpg）复制到数据目录（不联网）。
+
+    纯本地操作，秒级完成。适合作为「先补齐本地已有图、再单独远程刮削」的轻量步骤。
+    """
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        if data.codes:
+            q = select(JavMovie).where(JavMovie.code.in_(data.codes))
+        else:
+            q = select(JavMovie).where(JavMovie.source == "nfo_cache").order_by(JavMovie.id)
+        rows = (await session.execute(q)).scalars().all()
+    finally:
+        await session.close()
+
+    targets = [(m.id, m.code or "") for m in rows if (m.code or "")]
+    if data.limit and len(targets) > data.limit:
+        targets = targets[: data.limit]
+
+    if not targets:
+        return {"status": "ok", "message": "没有需要复制的影片", "total": 0, "queued": 0}
+
+    import time as _time
+    _local_sync_state.update({
+        "running": True, "done": 0, "total": len(targets),
+        "copied": 0, "no_video_dir": 0, "failed": 0,
+        "started_at": _time.time(),
+    })
+
+    async def _run():
+        nonlocal_copied = 0
+        nonlocal_no_video = 0
+        nonlocal_failed = 0
+        nonlocal_marked = 0
+        for idx, (mid, code) in enumerate(targets, start=1):
+            try:
+                video_dir = await _pick_video_dir_async(db, mid)
+                if video_dir is None:
+                    nonlocal_no_video += 1
+                else:
+                    n = _copy_local_previews(video_dir, code)
+                    nonlocal_copied += n
+                    # 复制后若三图齐全且有样图 → 标记 source=local，离开待补全队列
+                    if n > 0:
+                        from app.utils.media_helpers import get_movie_local_dir
+                        movie_dir = get_movie_local_dir("jav", code)
+                        if _movie_has_full_preview_set(movie_dir):
+                            try:
+                                s = await db.get_session()
+                                try:
+                                    m = await s.get(JavMovie, mid)
+                                    if m is not None and m.source == "nfo_cache":
+                                        m.source = "local"
+                                        m.status = "scraped"
+                                        await s.commit()
+                                        nonlocal_marked += 1
+                                finally:
+                                    await s.close()
+                            except Exception as e:
+                                logger.warning(f"标记 local 失败 {code}: {e}")
+            except Exception as e:
+                logger.warning(f"复制本地图失败 {code}: {e}")
+                nonlocal_failed += 1
+            _local_sync_state["done"] = idx
+            _local_sync_state["copied"] = nonlocal_copied
+            _local_sync_state["no_video_dir"] = nonlocal_no_video
+            _local_sync_state["failed"] = nonlocal_failed
+            _local_sync_state["marked"] = nonlocal_marked
+        _local_sync_state["running"] = False
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "message": f"已排队复制 {len(targets)} 部影片的本地图",
+        "total": len(targets),
+        "queued": len(targets),
+    }
+
+
+@router.get("/covers/sync-local/status")
+async def local_sync_status():
+    """本地预览图复制进度"""
+    return _local_sync_state
+
+
+async def _pick_video_dir_async(db, mid: int) -> Path | None:
+    """异步查影片 video_dir（从 DB file_path 取 parent）。"""
+    from sqlalchemy import select
+    from app.db.jav_models import JavMovie
+
+    session = await db.get_session()
+    try:
+        m = await session.get(JavMovie, mid)
+    finally:
+        await session.close()
+
+    if m is None:
+        return None
+    return _pick_video_dir(m)

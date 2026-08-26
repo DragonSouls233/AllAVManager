@@ -1786,3 +1786,155 @@ async def actor_cleanup_rebuild_api(req: ActorCleanupRequest):
         logger.exception("演员表清理重建失败")
         raise HTTPException(status_code=500, detail=f"清理重建失败: {e}")
     return result
+
+
+# ===== 手动修正演员名称 =====
+
+class ActorFixNameRequest(BaseModel):
+    new_name: str = Body(..., description="修正后的演员名")
+    alias: str = Body("", description="其他名称（可选，写进 alias 字段）")
+    module: str = Body("jav", description="模块名")
+
+
+@router.post("/{actor_id}/fix-name", response_model=dict)
+async def fix_actor_name(actor_id: int, req: ActorFixNameRequest):
+    """修正演员名称：
+    1. 检查新名称是否已存在（避免重复）
+    2. 改名并写 alias
+    3. movies.actor 字段中旧ID→新ID（如果改名后合并）
+    4. 触发 recalc-movie-count（该演员的作品数重算）
+    """
+    if not req.new_name or not req.new_name.strip():
+        raise HTTPException(status_code=400, detail="新名称不能为空")
+    new_name = req.new_name.strip()
+
+    session = await get_module_session(req.module)
+    ActorModel = get_module_model(req.module, "actor")
+    MovieModel = get_module_model(req.module, "movie")
+    try:
+        # 1. 获取当前演员
+        actor = await session.get(ActorModel, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        old_name = actor.name or ""
+
+        # 2. 检查新名是否已存在（不同id）
+        existing = await session.scalar(select(ActorModel).where(ActorModel.name == new_name))
+        if existing and existing.id != actor_id:
+            # 合并到已存在的同名演员
+            dst_id = existing.id
+            dst_name = existing.name
+            # 2a. 更新 movies.actor 引用：旧id → 新id
+            old_ref = "," + str(actor_id) + ","
+            new_ref = "," + str(dst_id) + ","
+            movies = await session.scalars(select(MovieModel).where(MovieModel.actor.like(f"%{old_ref}%")))
+            updated_count = 0
+            for m in movies:
+                if old_ref in m.actor:
+                    m.actor = m.actor.replace(old_ref, new_ref)
+                    updated_count += 1
+            # 2b. 保留旧 alias
+            if req.alias and req.alias.strip():
+                cur_alias = existing.alias or ""
+                existing.alias = f"{cur_alias},{req.alias.strip()}".strip(",")
+            if old_name and old_name != dst_name:
+                cur_alias = existing.alias or ""
+                existing.alias = f"{cur_alias},{old_name}".strip(",")
+            # 2c. 删除当前演员
+            await session.delete(actor)
+            await session.commit()
+            _cache.invalidate("actors:")
+            return {
+                "status": "merged",
+                "merged_into": dst_id,
+                "merged_into_name": dst_name,
+                "movies_updated": updated_count,
+            }
+        else:
+            # 2d. 直接改名
+            old_name_for_alias = old_name
+            actor.name = new_name
+            if req.alias and req.alias.strip():
+                actor.alias = req.alias.strip()
+            elif old_name_for_alias and old_name_for_alias != new_name:
+                actor.alias = old_name_for_alias
+            # 更新 movies.actor 中旧名引用（如果旧名是纯文字而非ID）
+            # 注意：movies.actor 存的是逗号分隔的ID串，所以改名不改变ID引用
+            await session.commit()
+            await session.refresh(actor)
+            _cache.invalidate("actors:")
+            return {
+                "status": "updated",
+                "id": actor.id,
+                "old_name": old_name_for_alias,
+                "new_name": new_name,
+                "alias": actor.alias,
+            }
+    finally:
+        await session.close()
+
+
+class ActorProblemNamesResponse(BaseModel):
+    problems: list[dict]
+    total: int
+
+
+@router.get("/problem-names", response_model=ActorProblemNamesResponse)
+async def get_problem_names(
+    module: str = Query("jav", description="模块名"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    """列出刮削器搜不到的问题演员名称，分类：
+    - comma: 含逗号的名称（多演员拼接）
+    - slash: 含斜杠的名称
+    - space: 含空格的日文名
+    - too_long: 超长名称(>10字符)
+    - has_digit: 含数字/年龄描述
+    - short: 名称过短(<2字符)
+    - has_paren: 括号包含别名
+    """
+    session = await get_module_session(module)
+    ActorModel = get_module_model(module, "actor")
+    try:
+        # 按问题类型分类查询
+        categories = {
+            "comma": select(ActorModel).where(ActorModel.name.like("%,%")),
+            "slash": select(ActorModel).where(ActorModel.name.like("%/%")),
+            "space": select(ActorModel).where(ActorModel.name.like("% %")).where(ActorModel.name.notlike("%/%")),
+            "too_long": select(ActorModel).where(func.length(ActorModel.name) > 10),
+            "has_digit": select(ActorModel).where(ActorModel.name.glob("*[0-9]*")),
+            "short": select(ActorModel).where(func.length(ActorModel.name) < 2),
+            "has_paren": select(ActorModel).where(ActorModel.name.like("%(%")),
+        }
+        all_problems = []
+        seen_ids = set()
+        for cat, stmt in categories.items():
+            rows = await session.scalars(stmt)
+            for r in rows:
+                if r.id not in seen_ids:
+                    seen_ids.add(r.id)
+                    all_problems.append({
+                        "id": r.id,
+                        "name": r.name,
+                        "alias": r.alias,
+                        "movie_count": r.movie_count or 0,
+                        "problem_type": cat,
+                        "problem_desc": {
+                            "comma": "含逗号，可能是多演员拼接",
+                            "slash": "含斜杠，可能是多演员拼接",
+                            "space": "含空格，可能是格式错误",
+                            "too_long": "超长名称，可能含描述文字",
+                            "has_digit": "含数字，可能含年龄/身份描述",
+                            "short": "名称过短，可能是碎片",
+                            "has_paren": "含括号，括号内可能是别名",
+                        }[cat],
+                    })
+
+        total = len(all_problems)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_data = all_problems[start:end]
+        return {"problems": page_data, "total": total}
+    finally:
+        await session.close()

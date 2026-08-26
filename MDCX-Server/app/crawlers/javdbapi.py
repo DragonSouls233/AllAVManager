@@ -171,6 +171,7 @@ class JavdbApiCrawler(BaseCrawler):
             poster_url=_with_https(data.get("frontcover_url")) or None,
             trailer_url=_with_https(data.get("sample_movie_url")) or None,
             extrafanart=[_with_https(u) for u in (data.get("samples") or []) if u],
+            sample_images=[_with_https(u) for u in (data.get("samples") or []) if u],
             raw_data=dict(data),
             confidence=0.9,
             is_exact_match=True,

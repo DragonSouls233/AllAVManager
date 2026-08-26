@@ -111,19 +111,19 @@ async def main(
         # aiohttp 新版 API：ClientSession + request 级 proxy（旧版 AsyncSession/proxies 已移除）
         async with aiohttp.ClientSession(cookies=cookies) as session:
             proxy = proxies["http"] if proxies else None
-            # 访问详情页面，提交 cookie
             url_article = f"https://fc2cmadb.com/articles/{number}"
             response_article = await session.get(url_article, proxy=proxy)
             if response_article.status != 200:
                 raise Exception(f"详情页请求失败: {response_article.status}")
+            response_article.close()
 
-            # 访问 XHR 接口获取 JSON 数据
             xhr_url = f"https://fc2cmadb.com/articles/article-info?videoid={number}"
             response_xhr = await session.get(xhr_url, proxy=proxy)
             if response_xhr.status != 200:
                 raise Exception(f"XHR 请求失败: {response_xhr.status}")
 
-        html_info = await response_xhr.json()  # json 传给旧变量
+            html_info = await response_xhr.json()
+            response_xhr.close()
 
         title = get_title(html_info)
         if not title:

@@ -66,6 +66,9 @@
             <el-button text type="primary" size="small" @click="scrapeProfile" :loading="scrapingProfile">
               <el-icon><MagicStick /></el-icon> 补充资料
             </el-button>
+            <el-button text type="warning" size="small" @click="openFixNameDialog">
+              <el-icon><Edit /></el-icon> 修正名称
+            </el-button>
             <el-tag v-if="newMovieCount > 0" type="danger" effect="dark" size="small">
               {{ newMovieCount }} 部新片
             </el-tag>
@@ -259,6 +262,44 @@
       </div>
     </el-card>
 
+    <!-- 修正名称对话框 -->
+    <el-dialog v-model="showFixNameDialog" title="修正演员名称" width="460px" :close-on-click-modal="false">
+      <el-form @submit.prevent="fixName">
+        <el-form-item label="当前名称">
+          <span class="current-name">{{ actor?.name }}</span>
+        </el-form-item>
+        <el-form-item label="修正名称">
+          <el-input
+            v-model="fixNameForm.new_name"
+            placeholder="请输入正确的演员名"
+            maxlength="50"
+            show-word-limit
+            autofocus
+          />
+        </el-form-item>
+        <el-form-item label="其他名称">
+          <el-input
+            v-model="fixNameForm.alias"
+            placeholder="艺名/别名（可选，留空则自动填旧名）"
+            maxlength="200"
+            show-word-limit
+          />
+        </el-form-item>
+        <el-alert type="info" :closable="false" show-icon>
+          <template #title>说明</template>
+          <div class="fix-name-help">
+            <p>• 输入正确名称后保存，系统会自动修正演员名</p>
+            <p>• 如果该名称已存在，会自动合并到已有演员</p>
+            <p>• 保存后可点击"补充资料"重新刮削头像和资料</p>
+          </div>
+        </el-alert>
+      </el-form>
+      <template #footer>
+        <el-button @click="showFixNameDialog = false">取消</el-button>
+        <el-button type="primary" :loading="fixingName" @click="fixName">保存修正</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 添加标签对话框 -->
     <el-dialog v-model="showTagDialog" title="添加演员标签" width="420px">
       <el-form @submit.prevent="addTag">
@@ -299,7 +340,7 @@
 import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete, MagicStick, InfoFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete, MagicStick, InfoFilled, Edit } from '@element-plus/icons-vue'
 import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl, getFileProxyUrl } from '@/utils/media'
 
 const route = useRoute()
@@ -411,6 +452,48 @@ const scrapeProfile = async () => {
     ElMessage.error('补充资料失败：' + (e.response?.data?.detail || e.message))
   } finally {
     scrapingProfile.value = false
+  }
+}
+
+// 修正名称
+const showFixNameDialog = ref(false)
+const fixingName = ref(false)
+const fixNameForm = ref({ new_name: '', alias: '' })
+function openFixNameDialog() {
+  if (!actor.value) return
+  fixNameForm.value = { new_name: '', alias: actor.value.alias || '' }
+  showFixNameDialog.value = true
+}
+const fixName = async () => {
+  const new_name = (fixNameForm.value.new_name || '').trim()
+  if (!new_name) {
+    ElMessage.warning('请输入修正后的名称')
+    return
+  }
+  if (new_name === (actor.value?.name || '')) {
+    ElMessage.warning('新名称与当前名称相同')
+    return
+  }
+  fixingName.value = true
+  try {
+    const res = await commonApi.fixActorName(actorId.value, {
+      new_name,
+      alias: fixNameForm.value.alias,
+      module: moduleType.value,
+    })
+    const data = res.data || res
+    if (data.status === 'merged') {
+      ElMessage.success(`已修正并合并到 "${data.merged_into_name}"（更新 ${data.movies_updated} 部影片）`)
+      router.push(`/actor/${data.merged_into}`)
+    } else {
+      ElMessage.success(`已修正名称：${data.old_name} → ${data.new_name}`)
+      showFixNameDialog.value = false
+      await loadActor()
+    }
+  } catch (e) {
+    ElMessage.error('修正失败：' + (e.response?.data?.detail || e.message))
+  } finally {
+    fixingName.value = false
   }
 }
 
@@ -1293,5 +1376,19 @@ onMounted(() => {
   margin-top: 2px;
   color: #c0c4cc;
   font-size: 11px;
+}
+.current-name {
+  font-size: 16px;
+  color: #e6a23c;
+  font-weight: 500;
+}
+.fix-name-help {
+  font-size: 12px;
+  line-height: 1.8;
+  color: #606266;
+  margin-top: 4px;
+}
+.fix-name-help p {
+  margin: 2px 0;
 }
 </style>

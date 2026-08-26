@@ -64,7 +64,8 @@
 
     <!-- 爬虫表格 -->
     <el-card shadow="never" class="table-card">
-      <el-table :data="filteredCrawlers" v-loading="loading" stripe
+      <el-empty v-if="!loading && filteredCrawlers.length === 0" description="未找到匹配的爬虫，请检查筛选条件或刷新列表" />
+      <el-table v-else :data="filteredCrawlers" v-loading="loading" stripe
         :default-sort="{ prop: 'priority', order: 'ascending' }">
         <el-table-column prop="name" label="标识" width="130" fixed>
           <template #default="{ row }"><span class="crawler-name">{{ row.name }}</span></template>

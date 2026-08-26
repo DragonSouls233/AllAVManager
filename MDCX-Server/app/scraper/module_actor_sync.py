@@ -31,25 +31,34 @@ _MODEL_MAP = {
 _JSON_STYLE_RE = re.compile(r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]")
 
 
+# 演员名最短长度（2026-08-26）：拒绝 ≤2 字符的短名，防止 "AI"/"あさみ"/"しずく" 等
+# 短名被当作演员后，在 LIKE '%AI%' 查询中会误匹配 AIAV 系列等大量无关影片。
+_MIN_ACTOR_NAME_LEN = 3
+
+
 def parse_actor_names(text: str) -> list[str]:
     """从文本字段解析演员名列表
 
     jav 的 actor 字段存在两种格式：
     1. 逗号/顿号分隔的纯文本（扫描、批量刮削写入）："三浦歩美,安堂はるの"
     2. JSON 风格（importer/sync 写入）：{'name': '愛弓りょう'}, {'name': '安堂はるの'}
+
+    防污染（2026-08-26）：拒绝长度 ≤2 的短名，防止 "AI"/"あさみ"/"しずく" 等
+    短名被当作演员写入 Actor 表后在 LIKE 查询中产生大量误匹配。
     """
     if not text or not text.strip():
         return []
     # 1. 优先按 JSON 风格提取 name
     json_names = [m.group(1).strip() for m in _JSON_STYLE_RE.finditer(text)]
     if json_names:
+        json_names = [n for n in json_names if len(n) >= _MIN_ACTOR_NAME_LEN]
         return json_names
     # 2. 回退按分隔符拆分
     parts = re.split(r"[,，、/&|\\n]+", text)
     names = []
     for p in parts:
         name = p.strip()
-        if name and len(name) <= 100:
+        if name and _MIN_ACTOR_NAME_LEN <= len(name) <= 100:
             names.append(name)
     return names
 

@@ -10,7 +10,7 @@
         <span class="page-subtitle">扫描本地存在但损坏/乱码的封面，批量就地解密或重下</span>
       </div>
       <div class="page-header-right">
-        <el-button :icon="Refresh" :loading="loading" @click="loadProblems">重新扫描</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="loadProblems(true)">重新扫描</el-button>
       </div>
     </div>
 
@@ -153,7 +153,7 @@ import {
   Refresh, RefreshRight, Unlock, MagicStick,
   WarningFilled, Picture
 } from '@element-plus/icons-vue'
-import { getCoverProblems, fixCoverProblems } from '@/api/jav'
+import { getCoverProblems, fixCoverProblems, getCoverFixStatus } from '@/api/jav'
 import { getServerUrl } from '@/api/index'
 
 // ===== 状态 =====
@@ -218,10 +218,14 @@ function toggleAll() {
   }
 }
 
-async function loadProblems() {
+async function loadProblems(force = false) {
   loading.value = true
   try {
-    const res = await getCoverProblems({ type_filter: typeFilter.value || undefined, limit: 2000 })
+    const res = await getCoverProblems({
+      type_filter: typeFilter.value || undefined,
+      limit: 2000,
+      force: force || undefined
+    })
     const data = res.data || {}
     problems.value = (data.problems || []).map((it) => ({ ...it, imgError: false }))
     typeCounts.value = data.type_counts || {}
@@ -243,7 +247,7 @@ async function startFix(mode, codes = null) {
     ElMessage.warning('没有可修复的影片')
     return
   }
-  const payload = { codes: targets }
+  const payload = { codes: targets, fast: true }
   if (mode === 'decrypt') {
     payload.decrypt = true
     payload.redownload = false
@@ -261,18 +265,22 @@ async function startFix(mode, codes = null) {
   try {
     await fixCoverProblems(payload)
     ElMessage.success(`已启动批量修复 ${targets.length} 部影片（后台执行）`)
-    // 轮询刷新结果，直到问题全部解决或达到轮询上限
+    // 轮询后台任务进度；任务结束后强制重扫拿最新结果
     fixTimer = setInterval(async () => {
       fixPolling += 1
-      fixingIndex.value = Math.min(fixingIndex.value + Math.ceil(fixingCount.value / 20), fixingCount.value)
       try {
-        await loadProblems()
-        if (!problems.value.length || fixPolling >= 40) {
+        const s = (await getCoverFixStatus()).data || {}
+        if (s.total) fixingCount.value = s.total
+        fixingIndex.value = s.done || 0
+        if (!s.running || fixPolling > 1200) {
           clearInterval(fixTimer)
           fixTimer = null
+          await loadProblems(true)
           fixing.value = false
           if (!problems.value.length) {
             ElMessage.success('全部封面问题已修复完成')
+          } else {
+            ElMessage.info(`批量修复结束：已处理 ${s.done}/${s.total}，剩余 ${problems.value.length} 部待处理`)
           }
         }
       } catch (e) {

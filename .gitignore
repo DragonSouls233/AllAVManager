@@ -129,3 +129,10 @@ MDCX-Server/debug_javdb_magnets2.py
 TEST_FIX_4_MODULES.md
 diag_local_map_bug.py
 diag_base_code.py
+
+.gitignore
+backup_jav.py
+dump_rows.py
+inspect_actors.py
+list_tables.py
+source_dist.py

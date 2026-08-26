@@ -445,8 +445,7 @@ const routes = [
       },
       {
         path: 'uncensored',
-        name: 'UncensoredScrape',
-        component: () => import('@/views/Crawlers.vue')
+        redirect: { name: 'UncensoredScrape' }
       },
       {
         path: 'uncensored/compare',
@@ -539,6 +538,12 @@ const routes = [
         name: 'JavCoverProblems',
         component: () => import('@/views/jav/CoverProblems.vue'),
         meta: { title: 'JAV 有码 · 封面问题修复' }
+      },
+      {
+        path: 'jav/refill-nfo-cache',
+        name: 'JavNfoCacheRefill',
+        component: () => import('@/views/jav/NfoCacheRefill.vue'),
+        meta: { title: 'JAV 有码 · 补全 NFO 缓存' }
       },
       {
         path: 'jav/leaderboard',

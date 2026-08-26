@@ -132,12 +132,38 @@ export async function fillJavFolderCheck(data = {}) {
 
 // ===== 封面问题检测与批量修复 =====
 
-// 全量扫描 JAV 封面，返回本地存在但损坏/乱码的图片列表
+// 全量扫描 JAV 封面，返回本地存在但损坏/乱码的图片列表（force=true 强制重扫）
 export async function getCoverProblems(params = {}) {
-  return api.get('/jav/covers/problems', { params })
+  return api.get('/jav/covers/problems', { params, timeout: 300000 })
 }
 
 // 批量修复问题封面（后台执行）：就地 XOR 解密 + 解密后仍损坏的自动重下
 export async function fixCoverProblems(data = {}) {
   return api.post('/jav/covers/fix', data, { timeout: 60000 })
+}
+
+// 批量封面修复的后台任务进度
+export async function getCoverFixStatus() {
+  return api.get('/jav/covers/fix/status')
+}
+
+// ===== 补全 nfo_cache（全量远程刮削 + 复制本地图 + 写番号预览图）=====
+
+// 批量补全 nfo_cache（后台执行）：每部先复制视频目录本地图，再远程刮削补全 metadata + 封面 + 番号预览图
+export async function refillNfoCache(data = {}) {
+  return api.post('/jav/scrape/refill-nfo-cache', data, { timeout: 60000 })
+}
+
+// 批量补全 nfo_cache 的进度
+export async function getNfoRefillStatus() {
+  return api.get('/jav/scrape/refill-nfo-cache/status')
+}
+
+// 本地预览图兜底（仅复制视频目录已有本地图到数据目录，不联网）
+export async function syncLocalPreviews(data = {}) {
+  return api.post('/jav/covers/sync-local', data, { timeout: 60000 })
+}
+
+export async function getLocalSyncStatus() {
+  return api.get('/jav/covers/sync-local/status')
 }

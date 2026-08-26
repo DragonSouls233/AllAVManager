@@ -49,7 +49,7 @@ function goActorDetail(id) {
 }
 
 function handleAvatarError(e) {
-  e.target.src = defaultAvatar(e.target.alt || '?')
+  e.target.src = defaultAvatar
 }
 
 onMounted(loadActors)

@@ -265,6 +265,10 @@ export const updateActor = (id, data) => api.patch(`/actors/${id}`, data)
 export const getActorStats = () => api.get('/actors/stats/overview')
 export const scrapeActorProfile = (id) => api.post(`/actors/${id}/scrape-profile`, null, { timeout: 120000 })
 export const scrapeActorProfiles = (data) => api.post('/actors/scrape-profiles/batch', data, { timeout: 300000 })
+// 手动修正演员名称（改名/合并，解决刮削器搜不到的问题）
+export const fixActorName = (id, data) => api.post(`/actors/${id}/fix-name`, data, { timeout: 60000 })
+// 问题名称列表（刮削器搜不到的演员）
+export const getProblemNames = (params) => api.get('/actors/problem-names', { params: params || {} })
 // 从影片 actor 字段反查补齐演员表（含改名后的新艺名）
 export const syncModuleActors = (module) => api.post(`/modules/${module}/actors/sync`, null, { timeout: 120000 })
 // JavDB 改名演员自动合并：扫描候选 + 批量应用

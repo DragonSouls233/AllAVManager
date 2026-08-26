@@ -341,6 +341,10 @@ class JavScanner(BaseScanner):
         from app.db.jav_models import JavActor
         from sqlalchemy import select
 
+        # 防污染（2026-08-26）：拒绝长度 ≤2 的短名
+        # "AI"/"あさみ"/"しずく" 等短名被当作演员后，在 LIKE 查询中会误匹配大量无关影片。
+        actor_names = [n for n in actor_names if len(n) >= 3]
+
         db = ModuleDatabase.get_instance("jav")
         session = await db.get_session()
         try:

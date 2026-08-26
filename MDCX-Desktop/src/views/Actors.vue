@@ -30,6 +30,10 @@
           <el-icon><Switch /></el-icon>
           JavDB 自动合并
         </el-button>
+        <el-button type="danger" @click="openProblemNames">
+          <el-icon><Warning /></el-icon>
+          名称异常
+        </el-button>
       </div>
 
       <!-- 作品数分类：多作品(默认页) / 素人单作品 / 全部，阈值可配 -->
@@ -231,6 +235,45 @@
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <!-- 问题名称列表对话框 -->
+    <el-dialog v-model="problemVisible" title="名称异常演员列表" width="720px">
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px">
+        <template #title>这些演员名称可能导致刮削器搜索不到头像和资料</template>
+      </el-alert>
+      <el-table
+        :data="problemNames"
+        v-loading="problemLoading"
+        stripe
+        max-height="420"
+        @row-click="goFixName"
+        style="cursor:pointer"
+      >
+        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column prop="name" label="当前名称" min-width="180" />
+        <el-table-column prop="alias" label="别名" min-width="120" />
+        <el-table-column prop="movie_count" label="作品数" width="80" />
+        <el-table-column label="问题类型" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="problemTypeColor(row.problem_type)">{{ row.problem_desc }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button text type="primary" size="small" @click.stop="goFixName(row)">修正</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="problemTotal > 50" class="pagination" style="margin-top:12px">
+        <el-pagination
+          v-model:current-page="problemPage"
+          :page-size="50"
+          :total="problemTotal"
+          layout="total, prev, pager, next"
+          @current-change="loadProblemNames"
+        />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -238,8 +281,8 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, MagicStick, Refresh, RefreshLeft, View, VideoPlay, Switch } from '@element-plus/icons-vue'
-import { getActors, previewAvatarScrape, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge } from '@/api'
+import { Search, MagicStick, Refresh, RefreshLeft, View, VideoPlay, Switch, Warning } from '@element-plus/icons-vue'
+import { getActors, previewAvatarScrape, scrapeActorProfiles, syncModuleActors, scanJavdbMerge, applyJavdbMerge, getProblemNames } from '@/api'
 import { useAvatarScrapeStore } from '@/stores/avatarScrape'
 import { defaultAvatar, getActorAvatarUrl, getFileProxyUrl } from '@/utils/media'
 
@@ -542,6 +585,39 @@ onMounted(() => {
   loadActors()
   avatarStore.initLibrary()
 })
+
+// 问题名称列表
+const problemVisible = ref(false)
+const problemLoading = ref(false)
+const problemNames = ref([])
+const problemTotal = ref(0)
+const problemPage = ref(1)
+const problemTypeColor = (type) => {
+  const map = { comma: 'danger', slash: 'danger', space: 'warning', too_long: 'info', has_digit: 'info', short: 'danger', has_paren: 'warning' }
+  return map[type] || ''
+}
+async function loadProblemNames() {
+  problemLoading.value = true
+  try {
+    const res = await getProblemNames({ module: moduleType.value, page: problemPage.value, page_size: 50 })
+    const data = res.data || res
+    problemNames.value = data.problems || []
+    problemTotal.value = data.total || 0
+  } catch (e) {
+    ElMessage.error('加载失败: ' + (e.message || '未知'))
+  } finally {
+    problemLoading.value = false
+  }
+}
+function openProblemNames() {
+  problemPage.value = 1
+  problemVisible.value = true
+  loadProblemNames()
+}
+function goFixName(row) {
+  problemVisible.value = false
+  router.push(`/actor/${row.id}`)
+}
 </script>
 
 <style scoped>
