@@ -17,6 +17,10 @@ from app.crawlers import javbus, javdb, fc2, avsox, avmoo, javdatabase, javbooks
 # TheJavDB 开放 API 爬虫（免 Cookie 绕 CF，见 javdbapi.py 头部版本追踪说明）
 from app.crawlers import javdbapi
 
+# 顶层 DMM/FANZA 网页爬虫（name="dmm_web"）。注意 md/dmm.py 是另一套 GraphQL
+# API 爬虫（name="dmm"），两者都需注册；若漏导入，refill 传 dmm_web 会"未找到爬虫"。
+from app.crawlers import dmm
+
 # 导入 md 爬虫（包含 fc2ppvdb/fc2club 等，会自动注册）
 from app.crawlers import md
 

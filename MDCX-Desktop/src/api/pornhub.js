@@ -68,3 +68,67 @@ export async function getPornhubPlayInfo(movieId) {
 export async function getPornhubPlayUrl(movieId, protocol = 'http') {
   return api.get(`/pornhub/movies/${movieId}/play/external`, { params: { protocol } })
 }
+
+// ===== 演员列表增强 =====
+export async function getPornhubActorsPage(params = {}) {
+  return api.get('/pornhub/actors', { params })
+}
+export async function getPornhubActorNationalities() {
+  return api.get('/pornhub/actors/nationalities')
+}
+export async function setPornhubActorProfileUrl(id, url) {
+  return api.post(`/pornhub/actors/${id}/set-profile-url`, { url })
+}
+export async function updatePornhubActor(id, data) {
+  return api.patch(`/pornhub/actors/${id}`, data)
+}
+export function pornhubActorAvatarUrl(id) {
+  return `/api/pornhub/actors/${id}/avatar/file`
+}
+
+// ===== 影片批量 =====
+export async function batchPornhubRefetchCovers(params = {}) {
+  return api.post('/pornhub/movies/batch/refetch-covers', null, { params })
+}
+export async function batchPornhubGeneratePreviews(params = {}) {
+  return api.post('/pornhub/movies/batch/generate-previews', null, { params })
+}
+export async function batchPornhubDownloadAvatars(params = {}) {
+  return api.post('/pornhub/actors/batch/download-avatars', null, { params })
+}
+export async function generatePornhubPreview(id, cols = 4, rows = 4, thumbW = 320) {
+  return api.post(`/pornhub/movies/${id}/generate-cover`, null, {
+    params: { cols, rows, thumb_w: thumbW }
+  })
+}
+export async function generatePornhubCoverEnhanced(id, width = 480, quality = 85) {
+  return api.post(`/pornhub/movies/generate-cover-enhanced/${id}`, null, {
+    params: { width, quality }
+  })
+}
+export async function rescrapePornhubMovie(id) {
+  return api.post(`/pornhub/movies/${id}/rescrape`, null, { timeout: 180000 })
+}
+export function pornhubPreviewUrl(id) {
+  return `/api/pornhub/movies/${id}/preview/file`
+}
+
+// ===== 外部 L:\data\PORNHUB\models.db =====
+export async function pornhubExternalStatus() {
+  return api.get('/pornhub/external/status')
+}
+export async function pornhubExternalSearch(name) {
+  return api.get('/pornhub/external/search', { params: { name } })
+}
+export async function pornhubExternalSeedActor(name) {
+  return api.post('/pornhub/external/seed-actor', { name })
+}
+export async function pornhubExternalSeedAll(limit = 200) {
+  return api.post('/pornhub/external/seed-all', null, { params: { limit } })
+}
+export async function pornhubBackfillUrls() {
+  return api.post('/pornhub/actors/backfill-urls')
+}
+export async function pornhubSeedFromExternal() {
+  return api.post('/pornhub/actors/seed-from-external')
+}

@@ -73,7 +73,10 @@ class DmmWebCrawler(BaseCrawler):
     base_url = "https://www.dmm.co.jp"
 
     priority = CrawlerPriority.LOW
-    supported_types = ["normal"]
+    # 注意：必须是 jav（不是 normal）——normal 不在模块映射表里，
+    # 否则 get_crawlers_for_module("jav") 永远找不到本爬虫，
+    # refill 传 sources=["dmm_web"] 会秒判"未找到爬虫"导致 no_source。
+    supported_types = ["jav"]
     supported_prefixes = []
     description = "DMM/FANZA 网页爬虫，直接解析 dmm.co.jp 页面"
     language = "ja"

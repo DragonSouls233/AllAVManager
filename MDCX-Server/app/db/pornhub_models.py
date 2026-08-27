@@ -38,6 +38,8 @@ class PornhubActor(ActorMixin, PORNHUB_BASE):
     __tablename__ = "actors"
 
     nationality: Mapped[str | None] = mapped_column(String(50))
+    profile_url: Mapped[str | None] = mapped_column(String(500))
+    profile_status: Mapped[str | None] = mapped_column(String(20), default="pending")
 
 
 class MovieActor(MovieActorMixin, PORNHUB_BASE):

@@ -277,3 +277,67 @@ def _copy_as_cover(ffmpeg: str, src_path: str, dst_path: str, quality: int) -> N
         logger.warning("封面复制失败: %s，回退直接复制文件", e)
         import shutil
         shutil.copy2(src_path, dst_path)
+
+
+# ==================== 预览图（缩略图墙） ====================
+
+
+async def generate_preview_grid(
+    video_path: str,
+    output_path: str,
+    cols: int = 4,
+    rows: int = 4,
+    thumb_w: int = 320,
+    quality: int = 85,
+    sample_range: tuple = (0.05, 0.95),
+) -> dict:
+    """从视频采样 cols*rows 帧，拼接成一张缩略图墙（preview.jpg）。"""
+    ffmpeg = get_ffmpeg_path()
+    if not ffmpeg or not Path(ffmpeg).exists():
+        return {"status": "error", "message": "ffmpeg 未找到"}
+
+    inp = Path(video_path)
+    if not inp.exists():
+        return {"status": "error", "message": f"视频不存在: {video_path}"}
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    duration = _get_video_duration(str(inp))
+    if not duration or duration <= 0:
+        return {"status": "error", "message": "无法获取视频时长"}
+
+    n = max(1, cols * rows)
+    start_t = duration * sample_range[0]
+    end_t = duration * sample_range[1]
+    if end_t <= start_t:
+        start_t, end_t = 0.0, duration * 0.95
+    step = (end_t - start_t) / max(1, n - 1) if n > 1 else 0
+
+    try:
+        vf = (
+            f"select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{max(0.05, step)})',"
+            f"scale={thumb_w}:-1,tile={cols}x{rows}"
+        )
+        cmd = [
+            ffmpeg, "-y",
+            "-i", str(inp),
+            "-vf", vf,
+            "-frames:v", "1",
+            "-q:v", str(max(2, min(quality // 4, 31))),
+            str(out),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0 and out.exists() and out.stat().st_size > 1024:
+            return {"status": "ok", "preview_path": str(out), "frames": n}
+        return {
+            "status": "error",
+            "message": f"ffmpeg 退出码 {proc.returncode}",
+            "stderr": (stderr.decode("utf-8", "ignore")[-400:] if stderr else ""),
+        }
+    except Exception as e:
+        logger.warning("预览图生成失败: %s", e)
+        return {"status": "error", "message": str(e)}

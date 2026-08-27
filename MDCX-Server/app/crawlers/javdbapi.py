@@ -110,18 +110,19 @@ class JavdbApiCrawler(BaseCrawler):
                     api_url, headers={"Accept": "application/json"}, purpose="api"
                 )
         except Exception as e:
+            # 404 = 该 API 未收录此番号（正常业务响应，javdb.com 上可能有但 API 没有），
+            # 超时/5xx 等才是真故障。无论哪种都不 mark_error：
+            # 之前 10 个"未收录"就会被 base.mark_error 标记为 ERROR 永久下线，
+            # 导致 refill 秒判"未找到爬虫"、全部 no_source。真故障由调用方熔断兜底。
             logger.warning(f"TheJavDB API 请求失败 {code}: {e}")
-            self.mark_error()
             return None
 
         if not isinstance(data, dict):
-            self.mark_error()
             return None
 
         result = self._to_scrape_result(data, fallback_number=code)
         if result is None or (not result.title and not result.cover_url):
             logger.debug(f"TheJavDB API {code}: 未找到或无内容")
-            self.mark_error()
             return None
 
         self.mark_success()

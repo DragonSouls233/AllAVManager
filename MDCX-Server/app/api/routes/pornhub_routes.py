@@ -19,6 +19,7 @@ from typing import Optional
 import os as _os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request as _Request
+from fastapi.responses import FileResponse
 
 from app.db.module_db import ModuleDatabase
 from app.services.pornhub_comparison import PornhubComparator, TitleNormalizer, LocalMediaScanner
@@ -33,6 +34,14 @@ _pornhub_scan_lock = asyncio.Lock()
 
 def get_pornhub_db() -> ModuleDatabase:
     return ModuleDatabase.get_instance("pornhub")
+
+
+# 模块级头像目录（兜底，与 pornhub_actor_scraper.AVATAR_DIR 保持一致）
+try:
+    from app.scraper.pornhub_actor_scraper import AVATAR_DIR  # type: ignore
+except Exception:
+    from app.config.manager import DATA_DIR
+    AVATAR_DIR = DATA_DIR / "avatars" / "pornhub"
 
 
 async def _store_pornhub_actor_avatar(actor, profile_avatar_url: "str | None", actor_name: str) -> "str | None":
@@ -181,18 +190,85 @@ async def trigger_pornhub_resumable_scan(background_tasks: BackgroundTasks,
 
 
 @router.get("/actors")
-async def list_actors():
-    """列出 PORNHub 演员列表"""
+async def list_actors(
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(50, ge=1, le=500, description="返回数量"),
+    search: Optional[str] = Query(None, description="按名称/别名模糊搜索"),
+    nationality: Optional[str] = Query(None, description="按国籍精确过滤"),
+    profile_status: Optional[str] = Query(None, description="资料状态 pending/scraped/failed"),
+    sort_by: str = Query("movie_count", description="排序字段 movie_count/name/created_at"),
+    sort_dir: str = Query("desc", description="asc/desc"),
+):
+    """列出 PORNHub 演员列表（支持分页/搜索/排序/国籍/资料状态）"""
     db = get_pornhub_db()
     session = await db.get_session()
     try:
         from app.db.pornhub_models import PornhubActor
-        from sqlalchemy import select
-        stmt = select(PornhubActor).order_by(PornhubActor.movie_count.desc())
+        from sqlalchemy import select, func, or_
+
+        filters = []
+        if search:
+            like = f"%{search}%"
+            filters.append(or_(PornhubActor.name.like(like),
+                               PornhubActor.alias.like(like),
+                               PornhubActor.name_en.like(like)))
+        if nationality:
+            filters.append(PornhubActor.nationality == nationality)
+        if profile_status:
+            filters.append(PornhubActor.profile_status == profile_status)
+
+        # 统计总数
+        total_stmt = select(func.count(PornhubActor.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
+        total = (await session.execute(total_stmt)).scalar()
+
+        # 排序字段白名单
+        sort_col = {
+            "movie_count": PornhubActor.movie_count,
+            "name": PornhubActor.name,
+            "created_at": PornhubActor.created_at,
+        }.get(sort_by, PornhubActor.movie_count)
+        order = sort_col.asc() if sort_dir == "asc" else sort_col.desc()
+
+        stmt = select(PornhubActor).order_by(order).offset(skip).limit(limit)
+        if filters:
+            stmt = stmt.where(*filters)
         result = await session.execute(stmt)
         actors = result.scalars().all()
-        return [{"id": a.id, "name": a.name, "nationality": a.nationality,
-                 "avatar_url": a.avatar_url, "movie_count": a.movie_count, "source": a.source, "module_type": "pornhub"} for a in actors]
+
+        return {"total": total, "items": [
+            {
+                "id": a.id, "name": a.name, "alias": a.alias, "name_en": a.name_en,
+                "nationality": a.nationality, "avatar_url": a.avatar_url,
+                "profile_url": getattr(a, "profile_url", None),
+                "profile_status": getattr(a, "profile_status", None),
+                "movie_count": a.movie_count, "source": a.source,
+                "module_type": "pornhub",
+                "created_at": str(a.created_at) if a.created_at else None,
+            }
+            for a in actors
+        ]}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/nationalities")
+async def list_actor_nationalities():
+    """获取所有出现过的国籍及计数（用于前端过滤下拉）"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select, func
+        stmt = (
+            select(PornhubActor.nationality, func.count(PornhubActor.id).label("c"))
+            .where(PornhubActor.nationality.isnot(None))
+            .group_by(PornhubActor.nationality)
+            .order_by(func.count(PornhubActor.id).desc())
+        )
+        result = await session.execute(stmt)
+        return [{"nationality": r[0], "count": r[1]} for r in result.all()]
     finally:
         await session.close()
 
@@ -203,19 +279,62 @@ async def get_actor(actor_id: int):
     db = get_pornhub_db()
     session = await db.get_session()
     try:
-        from app.db.pornhub_models import PornhubActor
+        from app.db.pornhub_models import PornhubActor, MovieActor, PornhubMovie
         from sqlalchemy import select
-        stmt = select(PornhubActor).where(PornhubActor.id == actor_id)
-        result = await session.execute(stmt)
-        actor = result.scalar_one_or_none()
+        actor = (await session.execute(
+            select(PornhubActor).where(PornhubActor.id == actor_id)
+        )).scalar_one_or_none()
         if not actor:
             raise HTTPException(status_code=404, detail="演员不存在")
-        return {"id": actor.id, "name": actor.name, "alias": actor.alias,
-                "nationality": actor.nationality,
-                "avatar_url": actor.avatar_url, "source": actor.source,
-                "module_type": "pornhub",
-                "movie_count": actor.movie_count,
-                "created_at": str(actor.created_at)}
+
+        # 主演作品（role=actress）
+        leading_q = (
+            select(PornhubMovie)
+            .join(MovieActor, MovieActor.movie_id == PornhubMovie.id)
+            .where(MovieActor.actor_id == actor_id, MovieActor.role == "actress")
+            .order_by(PornhubMovie.created_at.desc())
+            .limit(60)
+        )
+        leading = (await session.execute(leading_q)).scalars().all()
+
+        # 共演作品（其它角色）
+        co_star_q = (
+            select(PornhubMovie)
+            .join(MovieActor, MovieActor.movie_id == PornhubMovie.id)
+            .where(MovieActor.actor_id == actor_id, MovieActor.role != "actress")
+            .order_by(PornhubMovie.created_at.desc())
+            .limit(40)
+        )
+        co_stars = (await session.execute(co_star_q)).scalars().all()
+
+        return {
+            "id": actor.id, "name": actor.name, "alias": actor.alias,
+            "name_en": actor.name_en, "name_jp": actor.name_jp,
+            "nationality": actor.nationality, "birthplace": actor.birthplace,
+            "birth_date": actor.birth_date, "age": actor.age,
+            "height": actor.height, "bust": actor.bust,
+            "waist": actor.waist, "hip": actor.hip, "cup": actor.cup,
+            "hobby": actor.hobby, "intro": actor.intro, "zodiac": actor.zodiac,
+            "debut_year": actor.debut_year, "social_links": actor.social_links,
+            "avatar_url": actor.avatar_url, "source": actor.source,
+            "source_site": actor.source_site,
+            "profile_url": getattr(actor, "profile_url", None),
+            "profile_status": getattr(actor, "profile_status", None),
+            "movie_count": actor.movie_count,
+            "module_type": "pornhub",
+            "created_at": str(actor.created_at),
+            "updated_at": str(actor.updated_at),
+            "leading_movies": [
+                {"id": m.id, "code": m.code, "title": m.title, "cover_url": m.cover_url,
+                 "release_date": m.release_date, "status": m.status, "duration": m.duration}
+                for m in leading
+            ],
+            "co_star_movies": [
+                {"id": m.id, "code": m.code, "title": m.title, "cover_url": m.cover_url,
+                 "release_date": m.release_date, "status": m.status, "duration": m.duration}
+                for m in co_stars
+            ],
+        }
     finally:
         await session.close()
 
@@ -224,14 +343,25 @@ async def get_actor(actor_id: int):
 
 
 @router.get("/movies")
-async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Query(False, description="仅列出未刮削的影片"),
+async def list_movies(
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(24, ge=1, le=200, description="返回数量"),
+    unscraped_only: bool = Query(False, description="仅列出未刮削的影片"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
     # 2026-08-08 新增: 详情页跳转筛选参数
     series: Optional[str] = Query(None, description="按系列精确过滤"),
     maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
     genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
-    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤")):
-    """列出 PORNHub 模块影片列表"""
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
+    # 2026-08-27 新增: 状态/搜索/排序
+    status: Optional[str] = Query(None, description="按状态过滤（pending/scraped/failed）"),
+    search: Optional[str] = Query(None, description="按 code/title 模糊搜索"),
+    has_cover: Optional[bool] = Query(None, description="是否有封面 URL"),
+    has_file: Optional[bool] = Query(None, description="是否已关联本地文件"),
+    sort_by: str = Query("created_at", description="created_at/release_date/source_views/play_count/duration"),
+    sort_dir: str = Query("desc", description="asc/desc"),
+):
+    """列出 PORNHub 模块影片列表（支持分页/搜索/排序/状态/封面过滤）"""
     db = get_pornhub_db()
     session = await db.get_session()
     try:
@@ -241,6 +371,8 @@ async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Que
         filters = []
         if unscraped_only:
             filters.append(PornhubMovie.status == "pending")
+        if status:
+            filters.append(PornhubMovie.status == status)
         if actor:
             filters.append(PornhubMovie.actor.like(f"%{actor}%"))
         if series:
@@ -251,25 +383,52 @@ async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Que
             filters.append(PornhubMovie.genre.contains(genre))
         if code_prefix:
             filters.append(PornhubMovie.code.startswith(code_prefix))
+        if search:
+            filters.append(or_(PornhubMovie.code.like(f"%{search}%"),
+                               PornhubMovie.title.like(f"%{search}%")))
+        if has_cover is True:
+            filters.append(PornhubMovie.cover_url.isnot(None))
+        elif has_cover is False:
+            filters.append(PornhubMovie.cover_url.is_(None))
+        if has_file is True:
+            filters.append(PornhubMovie.file_path.isnot(None))
+        elif has_file is False:
+            filters.append(PornhubMovie.file_path.is_(None))
 
         total_stmt = select(func.count(PornhubMovie.id))
         if filters:
             total_stmt = total_stmt.where(*filters)
-        total_result = await session.execute(total_stmt)
-        total = total_result.scalar()
+        total = (await session.execute(total_stmt)).scalar()
 
-        stmt = select(PornhubMovie).order_by(PornhubMovie.created_at.desc()).offset(skip).limit(limit)
+        sort_col = {
+            "created_at": PornhubMovie.created_at,
+            "release_date": PornhubMovie.release_date,
+            "source_views": PornhubMovie.source_views,
+            "play_count": PornhubMovie.play_count,
+            "duration": PornhubMovie.duration,
+        }.get(sort_by, PornhubMovie.created_at)
+        order = sort_col.asc() if sort_dir == "asc" else sort_col.desc()
+
+        stmt = select(PornhubMovie).order_by(order).offset(skip).limit(limit)
         if filters:
             stmt = stmt.where(*filters)
-        result = await session.execute(stmt)
-        movies = result.scalars().all()
+        movies = (await session.execute(stmt)).scalars().all()
         return {"total": total, "items": [
-            {"id": m.id, "code": m.code, "title": m.title,
-             "source_views": m.source_views, "source_score": m.source_score,
-             "uploader": m.uploader, "categories": m.categories,
-             "cover_url": m.cover_url, "actor": m.actor,
-             "module_type": "pornhub",
-             "file_path": m.file_path, "status": m.status}
+            {
+                "id": m.id, "code": m.code, "title": m.title,
+                "source_id": m.source_id, "source_views": m.source_views,
+                "source_score": m.source_score, "source_downloads": m.source_downloads,
+                "uploader": m.uploader, "categories": m.categories,
+                "cover_url": m.cover_url, "poster_url": m.poster_url,
+                "actor": m.actor, "studio": m.studio, "maker": m.maker, "series": m.series,
+                "release_date": m.release_date, "duration": m.duration,
+                "rating": m.rating, "genre": m.genre,
+                "module_type": "pornhub",
+                "file_path": m.file_path, "file_size": m.file_size,
+                "play_count": m.play_count, "view_status": m.view_status,
+                "status": m.status, "scraped_at": str(m.scraped_at) if m.scraped_at else None,
+                "created_at": str(m.created_at),
+            }
             for m in movies
         ]}
     finally:
@@ -278,32 +437,53 @@ async def list_movies(skip: int = 0, limit: int = 20, unscraped_only: bool = Que
 
 @router.get("/movies/{movie_id}")
 async def get_movie(movie_id: int):
-    """获取 PORNHub 影片详情"""
+    """获取 PORNHub 影片详情（含关联演员）"""
     db = get_pornhub_db()
     session = await db.get_session()
     try:
-        from app.db.pornhub_models import PornhubMovie
+        from app.db.pornhub_models import PornhubMovie, MovieActor, PornhubActor
         from sqlalchemy import select
-        stmt = select(PornhubMovie).where(PornhubMovie.id == movie_id)
-        result = await session.execute(stmt)
-        movie = result.scalar_one_or_none()
+        movie = (await session.execute(
+            select(PornhubMovie).where(PornhubMovie.id == movie_id)
+        )).scalar_one_or_none()
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 关联演员
+        actors_q = (
+            select(PornhubActor, MovieActor.role)
+            .join(MovieActor, MovieActor.actor_id == PornhubActor.id)
+            .where(MovieActor.movie_id == movie_id)
+        )
+        rows = (await session.execute(actors_q)).all()
+        actors_data = [
+            {"id": a.id, "name": a.name, "avatar_url": a.avatar_url, "role": role}
+            for a, role in rows
+        ]
+
         return {
             "id": movie.id, "code": movie.code, "title": movie.title,
-            "original_title": movie.original_title,
+            "original_title": movie.original_title, "title_jp": movie.title_jp,
             "source_id": movie.source_id, "source_views": movie.source_views,
             "source_score": movie.source_score, "source_downloads": movie.source_downloads,
             "uploader": movie.uploader, "categories": movie.categories,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
-            "actor": movie.actor, "studio": movie.studio,
+            "thumb_url": movie.thumb_url, "trailer_url": movie.trailer_url,
+            "sample_images": movie.sample_images,
+            "actor": movie.actor, "studio": movie.studio, "maker": movie.maker, "series": movie.series,
+            "director": movie.director, "genre": movie.genre, "tag": movie.tag,
             "module_type": "pornhub",
             "release_date": movie.release_date, "duration": movie.duration,
-            "rating": movie.rating, "plot": movie.plot,
-            "tags": getattr(movie, "tag", None), "source": movie.source, "source_url": movie.source_url,
-            "file_path": movie.file_path, "file_size": movie.file_size,
+            "rating": movie.rating, "plot": movie.plot, "plot_short": movie.plot_short,
+            "source": movie.source, "source_url": movie.source_url,
+            "file_path": movie.file_path, "output_dir": movie.output_dir,
+            "file_size": movie.file_size, "fingerprint": movie.fingerprint,
             "play_count": movie.play_count, "view_status": movie.view_status,
-            "status": movie.status, "created_at": str(movie.created_at),
+            "last_played_at": str(movie.last_played_at) if movie.last_played_at else None,
+            "status": movie.status, "scraped_at": str(movie.scraped_at) if movie.scraped_at else None,
+            "created_at": str(movie.created_at),
+            "updated_at": str(movie.updated_at),
+            "actors": actors_data,
         }
     finally:
         await session.close()
@@ -1388,6 +1568,370 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
         "status": "started",
         "message": "PORNHub 完整工作流已启动（扫描目录 → 刮削演员 → 生成封面）",
     }
+
+
+# ========== 批量补封/补头像/预览图/外部种子 ==========
+
+
+@router.post("/movies/batch/refetch-covers")
+async def batch_refetch_covers(
+    background_tasks: BackgroundTasks,
+    only_missing: bool = Query(True, description="仅补缺失封面"),
+    limit: int = Query(100, ge=1, le=1000),
+):
+    """批量从 source_url 重新下载封面到本地（按 source_id 重新构建 cover_url）"""
+    async def _run():
+        try:
+            import httpx
+        except ImportError:
+            logger.error("httpx 未安装，无法批量补封")
+            return
+        db = get_pornhub_db()
+        session = await db.get_session()
+        try:
+            from app.db.pornhub_models import PornhubMovie
+            from sqlalchemy import select
+            stmt = select(PornhubMovie).order_by(PornhubMovie.id.desc()).limit(limit)
+            if only_missing:
+                stmt = stmt.where(PornhubMovie.cover_url.is_(None))
+            movies = (await session.execute(stmt)).scalars().all()
+            from app.config.manager import DATA_DIR
+            cover_dir = DATA_DIR / "movies" / "pornhub" / "covers"
+            cover_dir.mkdir(parents=True, exist_ok=True)
+            success = 0
+            failed = 0
+            for mv in movies:
+                url = mv.cover_url
+                if not url and mv.source_id:
+                    url = f"https://ci.phncdn.com/videos/{mv.source_id}/(mh=default)/1.jpg"
+                if not url:
+                    failed += 1
+                    continue
+                try:
+                    target = cover_dir / f"{mv.code}.jpg"
+                    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                        if r.status_code == 200 and len(r.content) > 1024:
+                            target.write_bytes(r.content)
+                            mv.cover_url = str(target)
+                            success += 1
+                        else:
+                            failed += 1
+                except Exception as e:
+                    logger.debug(f"批量补封失败 {mv.code}: {e}")
+                    failed += 1
+                await asyncio.sleep(0.2)
+            await session.commit()
+            logger.info(f"PORNHub 批量补封 完成: success={success} failed={failed}")
+        finally:
+            await session.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "PORNHub 批量补封已启动（后台任务）"}
+
+
+@router.post("/movies/batch/generate-previews")
+async def batch_generate_previews(
+    background_tasks: BackgroundTasks,
+    cols: int = Query(4, ge=1, le=10),
+    rows: int = Query(4, ge=1, le=10),
+    thumb_w: int = Query(320, ge=80, le=1280),
+    limit: int = Query(200, ge=1, le=2000),
+    only_missing: bool = Query(True),
+):
+    """批量从视频采样生成预览图（缩略图墙），输出到视频同目录 preview.jpg"""
+    async def _run():
+        try:
+            from app.utils.pornhub_cover_generator import generate_preview_grid
+        except ImportError:
+            logger.error("pornhub_cover_generator 不可用")
+            return
+        db = get_pornhub_db()
+        session = await db.get_session()
+        try:
+            from app.db.pornhub_models import PornhubMovie
+            from sqlalchemy import select
+            stmt = select(PornhubMovie).order_by(PornhubMovie.id.desc()).limit(limit)
+            if only_missing:
+                stmt = stmt.where(PornhubMovie.cover_url.isnot(None))
+            movies = (await session.execute(stmt)).scalars().all()
+            success = 0
+            failed = 0
+            for mv in movies:
+                if not mv.file_path or not Path(mv.file_path).exists():
+                    failed += 1
+                    continue
+                try:
+                    video_dir = Path(mv.file_path).parent
+                    out_path = video_dir / f"{Path(mv.file_path).stem}_preview.jpg"
+                    res = await generate_preview_grid(
+                        video_path=mv.file_path,
+                        output_path=str(out_path),
+                        cols=cols, rows=rows, thumb_w=thumb_w,
+                    )
+                    if res.get("status") == "ok":
+                        mv.sample_images = str(out_path)
+                        success += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    logger.debug(f"预览图生成失败 {mv.code}: {e}")
+                    failed += 1
+                await asyncio.sleep(0.1)
+            await session.commit()
+            logger.info(f"PORNHub 批量生成预览图 完成: success={success} failed={failed}")
+        finally:
+            await session.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "PORNHub 批量预览图生成已启动"}
+
+
+@router.post("/actors/batch/download-avatars")
+async def batch_download_avatars(
+    background_tasks: BackgroundTasks,
+    only_missing: bool = Query(True),
+    limit: int = Query(200, ge=1, le=2000),
+):
+    """批量下载缺失头像：1) 先从已抓取的 profile.avatar_url；2) 失败再回退到 javdb"""
+    async def _run():
+        db = get_pornhub_db()
+        session = await db.get_session()
+        try:
+            from app.db.pornhub_models import PornhubActor
+            from sqlalchemy import select
+            stmt = select(PornhubActor).order_by(PornhubActor.id.desc()).limit(limit)
+            if only_missing:
+                stmt = stmt.where(PornhubActor.avatar_url.is_(None))
+            actors = (await session.execute(stmt)).scalars().all()
+            success = 0
+            failed = 0
+            for act in actors:
+                try:
+                    avatar_url = None
+                    profile = None
+                    try:
+                        from app.scraper.pornhub_actor_scraper import scrape_actor_profile
+                        profile = await scrape_actor_profile(act.name, act.nationality)
+                    except Exception:
+                        profile = None
+                    if profile and profile.avatar_url:
+                        avatar_url = profile.avatar_url
+                    if not avatar_url:
+                        avatar_url = await _scrape_avatar_from_javdb(act.name)
+                    local_path = await _store_pornhub_actor_avatar(act, avatar_url, act.name)
+                    if local_path:
+                        success += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    logger.debug(f"批量下载头像失败 {act.name}: {e}")
+                    failed += 1
+                await asyncio.sleep(0.3)
+            await session.commit()
+            logger.info(f"PORNHub 批量头像下载 完成: success={success} failed={failed}")
+        finally:
+            await session.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "PORNHub 批量头像下载已启动"}
+
+
+@router.get("/actors/{actor_id}/avatar/file")
+async def serve_actor_avatar_file(actor_id: int):
+    """从本地 DATA_DIR/avatars/pornhub/ 读取 actor 头像（按 id 或 name 命名）"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select
+        act = (await session.execute(
+            select(PornhubActor).where(PornhubActor.id == actor_id)
+        )).scalar_one_or_none()
+        if not act:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        safe_name = re.sub(r'[\\/:*?"<>|]', '_', act.name)
+        candidates = [
+            Path(AVATAR_DIR) / f"actor_{act.id}.jpg",
+            Path(AVATAR_DIR) / f"{safe_name}.jpg",
+            Path(AVATAR_DIR) / f"{safe_name}.png",
+        ]
+        for c in candidates:
+            if c.exists():
+                return FileResponse(str(c))
+        raise HTTPException(status_code=404, detail="本地头像文件不存在")
+    finally:
+        await session.close()
+
+
+@router.get("/movies/{movie_id}/preview/file")
+async def serve_movie_preview_file(movie_id: int):
+    """从视频同目录读取 sample_images 字段指向的 preview.jpg"""
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubMovie
+        from sqlalchemy import select
+        mv = (await session.execute(
+            select(PornhubMovie).where(PornhubMovie.id == movie_id)
+        )).scalar_one_or_none()
+        if not mv:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        for cand in [mv.sample_images, mv.cover_url, mv.poster_url]:
+            if cand and Path(cand).exists():
+                return FileResponse(str(cand))
+        raise HTTPException(status_code=404, detail="预览图不存在")
+    finally:
+        await session.close()
+
+
+# ========== 外部 L:\data\PORNHUB\models.db 种子导入 ==========
+
+
+@router.get("/external/status")
+async def external_db_status():
+    """检查 L:\\data\\PORNHUB\\models.db 是否可读，返回模型/作品统计"""
+    try:
+        from app.services.pornhub_external_db import get_external_status
+        return get_external_status()
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@router.get("/external/search")
+async def external_search(name: str = Query(..., min_length=1)):
+    """从外部 DB 模糊搜索演员，返回 {name, profile_url, video_count, mode, country} 列表"""
+    try:
+        from app.services.pornhub_external_db import search_models
+        return {"items": search_models(name)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/external/seed-actor")
+async def external_seed_actor(payload: dict):
+    """把外部 DB 的演员（按 name）导入为 PornhubActor 记录（无头像无作品仅作种子）"""
+    name = (payload or {}).get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="name 必填")
+    try:
+        from app.services.pornhub_external_db import get_model_by_name
+        model = get_model_by_name(name)
+        if not model:
+            raise HTTPException(status_code=404, detail=f"外部 DB 未找到 {name}")
+        db = get_pornhub_db()
+        session = await db.get_session()
+        try:
+            from app.db.pornhub_models import PornhubActor
+            from sqlalchemy import select
+            existing = (await session.execute(
+                select(PornhubActor).where(PornhubActor.name == name)
+            )).scalar_one_or_none()
+            if existing:
+                if not existing.profile_url and model.get("profile_url"):
+                    existing.profile_url = model["profile_url"]
+                if not existing.nationality and model.get("country"):
+                    existing.nationality = model["country"]
+                await session.commit()
+                return {"status": "updated", "id": existing.id, "actor": existing.name}
+            new = PornhubActor(
+                name=name,
+                nationality=model.get("country"),
+                profile_url=model.get("profile_url"),
+                profile_status="pending",
+                source="pornhub",
+            )
+            session.add(new)
+            await session.commit()
+            return {"status": "created", "id": new.id, "actor": new.name}
+        finally:
+            await session.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/external/seed-all")
+async def external_seed_all(
+    background_tasks: BackgroundTasks,
+    limit: int = Query(200, ge=1, le=5000, description="最多导入多少个"),
+):
+    """把外部 DB 全部模型批量导入为 PornhubActor 种子（异步后台任务）"""
+    async def _run():
+        try:
+            from app.services.pornhub_external_db import iter_models
+        except Exception as e:
+            logger.error(f"external_seed_all 失败: {e}")
+            return
+        db = get_pornhub_db()
+        session = await db.get_session()
+        try:
+            from app.db.pornhub_models import PornhubActor
+            from sqlalchemy import select
+            count = 0
+            skipped = 0
+            for model in iter_models():
+                if count >= limit:
+                    break
+                name = model.get("name")
+                if not name:
+                    continue
+                exists = (await session.execute(
+                    select(PornhubActor).where(PornhubActor.name == name)
+                )).scalar_one_or_none()
+                if exists:
+                    skipped += 1
+                    continue
+                new = PornhubActor(
+                    name=name,
+                    nationality=model.get("country"),
+                    profile_url=model.get("profile_url"),
+                    profile_status="pending",
+                    source="pornhub",
+                )
+                session.add(new)
+                count += 1
+                if count % 50 == 0:
+                    await session.commit()
+                    await asyncio.sleep(0.2)
+            await session.commit()
+            logger.info(f"PORNHub 外部种子导入完成: created={count} skipped={skipped}")
+        finally:
+            await session.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "PORNHub 外部种子导入已启动（后台）"}
+
+
+@router.post("/actors/{actor_id}/set-profile-url")
+async def set_actor_profile_url(actor_id: int, payload: dict):
+    """手动设置/修正演员的 profile_url（用于 L:\\data\\PORNHUB 导入失败时手工补）"""
+    url = (payload or {}).get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="url 必填")
+    db = get_pornhub_db()
+    session = await db.get_session()
+    try:
+        from app.db.pornhub_models import PornhubActor
+        from sqlalchemy import select
+        act = (await session.execute(
+            select(PornhubActor).where(PornhubActor.id == actor_id)
+        )).scalar_one_or_none()
+        if not act:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        act.profile_url = url
+        act.profile_status = "pending"
+        await session.commit()
+        return {"status": "ok", "id": act.id, "profile_url": url}
+    finally:
+        await session.close()
+
+
+@router.post("/movies/{movie_id}/rescrape")
+async def rescrape_movie(movie_id: int):
+    """强制重新刮削影片（无视状态，等同于 /scrape）"""
+    return await scrape_pornhub_movie(movie_id)
 
 
 # ========== 播放端点 ==========

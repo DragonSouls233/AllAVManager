@@ -2592,8 +2592,8 @@ _nfo_refill_state: dict = {
 # 优先使用 JAVDB API 等健康源，避免整批任务被一个坏源拖死。
 _source_fail_streak: dict[str, int] = {}
 _source_blackout_until: dict[str, float] = {}
-_SOURCE_FAIL_THRESHOLD = 3       # 连续失败 N 次触发熔断
-_SOURCE_BLACKOUT_SECS = 600      # 熔断时长（秒）
+_SOURCE_FAIL_THRESHOLD = 5       # 仅"确定性故障"连续失败 N 次才触发熔断（无有效结果不计）
+_SOURCE_BLACKOUT_SECS = 180      # 熔断时长（秒）
 
 
 def _source_in_blackout(src: str) -> bool:
@@ -2601,18 +2601,24 @@ def _source_in_blackout(src: str) -> bool:
     return _source_blackout_until.get(src, 0.0) > _t.monotonic()
 
 
-def _record_source_result(src: str, ok: bool) -> None:
-    """记录单源刮削结果；连续失败达到阈值即熔断该源一段时间。"""
+def _record_source_result(src: str, ok: bool, fatal: bool = False) -> None:
+    """记录单源刮削结果；仅"确定性故障"（超时/HTTP 失败/异常）连续失败达到阈值才熔断。
+
+    站点正常响应但未找到该片（is_valid=False，fatal=False）不计入熔断——
+    "该站没这片" ≠ "该站挂了"，JAVDB 上明明有数据的番号绝不能因别的片没收录而被熔断。
+    """
     import time as _t
     if ok:
         _source_fail_streak[src] = 0
         _source_blackout_until.pop(src, None)
         return
+    if not fatal:
+        return
     _source_fail_streak[src] = _source_fail_streak.get(src, 0) + 1
     if _source_fail_streak[src] >= _SOURCE_FAIL_THRESHOLD:
         _source_blackout_until[src] = _t.monotonic() + _SOURCE_BLACKOUT_SECS
         logger.warning(
-            f"源 {src} 连续失败 {_SOURCE_FAIL_THRESHOLD} 次，熔断 "
+            f"源 {src} 连续故障 {_SOURCE_FAIL_THRESHOLD} 次，熔断 "
             f"{_SOURCE_BLACKOUT_SECS}s（后续补全自动切到其余源，优先 JAVDB API）"
         )
         _source_fail_streak[src] = 0
@@ -2826,6 +2832,11 @@ async def refill_nfo_cache(
         from sqlalchemy import select as _select
         from app.db.jav_models import JavMovie
 
+        # 新任务开始：重置刮削源熔断状态，避免上一任务积累的熔断（跨任务延续）
+        # 误伤本次任务——"上次 JAVBUS 挂了"不代表"这次 JAVDB 也挂了"。
+        _source_fail_streak.clear()
+        _source_blackout_until.clear()
+
         # 一次性 SQL 取全 file_path，避免 7000+ 次单独 DB 查询
         mid_to_fp: dict[int, str] = {}
         if targets:
@@ -2858,6 +2869,50 @@ async def refill_nfo_cache(
 
         sem = _asyncio.Semaphore(data.concurrency)
         _counters = {"scraped": 0, "no_source": 0, "failed": 0, "local_only": 0}
+
+        async def _refill_apply_result(mid, code, result):
+            """DB 落库段（写 NFO/封面 + 更新 movie 记录）。
+
+            独立成协程以便调用方用「可放弃超时」包裹：jav.db 位于 L 盘网络路径，
+            aiosqlite 底层 sqlite 线程可能因网络 IO 永久阻塞，导致这里任意一个
+            await 永不返回。调用方 wait(timeout) 超时后丢弃该任务（不等待取消），
+            worker 继续前进，避免单个卡死拖死整批 gather。
+            """
+            s = await db.get_session()
+            try:
+                m = await s.get(JavMovie, mid)
+                if m is None:
+                    return "failed: DB 记录不存在"
+                resp = await _apply_scrape_result(s, m, result, "jav")
+                if resp.get("status") == "ok":
+                    await s.commit()
+                    return "ok"
+                await s.rollback()
+                return f"failed: {resp.get('message', '写入失败')}"
+            finally:
+                await s.close()
+
+        def _flush_failed_file():
+            """把当前失败清单落盘为 txt（同步执行，事件循环内无并发写冲突）。
+
+            任务进行中每 50 部刷新一次 + 任务结束时再写一次；文件放
+            L:\\data\\logs\\refill_nfo_cache_failed_*.txt，用户可直接打开。
+            """
+            _fl = list(_nfo_refill_state.get("failed_list") or [])
+            if not _fl:
+                return
+            try:
+                from app.config.manager import DATA_DIR as _DD
+                _lf = _DD / "logs"
+                _lf.mkdir(parents=True, exist_ok=True)
+                _ff = _lf / f"refill_nfo_cache_failed_{_time.strftime('%Y%m%d_%H%M%S')}.txt"
+                with open(_ff, "w", encoding="utf-8") as _fh:
+                    for _item in _fl:
+                        _fh.write(f"{_item.get('code')} | {_item.get('reason')}\n")
+                _nfo_refill_state["failed_file"] = str(_ff)
+                logger.info(f"[refill] 失败清单已落盘: {_ff} ({len(_fl)} 条)")
+            except Exception as e:
+                logger.warning(f"[refill] 失败清单落盘失败: {e}")
 
         async def _refill_one(mid, code, video_dir):
             _start_t = _time.monotonic()
@@ -2916,7 +2971,7 @@ async def refill_nfo_cache(
                                     )
                             except Exception as e:
                                 r = None
-                                _record_source_result(src, False)
+                                _record_source_result(src, False, fatal=True)
                                 logger.warning(
                                     f"[refill] 源 {src} 刮削 {code} 异常: "
                                     f"{type(e).__name__}: {e}"
@@ -2940,27 +2995,29 @@ async def refill_nfo_cache(
                         )
                         return "no_source"
 
-                    s = await db.get_session()
-                    try:
-                        m = await s.get(JavMovie, mid)
-                        if m is None:
+                    # DB 落库段：120s 可放弃超时。jav.db 在网络盘上，aiosqlite 底层
+                    # 线程可能因网络 IO 永久阻塞，直接 await 会无限挂起并拖死整批
+                    # gather；wait 超时后丢弃任务（不等待取消），worker 继续。
+                    _dbtask = _asyncio.create_task(
+                        _refill_apply_result(mid, code, result)
+                    )
+                    _ddone, _drest = await _asyncio.wait({_dbtask}, timeout=120.0)
+                    if _dbtask not in _ddone:
+                        _dbtask.cancel()
+                        _counters["failed"] += 1
+                        _nfo_refill_state["failed_list"].append(
+                            {"code": code, "reason": "failed: DB 落库超时 120s（网络盘 IO 卡死，已放弃）"}
+                        )
+                        logger.warning(f"[refill] {code} DB 落库超时 120s（已放弃等待，进入图片阶段）")
+                    else:
+                        _db_res = _dbtask.result()
+                        if _db_res != "ok":
                             _counters["failed"] += 1
                             _nfo_refill_state["failed_list"].append(
-                                {"code": code, "reason": "failed: DB 记录不存在"}
+                                {"code": code, "reason": _db_res}
                             )
+                            logger.warning(f"[refill] {code} 落库失败: {_db_res}")
                             return "failed"
-                        resp = await _apply_scrape_result(s, m, result, "jav")
-                        if resp.get("status") == "ok":
-                            await s.commit()
-                        else:
-                            await s.rollback()
-                            _counters["failed"] += 1
-                            _nfo_refill_state["failed_list"].append(
-                                {"code": code, "reason": f"failed: {resp.get('message', '写入失败')}"}
-                            )
-                            return "failed"
-                    finally:
-                        await s.close()
 
                     try:
                         from app.utils.media_helpers import ensure_movie_media_local
@@ -3088,39 +3145,62 @@ async def refill_nfo_cache(
                 )
                 return "failed"
 
-        # 用 gather 并发执行，避免 7000 部串行；sem 控制并发度
+        # 用 wait 并发执行，避免 7000 部串行；sem 控制并发度
         async def _worker(idx: int, mid, code):
             _st = _time.monotonic()
-            status = await _refill_one(mid, code, prefetch.get(mid))
+            try:
+                status = await _refill_one(mid, code, prefetch.get(mid))
+            except Exception as e:
+                # 兜底：任何未捕获异常都记入失败清单并推进进度，避免进度停滞
+                status = "failed"
+                _counters["failed"] += 1
+                _nfo_refill_state["failed_list"].append(
+                    {"code": code, "reason": f"failed: worker异常 {type(e).__name__}: {e}"}
+                )
+                logger.warning(f"[refill] {code} worker 异常: {type(e).__name__}: {e}")
             logger.info(
                 f"[refill] {code} 完成 status={status} "
                 f"耗时 {_time.monotonic() - _st:.1f}s "
                 f"(done={idx + 1}/{total} scraped={_counters['scraped']} "
                 f"local_only={_counters['local_only']} no_source={_counters['no_source']})"
             )
-            # 每部完成后立刻推进进度（避免 200 一批才更新导致前端长时间看到 0）
+            # 每部完成后立刻推进进度（避免一批才更新导致前端长时间看到 0）
             _nfo_refill_state["done"] = idx + 1
             _nfo_refill_state["scraped"] = _counters["scraped"]
             _nfo_refill_state["no_source"] = _counters["no_source"]
             _nfo_refill_state["failed"] = _counters["failed"]
             _nfo_refill_state["local_only"] = _counters["local_only"]
+            # 每 50 部刷新失败清单文件，任务进行中也能随时查看
+            if (idx + 1) % 50 == 0:
+                _flush_failed_file()
             return status
 
         total = len(targets)
         tasks = [_worker(i, mid, code) for i, (mid, code) in enumerate(targets)]
-        batch_size = 200
+        # batch 不能太大：同批 worker 在 DB 落库段是并发的（无信号量限制），
+        # 200 并发会打爆 jav.db 连接池（50 连接 → QueuePool 30s 超时 → failed）。
+        # 40 并发在连接池容量内，且任一 worker 卡死也只影响本批 40 个。
+        batch_size = 40
         for i in range(0, total, batch_size):
             if _nfo_refill_state.get("cancel_requested"):
                 logger.info("refill-nfo-cache: cancel requested at batch %d", i)
                 break
-            batch = tasks[i : i + batch_size]
-            await _asyncio.gather(*batch, return_exceptions=True)
+            # asyncio.wait 只接受 Task/Future，协程必须用 ensure_future 包装，
+            # 否则抛 TypeError: Passing coroutines is forbidden（整批任务崩溃假死）
+            batch = [_asyncio.ensure_future(t) for t in tasks[i : i + batch_size]]
+            # 每批整体给 25 分钟硬上限：即便个别 worker 异常拖沓，整批也必须返回，
+            # 避免无限挂起导致后续批次永不启动（进度冻结、无日志）。
+            _gd, _gp = await _asyncio.wait(batch, timeout=1500.0)
+            for _t in _gp:
+                _t.cancel()
             _nfo_refill_state["done"] = min(i + len(batch), total)
             _nfo_refill_state["scraped"] = _counters["scraped"]
             _nfo_refill_state["no_source"] = _counters["no_source"]
             _nfo_refill_state["failed"] = _counters["failed"]
             _nfo_refill_state["local_only"] = _counters["local_only"]
 
+        # 任务结束：落盘最终失败清单，供用户手动补数据
+        _flush_failed_file()
         _nfo_refill_state["running"] = False
 
     background_tasks.add_task(_run)

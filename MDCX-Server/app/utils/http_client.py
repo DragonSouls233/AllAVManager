@@ -34,6 +34,11 @@ from app.utils.browser_fingerprint import (
 
 logger = logging.getLogger(__name__)
 
+# 确定性失败状态码：源站/CDN 明确拒绝或不可达（Cloudflare 521-524、内容级
+# 403/404/405/410/451）。重试无意义，命中即跳过重试与 httpx 降级，立即失败，
+# 避免每张图浪费 3 次重试（每次约 20s）+ 降级 httpx 的双倍时间。
+_NO_RETRY_STATUS = {403, 404, 405, 410, 451, 521, 522, 523, 524}
+
 # 会话级默认指纹（最现代的 Chrome 136 Windows）
 # 每个请求可通过 impersonate 参数覆盖
 _SESSION_DEFAULT_IMPERSONATE = "chrome136"
@@ -333,6 +338,7 @@ class AsyncHttpClient:
         req_headers = self._build_request_headers(url, fingerprint, headers, req_purpose)
 
         # 重试逻辑
+        no_retry_status: Optional[int] = None
         if not self._curl_failed and self._session is not None:
             for attempt in range(self.max_retries):
                 try:
@@ -356,6 +362,13 @@ class AsyncHttpClient:
                     # 错误被本 try 捕获并切到 httpx 降级。
                     _ = response.content
                     # 检查响应状态码
+                    if response.status_code and response.status_code in _NO_RETRY_STATUS:
+                        # 确定性失败：跳过剩余重试与 httpx 降级，直接失败
+                        no_retry_status = response.status_code
+                        logger.warning(
+                            f"GET {url} 确定性失败 HTTP {no_retry_status}，跳过重试"
+                        )
+                        break
                     if response.status_code and 400 <= response.status_code < 600:
                         raise Exception(f"HTTP {response.status_code}")
                     return response
@@ -374,6 +387,10 @@ class AsyncHttpClient:
                         break
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(1.0 * (attempt + 1))
+
+        # 确定性失败：直接抛给调用方，不再降级 httpx（降级结果相同，纯浪费时间）
+        if no_retry_status is not None:
+            raise Exception(f"HTTP {no_retry_status}")
 
         # curl_cffi 不可用或本次失败 → 降级到 httpx（接口兼容 Response）
         if self.max_retries > 0:

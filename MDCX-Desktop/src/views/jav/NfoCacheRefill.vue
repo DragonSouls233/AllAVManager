@@ -150,6 +150,20 @@
       </div>
     </el-card>
 
+    <el-card v-if="status.running || (status.failed_list && status.failed_list.length)" class="progress-card" shadow="never">
+      <template #header>
+        <span class="card-title"><el-icon><Warning /></el-icon>&nbsp;失败清单（{{ (status.failed_list || []).length }} 条）</span>
+      </template>
+      <div v-if="status.failed_file" class="failed-file">
+        已落盘：<code>{{ status.failed_file }}</code>
+        <el-button size="small" type="primary" text @click="copyFailedFile">复制路径</el-button>
+      </div>
+      <el-table :data="status.failed_list || []" size="small" max-height="360" style="width:100%">
+        <el-table-column prop="code" label="番号" width="150" />
+        <el-table-column prop="reason" label="失败原因" show-overflow-tooltip />
+      </el-table>
+    </el-card>
+
     <div class="info-note">
       <el-alert type="info" :closable="false">
         <template #title>说明</template>
@@ -165,16 +179,17 @@
 </template>
 
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
-import { Download, Setting, VideoPlay, CopyDocument, Loading } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { Download, Setting, VideoPlay, CopyDocument, Loading, Warning } from '@element-plus/icons-vue'
 import { refillNfoCache, getNfoRefillStatus, syncLocalPreviews, getLocalSyncStatus, getJavMovies } from '@/api/jav'
+import { ElMessage } from 'element-plus'
 
 const stats = ref({ total: 0, cover_ok: 0, cover_missing: 0, local_missing: 0 })
 const limit = ref(500)
 const concurrency = ref(5)
 const sources = ref(['javdbapi', 'javbus', 'avmoo', 'javbooks', 'javdatabase', 'avsox', 'dmm_web'])
 const steps = ref(['local_first', 'scrape'])
-const status = ref({ running: false, done: 0, total: 0, scraped: 0, no_source: 0, failed: 0, local_only: 0, started_at: 0 })
+const status = ref({ running: false, done: 0, total: 0, scraped: 0, no_source: 0, failed: 0, local_only: 0, started_at: 0, failed_list: [], failed_file: null })
 const syncStatus = ref({ running: false, done: 0, total: 0, copied: 0, no_video_dir: 0, failed: 0, started_at: 0 })
 const running = ref(false)
 const syncRunning = ref(false)
@@ -237,15 +252,62 @@ async function pollRefillStatus() {
   try {
     const res = await getNfoRefillStatus()
     status.value = res
-    if (!res.running) {
-      clearInterval(pollTimer)
-      pollTimer = null
-      running.value = false
+    running.value = !!res.running
+    if (res.running) {
+      // 后端任务在跑：确保轮询恢复（切页回来 onMounted 首次拉取时也能续上）
+      if (!pollTimer) {
+        pollTimer = setInterval(pollRefillStatus, 2500)
+      }
+    } else {
+      if (pollTimer) {
+        clearInterval(pollTimer)
+        pollTimer = null
+      }
       loadStats()
     }
   } catch (e) {
     console.error(e)
   }
+}
+
+async function pollSyncStatus() {
+  try {
+    const res = await getLocalSyncStatus()
+    syncStatus.value = res
+    syncRunning.value = !!res.running
+    if (res.running) {
+      if (!syncPollTimer) {
+        syncPollTimer = setInterval(pollSyncStatus, 2500)
+      }
+    } else {
+      if (syncPollTimer) {
+        clearInterval(syncPollTimer)
+        syncPollTimer = null
+      }
+      loadStats()
+    }
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+onMounted(() => {
+  // 页面挂载即恢复实时状态：后端任务若在跑，自动恢复轮询并显示实时进度，
+  // 不再依赖"必须在本页点击启动"才展示
+  pollRefillStatus()
+  pollSyncStatus()
+  loadStats()
+})
+
+loadStats()
+
+function copyFailedFile() {
+  if (!status.value.failed_file) return
+  navigator.clipboard.writeText(status.value.failed_file).then(() => {
+    ElMessage.success('失败清单路径已复制')
+  }).catch(() => {
+    ElMessage.error('复制失败，请手动复制上方路径')
+  })
 }
 
 async function startLocalSync() {
@@ -260,23 +322,6 @@ async function startLocalSync() {
     console.error(e)
   }
 }
-
-async function pollSyncStatus() {
-  try {
-    const res = await getLocalSyncStatus()
-    syncStatus.value = res
-    if (!res.running) {
-      clearInterval(syncPollTimer)
-      syncPollTimer = null
-      syncRunning.value = false
-      loadStats()
-    }
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-loadStats()
 </script>
 
 <style scoped>
@@ -310,6 +355,21 @@ loadStats()
 .mini-num.warning { color: #e6a23c; }
 .mini-num.danger { color: #f56c6c; }
 .success-color { color: #67c23a; }
+.failed-file {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.failed-file code {
+  background: #f4f4f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
 .info-note { margin-top: 12px; }
 .info-note .el-alert { font-size: 13px; line-height: 1.7; }
 </style>
