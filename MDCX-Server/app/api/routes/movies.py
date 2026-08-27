@@ -2859,11 +2859,14 @@ def _detail_referer(source: str | None, code: str | None) -> str | None:
     return None
 
 
-async def _persist_scraped_media(result, code: str, module: str = "jav"):
+async def _persist_scraped_media(result, code: str, module: str = "jav", skip_samples: bool = False):
     """下载刮削封面+预览图到规范目录 data/movies/<模块>/<番号>/，并生成 NFO（规则3）。
 
     注意：落盘目录按电影所属模块（module）决定，而不是按刮削来源站点推断，
     否则无码/fc2/欧美等片会被误写入 jav 目录。
+
+    skip_samples=True 时跳过样本图下载（refill 批量落库用：样本图 12 张串行
+    网络下载是 120s 超时的主要卡点，批量任务里交给图片阶段统一处理）。
     """
     import logging
     import re
@@ -2909,7 +2912,7 @@ async def _persist_scraped_media(result, code: str, module: str = "jav"):
             if not samples:
                 # 兜底：从封面/DMM cid 构造标准样本图（预览图），扩大预览图来源
                 samples = _dmm_sample_urls_from_result(result)
-            if samples:
+            if samples and not skip_samples:
                 from app.config.manager import get_config as _get_cfg
                 preview_count = getattr(_get_cfg().scraper, "preview_count", 12)
                 sample_local = await proc.download_samples(
@@ -2924,10 +2927,11 @@ async def _persist_scraped_media(result, code: str, module: str = "jav"):
     return cover_local, sample_local, str(movie_dir)
 
 
-async def _apply_scrape_result(session, movie, result, module: str = "jav") -> dict:
+async def _apply_scrape_result(session, movie, result, module: str = "jav", skip_samples: bool = False) -> dict:
     """将刮削结果落地到 movie 记录（字段 + 封面/预览图 + 演员 + NFO 引用）。
 
     被 scrape_movie 与 scrape_by_code 共用。调用方需自行 commit 前保证 movie 已存在于 session。
+    skip_samples=True 时跳过样本图下载（refill 批量落库优化，见 _persist_scraped_media）。
     """
     MovieActor = _get_mod_cls(module, "MovieActor")
     Studio = _get_mod_cls(module, "Studio")
@@ -2937,7 +2941,7 @@ async def _apply_scrape_result(session, movie, result, module: str = "jav") -> d
     if not (result and result.is_valid()):
         return {"status": "failed", "message": "刮削失败，未找到匹配数据"}
 
-    cover_local, sample_local, movie_dir = await _persist_scraped_media(result, movie.code, module)
+    cover_local, sample_local, movie_dir = await _persist_scraped_media(result, movie.code, module, skip_samples=skip_samples)
     if movie_dir:
         movie.output_dir = movie_dir
 

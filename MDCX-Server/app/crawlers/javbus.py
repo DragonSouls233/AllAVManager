@@ -95,8 +95,9 @@ class JavBusCrawler(BaseCrawler):
                 # 异步抓取磁力链接（通过 uncledatoolsbyajax API）
                 await self._fetch_and_attach_magnets(client, code, html_text, result, headers)
                 self.mark_success()
-            else:
-                self.mark_error()
+            # 页面正常但未解析出结果 = 该站没收录此片（正常响应），不 mark_error。
+            # 否则批量补全里连遇 10 个未收录片，本爬虫会被 base.mark_error
+            # 标记为 ERROR 永久下线，导致后续全部秒判"未找到爬虫"。
 
             return result
 
@@ -155,8 +156,7 @@ class JavBusCrawler(BaseCrawler):
             if result:
                 await self._fetch_and_attach_magnets(client, code, html_text, result, headers)
                 self.mark_success()
-            else:
-                self.mark_error()
+            # 页面正常但未解析出结果 = 该站没收录此片，不 mark_error（同 scrape 说明）。
 
             return result
 

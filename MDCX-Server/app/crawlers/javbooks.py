@@ -60,22 +60,21 @@ class JavBooksCrawler(BaseCrawler):
         # 2) 搜索页找精确匹配的详情页 URL
         detail_url = await self._find_detail_url(prefix, code)
         if not detail_url:
+            # 搜索页未找到匹配 = 该站没收录（正常响应），不 mark_error。
             logger.debug(f"JavBooks {code}: 搜索页未找到匹配条目")
-            self.mark_error()
             return None
 
         # 3) 抓详情页
         async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             html_text = await client.get_text(detail_url, headers=self._headers())
             if not html_text:
-                self.mark_error()
+                # 详情页为空 = 该站没收录（正常响应），不 mark_error。
                 return None
 
         result = self._parse_detail_page(html_text, code, detail_url)
         if result:
             self.mark_success()
-        else:
-            self.mark_error()
+        # 解析无结果 = 页面字段不匹配（正常响应），不 mark_error。
         return result
 
     # ------------------------------------------------------------------

@@ -2640,8 +2640,8 @@ class RefillNfoCacheRequest(BaseModel):
     )
     concurrency: int = Field(5, ge=1, le=20, description="刮削并发度")
     sources: list[str] = Field(
-        default_factory=lambda: ["javbus", "javdbapi", "avmoo", "javbooks", "javdatabase", "avsox", "dmm_web"],
-        description="刮削源优先级顺序：JAVBUS → JAVDB API → AVMOO → 4 辅助。按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，连续失败自动熔断 10 分钟",
+        default_factory=lambda: ["javdb", "javbus", "avmoo", "javbooks", "javdatabase", "avsox", "dmm_web"],
+        description="刮削源优先级顺序：JAVDB 官方 App API → JAVBUS → AVMOO → 4 辅助。按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，连续失败自动熔断 10 分钟",
     )
 
 
@@ -2883,7 +2883,7 @@ async def refill_nfo_cache(
                 m = await s.get(JavMovie, mid)
                 if m is None:
                     return "failed: DB 记录不存在"
-                resp = await _apply_scrape_result(s, m, result, "jav")
+                resp = await _apply_scrape_result(s, m, result, "jav", skip_samples=True)
                 if resp.get("status") == "ok":
                     await s.commit()
                     return "ok"
@@ -2995,9 +2995,11 @@ async def refill_nfo_cache(
                         )
                         return "no_source"
 
-                    # DB 落库段：120s 可放弃超时。jav.db 在网络盘上，aiosqlite 底层
-                    # 线程可能因网络 IO 永久阻塞，直接 await 会无限挂起并拖死整批
-                    # gather；wait 超时后丢弃任务（不等待取消），worker 继续。
+                    # DB 落库段：120s 可放弃超时。落库协程内含封面网络下载 + DB 写，
+                    # 若图片 CDN 挂起/被反爬会拖慢落库；wait 超时后丢弃任务（不等待取消），
+                    # worker 继续前进，避免单个卡死拖死整批 gather。
+                    # 注：样本图(12张)下载已通过 _apply_scrape_result(skip_samples=True) 跳过，
+                    # 批量任务里由图片阶段统一处理，避免串行网络下载撑爆 120s。
                     _dbtask = _asyncio.create_task(
                         _refill_apply_result(mid, code, result)
                     )
@@ -3006,7 +3008,7 @@ async def refill_nfo_cache(
                         _dbtask.cancel()
                         _counters["failed"] += 1
                         _nfo_refill_state["failed_list"].append(
-                            {"code": code, "reason": "failed: DB 落库超时 120s（网络盘 IO 卡死，已放弃）"}
+                            {"code": code, "reason": "failed: DB 落库超时 120s（网络图片下载卡住，已放弃）"}
                         )
                         logger.warning(f"[refill] {code} DB 落库超时 120s（已放弃等待，进入图片阶段）")
                     else:

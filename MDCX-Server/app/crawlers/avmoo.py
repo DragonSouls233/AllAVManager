@@ -138,7 +138,9 @@ class AvmooCrawler(BaseCrawler):
             "/jav/data/api/search", [{"search": code, "lang": "cn"}, 60, 1]
         )
         if not data:
-            self.mark_error()
+            # API 返回空 = 搜索无结果/该站没收录（正常响应），不 mark_error。
+            # 否则批量补全里连遇 10 个未收录片，本爬虫会被 base.mark_error
+            # 标记为 ERROR 永久下线，导致后续全部秒判"未找到爬虫"。
             return None
 
         items = data.get("data") or []
@@ -155,23 +157,22 @@ class AvmooCrawler(BaseCrawler):
                 movie_id = items[0].get("movieId")
 
         if not movie_id:
+            # 搜索无结果 = 该站没收录（正常响应），不 mark_error。
             logger.debug(f"Avmoo {code}: 搜索无结果")
-            self.mark_error()
             return None
 
         detail = await self._api_post(
             "/jav/data/api/getMovie", [movie_id, "cn"]
         )
         if not detail:
-            self.mark_error()
+            # getMovie 返回空 = 详情不存在（正常响应），不 mark_error。
             return None
 
         movie = detail.get("data") or {}
         result = self._parse_api_data(movie, code)
         if result:
             self.mark_success()
-        else:
-            self.mark_error()
+        # 解析无结果 = 详情字段不匹配（正常响应），不 mark_error。
         return result
 
     # ------------------------------------------------------------------

@@ -77,8 +77,7 @@ class JavDBCrawler(BaseCrawler):
         result = self._parse_detail_page(html, code, url)
         if result:
             self.mark_success()
-        else:
-            self.mark_error()
+        # 页面正常但解析无结果 = 详情字段不匹配（正常响应），不 mark_error。
         return result
 
     async def _scrape_via_app_api(self, code: str, zone: Optional[str] = None) -> Optional[ScrapeResult]:
@@ -94,18 +93,21 @@ class JavDBCrawler(BaseCrawler):
             try:
                 mv = await client.search_movie(code, zone=zone)
                 if not mv:
+                    # 搜索未找到 = 该站没收录（正常响应），不 mark_error。
+                    # 否则批量补全里连遇 10 个未收录片，本爬虫会被 base.mark_error
+                    # 标记为 ERROR 永久下线，导致后续全部秒判"未找到爬虫"。
                     logger.debug(f"JavDB App API {code}: 未找到")
-                    self.mark_error()
                     return None
                 # 反向校验：App API 返回的 number 若与目标番号强不等价，判定为抓错片，拒绝入库防串号。
                 if mv.number:
                     from app.utils.code_verify import reverse_code_check
                     is_match, norm_e, norm_g = reverse_code_check(code, mv.number)
                     if not is_match:
+                        # 抓错片也是正常业务场景（搜索返回了近似条目），拒绝入库但不 mark_error，
+                        # 否则批量任务里本爬虫同样会被误杀下线。
                         logger.warning(
                             f"JavDB App API 番号反向校验失败，拒绝入库: 期望={norm_e} 实际={norm_g} title={mv.title[:30]!r}"
                         )
-                        self.mark_error()
                         return None
                 # 取磁力（App API 特有，HTML 链路拿不到）
                 magnets = await client.get_magnets(mv.id)

@@ -61,9 +61,7 @@ class AvSoxCrawler(BaseCrawler):
                 
                 if result:
                     self.mark_success()
-                else:
-                    self.mark_error()
-                
+                # 页面正常但解析无结果 = 该站没收录（正常响应），不 mark_error。
                 return result
             
             except Exception as e:

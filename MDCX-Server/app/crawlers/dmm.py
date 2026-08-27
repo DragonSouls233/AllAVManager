@@ -118,7 +118,7 @@ class DmmWebCrawler(BaseCrawler):
                     logger.debug(f"DMM Web {code} URL {detail_url} 失败: {e}")
                     continue
 
-            self.mark_error()
+            # 所有 URL 模式均 404/无结果 = 该站没收录此片（正常响应），不 mark_error。
             logger.debug(f"DMM Web {code}: 所有 URL 模式均未找到")
             return None
 
