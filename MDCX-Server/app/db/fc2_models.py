@@ -96,7 +96,7 @@ class UserRecommendation(UserRecommendationMixin, FC2_BASE):
 from sqlalchemy.orm import relationship as _rel
 
 # --- MovieActor → Movie / Actor ---
-MovieActor.movie = _rel(Fc2Movie, foreign_keys=[MovieActor.movie_id], back_populates="actors")
+MovieActor.movie = _rel(Fc2Movie, foreign_keys=[MovieActor.movie_id], back_populates="actors_rel")
 MovieActor.actor = _rel(Fc2Actor, foreign_keys=[MovieActor.actor_id], back_populates="movies")
 
 # --- MovieTag → Movie / Tag ---
@@ -117,7 +117,7 @@ MovieRelation.related_movie = _rel(Fc2Movie, foreign_keys=[MovieRelation.related
 UserRecommendation.movie = _rel(Fc2Movie, foreign_keys=[UserRecommendation.movie_id])
 
 # --- Movie → 关联表 ---
-Fc2Movie.actors = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
+Fc2Movie.actors_rel = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
 Fc2Movie.tags_rel = _rel(MovieTag, back_populates="movie", cascade="all, delete-orphan")
 Fc2Movie.studio_ref = _rel(Studio, foreign_keys=[Fc2Movie.studio_id])
 Fc2Movie.series_ref = _rel(Series, foreign_keys=[Fc2Movie.series_id])

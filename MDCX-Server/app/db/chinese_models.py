@@ -95,7 +95,7 @@ class UserRecommendation(UserRecommendationMixin, CHINESE_BASE):
 from sqlalchemy.orm import relationship as _rel
 
 # --- MovieActor → Movie / Actor ---
-MovieActor.movie = _rel(ChineseMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors")
+MovieActor.movie = _rel(ChineseMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors_rel")
 MovieActor.actor = _rel(ChineseActor, foreign_keys=[MovieActor.actor_id], back_populates="movies")
 
 # --- MovieTag → Movie / Tag ---
@@ -116,7 +116,7 @@ MovieRelation.related_movie = _rel(ChineseMovie, foreign_keys=[MovieRelation.rel
 UserRecommendation.movie = _rel(ChineseMovie, foreign_keys=[UserRecommendation.movie_id])
 
 # --- Movie → 关联表 ---
-ChineseMovie.actors = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
+ChineseMovie.actors_rel = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
 ChineseMovie.tags_rel = _rel(MovieTag, back_populates="movie", cascade="all, delete-orphan")
 ChineseMovie.studio_ref = _rel(Studio, foreign_keys=[ChineseMovie.studio_id])
 ChineseMovie.series_ref = _rel(Series, foreign_keys=[ChineseMovie.series_id])

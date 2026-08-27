@@ -111,7 +111,7 @@ class AnimeUserRecommendation(UserRecommendationMixin, ANIME_BASE):
 from sqlalchemy.orm import relationship as _rel
 
 # --- MovieActor → Movie / Actor ---
-AnimeMovieActor.movie = _rel(AnimeMovie, foreign_keys=[AnimeMovieActor.movie_id], back_populates="actors")
+AnimeMovieActor.movie = _rel(AnimeMovie, foreign_keys=[AnimeMovieActor.movie_id], back_populates="actors_rel")
 AnimeMovieActor.actor = _rel(AnimeActor, foreign_keys=[AnimeMovieActor.actor_id], back_populates="movies")
 
 # --- MovieTag → Movie / Tag ---
@@ -132,7 +132,7 @@ AnimeMovieRelation.related_movie = _rel(AnimeMovie, foreign_keys=[AnimeMovieRela
 AnimeUserRecommendation.movie = _rel(AnimeMovie, foreign_keys=[AnimeUserRecommendation.movie_id])
 
 # --- Movie → 关联表 ---
-AnimeMovie.actors = _rel(AnimeMovieActor, back_populates="movie", cascade="all, delete-orphan")
+AnimeMovie.actors_rel = _rel(AnimeMovieActor, back_populates="movie", cascade="all, delete-orphan")
 AnimeMovie.tags_rel = _rel(AnimeMovieTag, back_populates="movie", cascade="all, delete-orphan")
 AnimeMovie.studio_ref = _rel(AnimeStudio, foreign_keys=[AnimeMovie.studio_id])
 AnimeMovie.series_ref = _rel(AnimeSeries, foreign_keys=[AnimeMovie.series_id])

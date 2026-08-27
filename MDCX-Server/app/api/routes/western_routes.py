@@ -153,7 +153,7 @@ async def get_movie(movie_id: int):
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "release_date": movie.release_date, "duration": movie.duration,
             "rating": movie.rating, "plot": movie.plot,
-            "genre": movie.genre, "tag": movie.tag, "actors": movie.actors,
+            "genre": movie.genre, "tag": movie.tag, "actors": movie.actor,
             "file_path": movie.file_path, "file_size": movie.file_size,
             "module_type": "western",
             "play_count": movie.play_count, "view_status": movie.view_status,
@@ -353,14 +353,26 @@ async def scrape_western_movie(movie_id: int):
 
         # 提取更精确的搜索关键词：去掉频道名/品牌前缀，取核心标题
         # 例: "Anna Ralphs - [Hegre.com] - [2023] - Cum Inside Me" → "Anna Ralphs Cum Inside Me"
-        # 例: "Blacked.19.10.12.Lana.Sharapova.4k-C" → "Blacked Lana Sharapova"
+        # 例: "Blacked.19.10.12.Lana.Sharapova.4k-C" → 多策略搜索
         import re as _re
-        clean_title = _re.sub(r'\[.*?\]', '', keyword)  # 去掉 [xxx] 内容
-        clean_title = _re.sub(r'[-_]\s*[0-9]+[kK]', '', clean_title)  # 去掉 -4K, -1080p 等
-        clean_title = _re.sub(r'-C$', '', clean_title)  # 去掉尾部 -C（中文版标记）
+        clean_title = _re.sub(r'\[.*?\]', '', keyword)
+        clean_title = _re.sub(r'[-_]\s*[0-9]+[kK]', '', clean_title)
+        clean_title = _re.sub(r'-C$', '', clean_title)
         clean_title = clean_title.replace('.', ' ').replace('_', ' ').replace('  ', ' ').strip()
-        if clean_title:
-            keyword = clean_title
+
+        # 从 code 提取品牌前缀（如 Blacked、bb、pba）
+        code_prefix = _re.match(r'([A-Za-z]+)', (movie.code or '').strip()).group(1) if movie.code else None
+
+        # 生成多策略搜索关键词列表
+        search_keywords = [clean_title] if clean_title else []
+        if code_prefix and len(code_prefix) >= 2:
+            search_keywords.append(f"{code_prefix} {clean_title}")
+            search_keywords.append(code_prefix)
+        # 去除纯数字后的剩余部分（演员名/场景描述）
+        non_digit = _re.sub(r'\d{2}\s*', '', clean_title).strip()
+        if non_digit and non_digit != clean_title and non_digit not in search_keywords:
+            search_keywords.append(non_digit)
+        search_keywords = list(dict.fromkeys(search_keywords))  # 去重保序
 
         # 尝试多个 Western 爬虫搜索（带超时控制，避免某个爬虫卡死）
         # 优先 WesternAggregateCrawler（内含 IAFD 全网搜索 + ThePornDB + Aylo）
@@ -379,17 +391,21 @@ async def scrape_western_movie(movie_id: int):
         ]
 
         matched_result = None
-        for scraper, timeout in scrapers:
-            try:
-                results = await asyncio.wait_for(scraper.search(keyword), timeout=timeout)
-                if results:
-                    matched_result = results[0]
-                    break
-            except asyncio.TimeoutError:
-                logger.debug(f"Western 爬虫 {scraper.name} 超时 ({timeout}s)")
-                continue
-            except Exception:
-                continue
+        # 对每个关键词都尝试所有爬虫
+        for kw in search_keywords:
+            for scraper, timeout in scrapers:
+                try:
+                    results = await asyncio.wait_for(scraper.search(kw), timeout=timeout)
+                    if results:
+                        matched_result = results[0]
+                        break
+                except asyncio.TimeoutError:
+                    logger.debug(f"Western 爬虫 {scraper.name} 搜索 [{kw}] 超时 ({timeout}s)")
+                    continue
+                except Exception:
+                    continue
+            if matched_result:
+                break
 
         if not matched_result:
             return {"status": "error", "message": f"未找到 {keyword} 的匹配数据"}
@@ -397,7 +413,7 @@ async def scrape_western_movie(movie_id: int):
         # 写入模块 DB
         from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
         from app.output.nfo import NFOGenerator
-        old_actors = movie.actors.split(",") if movie.actors else []
+        old_actors = movie.actor.split(",") if movie.actor else []
         movie.title = matched_result.title
         movie.original_title = matched_result.original_title or matched_result.title
         local_media = await ensure_movie_media_local(
@@ -440,7 +456,7 @@ async def scrape_western_movie(movie_id: int):
         if matched_result.actors:
             new_actor_names = set()
             actor_names = [a.name for a in matched_result.actors]
-            movie.actors = ",".join(actor_names)
+            movie.actor = ",".join(actor_names)
             from app.db.western_models import WesternActor
             for ai in matched_result.actors:
                 new_actor_names.add(ai.name)
@@ -481,7 +497,7 @@ async def scrape_western_movie(movie_id: int):
             mv_dir = _os.path.dirname(str(movie.file_path))
         try:
             if mv_dir and _os.path.isdir(mv_dir):
-                actor_names = [a.strip() for a in (movie.actors or "").split(",") if a.strip()]
+                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
                 NFOGenerator(output_dir=mv_dir).generate_from_movie(
                     movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
                 )

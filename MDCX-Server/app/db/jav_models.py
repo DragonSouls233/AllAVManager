@@ -114,7 +114,7 @@ class UserRecommendation(UserRecommendationMixin, JAV_BASE):
 from sqlalchemy.orm import relationship as _rel
 
 # --- MovieActor → Movie / Actor ---
-MovieActor.movie = _rel(JavMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors")
+MovieActor.movie = _rel(JavMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors_rel")
 MovieActor.actor = _rel(JavActor, foreign_keys=[MovieActor.actor_id], back_populates="movies")
 
 # --- MovieTag → Movie / Tag ---
@@ -135,7 +135,7 @@ MovieRelation.related_movie = _rel(JavMovie, foreign_keys=[MovieRelation.related
 UserRecommendation.movie = _rel(JavMovie, foreign_keys=[UserRecommendation.movie_id])
 
 # --- Movie → 关联表 ---
-JavMovie.actors = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
+JavMovie.actors_rel = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
 JavMovie.tags_rel = _rel(MovieTag, back_populates="movie", cascade="all, delete-orphan")
 JavMovie.studio_ref = _rel(Studio, foreign_keys=[JavMovie.studio_id])
 JavMovie.series_ref = _rel(Series, foreign_keys=[JavMovie.series_id])

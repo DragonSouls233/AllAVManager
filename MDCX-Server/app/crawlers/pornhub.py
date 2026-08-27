@@ -9,6 +9,7 @@ PORNHub 爬虫
 - PornHubDL-main: flashvars 注入方案 (P0)
 """
 
+import asyncio
 import json
 import re
 from typing import Optional
@@ -119,7 +120,8 @@ class PornhubCrawler(BaseCrawler):
 
     def __init__(self):
         super().__init__()
-        self._proxy = None  # 修复:search()/fetch_actress_videos() 使用了未初始化的 self._proxy
+        from app.services.proxy_manager import get_effective_proxy_url
+        self._proxy = get_effective_proxy_url()
 
     def _extract_viewkey(self, code: str) -> Optional[str]:
         code = code.strip().lower()

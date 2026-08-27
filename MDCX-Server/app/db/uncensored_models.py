@@ -94,7 +94,7 @@ class UserRecommendation(UserRecommendationMixin, UNCENSORED_BASE):
 from sqlalchemy.orm import relationship as _rel
 
 # --- MovieActor → Movie / Actor ---
-MovieActor.movie = _rel(UncensoredMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors")
+MovieActor.movie = _rel(UncensoredMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors_rel")
 MovieActor.actor = _rel(UncensoredActor, foreign_keys=[MovieActor.actor_id], back_populates="movies")
 
 # --- MovieTag → Movie / Tag ---
@@ -115,7 +115,7 @@ MovieRelation.related_movie = _rel(UncensoredMovie, foreign_keys=[MovieRelation.
 UserRecommendation.movie = _rel(UncensoredMovie, foreign_keys=[UserRecommendation.movie_id])
 
 # --- Movie → 关联表 ---
-UncensoredMovie.actors = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
+UncensoredMovie.actors_rel = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
 UncensoredMovie.tags_rel = _rel(MovieTag, back_populates="movie", cascade="all, delete-orphan")
 UncensoredMovie.studio_ref = _rel(Studio, foreign_keys=[UncensoredMovie.studio_id])
 UncensoredMovie.series_ref = _rel(Series, foreign_keys=[UncensoredMovie.series_id])

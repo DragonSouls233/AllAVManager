@@ -99,7 +99,7 @@ class UserRecommendation(UserRecommendationMixin, PORNHUB_BASE):
 from sqlalchemy.orm import relationship as _rel
 
 # --- MovieActor → Movie / Actor ---
-MovieActor.movie = _rel(PornhubMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors")
+MovieActor.movie = _rel(PornhubMovie, foreign_keys=[MovieActor.movie_id], back_populates="actors_rel")
 MovieActor.actor = _rel(PornhubActor, foreign_keys=[MovieActor.actor_id], back_populates="movies")
 
 # --- MovieTag → Movie / Tag ---
@@ -120,7 +120,7 @@ MovieRelation.related_movie = _rel(PornhubMovie, foreign_keys=[MovieRelation.rel
 UserRecommendation.movie = _rel(PornhubMovie, foreign_keys=[UserRecommendation.movie_id])
 
 # --- Movie → 关联表 ---
-PornhubMovie.actors = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
+PornhubMovie.actors_rel = _rel(MovieActor, back_populates="movie", cascade="all, delete-orphan")
 PornhubMovie.tags_rel = _rel(MovieTag, back_populates="movie", cascade="all, delete-orphan")
 PornhubMovie.studio_ref = _rel(Studio, foreign_keys=[PornhubMovie.studio_id])
 PornhubMovie.series_ref = _rel(Series, foreign_keys=[PornhubMovie.series_id])

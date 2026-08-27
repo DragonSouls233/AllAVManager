@@ -598,13 +598,35 @@ async def scrape_pornhub_movie(movie_id: int):
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
 
-        viewkey = movie.code
-        if viewkey.startswith("ph"):
-            viewkey = viewkey[2:]
-
         from app.crawlers.pornhub import PornhubCrawler
         crawler = PornhubCrawler()
         scrape_result = await crawler.scrape(movie.code)
+
+        # 回退方案：code 为路径格式时，用标题或文件名搜索匹配
+        if not scrape_result or not scrape_result.title:
+            # 提取搜索关键词
+            import os
+            search_keyword = None
+            if movie.title:
+                search_keyword = movie.title.strip()
+            elif movie.file_path:
+                search_keyword = os.path.basename(str(movie.file_path))
+
+            if search_keyword:
+                try:
+                    import asyncio as _asyncio
+                    search_results = await _asyncio.wait_for(crawler.search(search_keyword), timeout=20)
+                    if search_results:
+                        # 用第一个结果
+                        best = search_results[0]
+                        if best and best.title:
+                            # 更新 code 为真实 viewkey
+                            if best.code:
+                                movie.code = best.code
+                            scrape_result = best
+                            logger.info(f"Pornhub 路径code回退搜索成功: [{movie.code}] → {scrape_result.title}")
+                except Exception as search_err:
+                    logger.debug(f"Pornhub 路径code回退搜索失败: {search_err}")
 
         from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
         from app.output.nfo import NFOGenerator
