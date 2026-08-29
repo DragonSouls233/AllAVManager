@@ -14,6 +14,11 @@
           <el-icon><RefreshRight /></el-icon> 全量重扫
         </el-button>
       </el-tooltip>
+      <el-tooltip content="将影片 actor 文本字段与演员表匹配，建立关联" placement="top">
+        <el-button type="warning" @click="syncActors" :loading="syncing">
+          <el-icon><Link /></el-icon> 同步演员关联
+        </el-button>
+      </el-tooltip>
       <el-tag v-if="store.total">共 {{ store.total }} 部</el-tag>
       <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
       <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
@@ -60,12 +65,15 @@ import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
 import { getCoverSrc } from '@/utils/media'
+import { syncPornhubMovieActors } from '@/api/pornhub'
+import { Link } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
 const store = usePornhubStore()
 const keyword = ref('')
 const scanning = ref(false)
+const syncing = ref(false)
 
 // 2026-08-08: 详情页跳转筛选（系列/片商/类别/番号前缀）
 function routeFilterParams() {
@@ -137,6 +145,18 @@ async function startRescan() {
     ElMessage.error('重扫启动失败: ' + (e.message || '未知错误'))
   } finally {
     scanning.value = false
+  }
+}
+
+async function syncActors() {
+  syncing.value = true
+  try {
+    const res = await syncPornhubMovieActors()
+    ElMessage.success(`同步完成: 扫描 ${res?.scanned || 0} 部, 更新 ${res?.updated || 0} 部, 关联 ${res?.linked || 0} 位演员`)
+  } catch (e) {
+    ElMessage.error('同步失败: ' + (e.message || '未知错误'))
+  } finally {
+    syncing.value = false
   }
 }
 

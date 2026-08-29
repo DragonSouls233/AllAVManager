@@ -184,8 +184,12 @@ class PornhubCrawler(BaseCrawler):
                 self.mark_error()
                 return None
 
-            if "The page you requested cannot be found" in html_text or "Page not found" in html_text:
-                logger.info(f"视频不存在: {viewkey}")
+            if ("The page you requested cannot be found" in html_text
+                    or "Page not found" in html_text
+                    or "Video Disabled" in html_text
+                    or "video was removed" in html_text.lower()
+                    or "access is restricted" in html_text.lower()):
+                logger.info(f"视频不可用: {viewkey}")
                 return None
 
             # === 策略1: flashvars 提取（参考 PornHubDL inject.js + yt-dlp） ===

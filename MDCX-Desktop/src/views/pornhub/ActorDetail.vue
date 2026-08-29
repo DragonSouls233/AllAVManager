@@ -37,7 +37,7 @@ import { ElMessage } from 'element-plus'
 import defaultAvatar from '@/assets/default-avatar.png'
 import defaultCover from '@/assets/default-cover.png'
 import { getAvatarSrc, getCoverSrc } from '@/utils/media'
-import { scrapePornhubActorProfile } from '@/api/pornhub'
+import { scrapePornhubActorProfile, getPornhubActorMovies } from '@/api/pornhub'
 
 const route = useRoute()
 const router = useRouter()
@@ -70,10 +70,11 @@ async function scrapeProfile() {
 
 onMounted(async () => {
   try {
-    actor.value = await store.loadActorDetail(Number(route.params.id))
-    // 只拉取当前演员的作品（按 movie.actor LIKE 过滤），并取足量条数避免分页截断
-    await store.loadMovies({ actor: actor.value.name, limit: 1000 })
-    movies.value = store.movies
+    const id = Number(route.params.id)
+    actor.value = await store.loadActorDetail(id)
+    // 使用专用端点获取该演员的关联作品
+    const res = await getPornhubActorMovies(id)
+    movies.value = res?.movies || []
   } finally {
     loading.value = false
   }

@@ -24,6 +24,15 @@
         </el-descriptions>
         <div v-if="movie.plot" class="desc"><h3>简介</h3><p>{{ movie.plot }}</p></div>
         <div v-if="movie.genre" class="tags-section"><el-tag type="info">{{ movie.genre }}</el-tag></div>
+        <div v-if="movie.actors && movie.actors.length" class="actors-section">
+          <h3>演员</h3>
+          <div class="actors-grid">
+            <div v-for="a in movie.actors" :key="a.id" class="actor-chip" @click="goActorDetail(a.id)">
+              <img :src="pornhubActorAvatarUrl(a.id)" alt="" @error="onActorError">
+              <span>{{ a.name }}</span>
+            </div>
+          </div>
+        </div>
         <div class="action-bar">
           <el-button size="small" type="warning" :loading="scraping" @click="startScrape">
             <el-icon><Refresh /></el-icon> 刮削补充
@@ -40,7 +49,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getPornhubMovie, scrapePornhubMovie, reloadPornhubMovieNfo } from '@/api/pornhub'
+import { getPornhubMovie, scrapePornhubMovie, reloadPornhubMovieNfo, pornhubActorAvatarUrl } from '@/api/pornhub'
 import { getCoverSrc } from '@/utils/media'
 import { ElMessage } from 'element-plus'
 import { VideoPlay, Refresh, Document } from '@element-plus/icons-vue'
@@ -54,12 +63,16 @@ const coverSrc = computed(() => getCoverSrc(movie.value))
 const canPlay = computed(() => movie.value && movie.value.file_path)
 
 function goBack() { router.push('/pornhub') }
+function goActorDetail(id) { router.push({ name: 'PornhubActorDetail', params: { id } }) }
 function play() {
   if (!canPlay.value) { ElMessage.warning('该影片没有关联视频文件'); return }
   router.push({ path: `/play/${route.params.id}`, query: { module: 'pornhub' } })
 }
 function onCoverError(e) {
   e.target.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="320" height="450"%3E%3Crect width="320" height="450" fill="%23111827"/%3E%3C/svg%3E'
+}
+function onActorError(e) {
+  e.target.style.display = 'none'
 }
 async function startScrape() {
   scraping.value = true
@@ -95,5 +108,12 @@ onMounted(async () => {
 .desc h3 { font-size: 14px; margin-bottom: 8px; }
 .desc p { line-height: 1.6; color: #666; font-size: 13px; }
 .tags-section { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+.actors-section { margin-top: 16px; }
+.actors-section h3 { font-size: 14px; margin-bottom: 10px; color: #333; }
+.actors-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+.actor-chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 20px; background: #f5f7fa; cursor: pointer; transition: background .2s; }
+.actor-chip:hover { background: #e8ecf0; }
+.actor-chip img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+.actor-chip span { font-size: 13px; color: #555; }
 .action-bar { margin-top: 20px; display: flex; gap: 8px; }
 </style>

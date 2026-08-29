@@ -86,6 +86,17 @@ export function pornhubActorAvatarUrl(id) {
   return `/api/pornhub/actors/${id}/avatar/file`
 }
 
+// ===== 影片-演员关联 =====
+export async function getPornhubMovieActors(movieId) {
+  return api.get(`/pornhub/movies/${movieId}/actors`)
+}
+export async function getPornhubActorMovies(actorId) {
+  return api.get(`/pornhub/actors/${actorId}/movies`)
+}
+export async function syncPornhubMovieActors() {
+  return api.post('/pornhub/movies/sync-actors')
+}
+
 // ===== 影片批量 =====
 export async function batchPornhubRefetchCovers(params = {}) {
   return api.post('/pornhub/movies/batch/refetch-covers', null, { params })

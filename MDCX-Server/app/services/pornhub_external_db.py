@@ -335,8 +335,8 @@ def get_external_status(db_path: Path | str | None = None) -> dict:
     return {
         "available": True,
         "path": str(ext.db_path),
-        "model_count": ext.model_count(),
-        "video_count": ext.video_count(),
+        "model_count": len(ext._name_index),
+        "video_count": ext._count_videos(),
         "cached": bool(ext._name_index),
     }
 
