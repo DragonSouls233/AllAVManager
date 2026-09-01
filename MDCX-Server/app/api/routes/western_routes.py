@@ -52,10 +52,10 @@ async def list_movies(
         filters = []
         if keyword:
             kw = f"%{keyword.replace('%', '').replace('_', '')}%"
-            filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actors.like(kw), WesternMovie.site.like(kw)))
+            filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actor.like(kw), WesternMovie.site.like(kw)))
         if actor:
             safe_actor = actor.replace('%', '').replace('_', '')
-            filters.append(WesternMovie.actors.like(f"%{safe_actor}%"))
+            filters.append(WesternMovie.actor.like(f"%{safe_actor}%"))
         if series:
             filters.append(WesternMovie.series == series)
         if maker:
@@ -87,6 +87,106 @@ async def list_movies(
              "status": m.status, "release_date": m.release_date}
             for m in movies
         ]}
+    finally:
+        await session.close()
+
+
+# ========== 影片-演员关联端点 ==========
+
+
+@router.get("/movies/{movie_id}/actors")
+async def get_western_movie_actors(movie_id: int):
+    """获取影片关联的演员列表"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternMovie, WesternActor, MovieActor as WMovieActor
+        from sqlalchemy import select
+        movie = (await session.execute(select(WesternMovie).where(WesternMovie.id == movie_id))).scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        rows = (await session.execute(
+            select(WesternActor, WMovieActor.role)
+            .join(WMovieActor, WMovieActor.actor_id == WesternActor.id)
+            .where(WMovieActor.movie_id == movie_id)
+        )).all()
+        actors_data = [
+            {"id": a.id, "name": a.name, "avatar_url": a.avatar_url,
+             "gender": a.gender, "country": a.country, "role": role}
+            for a, role in rows
+        ]
+        return {"movie_id": movie_id, "actors": actors_data}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/movies")
+async def get_western_actor_movies(actor_id: int):
+    """获取演员关联的影片列表"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternActor, WesternMovie, MovieActor as WMovieActor
+        from sqlalchemy import select
+        actor = (await session.execute(select(WesternActor).where(WesternActor.id == actor_id))).scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        rows = (await session.execute(
+            select(WesternMovie, WMovieActor.role)
+            .join(WMovieActor, WMovieActor.movie_id == WesternMovie.id)
+            .where(WMovieActor.actor_id == actor_id)
+        )).all()
+        movies_data = [
+            {"id": m.id, "title": m.title, "code": m.code, "cover_url": m.cover_url,
+             "site": m.site, "role": role}
+            for m, role in rows
+        ]
+        return {"actor_id": actor_id, "movies": movies_data}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/avatar/file")
+async def get_western_actor_avatar_file(actor_id: int):
+    """获取演员头像文件"""
+    from fastapi.responses import FileResponse, HTMLResponse
+    from app.utils.media_helpers import get_actor_avatar_path, fast_file_exists
+
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternActor
+        actor = await session.get(WesternActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        avatar_path = get_actor_avatar_path(actor.name)
+        if fast_file_exists(avatar_path):
+            return FileResponse(str(avatar_path), media_type="image/jpeg")
+    finally:
+        await session.close()
+    return HTMLResponse("<h2>No avatar</h2>", status_code=404)
+
+
+@router.post("/actors/sync-avatars")
+async def sync_western_actor_avatars():
+    """批量从 actor.avatar_url 下载头像到本地"""
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternActor
+        from sqlalchemy import select
+        from app.utils.media_helpers import ensure_actor_avatar_local
+        actors = (await session.execute(select(WesternActor))).scalars().all()
+        downloaded = 0
+        for actor in actors:
+            if not actor.avatar_url:
+                continue
+            local_avatar = await ensure_actor_avatar_local(actor.name, actor.avatar_url)
+            if local_avatar:
+                actor.avatar_url = local_avatar
+                downloaded += 1
+        await session.commit()
+        return {"status": "ok", "downloaded": downloaded, "total": len(actors)}
     finally:
         await session.close()
 
@@ -339,7 +439,7 @@ async def scrape_western_movie(movie_id: int):
     db = get_western_db()
     session = await db.get_session()
     try:
-        from app.db.western_models import WesternMovie, WesternActor
+        from app.db.western_models import WesternMovie, WesternActor, MovieActor as WMovieActor
         from sqlalchemy import select
 
         movie = (await session.execute(select(WesternMovie).where(WesternMovie.id == movie_id))).scalar_one_or_none()
@@ -457,7 +557,11 @@ async def scrape_western_movie(movie_id: int):
             new_actor_names = set()
             actor_names = [a.name for a in matched_result.actors]
             movie.actor = ",".join(actor_names)
-            from app.db.western_models import WesternActor
+            from app.db.western_models import WesternActor, MovieActor as WMovieActor
+            # 清除旧的 movie_actors 关联
+            old_ma_q = select(WMovieActor).where(WMovieActor.movie_id == movie.id)
+            for ma_row in (await session.execute(old_ma_q)).scalars().all():
+                await session.delete(ma_row)
             for ai in matched_result.actors:
                 new_actor_names.add(ai.name)
                 actor_stmt = select(WesternActor).where(WesternActor.name == ai.name)
@@ -476,6 +580,12 @@ async def scrape_western_movie(movie_id: int):
                     if not existing_actor.avatar_url and getattr(ai, "avatar_url", None):
                         local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
                         existing_actor.avatar_url = local_avatar or ai.avatar_url
+                # 写入 movie_actors 关联表
+                await session.flush()
+                ex2 = await session.execute(select(WesternActor).where(WesternActor.name == ai.name))
+                db_actor = ex2.scalar_one_or_none()
+                if db_actor:
+                    session.add(WMovieActor(movie_id=movie.id, actor_id=db_actor.id))
             remove_count = 0
             for name in old_actors:
                 n = name.strip()
@@ -536,7 +646,7 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
 
     async def _run():
-        from app.db.western_models import WesternMovie, WesternActor
+        from app.db.western_models import WesternMovie, WesternActor, MovieActor as WMovieActor
         from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
         from app.output.nfo import NFOGenerator
         from sqlalchemy import select
@@ -587,7 +697,7 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
             try:
                 mv = (await s.execute(select(WesternMovie).where(WesternMovie.id == m.id))).scalar_one_or_none()
                 if mv:
-                    old_actors = mv.actors.split(",") if mv.actors else []
+                    old_actors = mv.actor.split(",") if mv.actor else []
                     mv.title = matched_result.title
                     local_media = await ensure_movie_media_local(
                         module_name="western", code=mv.code,
@@ -616,7 +726,11 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
                         mv.genre = ",".join(matched_result.genres)
                     if matched_result.actors:
                         new_actor_names = set()
-                        mv.actors = ",".join(a.name for a in matched_result.actors)
+                        mv.actor = ",".join(a.name for a in matched_result.actors)
+                        # 清除旧的 movie_actors 关联
+                        old_ma_q = select(WMovieActor).where(WMovieActor.movie_id == mv.id)
+                        for ma_row in (await s.execute(old_ma_q)).scalars().all():
+                            await s.delete(ma_row)
                         for ai in matched_result.actors:
                             new_actor_names.add(ai.name)
                             ex = await s.execute(select(WesternActor).where(WesternActor.name == ai.name))
@@ -634,6 +748,12 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
                                 if not a.avatar_url and getattr(ai, "avatar_url", None):
                                     local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
                                     a.avatar_url = local_avatar or ai.avatar_url
+                            # 写入 movie_actors 关联表
+                            await s.flush()
+                            ex2 = await s.execute(select(WesternActor).where(WesternActor.name == ai.name))
+                            db_actor = ex2.scalar_one_or_none()
+                            if db_actor:
+                                s.add(WMovieActor(movie_id=mv.id, actor_id=db_actor.id))
                         for name in old_actors:
                             n = name.strip()
                             if n and n not in new_actor_names:
@@ -652,7 +772,7 @@ async def scrape_all_pending_western(background_tasks: BackgroundTasks):
                         mv_dir = _os.path.dirname(str(mv.file_path))
                     try:
                         if mv_dir and _os.path.isdir(mv_dir):
-                            actor_names = [a.strip() for a in (mv.actors or "").split(",") if a.strip()]
+                            actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
                             NFOGenerator(output_dir=mv_dir).generate_from_movie(
                                 mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
                             )

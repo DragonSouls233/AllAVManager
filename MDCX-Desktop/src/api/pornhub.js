@@ -83,7 +83,7 @@ export async function updatePornhubActor(id, data) {
   return api.patch(`/pornhub/actors/${id}`, data)
 }
 export function pornhubActorAvatarUrl(id) {
-  return `/api/pornhub/actors/${id}/avatar/file`
+  return `/api/v1/pornhub/actors/${id}/avatar/file`
 }
 
 // ===== 影片-演员关联 =====

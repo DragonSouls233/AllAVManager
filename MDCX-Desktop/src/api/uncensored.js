@@ -86,6 +86,20 @@ export function uploadActorAvatar(id, formData) {
   })
 }
 
+export function downloadActorAvatar(id) {
+  return api.post(`${API}/actors/${id}/avatar`)
+}
+
+// ===== 演员头像文件代理 =====
+export function getActorAvatarFileUrl(id) {
+  return `/api/v1${API}/actors/${id}/avatar/file`
+}
+
+// ===== 批量同步演员头像 =====
+export function syncActorAvatars() {
+  return api.post(`${API}/actors/sync-avatars`)
+}
+
 // Studios
 export function getStudios(params = {}) {
   return api.get(`${API}/studios`, { params })
@@ -184,7 +198,7 @@ export function setCrawlerEnabled(id, enabled) {
 }
 
 export function setCrawlerPriority(id, priority) {
-  return api.put(`${API}/crawlers/${id}/priority`, { priority })
+  return api.post(`${API}/crawlers/${id}/priority`, { priority })
 }
 
 export function getCrawlerLogs(params = {}) {

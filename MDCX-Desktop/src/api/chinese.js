@@ -85,3 +85,33 @@ export async function getRelatedMovies(movieId) {
 export async function getMovieActors(movieId) {
   return api.get(`/chinese/movies/${movieId}/actors`)
 }
+
+// ===== 演员相关 =====
+export async function getActorMovies(actorId) {
+  return api.get(`/chinese/actors/${actorId}/movies`)
+}
+
+// ===== 演员头像文件代理 =====
+export function getActorAvatarFileUrl(actorId) {
+  return `/api/v1/chinese/actors/${actorId}/avatar/file`
+}
+
+// ===== 批量同步演员头像 =====
+export async function syncChineseActorAvatars() {
+  return api.post('/chinese/actors/sync-avatars')
+}
+
+// ===== 封面文件代理 =====
+export function getChineseCoverUrl(movieId) {
+  return `/api/v1/chinese/movies/${movieId}/cover/file`
+}
+
+// ===== 视频文件代理 =====
+export function getChinesePlayFileUrl(movieId) {
+  return `/api/v1/chinese/movies/${movieId}/play/file`
+}
+
+// ===== 批量刮削 =====
+export async function scrapeAllPendingChinese() {
+  return api.post('/chinese/movies/scrape-all-pending')
+}

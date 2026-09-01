@@ -2640,8 +2640,8 @@ class RefillNfoCacheRequest(BaseModel):
     )
     concurrency: int = Field(5, ge=1, le=20, description="刮削并发度")
     sources: list[str] = Field(
-        default_factory=lambda: ["javdb", "javbus", "avmoo", "javbooks", "javdatabase", "avsox", "dmm_web"],
-        description="刮削源优先级顺序：JAVDB 官方 App API → JAVBUS → AVMOO → 4 辅助。按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，连续失败自动熔断 10 分钟",
+        default_factory=lambda: ["javdb", "javbus", "avmoo", "javbooks", "freejavbt", "xcity", "javdbapi"],
+        description="刮削源优先级顺序（实战验证 100% 可用代理的源）：JAVDB 官方 App API → JAVBUS → AVMOO → 4 补充（javbooks/freejavbt/xcity/javdbapi）。按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，连续失败自动熔断 10 分钟。已禁用 dmm_web/avsox/javdatabase/avsex/faleno/... 等 22+ 个 CF 403 源（爬虫仍注册可手动启用）",
     )
 
 

@@ -162,13 +162,62 @@ class ChineseScanner(BaseScanner):
 
             await session.commit()
 
-            # 同步演员表：新演员写入
+            # 同步演员表：新演员写入 + 写入 movie_actors 关联表
             for actor_name in result["actors"]:
                 ext_actor = await session.execute(select(ChineseActor).where(ChineseActor.name == actor_name))
                 if not ext_actor.scalar_one_or_none():
                     session.add(ChineseActor(name=actor_name, source="folder"))
-
             await session.commit()
+
+            # 写入 movie_actors 关联表（扫描后补写）
+            try:
+                from app.db.chinese_models import MovieActor as CMovieActor
+                for actor_name in result["actors"]:
+                    ex_a = await session.execute(select(ChineseActor).where(ChineseActor.name == actor_name))
+                    db_actor = ex_a.scalar_one_or_none()
+                    if not db_actor:
+                        continue
+                    # 查找 extracted_actor 包含此演员的所有影片
+                    movies_stmt = select(ChineseMovie.id).where(
+                        ChineseMovie.extracted_actor == actor_name
+                    )
+                    movie_ids = (await session.execute(movies_stmt)).scalars().all()
+                    for mid in movie_ids:
+                        existing = await session.scalar(
+                            select(CMovieActor).where(
+                                CMovieActor.movie_id == mid,
+                                CMovieActor.actor_id == db_actor.id
+                            )
+                        )
+                        if not existing:
+                            session.add(CMovieActor(movie_id=mid, actor_id=db_actor.id))
+                    # 处理多演员（逗号分隔）
+                    movies_multi = (await session.execute(
+                        select(ChineseMovie.id, ChineseMovie.extracted_actor).where(
+                            ChineseMovie.extracted_actor.contains(actor_name)
+                        )
+                    )).all()
+                    for mid, extracted in movies_multi:
+                        if not extracted:
+                            continue
+                        for other_name in extracted.split(","):
+                            other_name = other_name.strip()
+                            if not other_name or other_name == actor_name:
+                                continue
+                            ex_o = await session.execute(select(ChineseActor).where(ChineseActor.name == other_name))
+                            db_other = ex_o.scalar_one_or_none()
+                            if db_other:
+                                existing2 = await session.scalar(
+                                    select(CMovieActor).where(
+                                        CMovieActor.movie_id == mid,
+                                        CMovieActor.actor_id == db_other.id
+                                    )
+                                )
+                                if not existing2:
+                                    session.add(CMovieActor(movie_id=mid, actor_id=db_other.id))
+                await session.commit()
+            except Exception as assoc_err:
+                logger.warning(f"[chinese] 写入 actor 关联表失败: {assoc_err}")
         finally:
             await session.close()
 

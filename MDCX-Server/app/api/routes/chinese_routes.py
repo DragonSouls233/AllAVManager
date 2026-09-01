@@ -14,6 +14,8 @@ from app.services.chinese_rename_service import get_rules, update_rules, clean_t
 
 import os as _os
 from pathlib import Path as _Path
+import logging as _logging
+logger = _logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chinese", tags=["国产模块"])
 
@@ -91,6 +93,118 @@ async def sync_folder_actors():
     scanner = ChineseScanner(config.modules.chinese.media_dirs)
     result = await scanner.scan()
     return result
+
+
+@router.get("/movies/{movie_id}/actors")
+async def get_chinese_movie_actors(movie_id: int):
+    """获取国产影片关联的演员列表（优先用 movie_actors 关联表）"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie, ChineseActor, MovieActor as CMovieActor
+        movie = await session.get(ChineseMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        # 优先从 movie_actors 关联表获取
+        rows = (await session.execute(
+            select(ChineseActor, CMovieActor.role)
+            .join(CMovieActor, CMovieActor.actor_id == ChineseActor.id)
+            .where(CMovieActor.movie_id == movie_id)
+        )).all()
+        if rows:
+            items = [{"id": a.id, "name": a.name, "avatar_url": a.avatar_url, "role": role} for a, role in rows]
+            return {"items": items}
+        # fallback: 从 folder_based_actors 文本字段解析
+        if not movie.folder_based_actors and not movie.extracted_actor:
+            return {"items": []}
+        raw = movie.extracted_actor or movie.folder_based_actors or ""
+        actor_names = [a.strip() for a in raw.split(",") if a.strip()]
+        items = []
+        for name in actor_names:
+            stmt = select(ChineseActor).where(ChineseActor.name == name)
+            result = await session.execute(stmt)
+            actor = result.scalar_one_or_none()
+            if actor:
+                items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url, "role": None})
+            else:
+                items.append({"id": None, "name": name, "avatar_url": None, "role": None})
+        return {"items": items}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/movies")
+async def get_chinese_actor_movies(actor_id: int):
+    """获取国产演员的影片列表（通过 movie_actors 关联表）"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie, ChineseActor, MovieActor as CMovieActor
+        actor = await session.get(ChineseActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        rows = (await session.execute(
+            select(ChineseMovie).join(CMovieActor, CMovieActor.movie_id == ChineseMovie.id)
+            .where(CMovieActor.actor_id == actor_id)
+        )).scalars().all()
+        return {
+            "actor": {"id": actor.id, "name": actor.name},
+            "items": [{"id": m.id, "code": m.code, "title": m.title, "cover_url": m.cover_url} for m in rows]
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/avatar/file")
+async def get_chinese_actor_avatar_file(actor_id: int):
+    """返回国产演员本地头像文件"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        actor = await session.get(ChineseActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        if not actor.avatar_url:
+            raise HTTPException(status_code=404, detail="头像不存在")
+        from fastapi.responses import FileResponse
+        path = _os.path.abspath(actor.avatar_url)
+        if not _os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="头像文件不存在")
+        return FileResponse(path, media_type="image/jpeg")
+    finally:
+        await session.close()
+
+
+@router.post("/actors/sync-avatars")
+async def sync_chinese_actor_avatars():
+    """批量从 actor.avatar_url 下载头像到本地"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        from app.utils.media_helpers import ensure_actor_avatar_local
+        from sqlalchemy import select
+        actors = (await session.execute(select(ChineseActor))).scalars().all()
+        updated = 0
+        for actor in actors:
+            if not actor.avatar_url:
+                continue
+            try:
+                local_path = await ensure_actor_avatar_local(actor.name, actor.avatar_url)
+                if local_path:
+                    actor.avatar_url = local_path
+                    updated += 1
+            except Exception as e:
+                logger.warning(f"chinese sync avatar failed [{actor.name}]: {e}")
+        await session.commit()
+        return {"status": "ok", "updated": updated, "total": len(actors)}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"sync_chinese_actor_avatars error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()
 
 
 @router.get("/movies")

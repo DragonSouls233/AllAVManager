@@ -175,6 +175,79 @@ async def get_fc2_cover_file(movie_id: int):
         await session.close()
 
 
+@router.get("/actors/{actor_id}/movies")
+async def get_fc2_actor_movies(actor_id: int):
+    """获取FC2演员的影片列表（通过 movie_actors 关联表）"""
+    from app.db.fc2_models import Fc2Movie, Fc2Actor, MovieActor as FMovieActor
+
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        actor = await session.get(Fc2Actor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        rows = (await session.execute(
+            select(Fc2Movie).join(FMovieActor, FMovieActor.movie_id == Fc2Movie.id)
+            .where(FMovieActor.actor_id == actor_id)
+        )).scalars().all()
+        return {
+            "actor": {"id": actor.id, "name": actor.name},
+            "items": [{"id": m.id, "code": m.code, "title": m.title, "cover_url": m.cover_url} for m in rows]
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/avatar/file")
+async def get_fc2_actor_avatar_file(actor_id: int):
+    """返回FC2演员本地头像文件"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Actor
+        actor = await session.get(Fc2Actor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        if not actor.avatar_url:
+            raise HTTPException(status_code=404, detail="头像不存在")
+        from fastapi.responses import FileResponse
+        path = _os.path.abspath(actor.avatar_url)
+        if not _os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="头像文件不存在")
+        return FileResponse(path, media_type="image/jpeg")
+    finally:
+        await session.close()
+
+
+@router.post("/actors/sync-avatars")
+async def sync_fc2_actor_avatars():
+    """批量从 actor.avatar_url 下载头像到本地"""
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Actor
+        from app.utils.media_helpers import ensure_actor_avatar_local
+        actors = (await session.execute(select(Fc2Actor))).scalars().all()
+        updated = 0
+        for actor in actors:
+            if not actor.avatar_url:
+                continue
+            try:
+                local_path = await ensure_actor_avatar_local(actor.name, actor.avatar_url)
+                if local_path:
+                    actor.avatar_url = local_path
+                    updated += 1
+            except Exception as e:
+                logger.warning(f"fc2 sync avatar failed [{actor.name}]: {e}")
+        await session.commit()
+        return {"status": "ok", "updated": updated, "total": len(actors)}
+    except Exception as e:
+        logger.error(f"sync_fc2_actor_avatars error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()
+
+
 @router.get("/actors/{actor_id}")
 async def get_actor(actor_id: int):
     """获取 FC2 演员详情"""
@@ -360,8 +433,8 @@ async def get_fc2_related_movies(movie_id: int):
 
 @router.get("/movies/{movie_id}/actors")
 async def get_fc2_movie_actors(movie_id: int):
-    """获取FC2影片关联的演员列表"""
-    from app.db.fc2_models import Fc2Movie, Fc2Actor
+    """获取FC2影片关联的演员列表（优先用 movie_actors 关联表）"""
+    from app.db.fc2_models import Fc2Movie, Fc2Actor, MovieActor as FMovieActor
 
     db = get_fc2_db()
     session = await db.get_session()
@@ -369,6 +442,19 @@ async def get_fc2_movie_actors(movie_id: int):
         movie = await session.get(Fc2Movie, movie_id)
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
+        # 优先从 movie_actors 关联表获取
+        rows = (await session.execute(
+            select(Fc2Actor, FMovieActor.role)
+            .join(FMovieActor, FMovieActor.actor_id == Fc2Actor.id)
+            .where(FMovieActor.movie_id == movie_id)
+        )).all()
+        if rows:
+            items = [
+                {"id": a.id, "name": a.name, "avatar_url": a.avatar_url, "role": role}
+                for a, role in rows
+            ]
+            return {"items": items}
+        # fallback: 从 movie.actor 文本字段解析
         if not movie.actor:
             return {"items": []}
         actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
@@ -378,9 +464,9 @@ async def get_fc2_movie_actors(movie_id: int):
             result = await session.execute(stmt)
             actor = result.scalar_one_or_none()
             if actor:
-                items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url})
+                items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url, "role": None})
             else:
-                items.append({"id": name, "name": name, "avatar_url": None})
+                items.append({"id": name, "name": name, "avatar_url": None, "role": None})
         return {"items": items}
     finally:
         await session.close()
@@ -488,6 +574,20 @@ async def scrape_fc2_movie(movie_id: int):
                         source_site=scrape_result.source,
                         movie_count=0,
                     ))
+            # 写入 movie_actors 关联表
+            await session.flush()
+            try:
+                from app.db.fc2_models import MovieActor as FMovieActor
+                old_ma_q = select(FMovieActor).where(FMovieActor.movie_id == movie.id)
+                for ma_row in (await session.execute(old_ma_q)).scalars().all():
+                    await session.delete(ma_row)
+                for actor_info in scrape_result.actors:
+                    ex2 = await session.execute(select(Fc2Actor).where(Fc2Actor.name == actor_info.name))
+                    db_a = ex2.scalar_one_or_none()
+                    if db_a:
+                        session.add(FMovieActor(movie_id=movie.id, actor_id=db_a.id))
+            except Exception as ae:
+                logger.warning(f"FC2 scrape 写入 actor 关联失败 [{movie.code}]: {ae}")
 
         movie.source = scrape_result.source or "scraper"
         if scrape_result.source_url:
@@ -616,6 +716,20 @@ async def scrape_all_pending_fc2(background_tasks: BackgroundTasks):
                                         if not existing.avatar_url and ai.avatar_url:
                                             local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
                                             existing.avatar_url = local_avatar or ai.avatar_url
+                                # 写入 movie_actors 关联表
+                                await s.flush()
+                                try:
+                                    from app.db.fc2_models import MovieActor as FMovieActor
+                                    old_ma_q = select(FMovieActor).where(FMovieActor.movie_id == mv.id)
+                                    for ma_row in (await s.execute(old_ma_q)).scalars().all():
+                                        await s.delete(ma_row)
+                                    for ai in sr.actors:
+                                        ex2 = await s.execute(select(Fc2Actor).where(Fc2Actor.name == ai.name))
+                                        db_a = ex2.scalar_one_or_none()
+                                        if db_a:
+                                            s.add(FMovieActor(movie_id=mv.id, actor_id=db_a.id))
+                                except Exception as ae:
+                                    logger.warning(f"FC2 批量刮削写入actor关联失败 [{mv.code}]: {ae}")
                                 remove_count = 0
                                 for name in old_actors:
                                     n = name.strip()

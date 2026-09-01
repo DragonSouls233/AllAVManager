@@ -78,3 +78,18 @@ export async function triggerFc2Scan() {
 export async function scrapeAllPendingFc2() {
   return api.post('/fc2/movies/scrape-all-pending')
 }
+
+// ===== 演员相关 =====
+export async function getFc2ActorMovies(actorId) {
+  return api.get(`/fc2/actors/${actorId}/movies`)
+}
+
+// ===== 演员头像文件代理 =====
+export function getFc2ActorAvatarUrl(actorId) {
+  return `/api/v1/fc2/actors/${actorId}/avatar/file`
+}
+
+// ===== 批量同步演员头像 =====
+export async function syncFc2ActorAvatars() {
+  return api.post('/fc2/actors/sync-avatars')
+}

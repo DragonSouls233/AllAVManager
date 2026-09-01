@@ -946,6 +946,21 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
                                         actor_obj = actor_result.scalar_one_or_none()
                                         if actor_obj and actor_obj.movie_count > 0:
                                             actor_obj.movie_count -= 1
+                            # 写入 movie_actors 关联表
+                            await s.flush()
+                            try:
+                                from app.db.pornhub_models import MovieActor as PHMovieActor
+                                old_ma_q = select(PHMovieActor).where(PHMovieActor.movie_id == mv.id)
+                                for ma_row in (await s.execute(old_ma_q)).scalars().all():
+                                    await s.delete(ma_row)
+                                if result.actors:
+                                    for ai in result.actors:
+                                        ex2 = await s.execute(select(PornhubActor).where(PornhubActor.name == ai.name))
+                                        db_a = ex2.scalar_one_or_none()
+                                        if db_a:
+                                            s.add(PHMovieActor(movie_id=mv.id, actor_id=db_a.id))
+                            except Exception as ae:
+                                logger.warning(f"Pornhub 批量刮削写入actor关联失败 [{mv.code}]: {ae}")
                             mv.status = "scraped"
                             mv.source = "pornhub"
                             await s.commit()

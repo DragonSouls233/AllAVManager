@@ -630,24 +630,34 @@ async def download_image_to_local(
                 local_path.unlink()
             except OSError:
                 pass
-        import aiohttp
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
         if referer:
             headers["Referer"] = referer
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=timeout_obj) as sess:
-            async with sess.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    if data:
-                        # JavDB 等 CDN 对 JPEG 做 XOR 混淆（key=data[0]），
-                        # 落盘前解密，否则文件头是乱码、图片无法打开。
-                        # 函数内部无损检测：本身已是 JPEG 时原样返回。
-                        data = maybe_decrypt_javdb_image(data)
-                        Path(str(local_path)).write_bytes(data)
-                        return str(local_path)
+
+        # 走项目统一 HTTP 通道：内部带 socks5 代理（xray）+ curl_cffi 浏览器指纹 + 重试。
+        # 旧版裸 aiohttp 不读代理，javbus CDN 等站点会被当前出口 IP 拉黑/绕路，
+        # 表现为"图片一直下载失败"。切到 AsyncHttpClient 后与爬虫共用同一代理通道。
+        # purpose="download" 让指纹层走 asset/download 分支（与图片资源指纹一致）。
+        from app.utils.http_client import AsyncHttpClient
+        async with AsyncHttpClient(timeout=int(timeout)) as client:
+            response = await client.get(
+                url,
+                headers=headers,
+                purpose="download",
+                timeout=int(timeout),
+            )
+            if response.status_code == 200:
+                data = response.content
+                if data:
+                    # JavDB 等 CDN 对 JPEG 做 XOR 混淆（key=data[0]），
+                    # 落盘前解密，否则文件头是乱码、图片无法打开。
+                    # 函数内部无损检测：本身已是 JPEG 时原样返回。
+                    data = maybe_decrypt_javdb_image(data)
+                    Path(str(local_path)).write_bytes(data)
+                    return str(local_path)
+            logger.warning(f"下载远程图片失败 [{url[:60]}]: HTTP {response.status_code}")
     except Exception as e:
         logger.warning(f"下载远程图片失败 [{url[:60]}]: {e}")
     return None

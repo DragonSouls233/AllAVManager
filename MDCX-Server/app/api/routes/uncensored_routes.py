@@ -254,14 +254,27 @@ async def get_uncensored_related_movies(movie_id: int):
 @router.get("/movies/{movie_id}/actors")
 async def get_uncensored_movie_actors(movie_id: int):
     """获取无码影片关联的演员列表"""
-    from app.db.uncensored_models import UncensoredMovie, UncensoredActor
-
     db = get_uncensored_db()
     session = await db.get_session()
     try:
+        from app.db.uncensored_models import UncensoredMovie, UncensoredActor, MovieActor as UMovieActor
+        from sqlalchemy import select
         movie = await session.get(UncensoredMovie, movie_id)
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
+        # 优先从 movie_actors 关联表获取
+        rows = (await session.execute(
+            select(UncensoredActor, UMovieActor.role)
+            .join(UMovieActor, UMovieActor.actor_id == UncensoredActor.id)
+            .where(UMovieActor.movie_id == movie_id)
+        )).all()
+        if rows:
+            items = [
+                {"id": a.id, "name": a.name, "avatar_url": a.avatar_url, "role": role}
+                for a, role in rows
+            ]
+            return {"items": items}
+        # fallback: 从 movie.actor 文本字段解析
         if not movie.actor:
             return {"items": []}
         actor_names = [a.strip() for a in movie.actor.split(",") if a.strip()]
@@ -272,8 +285,6 @@ async def get_uncensored_movie_actors(movie_id: int):
             actor = result.scalar_one_or_none()
             if actor:
                 items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url})
-            else:
-                items.append({"id": name, "name": name, "avatar_url": None})
         return {"items": items}
     finally:
         await session.close()
@@ -483,6 +494,12 @@ async def scrape_uncensored_movie(movie_id: int):
             new_actor_names = {a.name for a in scrape_result.actors}
             movie.actor = ",".join(sorted(new_actor_names))
 
+            # 清除旧的 movie_actors 关联
+            from app.db.uncensored_models import MovieActor as UMovieActor
+            old_ma_q = select(UMovieActor).where(UMovieActor.movie_id == movie.id)
+            for ma_row in (await session.execute(old_ma_q)).scalars().all():
+                await session.delete(ma_row)
+
             for actor_info in scrape_result.actors:
                 existing = await session.execute(
                     select(UncensoredActor).where(UncensoredActor.name == actor_info.name)
@@ -505,6 +522,12 @@ async def scrape_uncensored_movie(movie_id: int):
                         source_site=scrape_result.source,
                         movie_count=0,
                     ))
+                # 写入 movie_actors 关联表
+                await session.flush()
+                ex2 = await session.execute(select(UncensoredActor).where(UncensoredActor.name == actor_info.name))
+                db_actor2 = ex2.scalar_one_or_none()
+                if db_actor2:
+                    session.add(UMovieActor(movie_id=movie.id, actor_id=db_actor2.id))
         else:
             movie.actor = None
 
@@ -642,6 +665,20 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
                                             source_site=sr.source,
                                             movie_count=0,
                                         ))
+                                # 批量刷新+写入 movie_actors 关联表
+                                await s.flush()
+                                try:
+                                    from app.db.uncensored_models import MovieActor as UMovieActor
+                                    old_ma_q = select(UMovieActor).where(UMovieActor.movie_id == mv.id)
+                                    for ma_row in (await s.execute(old_ma_q)).scalars().all():
+                                        await s.delete(ma_row)
+                                    for ai in sr.actors:
+                                        ex2 = await s.execute(select(UncensoredActor).where(UncensoredActor.name == ai.name))
+                                        db_actor = ex2.scalar_one_or_none()
+                                        if db_actor:
+                                            s.add(UMovieActor(movie_id=mv.id, actor_id=db_actor.id))
+                                except Exception as ae:
+                                    logger.debug(f"无码批量刮削写入演员关联失败 [{mv.code}]: {ae}")
                             mv.source = sr.source or "scraper"
                             mv.status = "scraped"
                             await s.commit()
@@ -1308,21 +1345,34 @@ async def refresh_uncensored_movie_images(movie_id: int):
         await session.close()
 
 
-@router.post("/movies/{movie_id}/poster")
-async def generate_uncensored_poster(movie_id: int, body: dict):
-    """生成AI海报"""
-    return {"status": "ok", "message": "海报生成功能开发中"}
-
-
+# 已移除: /movies/{id}/poster (AI海报开发中)
+# 已移除: /movies/{id}/media/refill (媒体补全开发中)
+# 已移除: /covers/refresh (封面刷新开发中)
 @router.post("/movies/{movie_id}/media")
 async def get_uncensored_media_info(movie_id: int):
-    return await get_uncensored_movie_play(movie_id)
-
-
-@router.post("/movies/{movie_id}/media/refill")
-async def refill_uncensored_media(movie_id: int, body: dict):
-    """补全影片媒体文件"""
-    return {"status": "ok", "message": "媒体补全功能开发中"}
+    """获取影片媒体信息（播放信息）"""
+    db = get_uncensored_db()
+    session = await db.get_session()
+    try:
+        from app.db.uncensored_models import UncensoredMovie
+        from sqlalchemy import select
+        stmt = select(UncensoredMovie).where(UncensoredMovie.id == movie_id)
+        r = await session.execute(stmt)
+        movie = r.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        return {
+            "movie_id": movie.id,
+            "code": movie.code,
+            "title": movie.title,
+            "file_path": movie.file_path,
+            "file_size": movie.file_size,
+            "cover_url": movie.cover_url,
+            "duration": movie.duration,
+            "status": movie.status,
+        }
+    finally:
+        await session.close()
 
 
 @router.get("/covers/problems")
@@ -1347,8 +1397,21 @@ async def detect_uncensored_cover_problems(page: int = 1, page_size: int = 20):
 
 @router.post("/covers/refresh")
 async def refresh_uncensored_covers(body: dict):
-    """批量刷新封面"""
-    return {"status": "ok", "message": "封面刷新功能开发中"}
+    """批量刷新封面：对全部影片重新触发刮削并下载封面"""
+    db = get_uncensored_db()
+    session = await db.get_session()
+    try:
+        from app.db.uncensored_models import UncensoredMovie
+        from sqlalchemy import select, update as sq_update
+        # 将已刮削影片的 cover_url/thumb_url/poster_url 置空，重新刮削时会重新下载
+        stmt = sq_update(UncensoredMovie).where(
+            UncensoredMovie.status == "scraped"
+        ).values(cover_url=None, thumb_url=None, poster_url=None, status="pending")
+        result = await session.execute(stmt)
+        await session.commit()
+        return {"status": "ok", "updated": result.rowcount}
+    finally:
+        await session.close()
 
 
 @router.get("/stats")
@@ -1397,22 +1460,8 @@ async def list_uncensored_tags(page: int = 1, page_size: int = 50):
         await session.close()
 
 
-@router.get("/favorites")
-async def list_uncensored_favorites(page: int = 1, page_size: int = 24):
-    """获取收藏列表"""
-    return {"items": [], "total": 0}
-
-
-@router.post("/favorites/{movie_id}")
-async def toggle_uncensored_favorite(movie_id: int):
-    """切换收藏状态"""
-    return {"status": "ok"}
-
-
-@router.get("/subscriptions")
-async def list_uncensored_subscriptions():
-    """获取订阅列表"""
-    return {"items": [], "total": 0}
+# 已移除: favorites/subscriptions (无用户系统) / crawlers/logs (无日志系统)
+# 已移除: /movies/{id}/poster (AI海报) /media/refill /covers/refresh (开发中桩)
 
 
 @router.get("/genres")
@@ -1484,29 +1533,8 @@ async def get_uncensored_play_url(movie_id: int):
     return await get_uncensored_movie_play(movie_id)
 
 
-@router.get("/movies/{movie_id}/play")
-async def get_uncensored_movie_play(movie_id: int):
-    """获取影片播放信息"""
-    db = get_uncensored_db()
-    session = await db.get_session()
-    try:
-        from app.db.uncensored_models import UncensoredMovie
-        from sqlalchemy import select
-        stmt = select(UncensoredMovie).where(UncensoredMovie.id == movie_id)
-        r = await session.execute(stmt)
-        movie = r.scalar_one_or_none()
-        if not movie:
-            raise HTTPException(status_code=404, detail="影片不存在")
-        return {
-            "movie_id": movie.id,
-            "code": movie.code,
-            "title": movie.title,
-            "file_path": movie.file_path,
-            "cover_url": movie.cover_url,
-            "duration": movie.duration,
-        }
-    finally:
-        await session.close()
+# 已移除重复的 GET /movies/{movie_id}/play 路由定义
+# 保留第一个 play_uncensored_movie 函数（含完整字段：file_size, file_exists, status）
 
 
 # 演员影片列表
@@ -1685,9 +1713,28 @@ async def delete_uncensored_actor(actor_id: int):
 
 
 @router.post("/actors/{actor_id}/avatar")
-async def upload_uncensored_actor_avatar(actor_id: int, request: _Request):
-    """上传无码演员头像"""
-    return {"status": "ok", "message": "头像上传功能开发中"}
+async def download_uncensored_actor_avatar(actor_id: int, body: dict):
+    """从 URL 下载无码演员头像到本地"""
+    from app.utils.media_helpers import ensure_actor_avatar_local
+    url = body.get("avatar_url", "")
+    if not url:
+        raise HTTPException(status_code=400, detail="需要提供 avatar_url")
+    db = get_uncensored_db()
+    session = await db.get_session()
+    try:
+        from app.db.uncensored_models import UncensoredActor
+        from sqlalchemy import select
+        actor = (await session.execute(select(UncensoredActor).where(UncensoredActor.id == actor_id))).scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        local_avatar = await ensure_actor_avatar_local(actor.name, url)
+        if local_avatar:
+            actor.avatar_url = local_avatar
+            await session.commit()
+            return {"status": "ok", "avatar_url": local_avatar}
+        return {"status": "error", "message": "下载失败"}
+    finally:
+        await session.close()
 
 
 # 创建/更新/删除片商
@@ -1836,13 +1883,19 @@ async def set_uncensored_crawler_enabled(crawler_id: str, body: dict):
 @router.put("/crawlers/{crawler_id}/priority")
 async def set_uncensored_crawler_priority(crawler_id: str, body: dict):
     """设置爬虫优先级"""
-    return {"status": "ok", "message": "优先级设置功能开发中"}
+    priority = int(body.get("priority", 0))
+    from app.crawlers.provider import get_crawler
+    crawler = get_crawler(crawler_id)
+    if not crawler:
+        raise HTTPException(status_code=404, detail="爬虫不存在")
+    crawler.priority = priority
+    return {"status": "ok", "name": crawler_id, "priority": crawler.priority}
 
 
 @router.get("/crawlers/logs")
 async def get_uncensored_crawler_logs(limit: int = 100):
-    """获取爬虫日志"""
-    return {"items": [], "total": 0}
+    """获取爬虫日志（暂未实现持久化日志）"""
+    return {"items": [], "total": 0, "note": "日志系统暂未实现持久化"}
 
 
 @router.get("/crawlers/settings")
