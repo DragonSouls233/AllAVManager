@@ -50,6 +50,9 @@ from app.services import stash_scraper_bridge
 # 导入国产模块增强爬虫
 from app.crawlers import chinese
 
+# 导入本次迁移新增爬虫
+from app.crawlers import dmm_api, missav_api, av123, myjav, javmost, javxx, javsb, javplace, javmenu
+
 __all__ = [
     "BaseCrawler",
     "ScrapeResult",

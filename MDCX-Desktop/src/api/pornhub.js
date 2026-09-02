@@ -143,3 +143,25 @@ export async function pornhubBackfillUrls() {
 export async function pornhubSeedFromExternal() {
   return api.post('/pornhub/actors/seed-from-external')
 }
+
+// ===== 内容去重 =====
+export async function pornhubDedupStatus() {
+  return api.get('/pornhub/dedup/status')
+}
+export async function pornhubDedupScan() {
+  return api.post('/pornhub/dedup/scan')
+}
+export async function pornhubDedupApply() {
+  return api.post('/pornhub/dedup/apply')
+}
+
+// ===== GraphQL 视频详情 =====
+export async function pornhubGraphqlVideo(viewkey) {
+  return api.get(`/pornhub/videos/graphql/${viewkey}`)
+}
+export async function pornhubVideoSearch(params = {}) {
+  return api.get('/pornhub/videos/search', { params })
+}
+export async function pornhubVideoDownload(viewkey, quality = 'auto') {
+  return api.post(`/pornhub/videos/download/${viewkey}`, { quality })
+}

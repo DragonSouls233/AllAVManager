@@ -26,6 +26,7 @@ httpx[socks]==0.28.1
 lxml==6.1.1
 parsel==1.11.0
 beautifulsoup4==4.14.3
+selectolax==0.3.29
 
 # 图像处理
 pillow==12.1.1

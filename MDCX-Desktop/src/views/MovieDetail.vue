@@ -32,6 +32,9 @@
         <div class="cover-wrap">
           <img :src="coverUrl" :alt="movie.code" @error="onCoverError" />
         </div>
+        <div v-if="movie.poster_url && movie.poster_url !== movie.cover_url" class="cover-fanart-wrap">
+          <img :src="toDisplayUrl(movie.poster_url)" :alt="movie.code + ' poster'" @error="onCoverError" />
+        </div>
       </div>
 
       <div class="info-col">
@@ -827,9 +830,15 @@ onMounted(() => { load() })
 .hero-subtitle { margin-top: 6px; font-size: 14px; color: var(--el-text-color-secondary); display: flex; gap: 12px; }
 .jp-title { font-family: 'Yu Gothic', 'Hiragino Kaku Gothic ProN', sans-serif; }
 .detail-main { display: flex; gap: 24px; margin-bottom: 24px; }
-.cover-col { flex: 0 0 320px; }
-.cover-wrap { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.12); aspect-ratio: 2/3; background: var(--el-bg-color-page); }
-.cover-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-col { flex: 0 0 auto; max-width: 540px; min-width: 320px; display: flex; flex-direction: column; gap: 12px; }
+.cover-wrap { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.12); background: var(--el-bg-color-page); width: fit-content; max-width: 100%; }
+/* 关键：不再强制 aspect-ratio: 2/3。
+   JavDB/JavBus/AVMOO 公开封面就 800x538 横向比例 (≈1.49:1)，强制 2/3 + object-fit:cover
+   会让 800x538 水平方向压 2.5 倍，看上去糊。
+   改为按原图宽高比自然显示（width: auto，img 撑开），浏览器不做放大 → 清晰。 */
+.cover-wrap img { display: block; width: auto; height: auto; max-width: 100%; max-height: 75vh; object-fit: contain; image-rendering: -webkit-optimize-contrast; }
+.cover-fanart-wrap { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.12); background: var(--el-bg-color-page); width: fit-content; max-width: 100%; }
+.cover-fanart-wrap img { display: block; width: auto; height: auto; max-width: 100%; max-height: 75vh; object-fit: contain; image-rendering: -webkit-optimize-contrast; }
 .info-col { flex: 1; min-width: 0; }
 .meta-list { display: grid; grid-template-columns: 72px 1fr; gap: 10px 12px; margin: 0 0 16px; }
 .meta-list dt { font-weight: 600; color: var(--el-text-color-regular); font-size: 14px; }
@@ -895,7 +904,7 @@ onMounted(() => { load() })
 .related-title { font-size: 12px; color: var(--el-text-color-regular); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 @media (max-width: 768px) {
   .detail-main { flex-direction: column; }
-  .cover-col { flex: none; max-width: 240px; margin: 0 auto; }
+  .cover-col { flex: none; max-width: 100%; margin: 0 auto; }
   .hero-h1 { font-size: 18px; }
   .related-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
   .preview-grid, .preview-skeleton { grid-template-columns: repeat(2, 1fr); gap: 8px; }

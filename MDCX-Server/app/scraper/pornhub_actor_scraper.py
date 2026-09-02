@@ -1,110 +1,123 @@
 """
-PORNHub 演员资料刮削器（增强版）
+PORNHub 演员资料刮削器（增强版 v2）
 
-从 PornHub 官方页面和辅助数据源拉取演员核心资料：
-- 全名、别名
-- 出生日期、出道年份
-- 作品统计量（影片数、视频数）
-- 官方头像下载与本地存储
-- 去重与完整性校验
+增强内容：
+  - curl_cffi + impersonate fallback（chrome136 → chrome120 → chrome119 → edge101）
+  - selectolax 超快 HTML 解析
+  - #getAvatar 双路径头像提取（ph-heatmap 方法）
+  - 国籍 → 国家映射（ph-heatmap _NATIONALITY_TO_COUNTRY）
+  - Video Views 精确提取（.videoViews data-title）
+  - 出生地解析与标准化
+  - 原有 regex 解析作为 fallback
 """
 
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from app.utils.http_client import AsyncHttpClient
 from app.config.manager import DATA_DIR
+from app.utils.http_client import AsyncHttpClient
 
 logger = logging.getLogger(__name__)
 
-# 头像本地存储目录
 AVATAR_DIR = DATA_DIR / "avatars" / "pornhub"
+PH_PAGES_BASE = "https://www.pornhub.com/pornstars"
 
-# 综合数据源
-PH_PAGES_BASE = "https://www.pornhub.com/pornstars"  # /{name}
+_IMPERSONATE_FALLBACKS = ["chrome136", "chrome120", "chrome119", "chrome116", "safari17_0", "edge101"]
+
+_NATIONALITY_TO_COUNTRY = {
+    "American": "United States", "British": "United Kingdom", "Russian": "Russia",
+    "Italian": "Italy", "French": "France", "German": "Germany", "Spanish": "Spain",
+    "Brazilian": "Brazil", "Mexican": "Mexico", "Japanese": "Japan",
+    "Korean": "South Korea", "Chinese": "China", "Australian": "Australia",
+    "Canadian": "Canada", "Czech": "Czech Republic", "Polish": "Poland",
+    "Ukrainian": "Ukraine", "Hungarian": "Hungary", "Romanian": "Romania",
+    "Argentine": "Argentina", "Argentinian": "Argentina", "Colombian": "Colombia",
+    "Dutch": "Netherlands", "Swedish": "Sweden", "Norwegian": "Norway",
+    "Finnish": "Finland", "Danish": "Denmark", "Turkish": "Turkey",
+    "Greek": "Greece", "Portuguese": "Portugal", "Indian": "India",
+    "Filipino": "Philippines", "Thai": "Thailand", "Vietnamese": "Vietnam",
+    "Indonesian": "Indonesia", "Bulgarian": "Bulgaria", "Serbian": "Serbia",
+    "Croatian": "Croatia", "Slovakian": "Slovakia", "Slovenian": "Slovenia",
+    "English": "United Kingdom", "Irish": "Ireland", "Belgian": "Belgium",
+    "Austrian": "Austria", "Cuban": "Cuba", "Dominican": "Dominican Republic",
+    "Puerto Rican": "Puerto Rico", "Egyptian": "Egypt", "Nigerian": "Nigeria",
+    "Armenian": "Armenia", "Peruvian": "Peru", "Venezuelan": "Venezuela",
+    "Uruguayan": "Uruguay", "New Zealander": "New Zealand",
+}
+
+_COUNTRY_ALIASES = {
+    "United States of America": "United States", "USA": "United States",
+    "U.S.A.": "United States", "U.S.": "United States", "UK": "United Kingdom",
+    "U.K.": "United Kingdom", "Great Britain": "United Kingdom", "England": "United Kingdom",
+    "Scotland": "United Kingdom",
+}
 
 
 @dataclass
 class EnhancedActorProfile:
-    """演员增强资料"""
     name: str
     alias: Optional[str] = None
     avatar_url: Optional[str] = None
     birth_date: Optional[str] = None
-    debut_year: Optional[str] = None          # 出道年份
+    debut_year: Optional[str] = None
     height: Optional[str] = None
     measurements: Optional[str] = None
     birthplace: Optional[str] = None
     country: Optional[str] = None
     ethnicity: Optional[str] = None
-    movie_count: Optional[int] = None          # PornHub 作品数
-    photo_count: Optional[int] = None          # 相片数
-    video_count: Optional[int] = None          # 视频数
-    profile_url: Optional[str] = None          # PornHub 个人主页
-    rank: Optional[int] = None                 # 排名
-    rank_weekly: Optional[int] = None          # 周排名
+    movie_count: Optional[int] = None
+    photo_count: Optional[int] = None
+    video_count: Optional[int] = None
+    profile_url: Optional[str] = None
+    rank: Optional[int] = None
+    rank_weekly: Optional[int] = None
+    total_views: Optional[int] = None
+    background: Optional[str] = None
+
+
+def _canonicalize_country(name: str) -> str:
+    name = name.strip()
+    return _COUNTRY_ALIASES.get(name, name)
 
 
 async def scrape_actor_profile(actor_name: str, nationality: Optional[str] = None) -> Optional[EnhancedActorProfile]:
-    """从 PornHub 和辅助数据源刮削演员资料
-
-    Args:
-        actor_name: 演员名称
-        nationality: 国籍（可选，用于辅助匹配校验）
-
-    Returns:
-        EnhancedActorProfile 或 None（刮削失败）
-    """
-    # 1. 先从 PornHub 页面爬取
-    profile = await _scrape_from_pornhub(actor_name)
+    profile = await _scrape_from_pornhub_selectolax(actor_name)
     if profile:
-        # 校正国籍：路径提取的优先级高于网页爬取
         if nationality and not profile.country:
             profile.country = nationality
         return profile
 
-    # 2. 如果 PH 没有，尝试名称变体搜索
-    # 去掉尾随数字
     base_name = re.sub(r'\d+$', '', actor_name).strip()
     if base_name and base_name != actor_name:
-        profile = await _scrape_from_pornhub(base_name)
+        profile = await _scrape_from_pornhub_selectolax(base_name)
         if profile:
             if nationality and not profile.country:
                 profile.country = nationality
             return profile
 
-    # 3. 尝试 JavDB 搜索获取基本信息
+    profile = await _scrape_from_pornhub_regex(actor_name)
+    if profile:
+        if nationality and not profile.country:
+            profile.country = nationality
+        return profile
+
     avatar_url = await _scrape_avatar_from_javdb(actor_name)
     if avatar_url:
-        return EnhancedActorProfile(
-            name=actor_name,
-            avatar_url=avatar_url,
-            country=nationality,
-        )
+        return EnhancedActorProfile(name=actor_name, avatar_url=avatar_url, country=nationality)
 
     return None
 
 
 async def download_actor_avatar(actor_name: str, avatar_url: str) -> Optional[str]:
-    """下载演员头像到本地存储
-
-    Args:
-        actor_name: 演员名称
-        avatar_url: 头像 URL
-
-    Returns:
-        本地文件路径字符串，或 None
-    """
     if not avatar_url or not avatar_url.startswith("http"):
         return None
 
     AVATAR_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 文件名用演员名，去掉不合法字符
     safe_name = re.sub(r'[\\/:*?"<>|]', '_', actor_name).strip()
     local_path = AVATAR_DIR / f"{safe_name}.jpg"
 
@@ -112,10 +125,8 @@ async def download_actor_avatar(actor_name: str, avatar_url: str) -> Optional[st
         return str(local_path)
 
     try:
-        # 获取代理 URL（PornHub 需要翻墙）
         from app.services.proxy_manager import get_effective_proxy_url
         proxy_url = get_effective_proxy_url()
-
         client = AsyncHttpClient(proxy=proxy_url)
         resp = await client.get(avatar_url, timeout=30)
         if resp and resp.status_code == 200:
@@ -129,7 +140,6 @@ async def download_actor_avatar(actor_name: str, avatar_url: str) -> Optional[st
 
 
 def check_profile_completeness(profile: EnhancedActorProfile) -> dict:
-    """检查资料完整性，返回缺失字段列表"""
     missing = []
     if not profile.avatar_url:
         missing.append("avatar_url")
@@ -141,30 +151,172 @@ def check_profile_completeness(profile: EnhancedActorProfile) -> dict:
         missing.append("debut_year")
     if profile.movie_count is None:
         missing.append("movie_count")
-
-    completeness = max(0, 100 - len(missing) * 20)  # 每个字段 20%
+    completeness = max(0, 100 - len(missing) * 20)
     return {"completeness": completeness, "missing_fields": missing}
 
 
-# ==================== 内部实现 ====================
+# ====== selectolax-based PH scraper ======
 
 
-async def _scrape_from_pornhub(actor_name: str) -> Optional[EnhancedActorProfile]:
-    """从 PornHub 官方页面爬取演员资料"""
+def _extract_photo_url(tree) -> Optional[str]:
+    """双路径头像提取：#getAvatar → fallback .topProfileHeader img"""
+    try:
+        from selectolax.parser import HTMLParser
+    except ImportError:
+        return None
+
+    avatar = tree.css_first("#getAvatar")
+    if avatar is not None:
+        src = avatar.attributes.get("src") or avatar.attributes.get("data-src")
+        if src:
+            return src
+
+    header = tree.css_first(".topProfileHeader")
+    if header is not None:
+        for img in header.css("img"):
+            src = img.attributes.get("src") or img.attributes.get("data-src")
+            if src and "/avatar" in src:
+                return src
+    return None
+
+
+_VIEWS_DATA_TITLE_RE = re.compile(r"Video views?\s*:\s*([\d,]+)", re.IGNORECASE)
+
+
+def _extract_video_views(tree) -> Optional[int]:
+    for node in tree.css(".videoViews[data-title]"):
+        title = node.attributes.get("data-title", "") or ""
+        match = _VIEWS_DATA_TITLE_RE.search(title)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    return None
+
+
+def _extract_country_from_tree(tree) -> Optional[str]:
+    birth_place = None
+    background = None
+    for piece in tree.css(".infoPiece"):
+        text = piece.text(strip=True)
+        if text.startswith("Birth Place:"):
+            birth_place = text[len("Birth Place:"):].strip()
+        elif text.startswith("Background:"):
+            background = text[len("Background:"):].strip()
+
+    if birth_place:
+        country = birth_place.split(",")[-1].strip()
+        if country:
+            return _canonicalize_country(country)
+
+    if background:
+        mapped = _NATIONALITY_TO_COUNTRY.get(background)
+        if mapped:
+            return mapped
+    return None
+
+
+async def _fetch_with_impersonate_fallback(url: str, cookies: dict, timeout: int = 30) -> Optional[str]:
+    from app.services.proxy_manager import get_effective_proxy_url
+    proxy_url = get_effective_proxy_url()
+    client = AsyncHttpClient(proxy=proxy_url, timeout=timeout, max_retries=1)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+
+    for impersonate in _IMPERSONATE_FALLBACKS:
+        try:
+            resp = await client.get(
+                url,
+                cookies=cookies,
+                headers=headers,
+                fingerprint={"impersonate": impersonate},
+                timeout=timeout,
+            )
+            if resp and resp.status_code == 200 and len(resp.text) > 1000:
+                logger.debug("impersonate=%s 成功 [%s]", impersonate, url[:60])
+                return resp.text
+        except Exception as e:
+            logger.debug("impersonate=%s 失败: %s", impersonate, e)
+
+    return None
+
+
+async def _scrape_from_pornhub_selectolax(actor_name: str) -> Optional[EnhancedActorProfile]:
     try:
         from app.crawlers.pornhub import _PH_BASE_COOKIES
-        import json
+        from selectolax.parser import HTMLParser
+    except ImportError:
+        return None
 
-        # PornHub 演员页面 URL
-        # 将空格转成下划线，特殊字符处理
+    ph_name = actor_name.replace(" ", "_")
+    url = f"https://www.pornhub.com/pornstar/{ph_name}"
+
+    html = await _fetch_with_impersonate_fallback(url, _PH_BASE_COOKIES)
+    if not html:
+        logger.debug("selectolax 抓取失败 [%s]", actor_name)
+        return None
+
+    try:
+        tree = HTMLParser(html)
+    except Exception:
+        return None
+
+    profile = EnhancedActorProfile(name=actor_name)
+
+    h1 = tree.css_first("h1")
+    if h1 is not None:
+        profile.name = h1.text(strip=True)
+
+    profile.avatar_url = _extract_photo_url(tree)
+    profile.total_views = _extract_video_views(tree)
+    profile.country = _extract_country_from_tree(tree)
+
+    info_fields = {}
+    for piece in tree.css(".infoPiece"):
+        text = piece.text(strip=True)
+        if ":" in text:
+            key, _, val = text.partition(":")
+            info_fields[key.strip().lower()] = val.strip()
+
+    for key, val in info_fields.items():
+        if key == "birthday":
+            profile.birth_date = val
+        elif key == "height":
+            profile.height = val
+        elif key == "measurements":
+            profile.measurements = val
+        elif key == "birth place":
+            profile.birthplace = val
+        elif key == "ethnicity":
+            profile.ethnicity = val
+        elif key == "background":
+            profile.background = val
+            if not profile.country:
+                mapped = _NATIONALITY_TO_COUNTRY.get(val)
+                if mapped:
+                    profile.country = mapped
+
+    profile.profile_url = url
+    if profile.avatar_url or profile.birth_date or profile.country:
+        return profile
+
+    return None
+
+
+async def _scrape_from_pornhub_regex(actor_name: str) -> Optional[EnhancedActorProfile]:
+    try:
+        from app.crawlers.pornhub import _PH_BASE_COOKIES
+        from app.services.proxy_manager import get_effective_proxy_url
+
         ph_name = actor_name.replace(" ", "_")
         url = f"https://www.pornhub.com/pornstar/{ph_name}"
-
-        # 获取代理 URL（PornHub 需要翻墙）
-        from app.services.proxy_manager import get_effective_proxy_url
         proxy_url = get_effective_proxy_url()
 
-        client = AsyncHttpClient(proxy=proxy_url)
+        client = AsyncHttpClient(proxy=proxy_url, timeout=30)
         resp = await client.get(
             url,
             cookies=_PH_BASE_COOKIES,
@@ -176,33 +328,27 @@ async def _scrape_from_pornhub(actor_name: str) -> Optional[EnhancedActorProfile
         )
 
         if not resp or resp.status_code != 200:
-            logger.debug("PH 演员页访问失败 [%s]: HTTP %s", actor_name, resp.status_code if resp else "None")
             return None
 
         html = resp.text
-
-        # 提取 JSON-LD / script 数据
         profile = EnhancedActorProfile(name=actor_name)
 
-        # 提取名字
         name_match = re.search(r'<h1[^>]*class="[^"]*name[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL)
         if name_match:
             profile.name = name_match.group(1).strip()
 
-        # 提取头像URL
-        avatar_match = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="([^"]+)"', html, re.DOTALL)
+        avatar_match = re.search(r'<img[^>]*id="getAvatar"[^>]*src="([^"]+)"', html, re.DOTALL)
         if avatar_match:
             profile.avatar_url = avatar_match.group(1).strip()
+        else:
+            avatar_match = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="([^"]+)"', html, re.DOTALL)
+            if avatar_match:
+                profile.avatar_url = avatar_match.group(1).strip()
 
-        # 提取国家/地区
         country_match = re.search(r'<span[^>]*class="[^"]*country[^"]*"[^>]*>(.*?)</span>', html, re.DOTALL)
         if country_match:
             profile.country = country_match.group(1).strip()
 
-        # 提取粉丝数、排名等统计信息
-        stats_section = re.search(r'class="[^"]*statsWrapper[^"]*"', html, re.DOTALL)
-
-        # 从个人资料栏提取详细信息
         info_items = re.findall(
             r'<div[^>]*class="[^"]*infoPiece[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>\s*<span[^>]*>(.*?)</span>',
             html, re.DOTALL
@@ -224,15 +370,8 @@ async def _scrape_from_pornhub(actor_name: str) -> Optional[EnhancedActorProfile
                 if not profile.country:
                     profile.country = value_clean
 
-        # 提取视频数量、照片数量
-        count_pattern = re.compile(
-            r'<span[^>]*class="[^"]*count[^"]*"[^>]*>\s*([\d,.KMB]+)\s*</span>',
-            re.DOTALL
-        )
-        count_labels = re.findall(
-            r'<span[^>]*class="[^"]*label[^"]*"[^>]*>\s*(Videos|Photos)\s*</span>',
-            html, re.DOTALL
-        )
+        count_pattern = re.compile(r'<span[^>]*class="[^"]*count[^"]*"[^>]*>\s*([\d,.KMB]+)\s*</span>', re.DOTALL)
+        count_labels = re.findall(r'<span[^>]*class="[^"]*label[^"]*"[^>]*>\s*(Videos|Photos)\s*</span>', html, re.DOTALL)
         counts = count_pattern.findall(html)
         for i, label in enumerate(count_labels):
             if i < len(counts):
@@ -242,60 +381,33 @@ async def _scrape_from_pornhub(actor_name: str) -> Optional[EnhancedActorProfile
                 elif label.lower() == "photos":
                     profile.photo_count = val
 
-        # 提取排名
         rank_match = re.search(r'#(\d+)\s*Rank', html, re.DOTALL)
         if rank_match:
             profile.rank = int(rank_match.group(1))
 
         profile.profile_url = url
 
-        # 检查是否提取到基本信息
         if not profile.avatar_url and not profile.birth_date and not profile.country:
             return None
 
         return profile
-
     except Exception as e:
-        logger.debug("PH 演员页面解析失败 [%s]: %s", actor_name, e)
+        logger.debug("PH regex 解析失败 [%s]: %s", actor_name, e)
         return None
 
 
 async def _scrape_avatar_from_javdb(actor_name: str) -> Optional[str]:
-    """从 JavDB 搜索演员头像（降级方案）"""
     try:
-        from app.utils.http_client import AsyncHttpClient
         from urllib.parse import quote
-
         search_url = f"https://javdb.com/search?q={quote(actor_name)}&f=actor"
         client = AsyncHttpClient()
-        resp = await client.get(
-            search_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            },
-            timeout=15,
-        )
-
+        resp = await client.get(search_url, timeout=15)
         if not resp or resp.status_code != 200:
             return None
-
         html = resp.text
-        # 提取第一个演员头像
-        avatar_match = re.search(
-            r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="(https://[^"]+\.(?:jpg|jpeg|png))"',
-            html, re.DOTALL
-        )
+        avatar_match = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="(https://[^"]+\.(?:jpg|jpeg|png))"', html, re.DOTALL)
         if avatar_match:
             return avatar_match.group(1)
-
-        # 备选：提取演员卡片中的头像
-        avatar_match2 = re.search(
-            r'class="[^"]*actor-avatar[^"]*"[^>]*>\s*<img[^>]*src="([^"]+\.(?:jpg|jpeg|png))"',
-            html, re.DOTALL
-        )
-        if avatar_match2:
-            return avatar_match2.group(1)
-
         return None
     except Exception as e:
         logger.debug("JavDB 头像搜索失败 [%s]: %s", actor_name, e)
@@ -303,7 +415,6 @@ async def _scrape_avatar_from_javdb(actor_name: str) -> Optional[str]:
 
 
 def _parse_number(text: str) -> int:
-    """解析带 K/M/B 后缀的数字"""
     if not text:
         return 0
     text = text.strip().replace(",", "").replace(" ", "")

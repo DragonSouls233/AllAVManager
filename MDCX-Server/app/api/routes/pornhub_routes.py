@@ -2349,3 +2349,163 @@ async def get_pornhub_external_play_url(movie_id: int, request: _Request, protoc
             return {"protocol": "direct", "play_url": movie.file_path, "player_command": movie.file_path, "copy_text": movie.file_path}
     finally:
         await session.close()
+
+
+# ========== 内容去重 ==========
+
+
+@router.post("/dedup/scan")
+async def api_dedup_scan(data: Optional[dict] = None):
+    """扫描视频文件重复项（SHA1 head+tail 指纹），默认 dry-run"""
+    try:
+        from app.utils.pornhub_dedupe import scan_directories, format_size_gb, format_size_mb
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"去重模块不可用: {e}")
+
+    dirs_raw = (data or {}).get("directories") or []
+    if not dirs_raw:
+        from app.config.manager import get_config
+        config = get_config()
+        dirs_raw = config.scraper.media_dirs or []
+
+    directories = [Path(d) for d in dirs_raw]
+
+    result = scan_directories(directories)
+
+    groups_info = []
+    for g in result.groups:
+        keeper_info = None
+        if g.keeper:
+            keeper_info = {
+                "name": g.keeper.name,
+                "path": str(g.keeper.path),
+                "size_mb": round(g.keeper.size_bytes / (1024 * 1024), 1),
+            }
+        removers_info = [
+            {"name": r.name, "path": str(r.path), "size_mb": round(r.size_bytes / (1024 * 1024), 1)}
+            for r in g.removers
+        ]
+        groups_info.append({
+            "fingerprint": g.fingerprint,
+            "keeper": keeper_info,
+            "removers": removers_info,
+            "size_mb": round(g.size_bytes / (1024 * 1024), 1),
+        })
+
+    return {
+        "scanned_files": result.scanned_files,
+        "duplicate_groups": result.duplicate_groups,
+        "removable_files": result.removable_files,
+        "total_bytes_saved": result.total_bytes_saved,
+        "total_gb_saved": format_size_gb(result.total_bytes_saved),
+        "scan_duration_ms": result.scan_duration_ms,
+        "directories": [str(d) for d in directories],
+        "groups": groups_info,
+    }
+
+
+@router.post("/dedup/apply")
+async def api_dedup_apply(data: Optional[dict] = None):
+    """执行去重删除，返回已删除文件列表"""
+    try:
+        from app.utils.pornhub_dedupe import scan_directories, apply_dedup, format_size_gb
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"去重模块不可用: {e}")
+
+    dirs_raw = (data or {}).get("directories") or []
+    if not dirs_raw:
+        from app.config.manager import get_config
+        config = get_config()
+        dirs_raw = config.scraper.media_dirs or []
+
+    directories = [Path(d) for d in dirs_raw]
+    result = scan_directories(directories)
+
+    if result.duplicate_groups == 0:
+        return {"status": "ok", "deleted_count": 0, "message": "无重复文件"}
+
+    deleted = apply_dedup(result)
+
+    return {
+        "status": "ok",
+        "deleted_count": len(deleted),
+        "deleted_files": deleted,
+        "total_groups": result.duplicate_groups,
+        "total_gb_saved": format_size_gb(result.total_bytes_saved),
+    }
+
+
+@router.get("/dedup/status")
+async def api_dedup_status():
+    """返回去重模块状态"""
+    return {"ready": True, "algorithm": "SHA1(head 64KB + tail 64KB + filesize)", "service": "pornhub_dedupe"}
+
+
+# ========== GraphQL API 视频元数据 ==========
+
+
+@router.get("/videos/graphql/{viewkey}")
+async def api_get_video_metadata(viewkey: str):
+    """通过 Pornhub GraphQL API 获取视频完整元数据"""
+    try:
+        from app.services.pornhub_graphql import fetch_video_metadata
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"GraphQL 模块不可用: {e}")
+
+    meta = await fetch_video_metadata(viewkey)
+    if not meta:
+        raise HTTPException(status_code=404, detail="视频不存在或无法获取")
+
+    return {
+        "viewkey": meta.viewkey,
+        "title": meta.title,
+        "description": meta.description,
+        "duration": meta.duration,
+        "thumbnail": meta.thumbnail,
+        "views": meta.views,
+        "publish_date": meta.publish_date,
+        "date_updated": meta.date_updated,
+        "likes": meta.likes,
+        "dislikes": meta.dislikes,
+        "rating": meta.rating,
+        "video_status": meta.video_status,
+        "is_premium": meta.is_premium,
+        "is_live": meta.is_live,
+        "is_hd": meta.is_hd,
+        "tags": meta.tags,
+        "categories": meta.categories,
+        "performer_names": meta.performer_names,
+        "performer_ids": meta.performer_ids,
+        "media_definitions": meta.media_definitions,
+        "hls_master": meta.hls_master,
+    }
+
+
+@router.get("/videos/search")
+async def api_search_videos(query: str = Query(..., min_length=1), page: int = Query(1, ge=1)):
+    """搜索 Pornhub 视频"""
+    try:
+        from app.services.pornhub_graphql import fetch_video_search
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"搜索模块不可用: {e}")
+
+    result = await fetch_video_search(query, page)
+    if not result:
+        raise HTTPException(status_code=404, detail="搜索失败")
+    return result
+
+
+@router.post("/videos/download/{viewkey}")
+async def api_download_video(viewkey: str, data: Optional[dict] = None):
+    """通过 GraphQL 获取 m3u8 链接并下载"""
+    try:
+        from app.services.pornhub_graphql import download_video
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"下载模块不可用: {e}")
+
+    quality = (data or {}).get("quality", "auto")
+    output_path = (data or {}).get("output_path", "")
+    result = await download_video(viewkey, quality=quality, output_path=output_path)
+    if not result:
+        raise HTTPException(status_code=404, detail="下载失败")
+    return {"status": "ok", "file_path": result}
