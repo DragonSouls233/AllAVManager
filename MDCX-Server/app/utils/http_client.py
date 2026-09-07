@@ -95,6 +95,17 @@ class AsyncHttpClient:
         # 一旦探测到该致命错误，置此标志，后续请求全部降级到 httpx，避免反复重试浪费时间。
         self._curl_failed: bool = False
 
+        # === 全局并发 Semaphore（防 hang 死）===
+        # 2026-09-03 事故：6:48 站群瞬时断流 → 数千个下载请求同时跑 3×30s 重试 →
+        # 累积死等协程占满 asyncio 信号量 → 事件循环锁死 → uvicorn handler 拿不到
+        # 调度 → 客户端全 504/超时。修复：所有 get/post 必须先 acquire Semaphore，
+        # 限制同时在途请求数。即使下游全挂，最多 N 个协程挂在 socket 上等超时，
+        # 不会耗光 asyncio 默认 1024 协程槽位。
+        # 拆分：document/api 走 _api_sem（限 16）；download 走 _download_sem（限 8）。
+        # 两路独立，单一图片洪水不会挤垮 API 刮削。
+        self._api_sem: asyncio.Semaphore = asyncio.Semaphore(16)
+        self._download_sem: asyncio.Semaphore = asyncio.Semaphore(8)
+
     async def __aenter__(self) -> "AsyncHttpClient":
         """上下文管理器入口"""
         await self.init_session()
@@ -325,6 +336,22 @@ class AsyncHttpClient:
         Raises:
             Exception: 当响应状态码为 4xx 或 5xx 时抛出异常
         """
+        # 2026-09-03 防 hang 死：按 purpose 选 Semaphore。
+        # 9/3 06:48 站群断流时数千图片下载同时挂起，吃光 asyncio 协程槽位。
+        # 限 8 个 download + 16 个 document/api 同时在途，剩余排队等 acquire。
+        is_download = purpose == "download"
+        sem = self._download_sem if is_download else self._api_sem
+        async with sem:
+            return await self._get_impl(url, headers, cookies, purpose, **kwargs)
+
+    async def _get_impl(
+        self,
+        url: str,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        purpose: Optional[RequestPurpose] = None,
+        **kwargs,
+    ) -> Response:
         await self.init_session()
         await self._wait_for_rate_limit(url)
 
@@ -492,6 +519,24 @@ class AsyncHttpClient:
         Returns:
             Response 响应对象
         """
+        # 2026-09-03 防 hang 死：POST 默认走 API 限流。
+        is_download = purpose == "download"
+        sem = self._download_sem if is_download else self._api_sem
+        async with sem:
+            return await self._post_impl(
+                url, data, json, headers, cookies, purpose, **kwargs
+            )
+
+    async def _post_impl(
+        self,
+        url: str,
+        data: Optional[dict] = None,
+        json: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        purpose: Optional[RequestPurpose] = None,
+        **kwargs,
+    ) -> Response:
         await self.init_session()
         await self._wait_for_rate_limit(url)
 

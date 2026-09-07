@@ -2,7 +2,17 @@
 FastAPI 应用入口
 """
 # Python 3.14 Windows ProactorEventLoop 兼容性修复：必须在任何异步操作前执行
+import sys
 import sys as _sys
+from pathlib import Path
+
+# 加载项目本地依赖（pip 沙箱受限时使用 --target 安装到 .libs）
+_LIBS_DIR = Path(__file__).resolve().parent.parent / ".libs"
+if _LIBS_DIR.exists():
+    _LIBS_STR = str(_LIBS_DIR)
+    if _LIBS_STR not in sys.path:
+        sys.path.insert(0, _LIBS_STR)
+
 if _sys.platform == "win32":
     import asyncio as _asyncio
     try:

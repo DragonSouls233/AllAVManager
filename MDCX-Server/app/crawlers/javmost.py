@@ -74,6 +74,14 @@ class JavMostCrawler(BaseCrawler):
     requires_proxy = False
 
     async def scrape(self, code: str, ctx=None) -> Optional[ScrapeResult]:
+        if ctx and ctx.http_client is not None:
+            return await self._scrape_with_client(code, ctx.http_client, ctx)
+        async with AsyncHttpClient() as client:
+            return await self._scrape_with_client(code, client, ctx)
+
+    async def _scrape_with_client(
+        self, code: str, client: AsyncHttpClient, ctx=None
+    ) -> Optional[ScrapeResult]:
         code_upper = code.strip().upper()
         detail_url = f"{self.base_url}/{code_upper}/"
 
@@ -88,8 +96,7 @@ class JavMostCrawler(BaseCrawler):
                 headers.update(user_headers)
 
         try:
-            async with AsyncHttpClient() as client:
-                html_text = await client.get_text(detail_url, headers=headers)
+            html_text = await client.get_text(detail_url, headers=headers)
         except Exception as e:
             self.mark_error()
             logger.debug(f"JavMost {code_upper} 请求失败: {e}")
@@ -99,7 +106,8 @@ class JavMostCrawler(BaseCrawler):
             self.mark_error()
             return None
 
-        if "cloudflare" in html_text.lower() or "driver-verify" in html_text.lower():
+        low = html_text.lower()
+        if "driver-verify" in low or "__cf_chl" in low or "cf-browser-verification" in low or "just a moment" in low:
             self.mark_error()
             logger.debug(f"JavMost {code_upper}: 遇到验证拦截")
             return None

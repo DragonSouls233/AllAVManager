@@ -112,7 +112,7 @@ class JavplaceCrawler(BaseCrawler):
     display_name = "JavPlace"
     base_url = "https://jav.place"
 
-    priority = CrawlerPriority.NORMAL
+    priority = CrawlerPriority.VERY_HIGH
     supported_types = ["jav"]
     supported_prefixes = []
     description = "JavPlace JAV 数据库站点"
@@ -120,6 +120,14 @@ class JavplaceCrawler(BaseCrawler):
     requires_proxy = False
 
     async def scrape(self, code: str, ctx=None) -> Optional[ScrapeResult]:
+        if ctx and ctx.http_client is not None:
+            return await self._scrape_with_client(code, ctx.http_client, ctx)
+        async with AsyncHttpClient() as client:
+            return await self._scrape_with_client(code, client, ctx)
+
+    async def _scrape_with_client(
+        self, code: str, client: AsyncHttpClient, ctx=None
+    ) -> Optional[ScrapeResult]:
         code_upper = code.strip().upper()
         detail_url = f"https://jav.place/video/{code_upper}"
 
@@ -130,143 +138,130 @@ class JavplaceCrawler(BaseCrawler):
                 headers.update(user_headers)
 
         try:
-            async with AsyncHttpClient() as client:
-                html_text = await client.get_text(detail_url, headers=headers)
+            html_text = await client.get_text(detail_url, headers=headers)
 
-                if not html_text:
-                    self.mark_error()
-                    return None
+            if not html_text:
+                self.mark_error()
+                return None
 
-                code_variant = code_upper.replace("-", "")
-                if code_upper not in html_text and code_variant not in html_text:
-                    logger.debug(f"JavPlace {code_upper}: 页面中未找到编号，可能不存在")
-                    self.mark_error()
-                    return None
+            code_variant = code_upper.replace("-", "")
+            if code_upper not in html_text and code_variant not in html_text:
+                logger.debug(f"JavPlace {code_upper}: 页面中未找到编号，可能不存在")
+                self.mark_error()
+                return None
 
-                html = etree.fromstring(
-                    html_text.encode() if isinstance(html_text, str) else html_text,
-                    etree.HTMLParser(),
+            html = etree.fromstring(
+                html_text.encode() if isinstance(html_text, str) else html_text,
+                etree.HTMLParser(),
+            )
+
+            og_image = self._get_meta(html, "og:image")
+            og_title = self._get_meta(html, "og:title")
+            og_desc = self._get_meta(html, "og:description")
+            page_url = self._get_meta(html, "og:url")
+            meta_desc = self._get_meta_by_name(html, "description")
+
+            desc_fields = _parse_meta_desc_desc(og_desc)
+            if not desc_fields.get("actors") and meta_desc:
+                desc_fields.update(_parse_meta_desc_desc(meta_desc))
+
+            raw_title = og_title
+            if not raw_title:
+                h1 = html.xpath("//h1/text()")
+                raw_title = h1[0].strip() if h1 else ""
+            if not raw_title:
+                title_tag = html.xpath("//title/text()")
+                raw_title = title_tag[0].strip() if title_tag else ""
+            title = _clean_title(raw_title, code_upper)
+
+            cover_url = og_image
+            if not cover_url:
+                poster = html.xpath('//img[contains(@class, "poster")]/@src')
+                if poster:
+                    cover_url = poster[0]
+            if not cover_url:
+                lazy = html.xpath('//img[contains(@class, "lazyimage")]/@src')
+                if lazy:
+                    cover_url = lazy[0]
+
+            table_data = self._extract_table_fields(html)
+
+            premiered = (
+                table_data.get("日期")
+                or desc_fields.get("date")
+                or self._first_date_in_html(html_text)
+            )
+            release_date = _parse_date(premiered or "")
+
+            duration_raw = table_data.get("時長") or desc_fields.get("duration")
+            duration = self._parse_duration(duration_raw)
+
+            studio = (
+                table_data.get("製作")
+                or table_data.get("制作")
+                or table_data.get("出版")
+                or ""
+            )
+
+            director = table_data.get("導演") or table_data.get("导演") or ""
+
+            series = table_data.get("系列") or ""
+
+            actor_names = _dedup(self._split_pipe_or_comma(desc_fields.get("actors", "")))
+            if not actor_names:
+                actor_names = self._collect_links_by_href(html, "/actors/")
+
+            tag_names = _dedup(self._split_pipe_or_comma(desc_fields.get("tags", "")))
+            if not tag_names:
+                tag_names = _dedup(
+                    t for t in self._collect_links_by_href(html, "/q/")
+                    if not _looks_like_code_token(t)
                 )
 
-                og_image = self._get_meta(html, "og:image")
-                og_title = self._get_meta(html, "og:title")
-                og_desc = self._get_meta(html, "og:description")
-                page_url = self._get_meta(html, "og:url")
-                meta_desc = self._get_meta_by_name(html, "description")
-
-                desc_fields = _parse_meta_desc_desc(og_desc)
-                if not desc_fields.get("actors") and meta_desc:
-                    desc_fields.update(_parse_meta_desc_desc(meta_desc))
-
-                # Title: og:title -> h1 -> title
-                raw_title = og_title
-                if not raw_title:
-                    h1 = html.xpath("//h1/text()")
-                    raw_title = h1[0].strip() if h1 else ""
-                if not raw_title:
-                    title_tag = html.xpath("//title/text()")
-                    raw_title = title_tag[0].strip() if title_tag else ""
-                title = _clean_title(raw_title, code_upper)
-
-                # Cover: og:image > img.poster > img.lazyimage
-                cover_url = og_image
-                if not cover_url:
-                    poster = html.xpath('//img[contains(@class, "poster")]/@src')
-                    if poster:
-                        cover_url = poster[0]
-                if not cover_url:
-                    lazy = html.xpath('//img[contains(@class, "lazyimage")]/@src')
-                    if lazy:
-                        cover_url = lazy[0]
-
-                # Table fields (日期/時長/製作/導演/系列 等)
-                table_data = self._extract_table_fields(html)
-
-                # Release date
-                premiered = (
-                    table_data.get("日期")
-                    or desc_fields.get("date")
-                    or self._first_date_in_html(html_text)
+            thumbs = _dedup(
+                self._collect_attr(
+                    html,
+                    '//img[contains(@class, "lazyimage")]/@src',
                 )
-                release_date = _parse_date(premiered or "")
+            )
+            thumbs = [u for u in thumbs if self._is_preview_image(u)]
 
-                # Duration
-                duration_raw = table_data.get("時長") or desc_fields.get("duration")
-                duration = self._parse_duration(duration_raw)
+            plot = ""
+            if og_desc:
+                m = re.search(r"^[^。．]*[。．]", og_desc)
+                if m:
+                    plot = m.group(0).strip()
 
-                # Studio
-                studio = (
-                    table_data.get("製作")
-                    or table_data.get("制作")
-                    or table_data.get("出版")
-                    or ""
-                )
+            if not title and not cover_url:
+                self.mark_error()
+                return None
 
-                # Director
-                director = table_data.get("導演") or table_data.get("导演") or ""
+            actor_infos = [ActorInfo(name=n) for n in actor_names]
+            directors_list = _dedup(d.strip() for d in director.split(",") if d.strip()) if director else []
 
-                # Series
-                series = table_data.get("系列") or ""
-
-                # Actors
-                actor_names = _dedup(self._split_pipe_or_comma(desc_fields.get("actors", "")))
-                if not actor_names:
-                    actor_names = self._collect_links_by_href(html, "/actors/")
-
-                # Tags
-                tag_names = _dedup(self._split_pipe_or_comma(desc_fields.get("tags", "")))
-                if not tag_names:
-                    tag_names = _dedup(
-                        t for t in self._collect_links_by_href(html, "/q/")
-                        if not _looks_like_code_token(t)
-                    )
-
-                # Preview images
-                thumbs = _dedup(
-                    self._collect_attr(
-                        html,
-                        '//img[contains(@class, "lazyimage")]/@src',
-                    )
-                )
-                thumbs = [u for u in thumbs if self._is_preview_image(u)]
-
-                # Plot (fallback: og:description first sentence)
-                plot = ""
-                if og_desc:
-                    m = re.search(r"^[^。．]*[。．]", og_desc)
-                    if m:
-                        plot = m.group(0).strip()
-
-                if not title and not cover_url:
-                    self.mark_error()
-                    return None
-
-                actor_infos = [ActorInfo(name=n) for n in actor_names]
-                directors_list = _dedup(d.strip() for d in director.split(",") if d.strip()) if director else []
-
-                return ScrapeResult(
-                    code=code_upper,
-                    title=title,
-                    source=self.name,
-                    source_url=page_url or detail_url,
-                    studio=studio,
-                    release_date=release_date,
-                    duration=duration,
-                    plot=plot,
-                    genres=tag_names,
-                    tags=tag_names,
-                    actors=actor_infos,
-                    all_actors=actor_names,
-                    directors=directors_list,
-                    cover_url=cover_url,
-                    poster_url=cover_url,
-                    thumb_url=thumbs[0] if thumbs else "",
-                    sample_images=thumbs,
-                    is_mosaic=None,
-                    is_uncensored=None,
-                    is_chinese=None,
-                    raw_data={"series": series} if series else {},
-                )
+            return ScrapeResult(
+                code=code_upper,
+                title=title,
+                source=self.name,
+                source_url=page_url or detail_url,
+                studio=studio,
+                release_date=release_date,
+                duration=duration,
+                plot=plot,
+                genres=tag_names,
+                tags=tag_names,
+                actors=actor_infos,
+                all_actors=actor_names,
+                directors=directors_list,
+                cover_url=cover_url,
+                poster_url=cover_url,
+                thumb_url=thumbs[0] if thumbs else "",
+                sample_images=thumbs,
+                is_mosaic=None,
+                is_uncensored=None,
+                is_chinese=None,
+                raw_data={"series": series} if series else {},
+            )
 
         except Exception as e:
             self.mark_error()

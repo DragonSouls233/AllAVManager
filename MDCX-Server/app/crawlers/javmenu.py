@@ -151,7 +151,7 @@ class JavmenuCrawler(BaseCrawler):
     display_name = "JavMenu"
     base_url = "https://javmenu.com"
 
-    priority = CrawlerPriority.NORMAL
+    priority = CrawlerPriority.HIGH
     supported_types = ["jav"]
     supported_prefixes = []
     description = "JavMenu JAV 目录大全"
@@ -159,6 +159,14 @@ class JavmenuCrawler(BaseCrawler):
     requires_proxy = False
 
     async def scrape(self, code: str, ctx=None) -> Optional[ScrapeResult]:
+        if ctx and ctx.http_client is not None:
+            return await self._scrape_with_client(code, ctx.http_client, ctx)
+        async with AsyncHttpClient() as client:
+            return await self._scrape_with_client(code, client, ctx)
+
+    async def _scrape_with_client(
+        self, code: str, client: AsyncHttpClient, ctx=None
+    ) -> Optional[ScrapeResult]:
         code_upper = code.strip().upper()
         detail_url = f"https://javmenu.com/zh/{code_upper}"
 
@@ -169,121 +177,120 @@ class JavmenuCrawler(BaseCrawler):
                 headers.update(user_headers)
 
         try:
-            async with AsyncHttpClient() as client:
-                html_text = await client.get_text(detail_url, headers=headers)
+            html_text = await client.get_text(detail_url, headers=headers)
 
-                if not html_text:
-                    self.mark_error()
-                    return None
+            if not html_text:
+                self.mark_error()
+                return None
 
-                if code_upper not in html_text.upper():
-                    logger.debug(f"JavMenu {code_upper}: 页面中未找到编号，可能不存在")
-                    self.mark_error()
-                    return None
+            if code_upper not in html_text.upper():
+                logger.debug(f"JavMenu {code_upper}: 页面中未找到编号，可能不存在")
+                self.mark_error()
+                return None
 
-                html = etree.fromstring(
-                    html_text.encode() if isinstance(html_text, str) else html_text,
-                    etree.HTMLParser(),
-                )
+            html = etree.fromstring(
+                html_text.encode() if isinstance(html_text, str) else html_text,
+                etree.HTMLParser(),
+            )
 
-                card_text = ""
-                card_bodies = html.xpath('//div[contains(@class, "card-body")]//text()')
-                card_text = " ".join(card_bodies)
+            card_text = ""
+            card_bodies = html.xpath('//div[contains(@class, "card-body")]//text()')
+            card_text = " ".join(card_bodies)
 
-                desc = self._get_desc_meta(html)
-                og_title = self._get_og_title_with_code(html, code_upper)
-                cover_url = self._get_cover_url(html)
+            desc = self._get_desc_meta(html)
+            og_title = self._get_og_title_with_code(html, code_upper)
+            cover_url = self._get_cover_url(html)
 
-                raw_title = _extract_between(desc, "影片名是", "，")
-                if not raw_title and og_title:
-                    raw_title = _clean_title(og_title, code_upper)
-                if not raw_title:
-                    h1 = html.xpath("//h1[contains(@class, 'display-5') and contains(@class, 'strong')]/text()")
-                    if h1:
-                        raw_title = _clean_title(h1[0], code_upper)
-                if not raw_title:
-                    title_tag = html.xpath("//title/text()")
-                    raw_title = _clean_title(title_tag[0] if title_tag else "", code_upper)
-                title = raw_title
+            raw_title = _extract_between(desc, "影片名是", "，")
+            if not raw_title and og_title:
+                raw_title = _clean_title(og_title, code_upper)
+            if not raw_title:
+                h1 = html.xpath("//h1[contains(@class, 'display-5') and contains(@class, 'strong')]/text()")
+                if h1:
+                    raw_title = _clean_title(h1[0], code_upper)
+            if not raw_title:
+                title_tag = html.xpath("//title/text()")
+                raw_title = _clean_title(title_tag[0] if title_tag else "", code_upper)
+            title = raw_title
 
-                premiered = (
-                    _extract_between(desc, "发佈日期为", "，")
-                    or _extract_after(card_text, "发佈于:")
-                    or _extract_labeled_span_value(html_text, "发佈于")
-                )
-                release_date = _parse_date(premiered)
+            premiered = (
+                _extract_between(desc, "发佈日期为", "，")
+                or _extract_after(card_text, "发佈于:")
+                or _extract_labeled_span_value(html_text, "发佈于")
+            )
+            release_date = _parse_date(premiered)
 
-                duration_text = (
-                    _extract_between(desc, "影片时长", "，")
-                    or _extract_between(desc, "影片时长", "。")
-                    or _extract_after(card_text, "时长:")
-                    or _extract_labeled_span_value(html_text, "时长")
-                )
-                duration = _parse_duration(duration_text)
+            duration_text = (
+                _extract_between(desc, "影片时长", "，")
+                or _extract_between(desc, "影片时长", "。")
+                or _extract_after(card_text, "时长:")
+                or _extract_labeled_span_value(html_text, "时长")
+            )
+            duration = _parse_duration(duration_text)
 
-                tag_text = _extract_between(desc, "主题为", "。")
-                if tag_text:
-                    tag_text = tag_text.replace("、", ",")
-                    tag_names = _dedup([t.strip() for t in tag_text.split(",") if t.strip()])
-                else:
-                    tag_names = _dedup(html.xpath("//a[contains(@class, 'genre')]/text()"))
-                    if not tag_names:
-                        tag_names = _extract_anchor_texts_by_class(html_text, "genre")
+            tag_text = _extract_between(desc, "主题为", "。")
+            if tag_text:
+                tag_text = tag_text.replace("、", ",")
+                tag_names = _dedup([t.strip() for t in tag_text.split(",") if t.strip()])
+            else:
+                tag_names = _dedup(html.xpath("//a[contains(@class, 'genre')]/text()"))
+                if not tag_names:
+                    tag_names = _extract_anchor_texts_by_class(html_text, "genre")
 
-                actor_text = _extract_between(desc, "主演女优是", "，")
-                if actor_text:
-                    actor_text = actor_text.replace("、", ",")
-                    actor_names = _dedup([n.strip() for n in actor_text.split(",") if n.strip()])
-                else:
-                    actor_names = _dedup(html.xpath("//a[contains(@class, 'actress')]/text()"))
-                    if not actor_names:
-                        actor_names = _extract_anchor_texts_by_class(html_text, "actress")
+            actor_text = _extract_between(desc, "主演女优是", "，")
+            if actor_text:
+                actor_text = actor_text.replace("、", ",")
+                actor_names = _dedup([n.strip() for n in actor_text.split(",") if n.strip()])
+            else:
+                actor_names = _dedup(html.xpath("//a[contains(@class, 'actress')]/text()"))
+                if not actor_names:
+                    actor_names = _extract_anchor_texts_by_class(html_text, "actress")
 
-                studio = ""
-                makers = html.xpath("//a[contains(@class, 'maker')]/text()")
-                if makers:
-                    studio = makers[0].strip()
-                else:
-                    studio = _extract_block_anchor_text(html_text, "maker")
+            studio = ""
+            makers = html.xpath("//a[contains(@class, 'maker')]/text()")
+            if makers:
+                studio = makers[0].strip()
+            else:
+                studio = _extract_block_anchor_text(html_text, "maker")
 
-                director_text = ""
-                directors = html.xpath("//div[contains(@class, 'director')]//a/text()")
-                if directors:
-                    director_text = directors[0].strip()
-                else:
-                    director_text = _extract_block_anchor_text(html_text, "director")
+            director_text = ""
+            directors = html.xpath("//div[contains(@class, 'director')]//a/text()")
+            if directors:
+                director_text = directors[0].strip()
+            else:
+                director_text = _extract_block_anchor_text(html_text, "director")
 
-                thumbs = html.xpath('//a[@data-fancybox="gallery"]/@href')
+            thumbs = html.xpath('//a[@data-fancybox="gallery"]/@href')
 
-                if not title and not cover_url:
-                    self.mark_error()
-                    return None
+            if not title and not cover_url:
+                self.mark_error()
+                return None
 
-                actor_infos = [ActorInfo(name=n) for n in actor_names]
-                directors_list = _dedup([d.strip() for d in director_text.split(",") if d.strip()]) if director_text else []
+            actor_infos = [ActorInfo(name=n) for n in actor_names]
+            directors_list = _dedup([d.strip() for d in director_text.split(",") if d.strip()]) if director_text else []
 
-                return ScrapeResult(
-                    code=code_upper,
-                    title=title,
-                    source=self.name,
-                    source_url=detail_url,
-                    studio=studio,
-                    release_date=release_date,
-                    duration=duration,
-                    plot="",
-                    genres=tag_names,
-                    tags=tag_names,
-                    actors=actor_infos,
-                    all_actors=actor_names,
-                    directors=directors_list,
-                    cover_url=cover_url,
-                    poster_url=cover_url,
-                    sample_images=list(thumbs),
-                    is_mosaic=True,
-                    is_uncensored=False,
-                    is_chinese=None,
-                    raw_data={"page_url": detail_url},
-                )
+            return ScrapeResult(
+                code=code_upper,
+                title=title,
+                source=self.name,
+                source_url=detail_url,
+                studio=studio,
+                release_date=release_date,
+                duration=duration,
+                plot="",
+                genres=tag_names,
+                tags=tag_names,
+                actors=actor_infos,
+                all_actors=actor_names,
+                directors=directors_list,
+                cover_url=cover_url,
+                poster_url=cover_url,
+                sample_images=list(thumbs),
+                is_mosaic=True,
+                is_uncensored=False,
+                is_chinese=None,
+                raw_data={"page_url": detail_url},
+            )
 
         except Exception as e:
             self.mark_error()
