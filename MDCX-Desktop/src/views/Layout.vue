@@ -291,6 +291,10 @@
             <el-icon><Collection /></el-icon>
             <template #title>系列</template>
           </el-menu-item>
+          <el-menu-item index="/anime/favorites">
+            <el-icon><Star /></el-icon>
+            <template #title>★ 喜好</template>
+          </el-menu-item>
         </el-sub-menu>
 
         <!-- ===== 全局功能分隔线 ===== -->

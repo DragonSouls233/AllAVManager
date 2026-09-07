@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 # 里番模块独立 Base（避免跨模块表名冲突）
@@ -48,6 +48,25 @@ class AnimeStudio(StudioMixin, ANIME_BASE):
 
 class AnimeSeries(SeriesMixin, ANIME_BASE):
     __tablename__ = "series"
+
+
+class AnimeSeriesFavorite(ANIME_BASE):
+    """用户标记的「喜好系列」（收藏夹）。
+
+    与 series_subscriptions（订阅/自动下载）职责不同：这里只记录"我喜欢这个系列"，
+    用于在「喜好」页聚合，免去在 1400+ 系列里逐个翻找。
+    冗余存 series_name：系列记录被删除时仍能显示名字，便于清理。
+    """
+    __tablename__ = "series_favorites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    series_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("series.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    series_name: Mapped[str | None] = mapped_column(String(200))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=func.now())
+    __table_args__ = (UniqueConstraint("series_id", name="uq_anime_series_favorite"),)
 
 class AnimeTag(TagMixin, ANIME_BASE):
     __tablename__ = "tags"

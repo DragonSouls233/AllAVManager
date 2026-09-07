@@ -4,6 +4,7 @@
       <div class="title-row">
         <h2>📺 日本里番</h2>
         <el-button text @click="$router.push('/anime/series')">查看系列 →</el-button>
+        <el-button text @click="$router.push('/anime/favorites')">★ 我的喜好</el-button>
       </div>
       <div class="filters">
         <el-input v-model="q" placeholder="搜索标题 / 制作商 / 系列" clearable style="width:260px" @input="onSearch" />
@@ -227,7 +228,8 @@ function onPage(p) { page.value = p; load() }
 
 async function loadFilters() {
   try {
-    const [mk, se] = await Promise.all([getAnimeMakers(), getAnimeSeries()])
+    // 系列下拉要全量（下拉筛选用），显式放大 limit，避免只拿到默认一页
+    const [mk, se] = await Promise.all([getAnimeMakers(), getAnimeSeries({ limit: 2000, sort: 'name' })])
     makers.value = mk.items || []
     seriesList.value = se.items || []
   } catch {}

@@ -3,13 +3,23 @@
     <div class="page-head">
       <div class="title-row">
         <h2>📺 日本里番 · 系列</h2>
-        <el-button text @click="$router.push('/anime')">影片库 →</el-button>
+        <div class="head-actions">
+          <el-button text @click="$router.push('/anime/favorites')">★ 我的喜好 →</el-button>
+          <el-button text @click="$router.push('/anime')">影片库 →</el-button>
+        </div>
       </div>
       <div class="filters">
         <el-input v-model="q" placeholder="搜索系列名 / 制作商" clearable style="width:280px" @input="onSearch" />
-        <el-select v-model="maker" placeholder="制作商" clearable filterable style="width:200px" @change="load">
+        <el-select v-model="maker" placeholder="制作商" clearable filterable style="width:200px" @change="reload">
           <el-option v-for="m in makers" :key="m.name" :label="`${m.name} (${m.movie_count})`" :value="m.name" />
         </el-select>
+        <el-select v-model="sort" style="width:150px" @change="reload">
+          <el-option label="按集数排序" value="count" />
+          <el-option label="按名称排序" value="name" />
+          <el-option label="按最新更新" value="recent" />
+        </el-select>
+        <el-switch v-model="onlyFav" active-text="仅看喜好" @change="reload" />
+        <span class="total-hint">共 {{ total }} 个系列</span>
       </div>
     </div>
 
@@ -19,6 +29,12 @@
         <div class="s-cover">
           <img v-if="s.cover" :src="s.cover" :alt="s.name" @error="onCoverError" loading="lazy" />
           <span class="s-count">{{ s.movie_count }} 集</span>
+          <!-- 喜好标记：加入「我的喜好」页 -->
+          <button class="s-fav" :class="{ on: s.favorited }"
+                  :title="s.favorited ? '取消喜好' : '标记為我的喜好'"
+                  @click.stop="toggleFav(s)">
+            {{ s.favorited ? '★' : '☆' }}
+          </button>
           <!-- 列表外直接播放整系列 -->
           <button class="s-play" :title="`播放整系列《${s.name}》`" :disabled="playLoadingId === s.id"
                   @click.stop="playSeriesFromList(s)">
@@ -28,7 +44,15 @@
         </div>
         <div class="s-name" :title="s.name">{{ s.name }}</div>
         <div class="s-maker" v-if="s.maker">{{ s.maker }}</div>
+        <div class="s-latest" v-if="s.latest_date">最新 {{ s.latest_date }}</div>
       </div>
+    </div>
+
+    <div v-if="!selected && total > pageSize" class="pager">
+      <el-pagination
+        v-model:current-page="page"
+        :total="total" :page-size="pageSize" :pager-count="7" background
+        layout="prev, pager, next, jumper, total" @current-change="load" />
     </div>
 
     <el-empty v-if="!selected && !loading && !seriesList.length" description="暂无系列数据，请先扫描 anime 模块" />
@@ -42,6 +66,10 @@
           <span v-if="selected.maker" class="tag maker">{{ selected.maker }}</span>
           <span class="count">· 共 {{ selected.movie_count }} 集</span>
         </div>
+        <el-button :type="selected?.favorited ? 'warning' : 'default'" plain
+                   @click="toggleFav(selected)">
+          {{ selected?.favorited ? '★ 已加入喜好' : '☆ 加入喜好' }}
+        </el-button>
         <el-button type="primary" plain :disabled="!displayEpisodes.length"
                    @click="playSeriesInView" title="按当前筛选连播整系列">
           ▶ 播放整系列
@@ -115,14 +143,25 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getAnimeSeries, getAnimeSeriesMovies, getAnimeMakers } from '@/api/anime'
+import { getAnimeSeries, getAnimeSeriesMovies, getAnimeMakers, toggleAnimeFavoriteSeries } from '@/api/anime'
+
+const route = useRoute()
+const router = useRouter()
 
 const seriesList = ref([])
 const makers = ref([])
 const loading = ref(false)
 const q = ref('')
 const maker = ref('')
+const sort = ref('count')
+const onlyFav = ref(false)
+
+// 分页：全库 1400+ 系列，必须服务端分页，否则一次只能拿到前 N 个
+const page = ref(1)
+const pageSize = ref(48)
+const total = ref(0)
 
 const selected = ref(null)
 const episodes = ref([])
@@ -142,35 +181,47 @@ const current = computed(() => playlist.value[playIndex.value] || null)
 let searchTimer = null
 function onSearch() {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => load(), 350)
+  searchTimer = setTimeout(() => reload(), 350)
+}
+
+// 条件变化：回到第一页
+function reload() {
+  page.value = 1
+  load()
 }
 
 async function load() {
   loading.value = true
   try {
+    // 搜索 / 制作商 / 喜好 过滤与分页全部下沉到后端，前端不再全量拉取
     const res = await getAnimeSeries({
-      limit: 300,
       q: q.value || undefined,
       maker: maker.value || undefined,
+      sort: sort.value,
+      favorite: onlyFav.value || undefined,
+      skip: (page.value - 1) * pageSize.value,
+      limit: pageSize.value,
     })
-    // 后端 /series 暂不支持 q/maker 过滤，前端兜底
-    let items = res.items || []
-    if (q.value) {
-      const k = q.value.toLowerCase()
-      items = items.filter(s => (s.name || '').toLowerCase().includes(k) || (s.maker || '').toLowerCase().includes(k))
-    }
-    if (maker.value) items = items.filter(s => s.maker === maker.value)
-    // 为系列卡片找一张封面（取该系列首部作品的封面）
-    await Promise.all(items.map(async (s) => {
-      try {
-        const r = await getAnimeSeriesMovies(s.id)
-        const first = (r.items || [])[0]
-        s.cover = first ? first.cover : null
-      } catch { s.cover = null }
-    }))
-    seriesList.value = items
+    seriesList.value = (res.items || []).map(s => ({ ...s, favorited: !!s.favorited }))
+    total.value = res.total || 0
+  } catch (e) {
+    ElMessage?.error?.('加载系列失败：' + (e?.message || e))
   } finally {
     loading.value = false
+  }
+}
+
+// 喜好标记（★/☆），与「我的喜好」页共用同一份数据
+async function toggleFav(s) {
+  const next = !s.favorited
+  s.favorited = next  // 乐观更新，失败回滚
+  try {
+    const res = await toggleAnimeFavoriteSeries(s.id)
+    s.favorited = !!res.favorited
+    ElMessage?.success?.(s.favorited ? `已加入喜好：${s.name}` : `已移出喜好：${s.name}`)
+  } catch (e) {
+    s.favorited = !next
+    ElMessage?.error?.('操作失败：' + (e?.message || e))
   }
 }
 
@@ -188,7 +239,13 @@ async function openSeries(s) {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-function back() { selected.value = null; episodes.value = []; yearFilter.value = null }
+function back() {
+  selected.value = null
+  episodes.value = []
+  yearFilter.value = null
+  // 清掉 ?open= 直达参数，避免返回列表后再次自动展开
+  if (route.query.open) router.replace({ path: '/anime/series' })
+}
 
 async function loadFilters() {
   try { const mk = await getAnimeMakers(); makers.value = mk.items || [] } catch {}

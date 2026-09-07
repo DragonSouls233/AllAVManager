@@ -20,6 +20,23 @@ export async function getAnimeMakers(params = {}) {
   return api.get('/anime/makers', { params })
 }
 
+// ===== 喜好（收藏的系列）=====
+export async function getAnimeFavoriteSeries(params = {}) {
+  return api.get('/anime/favorites/series', { params })
+}
+
+export async function addAnimeFavoriteSeries(seriesId) {
+  return api.post('/anime/favorites/series', null, { params: { series_id: seriesId } })
+}
+
+export async function removeAnimeFavoriteSeries(seriesId) {
+  return api.delete(`/anime/favorites/series/${seriesId}`)
+}
+
+export async function toggleAnimeFavoriteSeries(seriesId) {
+  return api.post(`/anime/favorites/series/${seriesId}/toggle`)
+}
+
 export async function scrapeAnimeMovie(movieId) {
   return api.post(`/anime/movies/${movieId}/scrape`)
 }

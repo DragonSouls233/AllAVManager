@@ -52,6 +52,12 @@ const routes = [
         component: () => import('@/views/AnimeSeries.vue')
       },
       {
+        path: 'anime/favorites',
+        name: 'AnimeFavorites',
+        component: () => import('@/views/AnimeFavorites.vue'),
+        meta: { title: '里番 · 我的喜好' }
+      },
+      {
         path: 'crawlers',
         name: 'Crawlers',
         component: () => import('@/views/Crawlers.vue')

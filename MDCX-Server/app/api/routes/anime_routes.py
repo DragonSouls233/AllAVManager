@@ -19,10 +19,10 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 
 from app.db.module_db import ModuleDatabase
-from app.db.anime_models import AnimeMovie, AnimeSeries, AnimeStudio
+from app.db.anime_models import AnimeMovie, AnimeSeries, AnimeSeriesFavorite, AnimeStudio
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -133,32 +133,236 @@ async def get_anime_movie(movie_id: int):
 # ============================================================
 # 系列（核心：看同作品相同集数）
 # ============================================================
+def _series_agg_columns():
+    """系列列表的聚合列：作品数 / 首部影片 id（取封面）/ 最新一集日期。
+
+    用相关子查询而非 GROUP BY + JOIN：可直接按聚合列排序并 offset/limit 分页，
+    数据库只需处理当前页的系列（全库 1400+ 系列时差异明显）。
+    """
+    cnt = (
+        select(func.count(AnimeMovie.id))
+        .where(AnimeMovie.series_id == AnimeSeries.id)
+        .correlate(AnimeSeries)
+        .scalar_subquery()
+    )
+    first_movie = (
+        select(AnimeMovie.id)
+        .where(AnimeMovie.series_id == AnimeSeries.id)
+        .order_by(AnimeMovie.episode.is_(None), AnimeMovie.episode, AnimeMovie.release_date, AnimeMovie.id)
+        .limit(1)
+        .correlate(AnimeSeries)
+        .scalar_subquery()
+    )
+    latest = (
+        select(func.max(AnimeMovie.release_date))
+        .where(AnimeMovie.series_id == AnimeSeries.id)
+        .correlate(AnimeSeries)
+        .scalar_subquery()
+    )
+    return cnt, first_movie, latest
+
+
+def _build_series_query(q: Optional[str], maker: Optional[str], favorite: bool, sort: str):
+    cnt, first_movie, latest = _series_agg_columns()
+    stmt = select(
+        AnimeSeries.id,
+        AnimeSeries.name,
+        AnimeSeries.studio_id,
+        cnt.label("movie_count"),
+        first_movie.label("first_movie_id"),
+        latest.label("latest_date"),
+    )
+
+    joined_studio = False
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.outerjoin(AnimeStudio, AnimeStudio.id == AnimeSeries.studio_id)
+        joined_studio = True
+        stmt = stmt.where(or_(AnimeSeries.name.like(like), AnimeStudio.name.like(like)))
+    if maker:
+        if not joined_studio:
+            stmt = stmt.outerjoin(AnimeStudio, AnimeStudio.id == AnimeSeries.studio_id)
+            joined_studio = True
+        stmt = stmt.where(AnimeStudio.name == maker)
+    if favorite:
+        stmt = stmt.join(AnimeSeriesFavorite, AnimeSeriesFavorite.series_id == AnimeSeries.id)
+
+    if favorite and sort == "fav_time":
+        # 喜好页默认：最近收藏的排最前
+        stmt = stmt.order_by(AnimeSeriesFavorite.created_at.desc(), AnimeSeries.name)
+    elif sort == "name":
+        stmt = stmt.order_by(AnimeSeries.name)
+    elif sort == "recent":
+        stmt = stmt.order_by(latest.is_(None), latest.desc(), AnimeSeries.name)
+    else:
+        # 默认按作品数（大系列靠前）
+        stmt = stmt.order_by(cnt.desc(), AnimeSeries.name)
+    return stmt
+
+
+async def _series_payload(session, rows) -> list[dict]:
+    """把行对象组装成前端需要的结构（含制作商名、封面、是否已收藏）。"""
+    studio_ids = {r.studio_id for r in rows if r.studio_id}
+    makers: dict[int, str] = {}
+    if studio_ids:
+        sts = (await session.execute(
+            select(AnimeStudio.id, AnimeStudio.name).where(AnimeStudio.id.in_(studio_ids))
+        )).all()
+        makers = {sid: name for sid, name in sts}
+
+    series_ids = [r.id for r in rows]
+    fav_ids: set[int] = set()
+    if series_ids:
+        fav_ids = {
+            r[0] for r in (await session.execute(
+                select(AnimeSeriesFavorite.series_id).where(AnimeSeriesFavorite.series_id.in_(series_ids))
+            )).all()
+        }
+
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "maker": makers.get(r.studio_id),
+            "movie_count": r.movie_count or 0,
+            "cover": _cover_url(r.first_movie_id) if r.first_movie_id else None,
+            "latest_date": r.latest_date,
+            "favorited": r.id in fav_ids,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/series")
-async def list_anime_series(limit: int = 200):
+async def list_anime_series(
+    q: Optional[str] = None,
+    maker: Optional[str] = None,
+    sort: str = "count",
+    favorite: bool = False,
+    skip: int = 0,
+    limit: int = 48,
+):
+    """系列列表（服务端分页 + 服务端过滤）。
+
+    - q：系列名 / 制作商 模糊匹配（下沉到 SQL，前端不必全量拉取 1400+ 系列）
+    - maker：制作商精确过滤
+    - favorite：True 时只返回已标记「喜好」的系列
+    - sort：count(作品数) / name(名称) / recent(最新一集) / fav_time(收藏时间)
+    - skip/limit：分页；返回 total 为过滤后的真实总数（非当前页条数）
+    """
+    limit = max(1, min(int(limit), 2000))
+    skip = max(0, int(skip))
     db = get_anime_db()
     session = await db.get_session()
     try:
-        stmt = (
-            select(
-                AnimeSeries.id,
-                AnimeSeries.name,
-                AnimeSeries.studio_id,
-                func.count(AnimeMovie.id).label("cnt"),
-            )
-            .outerjoin(AnimeMovie, AnimeMovie.series_id == AnimeSeries.id)
-            .group_by(AnimeSeries.id)
-            .order_by(text("cnt DESC"))
-            .limit(limit)
-        )
-        rows = (await session.execute(stmt)).all()
-        series_list = []
-        for r in rows:
-            maker = None
-            if r.studio_id:
-                st = (await session.execute(select(AnimeStudio).where(AnimeStudio.id == r.studio_id))).scalar_one_or_none()
-                maker = st.name if st else None
-            series_list.append({"id": r.id, "name": r.name, "maker": maker, "movie_count": r.cnt})
-        return {"items": series_list, "total": len(series_list)}
+        stmt = _build_series_query(q, maker, favorite, sort)
+        total = (
+            await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+        ).scalar() or 0
+        rows = (await session.execute(stmt.offset(skip).limit(limit))).all()
+        return {"items": await _series_payload(session, rows), "total": total}
+    finally:
+        await session.close()
+
+
+# ============================================================
+# 喜好（收藏的系列）
+# ============================================================
+@router.get("/favorites/series")
+async def list_anime_favorite_series(
+    q: Optional[str] = None,
+    sort: str = "fav_time",
+    skip: int = 0,
+    limit: int = 48,
+):
+    """喜好的系列列表（分页，默认按收藏时间倒序）。"""
+    limit = max(1, min(int(limit), 2000))
+    skip = max(0, int(skip))
+    db = get_anime_db()
+    session = await db.get_session()
+    try:
+        stmt = _build_series_query(q, None, True, sort)
+        total = (
+            await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+        ).scalar() or 0
+        rows = (await session.execute(stmt.offset(skip).limit(limit))).all()
+        items = await _series_payload(session, rows)
+
+        # 补上收藏时间（喜好页展示"何时加入"）
+        if items:
+            ids = [i["id"] for i in items]
+            favs = (await session.execute(
+                select(AnimeSeriesFavorite.series_id, AnimeSeriesFavorite.created_at)
+                .where(AnimeSeriesFavorite.series_id.in_(ids))
+            )).all()
+            fav_map = {sid: created for sid, created in favs}
+            for i in items:
+                i["favorited_at"] = fav_map.get(i["id"])
+        return {"items": items, "total": total}
+    finally:
+        await session.close()
+
+
+@router.post("/favorites/series")
+async def add_anime_favorite_series(series_id: int = Query(...)):
+    """标记系列为喜好（幂等：重复调用不报错）。"""
+    db = get_anime_db()
+    session = await db.get_session()
+    try:
+        s = (await session.execute(select(AnimeSeries).where(AnimeSeries.id == series_id))).scalar_one_or_none()
+        if not s:
+            raise HTTPException(status_code=404, detail="系列不存在")
+        existing = (await session.execute(
+            select(AnimeSeriesFavorite).where(AnimeSeriesFavorite.series_id == series_id)
+        )).scalar_one_or_none()
+        if not existing:
+            session.add(AnimeSeriesFavorite(series_id=series_id, series_name=s.name))
+            await session.commit()
+        elif existing.series_name != s.name:
+            existing.series_name = s.name
+            await session.commit()
+        return {"status": "success", "series_id": series_id, "favorited": True}
+    finally:
+        await session.close()
+
+
+@router.delete("/favorites/series/{series_id}")
+async def remove_anime_favorite_series(series_id: int):
+    """取消系列喜好（幂等）。"""
+    db = get_anime_db()
+    session = await db.get_session()
+    try:
+        fav = (await session.execute(
+            select(AnimeSeriesFavorite).where(AnimeSeriesFavorite.series_id == series_id)
+        )).scalar_one_or_none()
+        if fav:
+            await session.delete(fav)
+            await session.commit()
+        return {"status": "success", "series_id": series_id, "favorited": False}
+    finally:
+        await session.close()
+
+
+@router.post("/favorites/series/{series_id}/toggle")
+async def toggle_anime_favorite_series(series_id: int):
+    """切换喜好状态：已收藏则取消，未收藏则收藏。返回最终状态。"""
+    db = get_anime_db()
+    session = await db.get_session()
+    try:
+        fav = (await session.execute(
+            select(AnimeSeriesFavorite).where(AnimeSeriesFavorite.series_id == series_id)
+        )).scalar_one_or_none()
+        if fav:
+            await session.delete(fav)
+            await session.commit()
+            return {"status": "success", "series_id": series_id, "favorited": False}
+
+        s = (await session.execute(select(AnimeSeries.id, AnimeSeries.name).where(AnimeSeries.id == series_id))).first()
+        if not s:
+            raise HTTPException(status_code=404, detail="系列不存在")
+        session.add(AnimeSeriesFavorite(series_id=series_id, series_name=s.name))
+        await session.commit()
+        return {"status": "success", "series_id": series_id, "favorited": True}
     finally:
         await session.close()
 
