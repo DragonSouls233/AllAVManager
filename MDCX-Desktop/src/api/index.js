@@ -106,6 +106,15 @@ export const getVersion = () => api.get('/health/version')
 // ============================================
 export const getMovies = (params) => api.get('/movies', { params })
 export const getMovie = (id) => api.get(`/movies/${id}`)
+/** 桌面端：按模块取影片详情（各模块 id 各自自增，必须带 module） */
+export const getModuleMovie = (id, module = 'jav') =>
+  api.get(`/movies/${id}`, { params: { module } })
+/** 桌面端：按模块取相关推荐（同演员/同系列/同类别） */
+export const getModuleRelated = (id, module = 'jav', limit = 12) =>
+  api.get(`/movies/${id}/related`, { params: { module, limit } })
+/** 桌面端：续播列表 */
+export const getViewingResume = (params) =>
+  api.get('/viewing/resume', { params })
 export const updateMovie = (id, data) => api.patch(`/movies/${id}`, data)
 export const deleteMovie = (id) => api.delete(`/movies/${id}`)
 export const reloadMovieNfo = (id) => api.post(`/movies/${id}/reload-nfo`)
@@ -524,10 +533,12 @@ export const livenessCheck = () => api.get('/health/live')
 // Player 播放器（缩略图进度条、GIF、章节、字幕）
 // ============================================
 // 一次性获取影片所有播放器元数据
-export const getPlayerConfig = (movieId) => api.get(`/player/${movieId}/config`)
+export const getPlayerConfig = (movieId, module = 'jav') =>
+  api.get(`/player/${movieId}/config`, { params: { module } })
 
 // 缩略图进度条
-export const getThumbnailSprite = (movieId) => api.get(`/player/${movieId}/thumbnail-sprite`)
+export const getThumbnailSprite = (movieId, module = 'jav') =>
+  api.get(`/player/${movieId}/thumbnail-sprite`, { params: { module } })
 export const generateThumbnailSprite = (movieId, params = {}) =>
   api.post(`/player/${movieId}/thumbnail-sprite/generate`, null, { params })
 
@@ -653,11 +664,16 @@ export const testTelegramToken = () => api.get('/telegram-bot/me')
 // 三态视频标记（v3.0）
 // ============================================
 export const getViewStatusStats = () => api.get('/view-status/stats')
-export const getMovieViewStatus = (movieId) => api.get(`/view-status/${movieId}`)
-export const setMovieViewStatus = (movieId, status) => api.put(`/view-status/${movieId}`, { status })
-export const batchSetViewStatus = (movieIds, status) => api.post('/view-status/batch', { movie_ids: movieIds, status })
-export const listMoviesByViewStatus = (status, limit = 100, offset = 0) =>
-  api.get('/view-status/', { params: { status, limit, offset } })
+export const getMovieViewStatus = (movieId, module = 'jav') =>
+  api.get(`/view-status/${movieId}`, { params: { module } })
+export const getBatchViewStatus = (movieIds, module = 'jav') =>
+  api.get('/view-status/batch', { params: { ids: movieIds.join(','), module } })
+export const setMovieViewStatus = (movieId, status, module = 'jav') =>
+  api.put(`/view-status/${movieId}`, { status }, { params: { module } })
+export const batchSetViewStatus = (movieIds, status, module = 'jav') =>
+  api.post('/view-status/batch', { movie_ids: movieIds, status }, { params: { module } })
+export const listMoviesByViewStatus = (status, limit = 100, offset = 0, module = 'jav') =>
+  api.get('/view-status/', { params: { status, limit, offset, module } })
 
 // ============================================
 // 文件整理（v3.0：5 种整理模式）

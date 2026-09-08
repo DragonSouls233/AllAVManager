@@ -99,6 +99,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mpvToggleFullscreen: () => ipcRenderer.send('mpv-fullscreen'),
   mpvState: () => ipcRenderer.invoke('mpv-state'),
   mpvLog: () => ipcRenderer.invoke('mpv-log'),
+  mpvContext: () => ipcRenderer.invoke('mpv-context'),
   onMpvExit: (callback) => {
     const handler = () => callback()
     ipcRenderer.on('mpv-exit', handler)

@@ -12,6 +12,7 @@
 """
 import asyncio
 import os
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,36 @@ def _movie_summary(m: AnimeMovie) -> dict:
         "status": m.status,
         "source": m.source,
     }
+
+
+def _parse_genre_list(raw) -> list[str]:
+    """把 DB 的 genre JSON 数组字符串解析成列表（详情页 category chips 用）"""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    s = str(raw).strip()
+    if s.startswith("["):
+        try:
+            import json
+
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return [x.strip() for x in re.split(r"[,，、|;；\n]", s) if x.strip()]
+
+
+def _actor_names(m: AnimeMovie) -> list[str]:
+    """把 actor 文本（逗号分隔）解析成演员名单（与通用详情端点 actor_names 同口径）"""
+    raw = getattr(m, "actor", "") or ""
+    names: list[str] = []
+    for chunk in re.split(r"[,，、/|;；\n]", str(raw)):
+        name = chunk.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 # ============================================================
@@ -177,7 +208,15 @@ async def get_anime_movie(movie_id: int):
         return {
             **_movie_summary(m),
             "plot": m.plot,
+            "plot_short": m.plot_short,
+            "genre": _parse_genre_list(m.genre),
+            "actor_names": _actor_names(m),
+            "original_title": m.original_title,
             "director": m.director,
+            "rating": m.rating,
+            "file_size": m.file_size,
+            "play_count": m.play_count,
+            "view_status": m.view_status,
             "file_path": m.file_path,
             "play_url": f"/api/v1/anime/movies/{m.id}/play/file",
         }

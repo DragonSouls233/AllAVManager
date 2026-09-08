@@ -173,3 +173,31 @@ AnimeSeries.studio = _rel(AnimeStudio, foreign_keys=[AnimeSeries.studio_id])
 # --- ActorSubscription / SeriesSubscription ---
 AnimeActorSubscription.actor = _rel(AnimeActor, foreign_keys=[AnimeActorSubscription.actor_id])
 AnimeSeriesSubscription.series = _rel(AnimeSeries, foreign_keys=[AnimeSeriesSubscription.series_id])
+
+
+# ============================================================
+# 兼容别名：无前缀共享类名（对齐 jav 等模块的命名约定）
+# 通用服务用 get_module_model(module, "play_history" / "movie_actor" / ...) 做无前缀
+# 类名查找（见 app/utils/module_helper.py::_SHARED_MODEL_CLASSES），里番模块历史遗留把
+# 所有表类都加了 "Anime" 前缀，导致 view-status/续播/观影报告等跨模块服务在 anime 上
+# AttributeError: module 'app.db.anime_models' has no attribute 'PlayHistory'。
+# 这里补无前缀别名，确保 anime 与其他 6 个模块行为一致。
+# ============================================================
+PlayHistory = AnimePlayHistory
+ImportRecord = AnimeImportRecord
+PatchRecord = AnimePatchRecord
+MovieActor = AnimeMovieActor
+Studio = AnimeStudio
+Series = AnimeSeries
+Tag = AnimeTag
+MovieTag = AnimeMovieTag
+ActorTag = AnimeActorTag
+TierConfig = AnimeTierConfig
+ActorTier = AnimeActorTier
+ActorCompareURL = AnimeActorCompareURL
+ActorSubscription = AnimeActorSubscription
+SeriesSubscription = AnimeSeriesSubscription
+FileOrganizeJob = AnimeFileOrganizeJob
+AutoOrganizeRule = AnimeAutoOrganizeRule
+MovieRelation = AnimeMovieRelation
+UserRecommendation = AnimeUserRecommendation

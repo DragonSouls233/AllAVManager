@@ -11,6 +11,9 @@ from app.utils.module_helper import get_module_model, get_module_session, MODULE
 
 router = APIRouter()
 
+# 避免与 GET /{movie_id} 冲突：批量查询须放在动态路由之前
+from app.services import viewing_report  # noqa: E402
+
 
 # 三态枚举
 VIEW_STATUS_BROWSED = "browsed"
@@ -23,6 +26,23 @@ VALID_STATUSES = {VIEW_STATUS_BROWSED, VIEW_STATUS_WATCHED, VIEW_STATUS_WANTED}
 def _resolve_module(module: str) -> str:
     """解析模块名，无效时回退到 jav"""
     return module if module in MODULE_MODELS else "jav"
+
+
+@router.get("/batch", summary="批量查询观看状态与续播进度")
+async def get_batch_view_status(
+    ids: str = Query(..., description="逗号分隔影片 id，最多 500"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub/anime"),
+):
+    """海报网格一次性获取多部影片的 view_status + 续播进度，避免 N+1。"""
+    module = _resolve_module(module)
+    try:
+        id_list = [int(x) for x in ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, "ids 必须为逗号分隔的整数")
+    id_list = id_list[:500]
+    if not id_list:
+        return {"items": []}
+    return await viewing_report.batch_view_status(module, id_list)
 
 
 # ============================================

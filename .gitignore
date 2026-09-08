@@ -140,3 +140,4 @@ source_dist.py
 fc2_scrape_test.py
 _tmp_anime_test.db-shm
 _tmp_anime_test.db-wal
+_e2e_pw.tmp

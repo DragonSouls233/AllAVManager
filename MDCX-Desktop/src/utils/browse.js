@@ -1,7 +1,7 @@
 // ============================================================
 // 桌面端浏览页（类别/系列/演员/喜好）共享工具
 // ============================================================
-import { getServerUrl } from '@/api/index'
+import { getServerUrl, getBatchViewStatus } from '@/api/index'
 import { getServerBaseUrl, getCoverSrc } from './media'
 
 /** 当前后端根地址（无尾斜杠） */
@@ -49,6 +49,64 @@ export function fmtCount(n) {
   if (v >= 10000) return `${(v / 10000).toFixed(1)}w`
   if (v >= 1000) return `${(v / 1000).toFixed(1)}k`
   return String(v)
+}
+
+/**
+ * 给一批影片项批量补上观看状态与续播进度（海报角标/进度条用）。
+ * fire-and-forget：失败静默，不影响网格本身加载。
+ * 每个 movie 会被注入：
+ *  - _view_status: 'browsed' | 'watched' | 'wanted' | ''
+ *  - _progress: 0~1（最近未看完进度，无记录为 0）
+ *  - _position: 秒
+ */
+export async function enrichStatus(items, module, cap = 0) {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length || !module) return
+  const byId = new Map(list.map((m) => [Number(m?.id), m]))
+  let ids = [...byId.keys()].filter((x) => Number.isFinite(x) && x > 0)
+  // cap>0 时只刷最近加载的 cap 个（keep-alive 激活全量重查时控制成本）
+  if (cap > 0 && ids.length > cap) ids = ids.slice(ids.length - cap)
+  if (!ids.length) return
+  try {
+    // 后端单次上限 500，分批拉取防漏标
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500)
+      const res = await getBatchViewStatus(chunk, module)
+      const map = new Map((res?.items || []).map((x) => [x.movie_id, x]))
+      for (const id of chunk) {
+        const m = byId.get(id)
+        if (!m) continue
+        const st = map.get(id)
+        if (!st) continue
+        m._view_status = st.view_status || ''
+        m._progress = st.progress || 0
+        m._position = st.position || 0
+      }
+    }
+  } catch (e) { /* 静默：角标失败不影响列表 */ }
+}
+
+/** 详情页修改标记后广播，供各海报网格局部刷新 */
+export function notifyViewStatusChanged(module, movieId, status) {
+  try {
+    window.dispatchEvent(new CustomEvent('mdcx-view-status-changed', {
+      detail: { module, movieId, status: status || '' }
+    }))
+  } catch (e) { /* ignore */ }
+}
+
+/** 网格页注册监听：命中本模块的影片则就地更新角标/清进度 */
+export function patchMovieStatus(items, detail) {
+  const list = Array.isArray(items) ? items : []
+  if (!detail || !list.length) return
+  const { movieId, status } = detail
+  const target = list.find((m) => Number(m?.id) === Number(movieId))
+  if (!target) return
+  target._view_status = status || ''
+  if (!status) {
+    target._progress = 0
+    target._position = 0
+  }
 }
 
 /** 取系列封面：cover 字段可直接用则用，否则回退该系列首部影片封面 */

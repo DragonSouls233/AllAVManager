@@ -36,7 +36,11 @@
 
       <div v-else-if="!genres.length" class="cinema-empty">
         <div class="cinema-empty-icon">🏷️</div>
-        <div class="cinema-empty-text">{{ q ? `没有匹配「${q}」的类别` : `${lib.currentLabel} 暂无类别数据` }}</div>
+        <div class="cinema-empty-text">
+          {{ q
+            ? `没有匹配「${q}」的类别`
+            : (isAnime ? `${lib.currentLabel} 类别浏览需服务端部署新版 anime 接口（当前旧版暂不支持）` : `${lib.currentLabel} 暂无类别数据`) }}
+        </div>
       </div>
 
       <div v-else class="genre-wall">
@@ -97,13 +101,13 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import PosterCard from '@/components/cinema/PosterCard.vue'
 import { useLibraryStore } from '@/stores/library'
 import { getModuleCategories, getMoviesByCategory } from '@/api'
 import { getAnimeMovies, getAnimeCategories } from '@/api/anime'
-import { decorateMovies, fmtCount } from '@/utils/browse'
+import { decorateMovies, fmtCount, enrichStatus } from '@/utils/browse'
 
 const PAGE = 48
 const router = useRouter()
@@ -125,6 +129,7 @@ const moviesError = ref('')
 const hasMore = ref(false)
 let movieSeq = 0
 
+const isAnime = computed(() => lib.currentModule === 'anime')
 const moduleLabel = computed(() => lib.currentLabel)
 
 async function load() {
@@ -132,8 +137,8 @@ async function load() {
   error.value = ''
   try {
     const res = lib.currentModule === 'anime'
-      ? await getAnimeCategories()
-      : await getModuleCategories(lib.currentModule)
+      ? await getAnimeCategories({ limit: 2000 })
+      : await getModuleCategories(lib.currentModule, { limit: 2000 })
     summary.value = res || null
     const items = (res?.items || res?.categories || []).map((g) => ({
       name: g.name || g.genre,
@@ -142,7 +147,18 @@ async function load() {
     rawGenres = items
     applyLocalSort()
   } catch (e) {
-    error.value = e?.response?.status === 401 ? '登录已失效，请重新登录' : '加载类别失败，请检查服务器连接'
+    // 服务端未部署 anime 类别端点（老版 anime_routes.py）时返回 404「未知模块」——
+    // 降级为友好空态提示，而不是报错。部署新版后端后自动恢复可用。
+    const animeUnsupported = lib.currentModule === 'anime'
+      && (e?.response?.status === 404 || /未知模块|not found/i.test(String(e?.response?.data?.detail || e?.message)))
+    error.value = animeUnsupported
+      ? ''
+      : (e?.response?.status === 401 ? '登录已失效，请重新登录' : '加载类别失败，请检查服务器连接')
+    if (animeUnsupported) {
+      summary.value = { total_categories: 0, total_movies: 0, items: [] }
+      rawGenres = []
+      applyLocalSort()
+    }
   } finally {
     loading.value = false
   }
@@ -207,6 +223,7 @@ async function loadMovies(fresh = false) {
     movies.value = fresh ? list : movies.value.concat(list)
     movieTotal.value = res?.total ?? movies.value.length
     hasMore.value = movies.value.length < movieTotal.value
+    enrichStatus(list, mod)
   } catch (e) {
     if (seq !== movieSeq) return
     moviesError.value = e?.response?.status === 401 ? '登录已失效，请重新登录' : '加载影片失败'
@@ -228,6 +245,11 @@ watch(() => lib.currentModule, () => {
 })
 
 onMounted(load)
+
+// keep-alive：返回时刷新类别影片角标（限最近 600）
+onActivated(() => {
+  if (movies.value.length) enrichStatus(movies.value, lib.currentModule, 600)
+})
 </script>
 
 <style scoped>

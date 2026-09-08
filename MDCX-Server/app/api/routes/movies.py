@@ -173,6 +173,8 @@ class MovieResponse(BaseModel):
     last_played_at: Optional[str] = None
     status: str
     actors: list[ActorBrief] = []
+    # 从 movie.actor 文本字段解析的完整演员名单（MovieActor 关联表可能为空时的回退，供详情页演员行展示）
+    actor_names: list[str] = []
     tags: list[TagBrief] = []  # 从 MovieTag 关联表查询的结构化标签列表
     module_type: Optional[str] = None  # 所属模块类型，前端据此拼出模块专属封面/头像端点
 
@@ -2334,6 +2336,26 @@ async def get_related_movies(
             if m.id not in related_ids:
                 related_ids.add(m.id)
                 actor_movies.append(_build_item(m))
+    elif getattr(movie, "actor", "") or "":
+        # MovieActor 关联表为空（JAV 等模块演员只存于 movie.actor 文本）→
+        # 取首个演员名做模糊匹配，仍能给"同演员更多"推荐
+        raw = str(getattr(movie, "actor", ""))
+        parts = [p.strip() for p in re.split(r"[,，、/|;；\n]", raw) if p.strip()]
+        if parts:
+            first_name = parts[0]
+            result = await session.execute(
+                select(MovieModel)
+                .where(
+                    MovieModel.actor.like(f"%{first_name}%"),
+                    MovieModel.id != movie_id,
+                )
+                .order_by(MovieModel.release_date.desc())
+                .limit(limit)
+            )
+            for m in result.scalars().all():
+                if m.id not in related_ids:
+                    related_ids.add(m.id)
+                    actor_movies.append(_build_item(m))
 
     series_movies = []
     if movie.series_id:
@@ -3786,6 +3808,16 @@ async def get_movie(
     actor_result = await session.execute(actor_query)
     actors = [ActorBrief(id=row[0], name=row[1]) for row in actor_result.fetchall()]
 
+    # MovieActor 关联表可能为空（JAV 等模块演员只以 movie.actor 文本存储）→
+    # 从文本解析出完整演员名单供详情页展示；无关联 id 时前端按名字模糊跳转。
+    actor_names: list[str] = []
+    raw_actor_text = getattr(movie, "actor", "") or ""
+    if raw_actor_text:
+        for chunk in re.split(r"[,，、/|;；\n]", str(raw_actor_text)):
+            name = chunk.strip()
+            if name and name not in actor_names:
+                actor_names.append(name)
+
     studio_name = None
     series_name = None
     lookup_ids = {}
@@ -3852,6 +3884,7 @@ async def get_movie(
         last_played_at=movie.last_played_at.isoformat() if movie.last_played_at else None,
         status=movie.status,
         actors=actors,
+        actor_names=actor_names,
         tags=tags,
         module_type=module,
     )

@@ -33,21 +33,33 @@ async def record_play(
     # 兼容前端字段：position/duration 缺失时回退到 duration_watched/progress
     duration_watched = body.duration_watched
     progress = body.progress
+    total_duration = body.total_duration
     if body.position is not None:
         duration_watched = body.position
         if body.duration:
             progress = min(1.0, body.position / body.duration)
+            total_duration = total_duration or body.duration
     await svc.record_play(
         movie_id=body.movie_id,
         user_id=body.user_id,
         duration_watched=duration_watched,
         progress=progress,
         completed=body.completed,
-        total_duration=body.total_duration,
+        total_duration=total_duration,
         ip_address=ip,
         module=body.module,
     )
     return {"ok": True}
+
+
+@router.get("/resume")
+async def resume(
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub/anime"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """续播列表：每部影片最近一条未看完的播放记录（供"继续观看"行 / 起播续播）"""
+    return await svc.list_resume(module=module, limit=limit, offset=offset)
 
 
 @router.get("/history")

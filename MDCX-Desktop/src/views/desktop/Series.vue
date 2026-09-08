@@ -159,14 +159,14 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import PosterCard from '@/components/cinema/PosterCard.vue'
 import { useLibraryStore } from '@/stores/library'
 import { getAnimeSeries, getAnimeSeriesMovies, toggleAnimeFavoriteSeries } from '@/api/anime'
 import { getModuleSeries, getModuleSeriesMovies } from '@/api'
-import { decorateMovies, normMedia } from '@/utils/browse'
+import { decorateMovies, normMedia, enrichStatus } from '@/utils/browse'
 
 const PAGE = 48
 const router = useRouter()
@@ -270,6 +270,7 @@ async function loadMovies(fresh = false) {
       movies.value = list
       movieTotal.value = res?.total ?? list.length
       hasMore.value = false // anime 系列一次全量返回
+      enrichStatus(list, 'anime')
     } else {
       const skip = movies.value.length
       res = await getModuleSeriesMovies(mod, activeSeries.value.name, {
@@ -281,6 +282,7 @@ async function loadMovies(fresh = false) {
       movies.value = fresh ? list : movies.value.concat(list)
       movieTotal.value = res?.total ?? movies.value.length
       hasMore.value = movies.value.length < movieTotal.value
+      enrichStatus(list, mod)
     }
   } catch (e) {
     if (seq !== movieSeq) return
@@ -327,6 +329,13 @@ watch(() => lib.currentModule, () => {
 })
 
 onMounted(load)
+
+// keep-alive：从详情/mpv 返回时刷新已加载集数角标（限最近 600）
+onActivated(() => {
+  if (movies.value.length && activeSeries.value) {
+    enrichStatus(movies.value, isAnime.value ? 'anime' : lib.currentModule, 600)
+  }
+})
 </script>
 
 <style scoped>

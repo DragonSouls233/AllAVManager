@@ -141,7 +141,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import PosterCard from '@/components/cinema/PosterCard.vue'
@@ -149,7 +149,7 @@ import { useLibraryStore } from '@/stores/library'
 import { MODULES } from '@/stores/library'
 import { getAnimeFavoriteSeries, removeAnimeFavoriteSeries, getAnimeSeriesMovies } from '@/api/anime'
 import { getFavoriteGroups, getFavoriteItems, removeFavoriteItem } from '@/api'
-import { decorateMovies, normMedia } from '@/utils/browse'
+import { decorateMovies, normMedia, enrichStatus } from '@/utils/browse'
 
 const router = useRouter()
 const lib = useLibraryStore()
@@ -227,6 +227,7 @@ async function loadSeriesMovies(s) {
     const res = await getAnimeSeriesMovies(s.id)
     seriesMovies.value = decorateMovies(res?.items || [], 'anime')
     seriesMoviesTotal.value = res?.total ?? seriesMovies.value.length
+    enrichStatus(seriesMovies.value, 'anime')
   } catch (e) {
     seriesMoviesError.value = e?.response?.status === 401 ? '登录已失效，请重新登录' : '加载系列影片失败'
   } finally {
@@ -295,6 +296,13 @@ function onImgErr(e) {
 onMounted(() => {
   loadAnime()
   loadMovieGroups()
+})
+
+// keep-alive：返回时刷新内嵌系列集数角标（anime）
+onActivated(() => {
+  if (seriesMovies.value.length && activeSeries.value) {
+    enrichStatus(seriesMovies.value, 'anime', 600)
+  }
 })
 </script>
 

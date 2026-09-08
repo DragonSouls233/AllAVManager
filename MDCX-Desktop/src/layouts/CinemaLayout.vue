@@ -32,6 +32,9 @@
           placeholder="搜索番号 / 标题 / 演员…"
           clearable
           size="small"
+          @input="onSearchInput"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
           @keyup.enter="onSearch"
           @clear="onSearch"
         >
@@ -89,11 +92,15 @@
         </router-view>
       </main>
     </div>
+
+    <PosterContextMenu />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import PosterContextMenu from '@/components/cinema/PosterContextMenu.vue'
+import { debounce } from '@/utils/debounce'
 import { useRoute, useRouter } from 'vue-router'
 import {
   VideoCamera, Film, PriceTag, Collection, User, Star,
@@ -135,6 +142,21 @@ function onModuleChange(val) {
 function onSearch() {
   lib.setKeyword(searchInput.value.trim())
   if (route.name !== 'Library') router.push('/library')
+}
+
+// 实时搜索 + 防抖：输入即筛选（300ms 防抖），回车/清空仍立即触发。
+// 中文输入法合成期间不打断，compositionend 后再触发一次。
+const debouncedSearch = debounce(() => onSearch(), 300)
+let composing = false
+function onCompositionStart() {
+  composing = true
+}
+function onCompositionEnd() {
+  composing = false
+  debouncedSearch()
+}
+function onSearchInput() {
+  if (!composing) debouncedSearch()
 }
 
 // NSFW：本地状态 + 全局 data 属性驱动 CSS（与 Web 端同一套机制）

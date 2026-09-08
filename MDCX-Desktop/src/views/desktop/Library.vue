@@ -68,6 +68,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import PosterCard from '@/components/cinema/PosterCard.vue'
+import { enrichStatus } from '@/utils/browse'
 import { useLibraryStore } from '@/stores/library'
 import { getJavMovies } from '@/api/jav'
 import { getFc2Movies } from '@/api/fc2'
@@ -141,6 +142,7 @@ async function loadMore() {
     items.value = skip === 0 ? list : items.value.concat(list)
     total.value = res?.total ?? items.value.length
     hasMore.value = list.length >= PAGE
+    enrichStatus(list, lib.currentModule) // 批量补角标/进度（静默失败）
   } catch (e) {
     if (seq !== requestSeq) return
     // 错误时保留已加载内容与全部筛选条件
@@ -189,6 +191,11 @@ onMounted(() => {
     }, { rootMargin: '600px' })
     observer.observe(sentinel.value)
   })
+})
+
+// keep-alive 缓存：从详情/mpv 返回时重刷角标与续播进度（限最近 600）
+onActivated(() => {
+  if (items.value.length) enrichStatus(items.value, lib.currentModule, 600)
 })
 
 onBeforeUnmount(() => {

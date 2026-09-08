@@ -595,6 +595,7 @@ ipcMain.on('tray-show', () => showMainWindow())
 // OSD 是一个透明、无边框、置顶的 overlay 窗口，浮在 mpv 画面之上。
 // 主窗口的客户区被 mpv 完全占据，所以控制条必须放在独立窗口里。
 let osdWindow = null
+let currentPlayCtx = null
 
 function osdLoad() {
   if (isDev) {
@@ -659,11 +660,20 @@ function closeOsdWindow() {
 
 ipcMain.handle('mpv-start', async (_event, opts = {}) => {
   if (!mainWindow) return { ok: false, error: '主窗口不存在' }
+  // 缓存当前播放影片上下文（OSD 窗口据此拉章节/缩略图等元数据）
+  currentPlayCtx = {
+    module: String(opts.module || ''),
+    id: Number(opts.id) || 0,
+    url: String(opts.url || '')
+  }
   createOsdWindow()
   const result = startMpv(mainWindow, opts)
   writeLog(`mpv-start url=${opts.url} result=${JSON.stringify(result)}`)
   return result
 })
+
+// OSD 查询当前播放的影片上下文（module + id）
+ipcMain.handle('mpv-context', () => currentPlayCtx || null)
 
 ipcMain.on('mpv-command', (_event, args) => commandMpv(args))
 ipcMain.on('mpv-set-prop', (_event, name, value) => setProperty(name, value))
@@ -672,6 +682,7 @@ ipcMain.on('mpv-stop', () => {
   writeLog('mpv-stop')
   stopMpv()
   closeOsdWindow()
+  currentPlayCtx = null
 })
 
 // OSD / 宿主页主动退出播放：停 mpv、关 OSD，并让主窗口回到影片库
@@ -679,6 +690,7 @@ ipcMain.on('mpv-exit', () => {
   writeLog('mpv-exit')
   stopMpv()
   closeOsdWindow()
+  currentPlayCtx = null
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
     mainWindow.webContents.send('mpv-exit')

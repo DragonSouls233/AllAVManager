@@ -47,13 +47,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PosterCard from '@/components/cinema/PosterCard.vue'
 import { useLibraryStore } from '@/stores/library'
 import { getActor, getActorMovies } from '@/api'
 import { getActorAvatarUrlById, defaultAvatar } from '@/utils/media'
-import { decorateMovies } from '@/utils/browse'
+import { decorateMovies, enrichStatus } from '@/utils/browse'
 
 const PAGE = 60
 const route = useRoute()
@@ -103,6 +103,7 @@ async function load() {
     movies.value = movies.value.concat(list)
     total.value = res?.total ?? movies.value.length
     hasMore.value = movies.value.length < total.value
+    enrichStatus(list, module.value)
     if (!actorName.value) actorName.value = res?.actor_name || ''
   } catch (e) {
     if (s !== seq) return
@@ -136,6 +137,11 @@ function playMovie(movie) {
 onMounted(() => {
   loadActorInfo()
   load()
+})
+
+// keep-alive：从详情/mpv 返回时刷新作品角标（限最近 600）
+onActivated(() => {
+  if (movies.value.length) enrichStatus(movies.value, module.value, 600)
 })
 </script>
 

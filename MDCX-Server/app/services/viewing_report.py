@@ -109,6 +109,132 @@ async def list_play_history(
     return {"total": total, "items": items}
 
 
+async def list_resume(
+    module: str = "jav",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """续播列表：每部影片取其最近一条「未看完且已开播」的播放记录
+
+    - 跳过 completed=True（看完了不再续）
+    - 跳过 progress >= 0.98（接近片尾视为看完）
+    - 返回影片摘要 + 续播位置，供前端"继续观看"行 / 起播自动续播
+    """
+    session = await get_module_session(module)
+    PlayHistoryModel = get_module_model(module, "play_history")
+    MovieModel = get_module_model(module, "movie")
+
+    latest = (
+        select(
+            PlayHistoryModel.movie_id,
+            func.max(PlayHistoryModel.id).label("latest_id"),
+        )
+        .where(
+            PlayHistoryModel.completed.is_(False),
+            PlayHistoryModel.progress > 0,
+            PlayHistoryModel.progress < 0.98,
+        )
+        .group_by(PlayHistoryModel.movie_id)
+        .subquery()
+    )
+
+    total = (await session.execute(select(func.count()).select_from(latest))).scalar_one() or 0
+
+    stmt = (
+        select(PlayHistoryModel, MovieModel)
+        .join(latest, PlayHistoryModel.id == latest.c.latest_id)
+        .join(MovieModel, MovieModel.id == PlayHistoryModel.movie_id)
+        .order_by(PlayHistoryModel.played_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    items = []
+    for h, m in rows:
+        total_sec = (h.total_duration or 0) or (getattr(m, "duration", None) or 0)
+        progress = float(h.progress or 0.0)
+        items.append({
+            "movie_id": h.movie_id,
+            "module": module,
+            "module_type": module,
+            "code": getattr(m, "code", None),
+            "title": getattr(m, "title", None),
+            "cover_url": getattr(m, "cover_url", None),
+            "duration": total_sec,
+            "progress": round(progress, 4),
+            "position": int(round(progress * total_sec)) if total_sec else 0,
+            "played_at": h.played_at.isoformat() if h.played_at else None,
+        })
+    return {"total": total, "items": items}
+
+
+async def batch_view_status(module: str, ids: list[int]) -> dict:
+    """批量查询影片观看状态 + 续播进度（海报角标/进度条用）
+
+    一次查出：
+    - movie.view_status（browsed/watched/wanted）
+    - 每片最近一条「未看完且已开播」播放记录 → progress/position（用于续播进度条）
+
+    Args:
+        module: 模块名（jav/fc2/.../anime）
+        ids: 影片 id 列表
+
+    Returns:
+        {"items": [{"movie_id", "code", "view_status", "progress",
+                    "position", "duration", "played_at"}]}
+    """
+    if not ids:
+        return {"items": []}
+    session = await get_module_session(module)
+    MovieModel = get_module_model(module, "movie")
+    PlayHistoryModel = get_module_model(module, "play_history")
+
+    movies = (
+        await session.execute(
+            select(MovieModel).where(MovieModel.id.in_(ids))
+        )
+    ).scalars().all()
+
+    # 每片最近一条未看完记录（与 list_resume 相同口径，限 ids 范围）
+    latest = (
+        select(
+            PlayHistoryModel.movie_id,
+            func.max(PlayHistoryModel.id).label("latest_id"),
+        )
+        .where(
+            PlayHistoryModel.movie_id.in_(ids),
+            PlayHistoryModel.completed.is_(False),
+            PlayHistoryModel.progress > 0,
+            PlayHistoryModel.progress < 0.98,
+        )
+        .group_by(PlayHistoryModel.movie_id)
+        .subquery()
+    )
+    hist_rows = (
+        await session.execute(
+            select(PlayHistoryModel).join(latest, PlayHistoryModel.id == latest.c.latest_id)
+        )
+    ).scalars().all()
+    hist_by_movie = {r.movie_id: r for r in hist_rows}
+
+    items = []
+    for m in movies:
+        h = hist_by_movie.get(m.id)
+        total_sec = (h.total_duration or 0) if h else (getattr(m, "duration", None) or 0)
+        progress = float(h.progress or 0.0) if h else 0.0
+        items.append({
+            "movie_id": m.id,
+            "code": getattr(m, "code", None),
+            "view_status": getattr(m, "view_status", None),
+            "progress": round(progress, 4),
+            "position": int(round(progress * total_sec)) if h and total_sec else 0,
+            "duration": int(total_sec) if total_sec else None,
+            "played_at": h.played_at.isoformat() if h and h.played_at else None,
+        })
+    return {"items": items}
+
+
 # ===== 报告生成 =====
 
 async def generate_report(
