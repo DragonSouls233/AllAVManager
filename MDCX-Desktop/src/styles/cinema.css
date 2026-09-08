@@ -1,0 +1,443 @@
+/* ============================================================
+   MDCX Player · 影院风设计系统（仅桌面端 flavor 使用）
+   原则：暗色纵深（绝不平铺纯色）/ 高对比 CTA / 即时反馈 / 尊重减弱动效
+   ============================================================ */
+
+:root {
+  /* 层级背景：深蓝黑，非纯黑 */
+  --cinema-0: #0B0E14;
+  --cinema-1: #13161D;
+  --cinema-2: #1A1E27;
+  --cinema-3: #252A36;
+  --cinema-line: #2A2F3A;
+
+  /* 品牌与强调 */
+  --brand: #00A3FF;
+  --brand-dim: rgba(0, 163, 255, 0.14);
+  --accent: #FFB020;
+
+  /* 文本 */
+  --text-1: #E8ECF4;
+  --text-2: #A7B0C0;
+  --text-3: #6B7484;
+
+  /* 尺寸 */
+  --topbar-h: 56px;
+  /* Electron 无边框窗口的自定义标题栏高度，由 TitleBar 挂载时写入实际值 */
+  --titlebar-h: 0px;
+  --rail-w: 72px;
+
+  /* 缓动 */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ===== 舞台背景：径向光晕 + 噪点纹理（避免平铺纯色） ===== */
+.cinema-stage {
+  position: relative;
+  min-height: 100%;
+  background: var(--cinema-0);
+}
+
+.cinema-stage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1200px 520px at 50% -12%, rgba(0, 163, 255, 0.10), transparent 62%),
+    radial-gradient(900px 420px at 88% 8%, rgba(255, 176, 32, 0.05), transparent 60%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.cinema-stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.028;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ===== 顶栏 ===== */
+.cinema-topbar {
+  position: relative;
+  z-index: 20;
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  background: linear-gradient(180deg, rgba(19, 22, 29, 0.96), rgba(19, 22, 29, 0.86));
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--cinema-line);
+}
+
+.cinema-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.cinema-brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--brand) 0%, #7A5CFF 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(0, 163, 255, 0.32);
+}
+
+.cinema-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.cinema-brand-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-1);
+  letter-spacing: 0.2px;
+}
+
+.cinema-brand-sub {
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+}
+
+/* 搜索框 */
+.cinema-search {
+  flex: 1;
+  max-width: 520px;
+}
+
+.cinema-search :deep(.el-input__wrapper) {
+  background: var(--cinema-2) !important;
+  box-shadow: 0 0 0 1px var(--cinema-line) inset !important;
+  border-radius: 10px;
+  height: 34px;
+}
+
+.cinema-search :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px var(--brand) inset, 0 0 0 3px var(--brand-dim) !important;
+}
+
+.cinema-search :deep(.el-input__inner) {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.cinema-topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cinema-icon-btn {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 9px !important;
+  color: var(--text-2) !important;
+}
+
+.cinema-icon-btn:hover {
+  background: var(--cinema-3) !important;
+  color: var(--text-1) !important;
+}
+
+/* ===== 主体：rail + stage ===== */
+.cinema-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  /* 用 flex 分配剩余高度：TitleBar 在 Web 环境不渲染时也不会错位 */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cinema-rail {
+  width: var(--rail-w);
+  flex-shrink: 0;
+  background: rgba(16, 19, 25, 0.72);
+  border-right: 1px solid var(--cinema-line);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cinema-rail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 60px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 11px;
+  position: relative;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease);
+  user-select: none;
+}
+
+.cinema-rail-item:hover {
+  background: var(--cinema-2);
+  color: var(--text-2);
+}
+
+.cinema-rail-item.active {
+  background: var(--brand-dim);
+  color: var(--brand);
+}
+
+.cinema-rail-item.active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 22px;
+  border-radius: 0 3px 3px 0;
+  background: var(--brand);
+  box-shadow: 0 0 10px var(--brand);
+}
+
+.cinema-rail-spacer {
+  flex: 1;
+}
+
+.cinema-main {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 18px 22px 32px;
+}
+
+.cinema-main::-webkit-scrollbar {
+  width: 10px;
+}
+
+.cinema-main::-webkit-scrollbar-thumb {
+  background: #2E3442;
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+.cinema-main::-webkit-scrollbar-thumb:hover {
+  background: #3B4354;
+  background-clip: content-box;
+}
+
+/* ===== 页面标题 ===== */
+.cinema-page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.cinema-page-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-1);
+  letter-spacing: -0.2px;
+}
+
+.cinema-page-count {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* ===== 海报网格 ===== */
+.cinema-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .cinema-grid {
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+    gap: 12px;
+  }
+}
+
+/* ===== 海报卡 ===== */
+.poster-card {
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+.poster-card:focus-visible .poster-frame {
+  box-shadow: 0 0 0 2px var(--brand), 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+.poster-frame {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--cinema-1);
+  border: 1px solid var(--cinema-line);
+  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease);
+}
+
+.poster-card:hover .poster-frame {
+  transform: translateY(-6px);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 163, 255, 0.35);
+}
+
+.poster-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.poster-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 26px;
+  background: linear-gradient(160deg, var(--cinema-2), var(--cinema-1));
+}
+
+.poster-code {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-1);
+  background: rgba(11, 14, 20, 0.78);
+  border-radius: 5px;
+  backdrop-filter: blur(4px);
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poster-meta {
+  padding: 8px 2px 0;
+}
+
+.poster-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-1);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 36px;
+}
+
+.poster-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== 骨架屏 ===== */
+.poster-skeleton {
+  aspect-ratio: 2 / 3;
+  border-radius: 10px;
+  background: linear-gradient(100deg, var(--cinema-1) 30%, var(--cinema-2) 50%, var(--cinema-1) 70%);
+  background-size: 220% 100%;
+  animation: cinema-shimmer 1.25s linear infinite;
+}
+
+@keyframes cinema-shimmer {
+  from { background-position: 180% 0; }
+  to { background-position: -60% 0; }
+}
+
+/* ===== 筛选条 ===== */
+.cinema-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.cinema-filters :deep(.el-select__wrapper),
+.cinema-filters :deep(.el-input__wrapper) {
+  background: var(--cinema-2) !important;
+  box-shadow: 0 0 0 1px var(--cinema-line) inset !important;
+  border-radius: 8px;
+  min-height: 32px;
+}
+
+.cinema-filters :deep(.el-select__placeholder),
+.cinema-filters :deep(.el-input__inner) {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+/* ===== 空状态 ===== */
+.cinema-empty {
+  padding: 64px 20px;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.cinema-empty-icon {
+  font-size: 42px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.cinema-empty-text {
+  font-size: 13px;
+}
+
+/* ===== 减弱动效 ===== */
+@media (prefers-reduced-motion: reduce) {
+  .poster-frame,
+  .cinema-rail-item {
+    transition: none !important;
+  }
+  .poster-card:hover .poster-frame {
+    transform: none;
+  }
+  .poster-skeleton {
+    animation: none;
+  }
+}
+
+/* ===== 暗色下的 Element 适配（桌面端强制暗色） ===== */
+.cinema-root :deep(.el-drawer),
+.cinema-root :deep(.el-dialog) {
+  background: var(--cinema-1);
+  border: 1px solid var(--cinema-line);
+}
+
+.cinema-root :deep(.el-drawer__title),
+.cinema-root :deep(.el-dialog__title) {
+  color: var(--text-1);
+}

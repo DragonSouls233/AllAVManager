@@ -71,12 +71,64 @@ def _movie_summary(m: AnimeMovie) -> dict:
 # ============================================================
 # 影片列表
 # ============================================================
+@router.get("/categories")
+async def list_anime_categories(
+    q: str = Query("", description="类别名模糊筛选"),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """里番类别聚合：解析 AnimeMovie.genre（JSON 数组字符串），按 count 降序返回。
+
+    与 /modules/{module}/categories 的返回形状一致，供桌面端「类别」页复用。
+    """
+    import json
+    from collections import Counter
+
+    db = get_anime_db()
+    session = await db.get_session()
+    try:
+        rows = (
+            await session.execute(
+                select(AnimeMovie.genre).where(
+                    AnimeMovie.genre.isnot(None), AnimeMovie.genre != ""
+                )
+            )
+        ).scalars().all()
+        total_movies = (
+            await session.execute(select(func.count(AnimeMovie.id)))
+        ).scalar() or 0
+    finally:
+        await session.close()
+
+    counter: Counter = Counter()
+    for raw in rows:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) and raw.strip().startswith("[") else raw
+        except Exception:
+            parsed = raw
+        if isinstance(parsed, list):
+            for g in parsed:
+                if g:
+                    counter[str(g).strip()] += 1
+        elif isinstance(parsed, str):
+            for g in (x.strip() for x in parsed.replace("|", ",").split(",") if x.strip()):
+                counter[g] += 1
+
+    items = [{"name": name, "count": cnt} for name, cnt in counter.most_common()]
+    if q:
+        kw = q.strip().lower()
+        items = [it for it in items if kw in it["name"].lower()]
+    if limit > 0:
+        items = items[:limit]
+    return {"module": "anime", "total_movies": total_movies, "total_categories": len(items), "items": items}
+
+
 @router.get("/movies")
 async def list_anime_movies(
     q: Optional[str] = None,
     maker: Optional[str] = None,
     series: Optional[str] = None,
     series_id: Optional[int] = None,
+    genre: Optional[str] = None,
     sort: str = "recent",
     skip: int = 0,
     limit: int = 48,
@@ -96,6 +148,9 @@ async def list_anime_movies(
             stmt = stmt.where(AnimeMovie.series == series)
         if series_id is not None:
             stmt = stmt.where(AnimeMovie.series_id == series_id)
+        if genre:
+            # genre 列为 JSON 数组字符串，按带引号的完整标签匹配，避免子串误配
+            stmt = stmt.where(AnimeMovie.genre.contains('"%s"' % genre))
 
         total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
 

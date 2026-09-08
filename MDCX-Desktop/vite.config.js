@@ -30,17 +30,32 @@ export default defineConfig({
         },
         vite: {
           build: {
-            outDir: 'dist-electron'
+            outDir: 'dist-electron',
+            rollupOptions: {
+              // Electron 33 加载 ESM preload 的要求：文件后缀必须是 .mjs，且窗口必须 sandbox:false
+              // （沙箱渲染器的 preload 只支持 CommonJS；本项目 package.json "type":"module"，
+              //  插件强制把 preload 输出为 ESM——若叫 .js/.cjs 且保持沙箱，加载会抛
+              //  "Cannot use import statement outside a module" → window.electronAPI 永远 undefined）
+              output: {
+                entryFileNames: 'preload.mjs'
+              }
+            }
           }
         }
       }
     ]),
     renderer()
   ],
+  // 构建期常量：desktop → 消费型播放器形态
+  define: {
+    __APP_FLAVOR__: JSON.stringify('desktop')
+  },
   resolve: {
-    alias: {
-      '@': resolve(__dirname, 'src')
-    }
+    // 顺序敏感：具体的路由表别名必须排在 '@' 之前
+    alias: [
+      { find: '@/router/routes', replacement: resolve(__dirname, 'src/router/routes.desktop.js') },
+      { find: '@', replacement: resolve(__dirname, 'src') }
+    ]
   },
   server: {
     port: 5173,

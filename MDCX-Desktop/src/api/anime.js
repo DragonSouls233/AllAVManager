@@ -4,6 +4,10 @@ export async function getAnimeMovies(params = {}) {
   return api.get('/anime/movies', { params })
 }
 
+export async function getAnimeCategories(params = {}) {
+  return api.get('/anime/categories', { params })
+}
+
 export async function getAnimeMovie(id) {
   return api.get(`/anime/movies/${id}`)
 }

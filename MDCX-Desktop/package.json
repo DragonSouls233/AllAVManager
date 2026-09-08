@@ -44,6 +44,18 @@
     "directories": {
       "output": "release"
     },
+    "extraResources": [
+      {
+        "from": "vendor/mpv",
+        "to": "vendor/mpv",
+        "filter": [
+          "**/*",
+          "!**/*.7z",
+          "!doc/**",
+          "!installer/**"
+        ]
+      }
+    ],
     "files": [
       "dist/**/*",
       "dist-electron/**/*"

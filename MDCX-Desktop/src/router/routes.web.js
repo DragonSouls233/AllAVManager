@@ -5,7 +5,7 @@ import AdminLayout from '@/layouts/AdminLayout.vue'
 // 由 src/router/index.js 原样迁出，逻辑零改动。
 // 桌面端构建时整份被 tree-shake 消除。
 // ============================================================
-export const webRoutes = [
+export const routes = [
   {
     path: '/login',
     name: 'Login',
@@ -711,3 +711,6 @@ export const webRoutes = [
     ]
   }
 ]
+
+// 兼容旧引用名
+export const webRoutes = routes

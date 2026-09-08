@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, ipcMain, shell, Tray, nativeImage, globalShortcut, nativeTheme, Notification, dialog } from 'electron'
+import { startMpv, stopMpv, commandMpv, setProperty, getMpvState, getMpvLog } from './mpv-embed.js'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
@@ -98,7 +99,9 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: join(__dirname, 'preload.js')
+      // preload 为 ESM(.mjs)：Electron 要求 sandbox:false 才能加载（沙箱只支持 CJS preload）
+      sandbox: false,
+      preload: join(__dirname, 'preload.mjs')
     },
     title: '龙魂 - 视频管理系统',
     show: !currentPrefs.start_minimized,
@@ -587,6 +590,121 @@ ipcMain.on('tray-toggle', () => {
   else showMainWindow()
 })
 ipcMain.on('tray-show', () => showMainWindow())
+
+// ===== mpv 内嵌播放器 =====
+// OSD 是一个透明、无边框、置顶的 overlay 窗口，浮在 mpv 画面之上。
+// 主窗口的客户区被 mpv 完全占据，所以控制条必须放在独立窗口里。
+let osdWindow = null
+
+function osdLoad() {
+  if (isDev) {
+    osdWindow.loadURL('http://localhost:5173/#/mpv-osd').catch(() => {})
+  } else {
+    osdWindow.loadFile(join(__dirname, '../dist/index.html'), { hash: '/mpv-osd' }).catch(() => {})
+  }
+}
+
+function createOsdWindow() {
+  if (osdWindow && !osdWindow.isDestroyed()) return osdWindow
+  if (!mainWindow) return null
+
+  const b = mainWindow.getContentBounds()
+  osdWindow = new BrowserWindow({
+    x: b.x,
+    y: b.y,
+    width: b.width,
+    height: b.height,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    hasShadow: false,
+    skipTaskbar: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      preload: join(__dirname, 'preload.mjs')
+    }
+  })
+  osdWindow.setAlwaysOnTop(true, 'screen-saver')
+  // 默认鼠标穿透，事件转给下面的 mpv；OSD 激活时才收回
+  osdWindow.setIgnoreMouseEvents(true, { forward: true })
+  global.__mpvOsdWindows = [osdWindow]
+  osdLoad()
+
+  const syncBounds = () => {
+    if (!osdWindow || osdWindow.isDestroyed() || !mainWindow) return
+    osdWindow.setBounds(mainWindow.getContentBounds())
+  }
+  mainWindow.on('move', syncBounds)
+  mainWindow.on('resize', syncBounds)
+  mainWindow.on('maximize', syncBounds)
+  mainWindow.on('unmaximize', syncBounds)
+
+  osdWindow.on('closed', () => {
+    osdWindow = null
+    global.__mpvOsdWindows = []
+    stopMpv()
+  })
+  return osdWindow
+}
+
+function closeOsdWindow() {
+  if (osdWindow && !osdWindow.isDestroyed()) osdWindow.close()
+  osdWindow = null
+  global.__mpvOsdWindows = []
+}
+
+ipcMain.handle('mpv-start', async (_event, opts = {}) => {
+  if (!mainWindow) return { ok: false, error: '主窗口不存在' }
+  createOsdWindow()
+  const result = startMpv(mainWindow, opts)
+  writeLog(`mpv-start url=${opts.url} result=${JSON.stringify(result)}`)
+  return result
+})
+
+ipcMain.on('mpv-command', (_event, args) => commandMpv(args))
+ipcMain.on('mpv-set-prop', (_event, name, value) => setProperty(name, value))
+
+ipcMain.on('mpv-stop', () => {
+  writeLog('mpv-stop')
+  stopMpv()
+  closeOsdWindow()
+})
+
+// OSD / 宿主页主动退出播放：停 mpv、关 OSD，并让主窗口回到影片库
+ipcMain.on('mpv-exit', () => {
+  writeLog('mpv-exit')
+  stopMpv()
+  closeOsdWindow()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+    mainWindow.webContents.send('mpv-exit')
+  }
+})
+
+ipcMain.on('mpv-fullscreen', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.setFullScreen(!mainWindow.isFullScreen())
+  // 全屏切换后 OSD 要重新贴合主窗口
+  setTimeout(() => {
+    if (osdWindow && !osdWindow.isDestroyed() && mainWindow) {
+      osdWindow.setBounds(mainWindow.getContentBounds())
+    }
+  }, 300)
+})
+
+ipcMain.handle('mpv-state', () => getMpvState())
+ipcMain.handle('mpv-log', () => getMpvLog())
+
+// OSD 请求切换鼠标穿透：显示控制条时收回点击，隐藏后把事件还给 mpv
+ipcMain.on('mpv-osd-interactive', (_event, on) => {
+  if (osdWindow && !osdWindow.isDestroyed()) {
+    osdWindow.setIgnoreMouseEvents(!on, { forward: true })
+  }
+})
 
 // 全局快捷键动态注册（让前端可临时注册额外的快捷键）
 ipcMain.handle('global-shortcut-register', (event, accelerator) => {

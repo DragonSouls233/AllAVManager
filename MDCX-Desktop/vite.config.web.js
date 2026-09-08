@@ -8,10 +8,16 @@ export default defineConfig({
   base: './',
   root: '.',
   plugins: [vue()],
+  // 构建期常量：web → 管理后台形态
+  define: {
+    __APP_FLAVOR__: JSON.stringify('web')
+  },
   resolve: {
-    alias: {
-      '@': resolve(__dirname, 'src')
-    }
+    // 顺序敏感：具体的路由表别名必须排在 '@' 之前
+    alias: [
+      { find: '@/router/routes', replacement: resolve(__dirname, 'src/router/routes.web.js') },
+      { find: '@', replacement: resolve(__dirname, 'src') }
+    ]
   },
   // 启用 public 目录，使 favicon.svg 随 Web 构建自动输出到 static/（修复 /favicon.svg 404）
   publicDir: 'public',

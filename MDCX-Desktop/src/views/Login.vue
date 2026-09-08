@@ -185,9 +185,8 @@ async function tryAutoLogin() {
       // 先验证可信 IP 对当前客户端是否真正生效
       // 使用原生 fetch 绕过 axios 拦截器，避免触发 401 重定向死循环
       try {
-        const testResp = await window.fetch('/api/v1/auth/me', {
-          headers: { 'Authorization': 'Bearer trusted-ip-mode' }
-        })
+        // 用「不带凭证请求受保护端点」验证：/auth/me 下游会解析 token 必然 401，会误判
+        const testResp = await window.fetch(`${getServerUrl()}/api/v1/modules`, { cache: 'no-store' })
         if (!testResp.ok) {
           // 可信 IP 对本客户端未生效（IP 不在白名单中），放弃自动登录
           console.warn('tryAutoLogin: 可信 IP 对本客户端无效，显示登录表单')
@@ -254,9 +253,7 @@ const handleLogin = async () => {
 const directEnter = async () => {
   // 先验证可信 IP 是否真正生效
   try {
-    const testResp = await window.fetch('/api/v1/auth/me', {
-      headers: { 'Authorization': 'Bearer trusted-ip-mode' }
-    })
+    const testResp = await window.fetch(`${getServerUrl()}/api/v1/modules`, { cache: 'no-store' })
     if (!testResp.ok) {
       ElMessage.warning('可信 IP 未生效，当前客户端不在白名单中，请使用密码登录')
       return
@@ -321,7 +318,7 @@ onMounted(async () => {
 
 <style scoped>
 .login-container {
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-h, 0px));
   display: flex;
   align-items: center;
   justify-content: center;

@@ -89,6 +89,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ===== 后端自动探测 =====
   detectBackend: () => ipcRenderer.invoke('backend-detect'),
+
+  // ===== mpv 内嵌播放器 =====
+  mpvStart: (opts) => ipcRenderer.invoke('mpv-start', opts),
+  mpvCommand: (args) => ipcRenderer.send('mpv-command', args),
+  mpvSetProp: (name, value) => ipcRenderer.send('mpv-set-prop', name, value),
+  mpvStop: () => ipcRenderer.send('mpv-stop'),
+  mpvExit: () => ipcRenderer.send('mpv-exit'),
+  mpvToggleFullscreen: () => ipcRenderer.send('mpv-fullscreen'),
+  mpvState: () => ipcRenderer.invoke('mpv-state'),
+  mpvLog: () => ipcRenderer.invoke('mpv-log'),
+  onMpvExit: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('mpv-exit', handler)
+    return () => ipcRenderer.removeListener('mpv-exit', handler)
+  },
+  onMpvState: (callback) => {
+    const handler = (_event, state) => callback(state)
+    ipcRenderer.on('mpv-state', handler)
+    return () => ipcRenderer.removeListener('mpv-state', handler)
+  },
+  // OSD 显示 / 隐藏时切换鼠标穿透，让事件在 mpv 与控制条之间流转
+  mpvOsdInteractive: (on) => ipcRenderer.send('mpv-osd-interactive', !!on)
 })
 
 // 兼容旧版调用（部分老组件可能直接用 window.electronAPI.openExternal）

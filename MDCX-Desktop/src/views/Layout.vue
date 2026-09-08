@@ -1,7 +1,5 @@
 <template>
   <div class="layout-root">
-    <!-- 自定义标题栏（仅 Electron 环境） -->
-    <TitleBar />
     <el-container class="layout-container">
     <!-- 跳到主内容（无障碍快捷导航） -->
     <a href="#main-content" class="skip-link">跳到主内容</a>
@@ -873,7 +871,6 @@ import { useThemeStore } from '@/stores/theme'
 import { useAuthStore } from '@/stores/auth'
 import { useUndoStore } from '@/stores/undo'
 import { useAvatarScrapeStore } from '@/stores/avatarScrape'
-import TitleBar from '@/components/TitleBar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1455,7 +1452,7 @@ const logout = () => {
 .layout-root {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-h, 0px));
   overflow: hidden;
 }
 
