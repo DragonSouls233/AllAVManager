@@ -65,7 +65,7 @@
             <span class="label">刮削源（3 重点 + 4 辅助）</span>
             <el-select v-model="sources" multiple collapse-tags collapse-tags-tooltip
                        placeholder="3 重点 + 4 辅助" style="width:100%">
-              <el-option label="JavDB API（重点）" value="javdbapi" />
+              <el-option label="JavDB API（重点）" value="thejavdb" />
               <el-option label="JavBus（重点）" value="javbus" />
               <el-option label="Avmoo（重点）" value="avmoo" />
               <el-option label="JavBooks（辅助）" value="javbooks" />
@@ -187,7 +187,7 @@ import { ElMessage } from 'element-plus'
 const stats = ref({ total: 0, cover_ok: 0, cover_missing: 0, local_missing: 0 })
 const limit = ref(500)
 const concurrency = ref(5)
-const sources = ref(['javdbapi', 'javbus', 'avmoo', 'javbooks', 'javdatabase', 'avsox', 'dmm_web'])
+const sources = ref(['thejavdb', 'javbus', 'avmoo', 'javbooks', 'javdatabase', 'avsox', 'dmm_web'])
 const steps = ref(['local_first', 'scrape'])
 const status = ref({ running: false, done: 0, total: 0, scraped: 0, no_source: 0, failed: 0, local_only: 0, started_at: 0, failed_list: [], failed_file: null })
 const syncStatus = ref({ running: false, done: 0, total: 0, copied: 0, no_video_dir: 0, failed: 0, started_at: 0 })

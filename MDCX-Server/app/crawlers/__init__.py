@@ -14,7 +14,9 @@ from app.crawlers.provider import (
 # 导入原始爬虫以触发注册
 from app.crawlers import javbus, javdb, fc2, avsox, avmoo, javdatabase, javbooks
 
-# TheJavDB 开放 API 爬虫（免 Cookie 绕 CF，见 javdbapi.py 头部版本追踪说明）
+# TheJavDB 开放 API 爬虫（免 Cookie 绕 CF，见 javdbapi.py 头部版本追踪说明）。
+# 2026-09-07 起注册名为 "thejavdb"（显示名 TheJavDB (API)），旧名 "javdbapi" 保留为别名，
+# 模块文件名暂不变（本行注释与下方 __all__ 的 javdbapi 均指文件/模块对象）。
 from app.crawlers import javdbapi
 
 # 顶层 DMM/FANZA 网页爬虫（name="dmm_web"）。注意 md/dmm.py 是另一套 GraphQL

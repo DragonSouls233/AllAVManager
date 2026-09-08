@@ -81,9 +81,16 @@ def _parse_date(s: str) -> Optional[date]:
 
 @register_crawler
 class JavdbApiCrawler(BaseCrawler):
-    """TheJavDB 开放 API 爬虫（免登录、绕过 Cloudflare）。"""
+    """TheJavDB 开放 API 爬虫（免登录、绕过 Cloudflare）。
 
-    name = "javdbapi"
+    2026-09-07 改名：注册名从 ``javdbapi`` 改为 ``thejavdb``（与显示名 TheJavDB 对齐）。
+    旧名 javdbapi 保留为别名（aliases），已刮削影片 DB 里的 ``source=javdbapi`` 历史数据
+    不动、配置/前端传入旧名仍可查到本实例。
+    文件名保持 javdbapi.py 不变，避免改导入关系引入风险。
+    """
+
+    name = "thejavdb"
+    aliases = ["javdbapi"]  # 旧名兼容别名
     display_name = "TheJavDB (API)"
     base_url = API_BASE
 

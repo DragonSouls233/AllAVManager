@@ -63,6 +63,8 @@ class CrawlerProvider:
             cls._instance._crawler_classes: dict[str, Type[BaseCrawler]] = {}
             cls._instance._prefix_map: dict[str, list[str]] = {}
             cls._instance._type_map: dict[str, list[str]] = {}
+            # 别名映射（alias -> 主名）：爬虫改名后保留旧名可查，兼容历史配置/数据
+            cls._instance._alias_map: dict[str, str] = {}
             # 运行时优先级覆盖（来自数据库设置，保存后即时生效，无需重启）
             cls._instance._priority_overrides: dict[str, int] = {}
         return cls._instance
@@ -108,6 +110,19 @@ class CrawlerProvider:
         if name in DISABLED_CRAWLERS:
             crawler.disable()
             logger.info(f"Crawler '{name}' auto-disabled (site no longer accessible)")
+
+        # 注册别名（爬虫改名兼容）：旧名也能查到同一实例，但不会重复出现在列表/统计里
+        aliases = list(getattr(crawler_class, "aliases", []) or [])
+        for alias in aliases:
+            alias = str(alias).strip()
+            if not alias or alias == name:
+                continue
+            alias_map = getattr(self, "_alias_map", {})
+            if alias in self._crawlers or alias in alias_map:
+                logger.warning(f"Crawler alias '{alias}' already taken, skipping (new name={name})")
+                continue
+            alias_map[alias] = name
+            logger.info(f"Registered crawler alias: {alias} -> {name}")
     
     def unregister(self, name: str) -> bool:
         """
@@ -141,17 +156,27 @@ class CrawlerProvider:
         logger.info(f"Unregistered crawler: {name}")
         return True
     
+    def _resolve(self, name: str) -> Optional[str]:
+        """把爬虫名/别名解析为主名；不存在返回 None。"""
+        if name in self._crawlers:
+            return name
+        alias_map = getattr(self, "_alias_map", {}) or {}
+        return alias_map.get(name)
+
     def get(self, name: str) -> Optional[BaseCrawler]:
         """
-        获取刮削器实例
-        
+        获取刮削器实例（支持别名，如改名前的旧名）
+
         Args:
-            name: 刮削器名称
-            
+            name: 刮削器名称或别名
+
         Returns:
             刮削器实例，不存在返回 None
         """
-        return self._crawlers.get(name)
+        key = self._resolve(name)
+        if key is None:
+            return None
+        return self._crawlers.get(key)
     
     def get_all(self) -> dict[str, BaseCrawler]:
         """获取所有刮削器"""
@@ -234,17 +259,19 @@ class CrawlerProvider:
                 continue
             if key.startswith("crawler_") and key.endswith("_priority"):
                 name = key[len("crawler_"):-len("_priority")]
-                crawler = self._crawlers.get(name)
+                # 别名 → 主名：旧配置里 crawler_{oldname}_priority 也能落到改名后的实例
+                crawler = self.get(name)
                 if crawler is None:
                     continue
                 try:
                     raw = int(value)
                 except (TypeError, ValueError):
                     continue
-                self._priority_overrides[name] = -abs(raw) if raw != 0 else 0
+                main_name = self._resolve(name) or name
+                self._priority_overrides[main_name] = -abs(raw) if raw != 0 else 0
             elif key.startswith("crawler_") and key.endswith("_enabled"):
                 name = key[len("crawler_"):-len("_enabled")]
-                crawler = self._crawlers.get(name)
+                crawler = self.get(name)
                 if crawler is None:
                     continue
                 if value == "false":
@@ -277,17 +304,19 @@ class CrawlerProvider:
         return crawlers
     
     def enable(self, name: str) -> bool:
-        """启用刮削器"""
-        if name not in self._crawlers:
+        """启用刮削器（支持别名）"""
+        key = self._resolve(name)
+        if key is None:
             return False
-        self._crawlers[name].enable()
+        self._crawlers[key].enable()
         return True
-    
+
     def disable(self, name: str) -> bool:
-        """禁用刮削器"""
-        if name not in self._crawlers:
+        """禁用刮削器（支持别名）"""
+        key = self._resolve(name)
+        if key is None:
             return False
-        self._crawlers[name].disable()
+        self._crawlers[key].disable()
         return True
     
     def clear(self) -> None:
