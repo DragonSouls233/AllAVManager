@@ -43,6 +43,14 @@ from typing import Any, Optional, TextIO
 CRASH_LOG_NAME = "crash.log"
 BOOTSTRAP_LOG_NAME = "startup.log"
 
+# startup.log 由 _TeeStream 裸追加写入（不经过 logging），因此**不会**被
+# RotatingFileHandler 轮转。线上实测已长到 196MB / 282 万行——uvicorn 与
+# 第三方库的 stderr 极吵，单条启动即可刷出数万行。这里补一套独立的大小轮转。
+BOOTSTRAP_MAX_BYTES = 5 * 1024 * 1024  # 5MB
+BOOTSTRAP_BACKUP_COUNT = 3
+# 每次 write 都 stat() 开销偏大（启动期 stderr 可达数万行），按写入次数节流
+_BOOTSTRAP_SIZE_CHECK_EVERY = 200
+
 _installed = False
 _log_dir: Optional[Path] = None
 _stderr_mirror: Optional[TextIO] = None
@@ -291,6 +299,24 @@ class _TeeStream:
         self._original = original
         self._mirror_path = mirror_path
         self._lock = threading.Lock()
+        self._write_count = 0
+
+    def _rotate_if_needed(self) -> None:
+        """超过体积上限时轮转镜像文件（startup.log → .1 → .2 → .3）"""
+        try:
+            p = self._mirror_path
+            if not p.exists() or p.stat().st_size < BOOTSTRAP_MAX_BYTES:
+                return
+            oldest = Path(str(p) + f".{BOOTSTRAP_BACKUP_COUNT}")
+            if oldest.exists():
+                oldest.unlink()
+            for i in range(BOOTSTRAP_BACKUP_COUNT - 1, 0, -1):
+                src = Path(str(p) + f".{i}")
+                if src.exists():
+                    src.rename(Path(str(p) + f".{i + 1}"))
+            p.rename(Path(str(p) + ".1"))
+        except Exception:
+            pass  # 轮转失败不能影响主流程，继续追加即可
 
     def write(self, data: str) -> int:
         try:
@@ -300,6 +326,10 @@ class _TeeStream:
         if data and data.strip():
             try:
                 with self._lock:
+                    # 按写入次数节流 stat，避免启动期高频 stderr 拖慢启动
+                    self._write_count += 1
+                    if self._write_count % _BOOTSTRAP_SIZE_CHECK_EVERY == 1:
+                        self._rotate_if_needed()
                     with open(self._mirror_path, "a", encoding="utf-8", errors="replace") as f:
                         f.write(data)
             except Exception:
