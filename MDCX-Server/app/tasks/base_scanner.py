@@ -253,6 +253,40 @@ def iter_media_entries(
     return entries
 
 
+def _copy_file_resilient(src: Path, dst: Path) -> bool:
+    """跨网络盘复制单个文件，带 SameFileError / 元数据失败降级。
+
+    服务器的媒体目录常是 SMB 映射盘（`L:` = `\\\\host\\share`），同一个物理文件可能
+    通过不同路径可达（如 `L:\\data` 与服务器本地 `E:\\MDCX-Server\\data`）。此时
+    `shutil.copy2` 会抛 SameFileError；另外 SMB 上 copystat（写 mtime/权限）经常
+    被拒绝，导致明明内容可复制却整体失败。
+
+    降级链：samefile 短路 → copy2（保留元数据）→ 纯字节流 copyfileobj（只要内容）。
+    """
+    try:
+        if dst.exists() and src.samefile(dst):
+            logger.debug(f"源与目标为同一文件，跳过: {src}")
+            return False
+    except OSError:
+        pass  # 网络盘不支持 samefile，交给后续实际复制去兜底
+
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except shutil.SameFileError:
+        logger.debug(f"源与目标为同一文件，跳过: {src}")
+        return False
+    except OSError as e:
+        # SMB / 只读属性 / copystat 被拒：退化为只要内容的字节流复制
+        logger.debug(f"copy2 失败，改用字节流复制 {src}: {e}")
+        try:
+            with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+            return True
+        except Exception as e2:
+            raise RuntimeError(f"字节流复制也失败: {e2}") from e2
+
+
 async def copy_video_assets_to_data_dir(
     video_file_path: str | Path,
     code: str,
@@ -314,7 +348,10 @@ async def copy_video_assets_to_data_dir(
         try:
             # 丢到线程池执行，避免同步复制阻塞事件循环（扫描期间大量小文件复制
             # 会拖慢整个服务端，APScheduler 曾因此报 "missed by 1:08"）。
-            await asyncio.to_thread(shutil.copy2, src, dst)
+            # 用 _copy_file_resilient 兜住 SMB 映射盘的 SameFileError / copystat 失败
+            ok = await asyncio.to_thread(_copy_file_resilient, src, dst)
+            if not ok:
+                continue
             copied += 1
             logger.info(f"[{module_name}] 复制视频资源: {src.name} → {dst}")
         except Exception as e:

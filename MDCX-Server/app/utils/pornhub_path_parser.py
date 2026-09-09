@@ -16,9 +16,14 @@ PORNHub 目录解析模块
   - Anna Cherry7 + Sunny Leone [UK]   (多演员)
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
+
+from app.utils.actor_name_guard import is_plausible_actor_name
+
+logger = logging.getLogger(__name__)
 
 # 常见国籍标记（扩展版）
 _NATIONALITY_PATTERNS: dict[str, str] = {
@@ -129,6 +134,12 @@ def extract_actor_and_nationality(folder_name: str) -> tuple[Optional[str], Opti
 
     if not name:
         return None, None
+
+    # 合理性校验：目录名可能是「2024」「1080p」「美国」这类非人名，
+    # 直接入库会污染演员表（与 chinese 模块同一类问题，共用一套规则）
+    if not is_plausible_actor_name(name):
+        logger.debug(f"忽略非演员目录名: {folder_name!r} -> {name!r}")
+        return None, nationality
 
     return name, nationality
 

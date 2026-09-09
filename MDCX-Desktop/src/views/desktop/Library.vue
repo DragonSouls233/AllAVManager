@@ -65,7 +65,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import PosterCard from '@/components/cinema/PosterCard.vue'
 import { enrichStatus } from '@/utils/browse'

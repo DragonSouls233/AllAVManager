@@ -32,6 +32,9 @@ THEPORNDB_API_BASE = "https://api.theporndb.net"
 THEPORNDB_SEARCH = f"{THEPORNDB_API_BASE}/scenes?q={{query}}"
 THEPORNDB_DETAIL = f"{THEPORNDB_API_BASE}/scenes/{{slug}}"
 
+# 未配置 API Key 时只告警一次，避免批量刮削刷屏
+_NO_KEY_WARNED = False
+
 
 def _parse_theporndb_response(data: dict) -> Optional[ScrapeResult]:
     """解析 ThePornDB API 响应（参考 mdcx theporndb.py read_data）"""
@@ -163,6 +166,27 @@ class ThePornDBCrawler(BaseCrawler):
         except Exception:
             return ""
 
+    def _ensure_api_key(self) -> Optional[str]:
+        """校验 API Key 是否已配置。
+
+        ThePornDB 的 scenes 接口**必须**带 Bearer Token，未配置时请求必定 401。
+        旧实现仍会发出请求，导致每次刮削都打一条 ERROR 日志并白耗一次代理连接
+        （批量刮削时会刷屏，且让人误以为是网络/站点故障）。
+
+        现在改为：未配置即短路返回，只 warning 一次，让刮削流程继续走其它源。
+        """
+        api_key = self._get_api_key()
+        if api_key:
+            return api_key
+        global _NO_KEY_WARNED
+        if not _NO_KEY_WARNED:
+            _NO_KEY_WARNED = True
+            logger.warning(
+                "ThePornDB 未配置 API Key，已跳过该数据源"
+                "（请在「设置」-「网络」-「API Token」中填写 theporndb_api_key 后生效）"
+            )
+        return None
+
     def _get_headers(self) -> dict:
         """构建请求头"""
         headers = {
@@ -182,6 +206,10 @@ class ThePornDBCrawler(BaseCrawler):
         """
         from app.services.proxy_manager import get_effective_proxy_url
         from app.utils.http_client import AsyncHttpClient
+
+        # 未配置 Key 时直接短路，不发无意义的 401 请求
+        if not self._ensure_api_key():
+            return None
 
         proxy = get_effective_proxy_url()
         headers = self._get_headers()
@@ -209,7 +237,11 @@ class ThePornDBCrawler(BaseCrawler):
                 return result
 
             except Exception as e:
-                logger.error(f"ThePornDB 刮削失败 [{code}]: {e}")
+                # 401/403 是 Token 问题而非站点故障，单独提示，避免被当成网络错误反复排查
+                if "401" in str(e) or "403" in str(e):
+                    logger.warning(f"ThePornDB Token 无效或已过期 [{code}]，请检查 API Key 配置")
+                else:
+                    logger.error(f"ThePornDB 刮削失败 [{code}]: {e}")
                 self.mark_error()
                 return None
 
@@ -219,6 +251,9 @@ class ThePornDBCrawler(BaseCrawler):
         from app.utils.http_client import AsyncHttpClient
 
         results = []
+        if not self._ensure_api_key():
+            return results
+
         proxy = get_effective_proxy_url()
         headers = self._get_headers()
 
@@ -233,6 +268,9 @@ class ThePornDBCrawler(BaseCrawler):
                     if result:
                         results.append(result)
             except Exception as e:
-                logger.error(f"ThePornDB 搜索失败 [{keyword}]: {e}")
+                if "401" in str(e) or "403" in str(e):
+                    logger.warning(f"ThePornDB Token 无效或已过期 [{keyword}]，请检查 API Key 配置")
+                else:
+                    logger.error(f"ThePornDB 搜索失败 [{keyword}]: {e}")
 
         return results
