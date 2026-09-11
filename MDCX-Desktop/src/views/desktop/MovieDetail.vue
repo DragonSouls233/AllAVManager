@@ -3,7 +3,7 @@
     <!-- 主信息卡 -->
     <div class="md-hero">
       <div class="md-cover-wrap">
-        <img v-if="cover" class="md-cover" :src="cover" :alt="code" />
+        <img v-if="cover" v-cover-fit="COVER_AR.poster" class="md-cover" :src="cover" :alt="code" />
         <div v-else class="md-cover-empty">
           <el-icon><Picture /></el-icon>
         </div>
@@ -193,6 +193,7 @@ import {
   getViewingHistory
 } from '@/api'
 import { getAnimeMovie, getAnimeSeriesMovies, getAnimeMovies } from '@/api/anime'
+import { vCoverFit, COVER_AR } from '@/utils/coverFit'
 
 const route = useRoute()
 const router = useRouter()
@@ -465,6 +466,9 @@ load()
   position: relative;
   flex: 0 0 228px;
   width: 228px;
+  /* 承载"封面自适应"的模糊底线（见 utils/coverFit.js），裁掉模糊层的溢出部分 */
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .md-cover {

@@ -13,6 +13,7 @@
 import asyncio
 import os
 import re
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -256,7 +257,56 @@ def _series_agg_columns():
     return cnt, first_movie, latest
 
 
-def _build_series_query(q: Optional[str], maker: Optional[str], favorite: bool, sort: str):
+def _norm_text(value: Optional[str]) -> str:
+    """搜索归一化：忽略全半角 / 大小写 / 空格 / 常见标点与集数符号（＃）。
+
+    例：影片标题里的 'OVA ようこそ！スケベエルフの森へ ＃4' 与 series 表里的
+    'OVAようこそ!スケベエルフの森へ' 归一化后能互相匹配 —— 解决
+    「影片库里能看到、系列页却搜不到」的写法差异问题。
+    """
+    s = unicodedata.normalize("NFKC", value or "").lower()
+    s = s.replace(" ", "").replace("\u3000", "")
+    return re.sub(r"[!！?？~～・·,，.。:：;；'\"“”‘’()（）\[\]【】\-—_＃#]+", "", s)
+
+
+async def _normalized_series_ids(session, q: str) -> list[int]:
+    """q 的归一化兜底：返回 系列名 / 制作商 / 旗下影片标题 归一化后命中的系列 id。
+
+    数据量小（约 1.4k 系列 + 3k 影片），全量归一化比在 SQL 里堆全半角替换
+    规则可靠，也无须给表加派生列。
+    """
+    qn = _norm_text(q)
+    if not qn:
+        return []
+    ids: set[int] = set()
+
+    for sid, name in (await session.execute(select(AnimeSeries.id, AnimeSeries.name))).all():
+        if qn in _norm_text(name):
+            ids.add(sid)
+
+    studio_hits = [
+        sid for sid, nm in
+        (await session.execute(select(AnimeStudio.id, AnimeStudio.name))).all()
+        if qn in _norm_text(nm)
+    ]
+    if studio_hits:
+        series_rows = (await session.execute(
+            select(AnimeSeries.id).where(AnimeSeries.studio_id.in_(studio_hits))
+        )).all()
+        ids.update(sid for sid, in series_rows)
+
+    for sid, title in (await session.execute(
+        select(AnimeMovie.series_id, AnimeMovie.title)
+    )).all():
+        if sid and qn in _norm_text(title):
+            ids.add(sid)
+
+    return list(ids)
+
+
+async def _build_series_query(
+    session, q: Optional[str], maker: Optional[str], favorite: bool, sort: str
+):
     cnt, first_movie, latest = _series_agg_columns()
     stmt = select(
         AnimeSeries.id,
@@ -272,7 +322,25 @@ def _build_series_query(q: Optional[str], maker: Optional[str], favorite: bool, 
         like = f"%{q}%"
         stmt = stmt.outerjoin(AnimeStudio, AnimeStudio.id == AnimeSeries.studio_id)
         joined_studio = True
-        stmt = stmt.where(or_(AnimeSeries.name.like(like), AnimeStudio.name.like(like)))
+        # 快路径：子串匹配「系列名 / 制作商 / 该系列下任一影片标题」。
+        # 影片标题用 EXISTS 相关子查询（而非 join）：避免一个系列命中多部影片时
+        # 行数被放大，导致分页 total 虚高、翻页出现重复系列。
+        title_hit = (
+            select(AnimeMovie.id)
+            .where(AnimeMovie.series_id == AnimeSeries.id, AnimeMovie.title.like(like))
+            .correlate(AnimeSeries)
+            .exists()
+        )
+        conds = [
+            AnimeSeries.name.like(like),
+            AnimeStudio.name.like(like),
+            title_hit,
+        ]
+        # 兜底：归一化匹配，容忍全半角 / 空格 / 标点 / 集数符号（＃4）差异
+        norm_ids = await _normalized_series_ids(session, q)
+        if norm_ids:
+            conds.append(AnimeSeries.id.in_(norm_ids))
+        stmt = stmt.where(or_(*conds))
     if maker:
         if not joined_studio:
             stmt = stmt.outerjoin(AnimeStudio, AnimeStudio.id == AnimeSeries.studio_id)
@@ -349,7 +417,7 @@ async def list_anime_series(
     db = get_anime_db()
     session = await db.get_session()
     try:
-        stmt = _build_series_query(q, maker, favorite, sort)
+        stmt = await _build_series_query(session, q, maker, favorite, sort)
         total = (
             await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
         ).scalar() or 0
@@ -375,7 +443,7 @@ async def list_anime_favorite_series(
     db = get_anime_db()
     session = await db.get_session()
     try:
-        stmt = _build_series_query(q, None, True, sort)
+        stmt = await _build_series_query(session, q, None, True, sort)
         total = (
             await session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
         ).scalar() or 0

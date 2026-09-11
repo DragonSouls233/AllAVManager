@@ -13,6 +13,7 @@
     <div class="poster-frame">
       <img
         v-if="cover && !failed"
+        v-cover-fit="COVER_AR.poster"
         :src="cover"
         :alt="title"
         loading="lazy"
@@ -54,6 +55,7 @@ import { isDesktop } from '@/config/flavor'
 import { useLibraryStore } from '@/stores/library'
 import { showPosterMenu } from '@/utils/posterMenu'
 import { preloadNeighbors } from '@/utils/preload'
+import { vCoverFit, COVER_AR } from '@/utils/coverFit'
 
 const props = defineProps({
   movie: { type: Object, required: true }

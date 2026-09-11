@@ -63,7 +63,14 @@
           @keyup.enter="enterSeries(s)"
         >
           <div class="asc-cover">
-            <img v-if="s.coverUrl" :src="s.coverUrl" :alt="s.name" loading="lazy" @error="onImgErr" />
+            <img
+              v-if="s.coverUrl"
+              v-cover-fit="COVER_AR.seriesAnime"
+              :src="s.coverUrl"
+              :alt="s.name"
+              loading="lazy"
+              @error="onImgErr"
+            />
             <div v-else class="asc-fallback">📚</div>
             <span class="asc-count">{{ s.movie_count }} 集</span>
             <button
@@ -167,6 +174,7 @@ import { useLibraryStore } from '@/stores/library'
 import { getAnimeSeries, getAnimeSeriesMovies, toggleAnimeFavoriteSeries } from '@/api/anime'
 import { getModuleSeries, getModuleSeriesMovies } from '@/api'
 import { decorateMovies, normMedia, enrichStatus } from '@/utils/browse'
+import { vCoverFit, COVER_AR } from '@/utils/coverFit'
 
 const PAGE = 48
 const router = useRouter()
@@ -373,11 +381,14 @@ onActivated(() => {
 }
 .asc-cover {
   position: relative;
-  aspect-ratio: 16 / 9;
+  /* 3:4 = 里番封面原生比例（实测中位 0.707，93% 落在此区间）。
+     原来用 16:9 横容器会把竖版封面裁掉 60% 画面（人物切头切脚）。 */
+  aspect-ratio: 3 / 4;
   background: var(--cinema-2);
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 .asc-cover img { width: 100%; height: 100%; object-fit: cover; }
 .asc-fallback { font-size: 40px; opacity: 0.4; }

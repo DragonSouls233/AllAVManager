@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>里番系列封面裁切修复 · 实测对比</title>
+<style>
+  :root{
+    --bg:#0d1017; --panel:#161b26; --line:#242b3a;
+    --text:#e8edf7; --dim:#8b97ad;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:26px 30px 34px;
+    background:radial-gradient(1100px 560px at 18% -12%, #1c2637, transparent), var(--bg);
+    color:var(--text);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  h1{font-size:21px;margin:0 0 5px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:22px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .col{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 16px 18px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:3px 11px;border-radius:999px;margin-bottom:14px}
+  .bad{background:rgba(224,82,82,.16);color:#ff9090;border:1px solid rgba(224,82,82,.42)}
+  .good{background:rgba(47,207,138,.14);color:#57e0a4;border:1px solid rgba(47,207,138,.42)}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:13px}
+  .card{border-radius:10px;overflow:hidden;background:#0b0e14;border:1px solid var(--line)}
+  /* ===== 修复前：16:9 横向容器 + object-fit: cover ===== */
+  .old .frame{position:relative;aspect-ratio:16/9;overflow:hidden;background:#12161f}
+  .old img{width:100%;height:100%;object-fit:cover;display:block}
+  /* ===== 修复后：3:4 容器 + 自适应（与 utils/coverFit.js 一致） ===== */
+  .new .frame{position:relative;aspect-ratio:3/4;overflow:hidden;background:#12161f;display:flex;align-items:center;justify-content:center}
+  .new img{width:100%;height:100%;object-fit:cover;display:block}
+  .new img.cover-contain{object-fit:contain}
+  .new .frame.cover-blur::before{
+    content:'';position:absolute;inset:-24px;background-image:inherit;background-size:cover;
+    background-position:center;filter:blur(18px) brightness(.42) saturate(1.15);z-index:0
+  }
+  .new .frame.cover-blur img{position:relative;z-index:1}
+  .meta{padding:7px 9px 8px;font-size:11.5px;color:var(--dim);line-height:1.5}
+  .meta b{color:var(--text);font-weight:600;display:block}
+  .stat{margin-top:12px;font-size:12px;padding:8px 11px;border-radius:8px;line-height:1.6}
+  .stat.bad{background:rgba(224,82,82,.1);border:1px dashed rgba(224,82,82,.35);color:#ffb3b3}
+  .stat.good{background:rgba(47,207,138,.09);border:1px dashed rgba(47,207,138,.35);color:#8fe9c4}
+</style>
+</head>
+<body>
+  <h1>里番系列封面裁切修复 · 实测对比</h1>
+  <div class="sub">图片取自服务器真实封面 <code>L:\data\movies\anime</code>，两侧容器宽度完全相同</div>
+
+  <div class="row">
+    <div class="col old">
+      <span class="tag bad">修复前 · 16:9 容器 + cover</span>
+      <div class="grid" id="oldGrid"></div>
+      <div class="stat bad">竖版封面被横向容器裁切 ≈ 60%，人物上下被切掉</div>
+    </div>
+
+    <div class="col new">
+      <span class="tag good">修复后 · 3:4 容器 + 自适应</span>
+      <div class="grid" id="newGrid"></div>
+      <div class="stat good">容器贴合原生比例，裁切降至 ≈ 6%；异形封面自动切 contain，画面完整</div>
+    </div>
+  </div>
+
+<script>
+// 与 src/utils/coverFit.js 完全一致的判定逻辑
+const THRESHOLD = 0.15
+function cropRatio(imgAR, containerAR) {
+  if (!(imgAR > 0) || !(containerAR > 0)) return 0
+  return 1 - Math.min(imgAR, containerAR) / Math.max(imgAR, containerAR)
+}
+function needsContain(imgAR, containerAR, threshold = THRESHOLD) {
+  return cropRatio(imgAR, containerAR) > threshold
+}
+
+const SAMPLE = [
+  { src: './poster_vert.jpg',   name: '典型里番封面',   size: '378×540' },
+  { src: './poster_narrow.jpg', name: '窄竖版封面',     size: '528×888' }
+]
+
+const oldGrid = document.getElementById('oldGrid')
+const newGrid = document.getElementById('newGrid')
+
+SAMPLE.forEach(it => {
+  oldGrid.insertAdjacentHTML('beforeend',
+    `<div class="card"><div class="frame"><img src="${it.src}" alt=""></div>
+     <div class="meta"><b>${it.name}</b>${it.size}</div></div>`)
+
+  newGrid.insertAdjacentHTML('beforeend',
+    `<div class="card"><div class="frame"><img src="${it.src}" alt=""></div>
+     <div class="meta"><b>${it.name}</b>${it.size}</div></div>`)
+})
+
+// 对"修复后"一侧应用 fitCover（容器 3:4）
+newGrid.querySelectorAll('.frame img').forEach(img => {
+  const apply = () => {
+    if (!img.naturalWidth) return
+    const box = img.parentElement
+    const ar = img.naturalWidth / img.naturalHeight
+    const need = needsContain(ar, 3 / 4)
+    img.classList.toggle('cover-contain', need)
+    box.classList.toggle('cover-blur', need)
+    if (need) box.style.backgroundImage = `url("${img.src}")`
+    const crop = (cropRatio(ar, 3 / 4) * 100).toFixed(1)
+    const cropOld = (cropRatio(ar, 16 / 9) * 100).toFixed(1)
+    const meta = img.closest('.card').querySelector('.meta')
+    meta.innerHTML += `<span style="color:#6f7d94">比例 ${ar.toFixed(3)} · 旧裁切 ${cropOld}% → 新裁切 ${crop}%</span>`
+  }
+  if (img.complete) apply()
+  else img.addEventListener('load', apply)
+})
+</script>
+</body>
+</html>

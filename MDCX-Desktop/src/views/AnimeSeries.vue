@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="filters">
-        <el-input v-model="q" placeholder="搜索系列名 / 制作商" clearable style="width:280px" @input="onSearch" />
+        <el-input v-model="q" placeholder="搜索系列名 / 制作商 / 影片名" clearable style="width:280px" @input="onSearch" />
         <el-select v-model="maker" placeholder="制作商" clearable filterable style="width:200px" @change="reload">
           <el-option v-for="m in makers" :key="m.name" :label="`${m.name} (${m.movie_count})`" :value="m.name" />
         </el-select>
@@ -27,7 +27,14 @@
     <div v-if="!selected" v-loading="loading" class="series-grid">
       <div v-for="s in seriesList" :key="s.id" class="series-card" @click="openSeries(s)">
         <div class="s-cover">
-          <img v-if="s.cover" :src="s.cover" :alt="s.name" @error="onCoverError" loading="lazy" />
+          <img
+            v-if="s.cover"
+            :src="s.cover"
+            :alt="s.name"
+            v-cover-fit="COVER_AR.seriesAnime"
+            @error="onCoverError"
+            loading="lazy"
+          />
           <span class="s-count">{{ s.movie_count }} 集</span>
           <!-- 喜好标记：加入「我的喜好」页 -->
           <button class="s-fav" :class="{ on: s.favorited }"
@@ -55,7 +62,8 @@
         layout="prev, pager, next, jumper, total" @current-change="load" />
     </div>
 
-    <el-empty v-if="!selected && !loading && !seriesList.length" description="暂无系列数据，请先扫描 anime 模块" />
+    <el-empty v-if="!selected && !loading && !seriesList.length"
+              :description="q ? `没有匹配「${q}」的系列（支持系列名 / 制作商 / 影片名）` : '暂无系列数据，请先扫描 anime 模块'" />
 
     <!-- 系列内集数 -->
     <div v-if="selected" class="episodes-view">
@@ -104,40 +112,13 @@
       <el-empty v-if="!epLoading && !displayEpisodes.length" description="该筛选条件下暂无集数" />
     </div>
 
-    <!-- 播放列表连播弹窗 -->
-    <el-dialog v-model="playerVisible" :title="(current?.series || '') + ' · 连播'" width="92%" top="3vh" @close="closePlayer">
-      <div v-if="current" class="player-wrap">
-        <div class="player-main">
-          <video :key="current.id" :src="current.play_url" controls autoplay
-                 style="width:100%;max-height:62vh;background:#000"
-                 @error="onVideoError" @ended="onEnded" />
-          <div class="player-bar">
-            <el-button :disabled="playIndex === 0" @click="prev">⏮ 上一集</el-button>
-            <span class="pos">{{ playIndex + 1 }} / {{ playlist.length }}</span>
-            <el-button :disabled="playIndex >= playlist.length - 1" @click="next">下一集 ⏭</el-button>
-            <span class="now" v-if="current.episode">第 {{ current.episode }} 集</span>
-            <span class="now" v-else-if="current.title">{{ current.title }}</span>
-          </div>
-          <div class="player-meta">
-            <span v-if="current.maker" class="tag maker">{{ current.maker }}</span>
-            <span v-if="current.series" class="tag series">{{ current.series }}</span>
-            <span v-if="current.episode" class="tag">第{{ current.episode }}集</span>
-            <span v-if="current.release_date" class="tag">{{ current.release_date }}</span>
-          </div>
-        </div>
-        <div class="player-list">
-          <div class="pl-head">播放列表 ({{ playlist.length }})</div>
-          <div v-for="(m, i) in playlist" :key="m.id"
-               :class="['pl-item', { active: i === playIndex, watched: m._played }]"
-               @click="jumpTo(i)">
-            <span class="pl-idx">{{ i + 1 }}</span>
-            <img v-if="m.cover" :src="m.cover" class="pl-cover" @error="onCoverError" />
-            <span class="pl-title">{{ m.title || m.code }}</span>
-            <span class="pl-ep" v-if="m.episode">第{{ m.episode }}集</span>
-          </div>
-        </div>
-      </div>
-    </el-dialog>
+    <!-- 播放列表连播弹窗（与「我的喜好」页共用同一组件） -->
+    <SeriesPlayerDialog
+      v-model="playerVisible"
+      v-model:playIndex="playIndex"
+      :playlist="playlist"
+      :series-name="current?.series || selected?.name || ''"
+      @video-error="onVideoError" />
   </div>
 </template>
 
@@ -146,6 +127,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getAnimeSeries, getAnimeSeriesMovies, getAnimeMakers, toggleAnimeFavoriteSeries } from '@/api/anime'
+import SeriesPlayerDialog from '@/components/SeriesPlayerDialog.vue'
+import { vCoverFit, COVER_AR } from '@/utils/coverFit'
 
 const route = useRoute()
 const router = useRouter()
@@ -254,9 +237,6 @@ async function loadFilters() {
 function onCoverError(e) {
   e.target.style.visibility = 'hidden'
 }
-function onVideoError() {
-  ElMessage?.error?.('视频加载失败，请确认服务器已挂载该目录')
-}
 
 // ===== 年份时间线 =====
 function yearOf(m) {
@@ -303,41 +283,21 @@ async function playSeriesFromList(s) {
     selected.value = s
     episodes.value = items
     epTotal.value = res.total || items.length
-    playlist.value = items.slice()
-    playIndex.value = 0
-    playerVisible.value = true
+    playSeries(items)
   } catch (e) {
     ElMessage?.error?.('加载系列失败：' + (e?.message || e))
   } finally {
     playLoadingId.value = null
   }
 }
-function next() {
-  if (playIndex.value < playlist.value.length - 1) {
-    markPlayed(playIndex.value)
-    playIndex.value += 1
-  }
+// 用给定片单打开连播弹窗（从第 1 集开始）
+function playSeries(items) {
+  playlist.value = items.slice()
+  playIndex.value = 0
+  playerVisible.value = true
 }
-function prev() {
-  if (playIndex.value > 0) playIndex.value -= 1
-}
-function jumpTo(i) {
-  if (i >= 0 && i < playlist.value.length) playIndex.value = i
-}
-function onEnded() {
-  markPlayed(playIndex.value)
-  if (playIndex.value < playlist.value.length - 1) {
-    playIndex.value += 1   // 自动连播下一集
-  } else {
-    ElMessage?.success?.('本系列播放完毕')
-  }
-}
-function markPlayed(i) {
-  const m = playlist.value[i]
-  if (m) m._played = true
-}
-function closePlayer() {
-  playerVisible.value = false
+function onVideoError() {
+  ElMessage?.error?.('视频加载失败，请确认服务器已挂载该目录')
 }
 
 onMounted(() => { loadFilters(); load() })
@@ -352,8 +312,8 @@ onMounted(() => { loadFilters(); load() })
 .series-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 18px; }
 .series-card { cursor: pointer; border-radius: 12px; overflow: hidden; background: var(--el-bg-color-overlay,#fff); transition: transform .2s, box-shadow .2s; }
 .series-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
-.s-cover { position: relative; aspect-ratio: 16/10; background: #2a2a35; display:flex; align-items:center; justify-content:center; }
-.s-cover img { max-width:100%; max-height:100%; object-fit: cover; }
+.s-cover { position: relative; /* 3:4 = 里番封面原生比例（实测 93% 落此区间），16:10 会裁掉大半画面 */ aspect-ratio: 3/4; background: #2a2a35; display:flex; align-items:center; justify-content:center; overflow: hidden; }
+.s-cover img { width:100%; height:100%; object-fit: cover; }
 .s-count { position:absolute; bottom:8px; right:8px; background: rgba(0,0,0,.6); color:#fff; font-size:12px; padding:2px 8px; border-radius:10px; }
 .s-play {
   position: absolute; bottom:8px; left:8px; width:38px; height:38px; border-radius:50%;
@@ -391,25 +351,5 @@ onMounted(() => { loadFilters(); load() })
 .tag { font-size:11px; padding:1px 7px; border-radius:8px; background: rgba(0,0,0,.06); }
 .tag.maker { background: rgba(240,110,201,.15); color:#d24bb0; }
 .tag.series { background: rgba(179,127,235,.15); color:#8a4fd0; }
-/* 连播弹窗 */
-.player-wrap { display:flex; gap:16px; align-items:flex-start; }
-.player-main { flex: 1 1 auto; min-width:0; }
-.player-bar { display:flex; align-items:center; gap:12px; margin-top:10px; flex-wrap:wrap; }
-.player-bar .pos { font-size:14px; color: var(--el-text-color-secondary); min-width:48px; text-align:center; }
-.player-bar .now { font-size:13px; color: var(--el-text-color-secondary); margin-left:auto; }
-.player-meta { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
-.player-list { flex: 0 0 280px; max-height:62vh; overflow-y:auto; border-left:1px solid var(--el-border-color,#ebeef5); padding-left:14px; }
-.pl-head { font-size:13px; font-weight:600; margin-bottom:8px; color: var(--el-text-color-secondary); }
-.pl-item { display:flex; align-items:center; gap:8px; padding:6px 6px; border-radius:8px; cursor:pointer; }
-.pl-item:hover { background: rgba(0,0,0,.05); }
-.pl-item.active { background: rgba(179,127,235,.18); }
-.pl-idx { font-size:12px; color: var(--el-text-color-secondary); width:20px; text-align:right; flex:0 0 auto; }
-.pl-cover { width:34px; height:46px; object-fit:cover; border-radius:4px; background:#2a2a35; flex:0 0 auto; }
-.pl-title { font-size:13px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
-.pl-ep { font-size:11px; color:#b37feb; flex:0 0 auto; }
-.pl-item.watched .pl-title { color: var(--el-text-color-secondary); text-decoration: line-through; }
-@media (max-width: 860px) {
-  .player-wrap { flex-direction: column; }
-  .player-list { flex: 1 1 auto; max-height:40vh; border-left:none; border-top:1px solid var(--el-border-color,#ebeef5); padding-left:0; padding-top:12px; width:100%; }
-}
+/* 连播弹窗样式已抽到 @/components/SeriesPlayerDialog.vue（系列页与喜好页共用） */
 </style>

@@ -320,6 +320,40 @@
   background: linear-gradient(160deg, var(--cinema-2), var(--cinema-1));
 }
 
+/* ===== 封面自适应填充（防裁切）=====
+   由 utils/coverFit.js 的 fitCover() 在 img @load 时按实际比例打标：
+   - cover-contain：原图与容器比例差异过大，改 contain 完整显示，不裁切
+   - cover-blur   ：容器上铺同图的模糊放大版，填补 contain 留下的留白
+   实测 anime 封面 93% 是 3:4 竖版，横容器下裁切达 60%，必须走 contain。 */
+img.cover-contain {
+  object-fit: contain !important;
+}
+
+.cover-blur {
+  position: relative;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.cover-blur::before {
+  content: '';
+  position: absolute;
+  inset: -24px;
+  background-image: inherit;
+  background-size: cover;
+  background-position: center;
+  filter: blur(18px) brightness(0.42) saturate(1.15);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.cover-blur > img {
+  position: relative;
+  z-index: 1;
+}
+
 .poster-code {
   position: absolute;
   left: 6px;

@@ -86,7 +86,14 @@
           @keyup.enter="enterSeries(s)"
         >
           <div class="asc-cover">
-            <img v-if="s.coverUrl" :src="s.coverUrl" :alt="s.name" loading="lazy" @error="onImgErr" />
+            <img
+              v-if="s.coverUrl"
+              :src="s.coverUrl"
+              :alt="s.name"
+              loading="lazy"
+              v-cover-fit="COVER_AR.seriesAnime"
+              @error="onImgErr"
+            />
             <div v-else class="asc-fallback">📚</div>
             <span class="asc-count">{{ s.movie_count }} 集</span>
             <button class="asc-fav on" type="button" title="移出喜好" @click.stop="removeFav(s)">★</button>
@@ -124,7 +131,14 @@
           <div v-else class="fav-group-items">
             <div v-for="it in g.items" :key="it.id" class="fav-item" :title="it.entity_name || ''">
               <div class="fav-item-cover">
-                <img v-if="itemCover(it)" :src="itemCover(it)" alt="" loading="lazy" @error="onImgErr" />
+                <img
+                  v-if="itemCover(it)"
+                  :src="itemCover(it)"
+                  alt=""
+                  loading="lazy"
+                  v-cover-fit="COVER_AR.movieCard34"
+                  @error="onImgErr"
+                />
                 <span v-else class="fav-item-fallback">🎬</span>
                 <button class="fav-item-del" type="button" title="移出收藏" @click.stop="removeGroupItem(g, it)">✕</button>
               </div>
@@ -150,6 +164,7 @@ import { MODULES } from '@/stores/library'
 import { getAnimeFavoriteSeries, removeAnimeFavoriteSeries, getAnimeSeriesMovies } from '@/api/anime'
 import { getFavoriteGroups, getFavoriteItems, removeFavoriteItem } from '@/api'
 import { decorateMovies, normMedia, enrichStatus } from '@/utils/browse'
+import { vCoverFit, COVER_AR } from '@/utils/coverFit'
 
 const router = useRouter()
 const lib = useLibraryStore()
@@ -336,7 +351,7 @@ onActivated(() => {
   border-color: var(--brand);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
 }
-.asc-cover { position: relative; aspect-ratio: 16 / 9; background: var(--cinema-2); display: flex; align-items: center; justify-content: center; }
+.asc-cover { position: relative; /* 3:4 = 里番封面原生比例，16:9 会裁掉 60% 画面 */ aspect-ratio: 3 / 4; background: var(--cinema-2); display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .asc-cover img { width: 100%; height: 100%; object-fit: cover; }
 .asc-fallback { font-size: 40px; opacity: 0.4; }
 .asc-count { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; padding: 1px 9px; border-radius: 999px; }
@@ -359,7 +374,7 @@ onActivated(() => {
 .fav-group-empty { font-size: 12px; color: var(--text-3); padding: 8px 0; }
 .fav-group-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 .fav-item { border-radius: 10px; overflow: hidden; background: var(--cinema-1); border: 1px solid var(--cinema-line); }
-.fav-item-cover { position: relative; aspect-ratio: 3 / 4; background: var(--cinema-2); display: flex; align-items: center; justify-content: center; }
+.fav-item-cover { position: relative; aspect-ratio: 3 / 4; background: var(--cinema-2); display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .fav-item-cover img { width: 100%; height: 100%; object-fit: cover; }
 .fav-item-fallback { font-size: 28px; opacity: .4; }
 .fav-item-del {
