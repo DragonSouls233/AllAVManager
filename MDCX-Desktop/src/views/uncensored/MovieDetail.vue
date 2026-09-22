@@ -24,6 +24,11 @@
         </el-descriptions>
         <div v-if="movie.plot" class="desc"><h3>简介</h3><p>{{ movie.plot }}</p></div>
         <div v-if="movie.genre" class="tags-section"><el-tag type="info">{{ movie.genre }}</el-tag></div>
+        <div v-if="hasVersionBadge" class="version-badges">
+          <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
+          <el-tag v-if="movie.is_4k" size="small" type="warning" effect="dark">4K</el-tag>
+          <el-tag v-if="movie.is_chinese" size="small" type="warning" effect="dark">中文</el-tag>
+        </div>
         <div class="action-bar">
           <el-button size="small" type="warning" :loading="scraping" @click="startScrape">
             <el-icon><Refresh /></el-icon> 刮削补充
@@ -52,6 +57,9 @@ const loading = ref(true)
 const scraping = ref(false)
 const coverSrc = computed(() => getCoverSrc(movie.value))
 const canPlay = computed(() => movie.value && movie.value.file_path)
+const hasVersionBadge = computed(() =>
+  movie.value && (movie.value.is_leak || movie.value.is_4k || movie.value.is_chinese)
+)
 
 function goBack() { router.push('/uncensored') }
 function play() {
@@ -95,5 +103,6 @@ onMounted(async () => {
 .desc h3 { font-size: 14px; margin-bottom: 8px; }
 .desc p { line-height: 1.6; color: #666; font-size: 13px; }
 .tags-section { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+.version-badges { margin-top: 8px; display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .action-bar { margin-top: 20px; display: flex; gap: 8px; }
 </style>

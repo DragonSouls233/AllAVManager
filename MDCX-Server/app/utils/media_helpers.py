@@ -10,8 +10,29 @@ import shutil
 import threading
 from pathlib import Path
 from typing import Optional, Set
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+# 这些无码站封面 CDN 带外站 Referer 反而返回 403，不带 Referer 才 200
+# （参考 neoavdc imageDownloader.ts: aventertainments/Kin8tream 无码封面 CDN）。
+# 命中时 download_image_to_local 跳过 Referer，避免封面下载失败。
+_NO_REFERER_HOSTS: Set[str] = {
+    "kin8tengoku.com",
+    "smovie.kin8tengoku.com",
+    "kin8.com",
+    "aventertainments.com",
+    "www.aventertainments.com",
+}
+
+
+def _is_no_referer_host(url: str) -> bool:
+    """目标图片 host 是否属于「不送 Referer」的 CDN。"""
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _NO_REFERER_HOSTS)
 
 
 def path_reachable(p: str, timeout: float = 1.0) -> bool:
@@ -633,7 +654,9 @@ async def download_image_to_local(
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
-        if referer:
+        # 部分无码站封面 CDN（Kin8tengoku/aventertainments 等）带外站 Referer 反而返回 403，
+        # 不带 Referer 才返回 200（参考 neoavdc imageDownloader.ts）。这些 host 跳过 Referer。
+        if referer and not _is_no_referer_host(url):
             headers["Referer"] = referer
 
         # 走项目统一 HTTP 通道：内部带 socks5 代理（xray）+ curl_cffi 浏览器指纹 + 重试。

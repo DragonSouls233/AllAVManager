@@ -195,14 +195,28 @@ class DeepLTranslator(BaseTranslator):
         self.config = config
         self.api_key = config.api_key
         self.api_base = config.api_base or "https://api-free.deepl.com/v2"
-    
+        # 移植自上游 ee1823c：付费 API 强制使用最优模型 quality_optimized；
+        # DeepL 免费 API(api-free 端点)不支持 model_type 参数，传了会返回 400，故仅在付费端点启用。
+        self._deepl_model_type = "quality_optimized" if "api-free" not in self.api_base else None
+
+    def _deepl_payload(self, texts: list[str]) -> dict:
+        """构造 DeepL 请求体（付费端点追加最优模型参数）。"""
+        payload = {
+            "text": texts,
+            "source_lang": self.config.source_lang.upper(),
+            "target_lang": self.config.target_lang.upper(),
+        }
+        if self._deepl_model_type:
+            payload["model_type"] = self._deepl_model_type
+        return payload
+
     async def translate(self, text: str) -> Optional[str]:
         """翻译文本"""
         if not text or not self.api_key:
             return None
-        
+
         import httpx
-        
+
         try:
             async with httpx.AsyncClient(timeout=self.config.timeout) as client:
                 response = await client.post(
@@ -211,28 +225,24 @@ class DeepLTranslator(BaseTranslator):
                         "Authorization": f"DeepL-Auth-Key {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "text": [text],
-                        "source_lang": self.config.source_lang.upper(),
-                        "target_lang": self.config.target_lang.upper(),
-                    },
+                    json=self._deepl_payload([text]),
                 )
                 response.raise_for_status()
                 data = response.json()
-                
+
                 return data["translations"][0]["text"]
-        
+
         except Exception as e:
             logger.error(f"DeepL translate error: {e}")
             return None
-    
+
     async def translate_batch(self, texts: list[str]) -> list[Optional[str]]:
         """批量翻译"""
         if not texts or not self.api_key:
             return [None] * len(texts)
-        
+
         import httpx
-        
+
         try:
             async with httpx.AsyncClient(timeout=self.config.timeout) as client:
                 response = await client.post(
@@ -241,17 +251,13 @@ class DeepLTranslator(BaseTranslator):
                         "Authorization": f"DeepL-Auth-Key {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "text": texts,
-                        "source_lang": self.config.source_lang.upper(),
-                        "target_lang": self.config.target_lang.upper(),
-                    },
+                    json=self._deepl_payload(texts),
                 )
                 response.raise_for_status()
                 data = response.json()
-                
+
                 return [t["text"] for t in data["translations"]]
-        
+
         except Exception as e:
             logger.error(f"DeepL batch translate error: {e}")
             return [None] * len(texts)

@@ -43,6 +43,9 @@ from app.crawlers import uncensored, uncensored_detail
 from app.crawlers import fc2_extended, fc2_extended_detail
 from app.crawlers import fc2_enhanced
 
+# FC2 JavBus 补全爬虫（演员/高清封面，多源合并一员；参考 ref107-garage javbus 解析）
+from app.crawlers import fc2_javbus
+
 # 导入欧美刮削器（Vixen / NaughtyAmerica / AdultTime / AyloAPI / Aggregate / Stash）
 from app.crawlers.western import vixen_network, naughtyamerica, adulttime, aylo_api, theporndb
 from app.crawlers import western_aggregate

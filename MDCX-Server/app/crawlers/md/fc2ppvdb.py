@@ -7,6 +7,7 @@ FC2PPVDB 爬虫 - 从 MDCX 迁移
 import logging
 import re
 import time
+from http.cookies import SimpleCookie
 from typing import Optional
 
 import aiohttp
@@ -61,16 +62,31 @@ def get_video_url(data):  # 获取视频URL
     #     return f"https://example.com/videos/{video_id}.mp4"
     return ""
 
-def get_video_time(data):  # 获取视频时长
-    return data.get("article", {}).get("duration", "")
+def get_video_time(data):  # 获取视频时长（上游统一为分钟，与库内其它模块一致）
+    duration = str(data.get("article", {}).get("duration", "")).strip()
+    if not duration:
+        return ""
+    temp_list = duration.split(":")
+    if len(temp_list) == 3:
+        hours, minutes, seconds = temp_list
+        try:
+            total_minutes = int(hours) * 60 + int(minutes)
+            if total_minutes == 0 and int(seconds) > 0:
+                return "1"
+            return str(total_minutes)
+        except ValueError:
+            return duration
+    if len(temp_list) <= 2 and temp_list[0].isdigit():
+        return str(int(temp_list[0]))
+    return duration
 
-def cookie_str_to_dict(cookie_str: str) -> dict:  # cookie 转为字典
-    cookies = {}
-    for item in cookie_str.split("; "):
-        if "=" in item:
-            key, value = item.split("=", 1)
-            cookies[key] = value
-    return cookies
+def cookie_str_to_dict(cookie_str: str) -> dict:  # cookie 转为字典（用 SimpleCookie 解析，兼容带引号/特殊字符的 value）
+    cookie = SimpleCookie()
+    try:
+        cookie.load(cookie_str)
+    except Exception:
+        return {}
+    return {key: morsel.value for key, morsel in cookie.items()}
 
 async def main(
     number,
@@ -96,33 +112,46 @@ async def main(
         debug_info = f"番号地址: {real_url}"
         LogBuffer.info().write(web_info + debug_info)
         # ========================================================================番号详情页
-        # 创建 session
         # 使用独立的 fc2ppvdb cookie
         from app.utils.cookie_manager import get_cookie
         cookie_str = get_cookie("fc2ppvdb") or ""
         cookies = cookie_str_to_dict(cookie_str)
-        if manager.config.use_proxy:
-            proxies = {
-                "http": manager.config.proxy,
-                "https": manager.config.proxy,
-            }
-        else:
-            proxies = None
+        base_url = "https://fc2cmadb.com"
+        proxies = {"http": manager.config.proxy, "https": manager.config.proxy} if manager.config.use_proxy else None
+        proxy = proxies["http"] if proxies else None
         # aiohttp 新版 API：ClientSession + request 级 proxy（旧版 AsyncSession/proxies 已移除）
+        # 同一 session 的 cookie jar 会在两次请求间保持，先访问详情页可让站点接受独立 cookie（warmup）
         async with aiohttp.ClientSession(cookies=cookies) as session:
-            proxy = proxies["http"] if proxies else None
-            url_article = f"https://fc2cmadb.com/articles/{number}"
+            # 1) 先访问详情页，让站点接受配置中的独立 cookie
+            url_article = f"{base_url}/articles/{number}"
             response_article = await session.get(url_article, proxy=proxy)
             if response_article.status != 200:
                 raise Exception(f"详情页请求失败: {response_article.status}")
+            # 详情页跳转到登录页，说明 cookie 未生效/已过期
+            if "/login" in str(response_article.url):
+                response_article.close()
+                raise Exception("详情页跳转到登录页，fc2ppvdb Cookie 可能无效或已过期")
             response_article.close()
 
-            xhr_url = f"https://fc2cmadb.com/articles/article-info?videoid={number}"
-            response_xhr = await session.get(xhr_url, proxy=proxy)
+            # 2) 再访问 XHR 接口获取 JSON 数据（带 XHR 头，模拟页面内请求）
+            xhr_url = f"{base_url}/articles/article-info?videoid={number}"
+            xhr_headers = {
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": url_article,
+                "X-Requested-With": "XMLHttpRequest",
+            }
+            response_xhr = await session.get(xhr_url, proxy=proxy, headers=xhr_headers)
             if response_xhr.status != 200:
                 raise Exception(f"XHR 请求失败: {response_xhr.status}")
-
-            html_info = await response_xhr.json()
+            try:
+                html_info = await response_xhr.json()
+            except Exception as e:
+                text = await response_xhr.text()
+                text_preview = " ".join(text.strip().split())[:120]
+                # 接口返回登录页/HTML 而非 JSON，通常是 cookie 失效
+                if "login" in text.lower() or text.lstrip().startswith("<!DOCTYPE html"):
+                    raise Exception(f"XHR 返回登录页/HTML（cookie 可能失效）：{text_preview}")
+                raise Exception(f"XHR 返回内容不是有效 JSON: {e}；响应摘要={text_preview}")
             response_xhr.close()
 
         title = get_title(html_info)

@@ -130,6 +130,10 @@ def detect_version_flags(file_name: str) -> dict:
         flags["is_uncensored"] = True
         flags["is_leak"] = True
 
+    # restored（无码修复版）识别为无码破解，但不视为流出(leak)  # 移植自 mdcx core/file.py acaf244
+    if "restored" in low:
+        flags["is_uncensored"] = True
+
     if "4k" in low or "uhd" in low:
         flags["is_4k"] = True
 

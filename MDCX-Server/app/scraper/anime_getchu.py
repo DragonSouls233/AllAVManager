@@ -251,13 +251,18 @@ class AnimeGetchuScraper:
             return None
 
     async def _scrape_impl(self, code, title, maker) -> dict | None:
-        # 1) 检索：番号优先 → 失败回退「制作商+标题」（成熟度：小众品牌如 DBLG 无番号收录）
-        candidates: list[tuple[str, str]] = []
-        if code:
-            candidates = await self._search_candidates(code, title_hint=title)
-        if not candidates and title:
-            keyword = (maker or "") + " " + title if maker else title
-            candidates = await self._search_candidates(keyword, title_hint=title)
+        # 1) 检索：番号优先 → 失败回退「制作商+标题」
+        # GETCHU-XXXX 是 dl.getchu.com 专属番号前缀（主站搜不到），直接走 dl 直链（对齐上游 90b0b06）
+        m = re.match(r"^GETCHU-?(\d+)$", (code or ""), re.IGNORECASE)
+        if m:
+            candidates = [(f"https://dl.getchu.com/i/item{m.group(1)}", code or "")]
+        else:
+            candidates: list[tuple[str, str]] = []
+            if code:
+                candidates = await self._search_candidates(code, title_hint=title)
+            if not candidates and title:
+                keyword = (maker or "") + " " + title if maker else title
+                candidates = await self._search_candidates(keyword, title_hint=title)
         if not candidates:
             return None
 
@@ -284,6 +289,12 @@ class AnimeGetchuScraper:
 
         g_title = get_title(html)
         if not g_title:
+            # dl.getchu.com 直链场景（GETCHU-XXXX 等）：www.getchu 选择器取不到标题时，
+            # 用 dl 结构化解析主导（对齐上游 90b0b06）
+            if "dl.getchu.com" in real_url:
+                dl_meta = await self._parse_dl_detail(html, real_url, code, title, maker)
+                if dl_meta:
+                    return dl_meta
             return None
 
         # 结果校验：番号检索看品番/标题，标题检索看重合（不再盲目信任）
@@ -348,6 +359,49 @@ class AnimeGetchuScraper:
             "preview_urls": preview_urls,
             "source_url": real_url,
             "code": web_number or code,
+        }
+
+    async def _parse_dl_detail(self, html, real_url, code, title, maker) -> dict | None:
+        """dl.getchu.com 商品页主导解析（GETCHU-XXXX 直链场景，对齐上游 90b0b06）。
+
+        复用 _parse_dl_getchu 的结构化字段；www.getchu 选择器取不到标题时回退到此。
+        Returns: 与 _scrape_detail 同构的元数据 dict，或 None。
+        """
+        meta = _parse_dl_getchu(html)
+        dl_title = (meta.get("title") or "").strip()
+        if not dl_title:
+            return None
+        # 结果校验：GETCHU 直链由 code 构造 URL 直接信任；其余按品番/标题重合
+        if code and code.upper().startswith("GETCHU"):
+            ok = True
+        elif code:
+            web_number = get_web_number(html, "").upper().replace("-", "")
+            code_n = code.upper().replace("-", "")
+            ok = bool(web_number) and web_number == code_n
+        else:
+            nh = re.sub(r"[ \[\]\［\］]+", "", title or "")
+            ok = bool(nh) and (nh[:4] in dl_title or dl_title[:4] in nh)
+        if not ok:
+            return None
+        item_id = re.search(r"/item/?(\d+)", real_url)
+        preview_urls = list(meta.get("preview_urls", []))
+        release = meta.get("release_date") or ""
+        year = release[:4] if release[:4].isdigit() else ""
+        return {
+            "title": dl_title,
+            "maker": meta.get("maker", "") or "",
+            "studio": meta.get("maker", "") or "",
+            "release_date": release or None,
+            "year": int(year) if year.isdigit() else None,
+            "runtime": None,
+            "genre": meta.get("genre", []) or [],
+            "plot": meta.get("plot", "") or "",
+            "director": None,
+            "series": "",
+            "cover_url": meta.get("cover_url") or None,
+            "preview_urls": preview_urls,
+            "source_url": real_url,
+            "code": code or "",
         }
 
     def _parse_preview_images(self, html, item_id: str) -> list[str]:

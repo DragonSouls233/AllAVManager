@@ -1,14 +1,20 @@
 """
 国产模块聚合爬虫 — 一站覆盖所有国产站点。
 
-数据源：
-1. ModelMediaAsia 官方 API — 麻豆传媒官方 JSON API (最高优先级)
+数据源（按优先级）：
+1. ModelMediaAsia 官方 API — 麻豆传媒官方 JSON API（演员/封面/时长/样图最全）
 2. HDouban API — 通用国产番号元数据 API
-3. CNMDB — 国产片数据库
+3. CNMDB — 国产片数据库兜底
 
-使用方式：
+本文件同时提供：
+- ``ChineseAggregateScraper``：底层搜索 worker（可被复用）
+- ``ChineseAggregateCrawler``：注册到全局 CrawlerProvider 的爬虫，
+  engine 在 module="chinese" 时会自动选用，优先级 VERY_HIGH，
+  失败时（三个源都拿不到数据）返回 None，由引擎回退到 madou/haijiao/91porn。
+
+使用方式（直接调用）：
   crawler = ChineseAggregateCrawler()
-  result = await crawler.search(keyword, studio=None)
+  result = await crawler.scrape("MD-0213")
 """
 
 import asyncio
@@ -16,14 +22,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 import httpx
 
 from app.crawlers.base import ActorInfo, BaseCrawler, CrawlerPriority, ScrapeResult
 from app.crawlers.provider import register_crawler
-from app.services.proxy_manager import get_effective_proxy_url
-from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -110,6 +115,19 @@ def _extract_actors(text: str) -> list[str]:
         if actor in text:
             found.append(actor)
     return found
+
+
+def _parse_date(s: str) -> Optional[date]:
+    """把 'YYYY-MM-DD' / 'YYYY/MM/DD' / 带时间的字符串解析为 date。"""
+    if not s:
+        return None
+    s = s.strip().replace("T", " ").split(" ")[0]
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return date(*map(int, s.replace("/", "-").replace(".", "-").split("-")[:3]))
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +320,7 @@ async def _search_cnmdb(code: str, client: httpx.AsyncClient) -> Optional[Chines
 
 
 # ---------------------------------------------------------------------------
-# 聚合爬虫类
+# 聚合搜索器
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +333,8 @@ class ChineseAggregateScraper:
     async def search(self, code: str) -> Optional[ChineseVideoInfo]:
         """搜索国产视频信息。
 
-        优先级: ModelMediaAsia API → HDouban API → CNMDB → 纯番号推测
+        优先级: ModelMediaAsia API → HDouban API → CNMDB。
+        三源都拿不到真实标题时返回 None（不猜测），由上层引擎回退到其他爬虫。
         """
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -344,17 +363,8 @@ class ChineseAggregateScraper:
                 logger.info("chinese search %s: found via cnmdb", code)
                 return result
 
-        # 4. 纯番号猜测
-        studio = _guess_studio(code)
-        actors = _extract_actors(code)
-        logger.info("chinese search %s: no data source found, using guess only", code)
-        return ChineseVideoInfo(
-            code=code,
-            title=code,
-            actors=actors,
-            studio=studio,
-            source="guess",
-        )
+        logger.info("chinese search %s: no data source found", code)
+        return None
 
     async def search_actor(self, actor_name: str) -> list[ChineseVideoInfo]:
         """搜索某个演员的全部作品（从 HDouban 搜索）。"""
@@ -392,28 +402,61 @@ class ChineseAggregateScraper:
         return results
 
 
-async def scrape_chinese(code: str) -> Optional[ScrapeResult]:
-    """国产刮削入口 — 供 scraper/engine.py 调用。"""
-    from app.services.proxy_manager import get_effective_proxy_url
+# ---------------------------------------------------------------------------
+# 注册到 CrawlerProvider 的爬虫
+# ---------------------------------------------------------------------------
 
-    proxy = get_effective_proxy_url()
 
-    scraper = ChineseAggregateScraper(proxy=proxy)
-    info = await scraper.search(code)
-    if not info:
-        return None
-
+def _to_scrape_result(info: ChineseVideoInfo) -> ScrapeResult:
+    """把 ChineseVideoInfo 转成统一的 ScrapeResult。"""
     result = ScrapeResult()
-    result.title = info.title
     result.code = info.code
-    result.studio = info.studio
-    result.cover_url = info.cover_url
-    result.poster_url = info.poster_url
-    result.release_date = info.release_date
-    result.duration = info.duration
-    result.plot = info.plot
-    result.genres = info.genres
-    result.actors = [ActorInfo(name=a) for a in info.actors]
+    result.title = info.title
     result.source = info.source
     result.source_url = info.code
+    result.studio = info.studio or None
+    result.cover_url = info.cover_url or None
+    result.poster_url = info.poster_url or None
+    result.release_date = _parse_date(info.release_date)
+    result.duration = info.duration or None
+    result.plot = info.plot or None
+    result.genres = [g for g in info.genres if g]
+    result.actors = [ActorInfo(name=a) for a in info.actors if a]
+    result.sample_images = [s for s in info.sample_images if s]
     return result
+
+
+@register_crawler
+class ChineseAggregateCrawler(BaseCrawler):
+    """国产聚合爬虫 — 麻豆官方 API / HDouban / CNMDB 一站覆盖。
+
+    注册为 chinese 模块爬虫，优先级 VERY_HIGH：engine 在
+    module="chinese" 时优先选用本源（演员/封面/时长/样图最全），
+    失败时（三源无数据）返回 None，由引擎回退到 madou/haijiao/91porn。
+    """
+
+    name = "chinese_aggregate"
+    display_name = "国产聚合(麻豆官方/HDouban/CNMDB)"
+    base_url = "https://model-api.bvncmsldo.com"
+
+    priority = CrawlerPriority.VERY_HIGH
+    supported_types = ["chinese"]
+    description = "国产番号聚合：麻豆官方API → HDouban → CNMDB"
+    language = "zh"
+    requires_proxy = True
+
+    async def scrape(
+        self,
+        code: str,
+        ctx=None,
+    ) -> Optional[ScrapeResult]:
+        scraper = ChineseAggregateScraper(proxy=self._proxy)
+        info = await scraper.search(code)
+        if not info or not info.title:
+            return None
+        return _to_scrape_result(info)
+
+    async def search(self, keyword: str) -> list[ScrapeResult]:
+        scraper = ChineseAggregateScraper(proxy=self._proxy)
+        infos = await scraper.search_actor(keyword)
+        return [_to_scrape_result(i) for i in infos if i and i.title]

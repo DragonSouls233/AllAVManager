@@ -4,7 +4,7 @@
 
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request as _Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request as _Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from app.services.chinese_rename_service import get_rules, update_rules, clean_t
 import os as _os
 from pathlib import Path as _Path
 import logging as _logging
+import json
 logger = _logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chinese", tags=["国产模块"])
@@ -292,6 +293,188 @@ async def get_movie(movie_id: int):
         }
     finally:
         await session.close()
+
+
+# ========== 刮削端点 ==========
+
+
+async def _persist_chinese_scrape(db, movie_id: int, sr) -> None:
+    """把刮削结果写入 chinese 库（影片/演员/媒体/样图/NFO）。
+
+    与 fc2/uncensored 模块保持一致：封面/头像下载到本地、样图存 JSON、
+    演员写入 actors + movie_actors 关联表、回写 NFO（失败不阻断）。
+    """
+    from app.db.chinese_models import ChineseMovie, ChineseActor, MovieActor
+    from sqlalchemy import select
+    from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+    from app.output.nfo import NFOGenerator
+
+    session = await db.get_session()
+    try:
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        mv = (await session.execute(stmt)).scalar_one_or_none()
+        if not mv:
+            return
+
+        mv.title = sr.title
+        if sr.original_title:
+            mv.original_title = sr.original_title
+        if sr.release_date:
+            mv.release_date = str(sr.release_date)
+        if sr.duration:
+            mv.duration = sr.duration
+        if sr.rating:
+            mv.rating = sr.rating
+        if sr.plot:
+            mv.plot = sr.plot
+        if sr.studio:
+            mv.studio = sr.studio
+        if sr.maker:
+            mv.maker = sr.maker
+        if sr.director:
+            mv.director = sr.director
+        if sr.series:
+            mv.series = sr.series
+        if sr.genres:
+            mv.genre = ",".join(sr.genres)
+        if sr.tags:
+            mv.tag = ",".join(sr.tags)
+
+        # ── 资源下载：远程封面/预览图下载到本地 ──
+        local_media = await ensure_movie_media_local(
+            module_name="chinese", code=mv.code,
+            cover_url=sr.cover_url,
+            fanart_url=sr.poster_url or sr.cover_url,
+            thumb_url=sr.sample_images[0] if sr.sample_images else sr.thumb_url,
+            referer=sr.cover_url,
+        )
+        if local_media.get("cover"):
+            mv.cover_url = local_media["cover"]
+        elif sr.cover_url:
+            mv.cover_url = sr.cover_url
+        if local_media.get("fanart"):
+            mv.poster_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            mv.thumb_url = local_media["thumb"]
+        # 样图/剧照存 JSON 列表（与 NFO 解析器兼容）
+        if sr.sample_images:
+            mv.sample_images = json.dumps(sr.sample_images, ensure_ascii=False)
+
+        # ── 演员：写入 actors 表 + movie_actors 关联表 ──
+        if sr.actors:
+            mv.actor = ",".join(a.name for a in sr.actors)
+            for ai in sr.actors:
+                ex = await session.execute(select(ChineseActor).where(ChineseActor.name == ai.name))
+                existing = ex.scalar_one_or_none()
+                if not existing:
+                    local_avatar = None
+                    try:
+                        local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                    except Exception as ae:
+                        logger.warning("chinese actor avatar download failed for %s: %s", ai.name, ae)
+                    session.add(ChineseActor(
+                        name=ai.name,
+                        avatar_url=local_avatar or ai.avatar_url,
+                        source="scraper",
+                        source_site=sr.source,
+                        movie_count=1,
+                    ))
+            await session.flush()
+            try:
+                old_ma = (await session.execute(
+                    select(MovieActor).where(MovieActor.movie_id == mv.id)
+                )).scalars().all()
+                for row in old_ma:
+                    await session.delete(row)
+                for ai in sr.actors:
+                    ex2 = await session.execute(select(ChineseActor).where(ChineseActor.name == ai.name))
+                    db_a = ex2.scalar_one_or_none()
+                    if db_a:
+                        session.add(MovieActor(movie_id=mv.id, actor_id=db_a.id))
+            except Exception as ae:
+                logger.warning("chinese 写入 actor 关联失败 [%s]: %s", mv.code, ae)
+
+        mv.source = sr.source or "scraper"
+        if sr.source_url:
+            mv.source_url = sr.source_url
+        mv.status = "scraped"
+        await session.commit()
+
+        # ── NFO 生成（回写到影片所在目录，失败不阻断）──
+        try:
+            out_dir = (
+                str(mv.output_dir) if getattr(mv, "output_dir", None)
+                else (str(_Path(mv.file_path).parent) if mv.file_path else "")
+            )
+            if out_dir:
+                gen = NFOGenerator(output_dir=out_dir)
+                actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                gen.generate_from_movie(
+                    movie=mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                )
+        except Exception as nfo_err:
+            logger.warning("chinese NFO 生成失败 [%s]: %s", movie_id, nfo_err)
+    finally:
+        await session.close()
+
+
+@router.post("/movies/{movie_id}/scrape")
+async def scrape_chinese_movie(movie_id: int):
+    """刮削指定国产影片的元数据"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        movie = (await session.execute(stmt)).scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+    finally:
+        await session.close()
+
+    from app.scraper.engine import get_scraper_engine
+    engine = get_scraper_engine()
+    sr = await engine.scrape_number(movie.code, module="chinese")
+    if not sr or not sr.title:
+        return {"status": "error", "message": f"刮削失败: 未找到 {movie.code} 的数据"}
+
+    await _persist_chinese_scrape(db, movie_id, sr)
+    return {"status": "ok", "message": f"刮削成功: {sr.title}"}
+
+
+@router.post("/movies/scrape-all-pending")
+async def scrape_all_pending_chinese(background_tasks: BackgroundTasks):
+    """后台批量刮削所有 status=pending 的国产影片"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+        stmt = select(ChineseMovie).where(ChineseMovie.status == "pending").order_by(ChineseMovie.id.desc())
+        pending = (await session.execute(stmt)).scalars().all()
+    finally:
+        await session.close()
+
+    if not pending:
+        return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
+
+    targets = [(m.id, m.code) for m in pending]
+
+    async def _run():
+        from app.scraper.engine import get_scraper_engine
+        engine = get_scraper_engine()
+        local_db = get_chinese_db()
+        for mid, code in targets:
+            try:
+                sr = await engine.scrape_number(code, module="chinese")
+                if sr and sr.title:
+                    await _persist_chinese_scrape(local_db, mid, sr)
+            except Exception as e:
+                logger.warning("chinese 批量刮削失败 [%s]: %s", code, e)
+
+    background_tasks.add_task(_run)
+    return {"status": "ok", "message": f"已加入后台刮削队列，共 {len(targets)} 部", "total": len(targets)}
 
 
 # ========== 封面端点（纯本地查找，不连外网） ==========

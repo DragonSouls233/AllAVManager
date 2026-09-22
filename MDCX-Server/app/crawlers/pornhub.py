@@ -49,6 +49,88 @@ NEXT_DATA_RE = re.compile(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
 # JS Challenge 检测（参考 eaf_base_api REGEX_CHALLENGE）
 _CHALLENGE_RE = re.compile(r'var p=(\d+); var s=(\d+);.*?(\d+):1;', re.DOTALL)
 
+
+# ===== PornHub JS 挑战解算器（移植自 lustpress/src/utils/ph-solver.ts）=====
+# PornHub 的 anti-bot 会在页面注入一段 function go(){...n=leastFactor(p);...}
+# 并据此下发 document.cookie="KEY=..."; 只有带上正确 KEY cookie 才能拿到真实页面。
+def _least_factor(n: int) -> int:
+    """PornHub 挑战 leastFactor 算法（与 lustpress 一致）"""
+    if n == 0:
+        return 0
+    if int(n) != n or n * n < 2:
+        return 1
+    if n % 2 == 0:
+        return 2
+    if n % 3 == 0:
+        return 3
+    if n % 5 == 0:
+        return 5
+    m = int(n ** 0.5)
+    i = 7
+    while i <= m:
+        if n % i == 0:
+            return i
+        if n % (i + 4) == 0:
+            return i + 4
+        if n % (i + 6) == 0:
+            return i + 6
+        if n % (i + 10) == 0:
+            return i + 10
+        if n % (i + 12) == 0:
+            return i + 12
+        if n % (i + 16) == 0:
+            return i + 16
+        if n % (i + 22) == 0:
+            return i + 22
+        if n % (i + 24) == 0:
+            return i + 24
+        i += 30
+    return n
+
+
+def solve_ph_challenge(html: str) -> Optional[str]:
+    """解出 PornHub JS 挑战的 KEY cookie 字符串（如 "KEY=10*12345:175:3:1"）
+
+    解不出返回 None。算法移植自 lustpress ph-solver.ts。
+    """
+    clean = re.sub(r"/\*[\s\S]*?\*/", "", html)  # 去注释，避免注释里出现干扰字符
+
+    pm = re.search(r"var p=(\d+);", clean)
+    sm = re.search(r"var s=(\d+);", clean)
+    em = re.search(r'document\.cookie="KEY="\+n\+"\*"\+p/n\+":"\+s\+":(\d+):1;path=/;";', clean)
+    if not pm or not sm or not em:
+        return None
+
+    p = int(pm.group(1))
+    s = int(sm.group(1))
+    extra = em.group(1)
+
+    go = re.search(r"function go\(\)\s*\{(.*?)n=leastFactor\(p\);", clean, re.DOTALL)
+    if go:
+        body = re.sub(r"\s+", "", go.group(1))
+        # 1) 处理 if((s>>shift)&1)p+=a*b;else p-=c*d; 块，并从 body 移除避免重复计算
+        ifelse = re.compile(r"if\(\(s>>(\d+)\)&1\)p([+-])=(\d+)\*(\d+);elsep([+-])=(\d+)\*(\d+);")
+        body_without_ifs = body
+        for m in ifelse.finditer(body):
+            shift = int(m.group(1))
+            cond = (s >> shift) & 1
+            if cond:
+                sign, a, b = m.group(2), int(m.group(3)), int(m.group(4))
+            else:
+                sign, a, b = m.group(5), int(m.group(6)), int(m.group(7))
+            p = p + a * b if sign == "+" else p - a * b
+            body_without_ifs = body_without_ifs.replace(m.group(0), "", 1)
+        # 2) 处理剩余 p+= / p-= 调整
+        for m in re.finditer(r"p([+-])=(\d+);", body_without_ifs):
+            sign, v = m.group(1), int(m.group(2))
+            p = p + v if sign == "+" else p - v
+
+    n = _least_factor(p)
+    if not n or n in (0, 1) or n != n:  # NaN 防护
+        n = p
+    return f"KEY={n}*{p // n}:{s}:{extra}:1"
+
+
 # 请求超时(秒)
 _REQ_TIMEOUT = 30
 # 最大重试次数
@@ -149,11 +231,13 @@ class PornhubCrawler(BaseCrawler):
 
         try:
             # 修复:添加重试机制,指数退避(参考 unofficial-api-for-pornhub tenacity 方案)
+            # 本地 cookie 副本:挑战解出后追加 KEY cookie,避免污染模块级 _PH_BASE_COOKIES
+            cookies = dict(_PH_BASE_COOKIES)
             last_error = None
             for attempt in range(1, _REQ_RETRIES + 1):
                 html_text = await client.get_text(
                     url,
-                    cookies=_PH_BASE_COOKIES,
+                    cookies=cookies,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; rv:115.0) Gecko/20100101 Firefox/115.0",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -170,7 +254,16 @@ class PornhubCrawler(BaseCrawler):
                 elif "Just a moment" in html_text or "cf-browser-verification" in html_text:
                     last_error = "Cloudflare"
                 elif _CHALLENGE_RE.search(html_text):
-                    last_error = "JS Challenge"
+                    # 修复(参考 lustpress ph-solver):解出 KEY cookie 后合并 age_verified 重抓
+                    solved = solve_ph_challenge(html_text)
+                    if solved:
+                        key_name, key_val = solved.split("=", 1)
+                        cookies[key_name] = key_val
+                        cookies["age_verified"] = "1"
+                        logger.info(f"PornHub JS 挑战已解出 [{viewkey}], 带 KEY cookie 重抓")
+                        last_error = None
+                        continue  # 用新 cookie 立即重抓,不计入失败
+                    last_error = "JS Challenge(解出失败)"
                 else:
                     break  # 成功获取
 

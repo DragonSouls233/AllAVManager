@@ -23,7 +23,7 @@ from typing import Optional
 # 匹配:uncensored / uncensor / uncen / uncensored-leaked / uncensored_leaked
 #      无码流出 / 无碼流出 / 无码破解 / 無碼破解
 _PATTERN_UNCENSORED = re.compile(
-    r'(uncen(sor(ed)?)?([- _\s]*leak(ed)?)?|[无無][码碼](流出|破解))',
+    r'(uncen(sor(ed)?)?([- _\s]*leak(ed)?)?|restored|[无無][码碼](流出|破解))',
     flags=re.I,
 )
 
@@ -73,8 +73,10 @@ def detect_special_attr(filepath: str, avid: Optional[str] = None) -> str:
     parts = base.split('-')
     if len(parts) > 1:
         postfix = parts[-1]
-        if postfix in ('U', 'C', 'UC', 'CU'):
-            result += postfix
+        # 去掉画质标记后缀(4K/8K/4KS/4K60FPS)，避免 U/UC 与 4K 连写时破解标记丢失  # 移植自 mdcx core/file.py 2639fe7
+        postfix_clean = re.sub(r'(?i)(4K60FPS|4KS|8K|4K)$', '', postfix)
+        if postfix_clean in ('U', 'C', 'UC', 'CU'):
+            result += postfix_clean
         elif avid:
             # 用番号精确匹配:番号 +(UC|U|C) 词边界
             # 借鉴 JavSP lib.py:64:re.sub(r'[_-]', '[_-]*', avid) 让 _ - 都能匹配
