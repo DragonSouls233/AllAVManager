@@ -91,7 +91,7 @@ LOGGING_CONFIG = {
         # ---- 文件 handler(追加模式 + 轮转, 崩溃现场不丢) ----
         "file": {
             "formatter": "plain",
-            "class": "logging.handlers.RotatingFileHandler",
+            "class": "app.utils.safe_log_handler.SafeRotatingFileHandler",
             "filename": _APP_LOG_PATH,
             "maxBytes": 5 * 1024 * 1024,
             "backupCount": 5,
@@ -101,7 +101,7 @@ LOGGING_CONFIG = {
         # ---- 错误单独成文件, 排查时优先看这个 ----
         "error_file": {
             "formatter": "plain",
-            "class": "logging.handlers.RotatingFileHandler",
+            "class": "app.utils.safe_log_handler.SafeRotatingFileHandler",
             "filename": _ERROR_LOG_PATH,
             "maxBytes": 5 * 1024 * 1024,
             "backupCount": 5,

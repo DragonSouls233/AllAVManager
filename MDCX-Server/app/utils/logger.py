@@ -102,41 +102,44 @@ def setup_logging(
     if log_file:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        # 2026-08-18: 复用 run.py bootstrap_logging() 早期挂上的同文件 handler,
-        # 避免两个 RotatingFileHandler 同时持锁导致 os.rename 互相 PermissionError
-        # (此前 startup.log 里出现过 4.2 万条 "另一个程序正在使用此文件")。
-        # _preserved 里的 handler 已经在上面 88-89 行重新 add 回 root 了,
-        # 这里只需要判定是否复用,不需要再 add 一次。
-        _bootstrap_reused = any(
-            getattr(_h, "baseFilename", None)
-            and Path(_h.baseFilename).resolve() == log_file.resolve()
-            for _h in _preserved
-        )
-        if not _bootstrap_reused:
-            file_handler = RotatingFileHandler(
+        # 2026-09-24 修复: 同进程内 app.log 可能被多个 RotatingFileHandler 同时持有
+        # (crash_logger.bootstrap_logging 的引导 handler / log_config dictConfig 的
+        # "file" handler / 本函数重建的 handler), 它们在 Windows 上轮转时
+        # os.rename 会互相 PermissionError(WinError 32), 导致每写一条日志就抛一次
+        # 完整堆栈(startup.log 实测 4.2 万+ 条)。这里按路径归并所有同路径 handler
+        # 为单实例, 仅在完全缺失时才新建 SafeRotatingFileHandler。
+        from app.utils.safe_log_handler import SafeRotatingFileHandler, dedupe_file_handlers
+
+        file_handler = dedupe_file_handlers(log_file)
+        if file_handler is None:
+            file_handler = SafeRotatingFileHandler(
                 log_file,
                 maxBytes=max_bytes,
                 backupCount=backup_count,
                 encoding="utf-8",
                 delay=True,
             )
-            file_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
-            file_handler.setFormatter(logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S"))
+        file_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S"))
+        if file_handler not in root_logger.handlers:
             root_logger.addHandler(file_handler)
 
     # 错误日志处理器(单独文件,仅 ERROR+)
     if error_log_file:
         error_log_file = Path(error_log_file)
         error_log_file.parent.mkdir(parents=True, exist_ok=True)
-        error_handler = RotatingFileHandler(
-            error_log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding="utf-8",
-        )
+        error_handler = dedupe_file_handlers(error_log_file)
+        if error_handler is None:
+            error_handler = SafeRotatingFileHandler(
+                error_log_file,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            )
         error_handler.setLevel(logging.ERROR)
         error_handler.setFormatter(logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S"))
-        root_logger.addHandler(error_handler)
+        if error_handler not in root_logger.handlers:
+            root_logger.addHandler(error_handler)
 
 
 def get_logger(name: str) -> logging.Logger:

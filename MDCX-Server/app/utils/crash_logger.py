@@ -54,6 +54,9 @@ _BOOTSTRAP_SIZE_CHECK_EVERY = 200
 _installed = False
 _log_dir: Optional[Path] = None
 _stderr_mirror: Optional[TextIO] = None
+# 登记 bootstrap_logging 创建的 handler，便于后续确定性关闭（防止被 dictConfig
+# 从 root 摘下后句柄残留、锁住 app.log 导致轮转失败）
+_bootstrap_handlers: list = []
 
 
 # =============================================================================
@@ -104,6 +107,11 @@ def get_log_dir() -> Path:
 
 def get_crash_log_path() -> Path:
     return get_log_dir() / CRASH_LOG_NAME
+
+
+def get_bootstrap_handlers() -> list:
+    """返回 bootstrap_logging() 创建过的所有 handler（可能已被 dictConfig 摘下）。"""
+    return list(_bootstrap_handlers)
 
 
 # =============================================================================
@@ -407,7 +415,10 @@ def bootstrap_logging(
             if getattr(h, "_mdcx_bootstrap", False):
                 return log_path
 
-        handler = RotatingFileHandler(
+        # 2026-09-24: 用 SafeRotatingFileHandler,轮转被占用时不刷屏
+        from app.utils.safe_log_handler import SafeRotatingFileHandler
+
+        handler = SafeRotatingFileHandler(
             log_path,
             maxBytes=max_bytes,
             backupCount=backup_count,
@@ -423,6 +434,10 @@ def bootstrap_logging(
         )
         handler._mdcx_bootstrap = True  # type: ignore[attr-defined]
         root.addHandler(handler)
+        try:
+            _bootstrap_handlers.append(handler)
+        except Exception:
+            pass
 
         logging.getLogger("mdcx.bootstrap").info(
             "=== 启动引导日志已就绪 (PID=%s, 日志目录=%s) ===", os.getpid(), log_dir
