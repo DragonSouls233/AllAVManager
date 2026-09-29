@@ -1,0 +1,69 @@
+MDCX-Server 更新包
+==================
+生成时间: 2026-09-29 08:11:07
+
+【重要】本次为正式源码交付，不是 .new 补丁。覆盖后请删除服务器上遗留的
+         *.new / *.new2 / *.new3 / *.bak 文件，以及 apply_*_fix.bat，避免混淆。
+
+一、拷贝方法（任选其一）
+------------------------
+方式 A（推荐，服务器上本机执行）：
+  把本目录的内容按同样的相对路径覆盖到 E:\MDCX-Server\
+  例如 robocopy：<本目录>  E:\MDCX-Server  /E /R:1 /W:1 /NFL /NDL
+
+方式 B（从本机挂载拷，可能遇到覆盖被拒）：
+  robocopy "<本目录>" "\\192.168.10.110\MDCX-Server" /E /R:1 /W:1
+  若个别文件 "访问被拒绝"，先在服务器上停掉 run.py 再试。
+
+二、拷贝后必须做的
+------------------
+1) 删除服务端 __pycache__（否则可能跑旧字节码）：
+     在 E:\MDCX-Server 下执行：
+       for /r %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d"
+     （在 .bat 里用 %%d，命令行直接执行则用 %%d -> %d）
+2) 重启 run.py
+
+三、本包修改清单
+----------------
+  - app/crawlers/base.py
+      ScrapeResult 新增 male_actors 字段
+  - app/crawlers/javdb.py
+      修复 javdb 男女演员 XPath（male 子串误匹配 / preceding-sibling 缺 [1]）；按页面原序输出演员
+  - app/utils/http_client.py
+      新增 post_json()（修 missav_api/md.hdouban 100% 失败）；401 加入免重试集合；POST 补确定性失败判定
+  - app/utils/actor_gender.py
+      【新增】女演员过滤 + 男演员名单持久化 data/male_actors.json
+  - app/output/images.py
+      新增 download_thumb()（此前从未下载 thumb.jpg，缺 989 部）
+  - app/output/nfo.py
+      NFO 不再写入男演员
+  - app/scraper/workflow.py
+      抽出 persist() 完整落盘链路；下载 thumb；补 output_dir/director/trailer/演员关联表
+  - app/scraper/engine.py
+      分层调度（高命中源先跑，结果完整即返回），并发 5→8
+  - app/api/routes/movies.py
+      入库前过滤男演员
+  - app/api/routes/jav_routes.py
+      批量刮削改走 workflow.persist()，不再只写元数据
+  - scripts/backfill_module_media.py
+      存量补齐 封面/背景/缩略图/预览图组/NFO（report-first，需 --apply）
+  - scripts/clean_actors.py
+      存量演员库清理：垃圾名 + 男演员（report-first，需 --apply）
+  - scripts/scan_crawler_api.py
+      【新增】静态扫描爬虫是否调用了不存在的 AsyncHttpClient 方法
+  - scripts/deploy_sync.py
+      【新增】源码→服务器同步（report-first，需 --apply）
+
+四、上线后可执行（都要先看只读报告，确认后再加 --apply）
+------------------------------------------------------
+python scripts\backfill_module_media.py --module jav
+python scripts\backfill_module_media.py --module jav --apply
+python scripts\backfill_module_media.py --module jav --apply --rescrape-samples --limit 200
+python scripts\clean_actors.py --module jav --mode garbage --apply
+python scripts\clean_actors.py --module jav --mode male --online --limit 300
+python scripts\scan_crawler_api.py
+
+五、注意
+--------
+- data/male_actors.json 是本版新生成男演员名单；若此前跑过旧逻辑产生过该文件，
+  建议先删除再重跑（旧逻辑会把女演员误判进去）。

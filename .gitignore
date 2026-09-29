@@ -23,7 +23,7 @@ qa_test_log_*.bak.txt
 jav_module_report.txt
 MDCX_QA_测试分析.md
 MDCX_QA自动化提示词.md
-
+_patch_audit
 qa_*.js
 qa_*.mjs
 qa_*.py
