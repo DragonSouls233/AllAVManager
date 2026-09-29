@@ -1,0 +1,733 @@
+"""
+国产模块 API 路由
+"""
+
+from datetime import datetime
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request as _Request
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_session
+from app.db.chinese_models import ChineseMovie, ChineseActor
+from app.services.chinese_rename_service import get_rules, update_rules, clean_title
+
+import os as _os
+from pathlib import Path as _Path
+import logging as _logging
+import json
+logger = _logging.getLogger(__name__)
+
+router = APIRouter(prefix="/chinese", tags=["国产模块"])
+
+# ===== 命名规则管理 =====
+
+@router.get("/name-rules")
+async def api_get_name_rules():
+    return get_rules()
+
+@router.put("/name-rules")
+async def api_update_name_rules(data: dict):
+    return update_rules(data)
+
+@router.post("/name-rules/clean")
+async def api_clean_title(data: dict):
+    title = data.get("title", "")
+    result = clean_title(title)
+    return {"original": data.get("title", ""), "cleaned": result}
+
+
+def get_chinese_db() -> "ModuleDatabase":
+    from app.db.module_db import ModuleDatabase
+    try:
+        return ModuleDatabase.get_instance("chinese")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("get_chinese_db failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Database init error: {e}")
+
+
+@router.get("/actors")
+async def list_actors():
+    """列出国产模块演员列表"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        from sqlalchemy import select
+        stmt = select(ChineseActor).order_by(ChineseActor.movie_count.desc())
+        result = await session.execute(stmt)
+        actors = result.scalars().all()
+        return [{"id": a.id, "name": a.name, "movie_count": a.movie_count, "source": a.source, "avatar_url": a.avatar_url, "module_type": "chinese"} for a in actors]
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}")
+async def get_actor(actor_id: int):
+    """获取国产演员详情"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        from sqlalchemy import select
+        stmt = select(ChineseActor).where(ChineseActor.id == actor_id)
+        result = await session.execute(stmt)
+        actor = result.scalar_one_or_none()
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        return {"id": actor.id, "name": actor.name, "alias": actor.alias,
+                "avatar_url": actor.avatar_url, "source": actor.source,
+                "module_type": "chinese",
+                "movie_count": actor.movie_count,
+                "created_at": str(actor.created_at)}
+    finally:
+        await session.close()
+
+
+@router.post("/actors/scan-folders")
+async def sync_folder_actors():
+    """从媒体目录的文件夹名同步演员"""
+    from app.config.manager import get_config
+    config = get_config()
+    from app.tasks.chinese_scanner import ChineseScanner
+    scanner = ChineseScanner(config.modules.chinese.media_dirs)
+    result = await scanner.scan()
+    return result
+
+
+@router.get("/movies/{movie_id}/actors")
+async def get_chinese_movie_actors(movie_id: int):
+    """获取国产影片关联的演员列表（优先用 movie_actors 关联表）"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie, ChineseActor, MovieActor as CMovieActor
+        movie = await session.get(ChineseMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        # 优先从 movie_actors 关联表获取
+        rows = (await session.execute(
+            select(ChineseActor, CMovieActor.role)
+            .join(CMovieActor, CMovieActor.actor_id == ChineseActor.id)
+            .where(CMovieActor.movie_id == movie_id)
+        )).all()
+        if rows:
+            items = [{"id": a.id, "name": a.name, "avatar_url": a.avatar_url, "role": role} for a, role in rows]
+            return {"items": items}
+        # fallback: 从 folder_based_actors 文本字段解析
+        if not movie.folder_based_actors and not movie.extracted_actor:
+            return {"items": []}
+        raw = movie.extracted_actor or movie.folder_based_actors or ""
+        actor_names = [a.strip() for a in raw.split(",") if a.strip()]
+        items = []
+        for name in actor_names:
+            stmt = select(ChineseActor).where(ChineseActor.name == name)
+            result = await session.execute(stmt)
+            actor = result.scalar_one_or_none()
+            if actor:
+                items.append({"id": actor.id, "name": actor.name, "avatar_url": actor.avatar_url, "role": None})
+            else:
+                items.append({"id": None, "name": name, "avatar_url": None, "role": None})
+        return {"items": items}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/movies")
+async def get_chinese_actor_movies(actor_id: int):
+    """获取国产演员的影片列表（通过 movie_actors 关联表）"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie, ChineseActor, MovieActor as CMovieActor
+        actor = await session.get(ChineseActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        rows = (await session.execute(
+            select(ChineseMovie).join(CMovieActor, CMovieActor.movie_id == ChineseMovie.id)
+            .where(CMovieActor.actor_id == actor_id)
+        )).scalars().all()
+        return {
+            "actor": {"id": actor.id, "name": actor.name},
+            "items": [{"id": m.id, "code": m.code, "title": m.title, "cover_url": m.cover_url} for m in rows]
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/avatar/file")
+async def get_chinese_actor_avatar_file(actor_id: int):
+    """返回国产演员本地头像文件"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        actor = await session.get(ChineseActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        if not actor.avatar_url:
+            raise HTTPException(status_code=404, detail="头像不存在")
+        from fastapi.responses import FileResponse
+        path = _os.path.abspath(actor.avatar_url)
+        if not _os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="头像文件不存在")
+        return FileResponse(path, media_type="image/jpeg")
+    finally:
+        await session.close()
+
+
+@router.post("/actors/sync-avatars")
+async def sync_chinese_actor_avatars():
+    """批量从 actor.avatar_url 下载头像到本地"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseActor
+        from app.utils.media_helpers import ensure_actor_avatar_local
+        from sqlalchemy import select
+        actors = (await session.execute(select(ChineseActor))).scalars().all()
+        updated = 0
+        for actor in actors:
+            if not actor.avatar_url:
+                continue
+            try:
+                local_path = await ensure_actor_avatar_local(actor.name, actor.avatar_url)
+                if local_path:
+                    actor.avatar_url = local_path
+                    updated += 1
+            except Exception as e:
+                logger.warning(f"chinese sync avatar failed [{actor.name}]: {e}")
+        await session.commit()
+        return {"status": "ok", "updated": updated, "total": len(actors)}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"sync_chinese_actor_avatars error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()
+
+
+@router.get("/movies")
+async def list_movies(skip: int = 0, limit: int = 20,
+    keyword: Optional[str] = Query(None, description="搜索标题"),
+    actor: Optional[str] = Query(None, description="按演员名过滤"),
+    # 2026-08-08 新增: 详情页跳转筛选参数
+    series: Optional[str] = Query(None, description="按系列精确过滤"),
+    maker: Optional[str] = Query(None, description="按片商/制作商过滤（匹配 maker 或 studio）"),
+    genre: Optional[str] = Query(None, description="按类别过滤（genre 字段包含）"),
+    code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤")):
+    """列出国产模块影片列表"""
+    db = get_chinese_db()
+    try:
+        session = await db.get_session()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Session error: {e}")
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select, func, or_
+        filters = []
+        if actor:
+            filters.append(ChineseMovie.folder_based_actors.like(f"%{actor}%"))
+        if keyword:
+            kw = f"%{keyword}%"
+            filters.append(or_(ChineseMovie.title.like(kw), ChineseMovie.code.like(kw)))
+        if series:
+            filters.append(ChineseMovie.series == series)
+        if maker:
+            filters.append(or_(ChineseMovie.maker == maker, ChineseMovie.studio == maker))
+        if genre:
+            filters.append(ChineseMovie.genre.contains(genre))
+        if code_prefix:
+            filters.append(ChineseMovie.code.startswith(code_prefix))
+
+        total_stmt = select(func.count(ChineseMovie.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
+        total_result = await session.execute(total_stmt)
+        total = total_result.scalar()
+        stmt = select(ChineseMovie)
+        if filters:
+            stmt = stmt.where(*filters)
+        stmt = stmt.order_by(ChineseMovie.created_at.desc()).offset(skip).limit(limit)
+        result = await session.execute(stmt)
+        movies = result.scalars().all()
+        return {"total": total, "items": [
+            {"id": m.id, "code": m.code, "title": m.title,
+             "folder_name": m.folder_name,
+             "folder_based_actors": m.folder_based_actors,
+             "studio": m.studio, "cover_url": m.cover_url,
+             "module_type": "chinese",
+             "file_path": m.file_path, "status": m.status}
+            for m in movies
+        ]}
+    finally:
+        await session.close()
+
+
+@router.get("/movies/{movie_id}")
+async def get_movie(movie_id: int):
+    """获取国产影片详情"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+        return {
+            "id": movie.id, "code": movie.code, "title": movie.title,
+            "folder_name": movie.folder_name,
+            "folder_based_actors": movie.folder_based_actors,
+            "studio": movie.studio, "cover_url": movie.cover_url,
+            "poster_url": movie.poster_url, "release_date": movie.release_date,
+            "duration": movie.duration, "rating": movie.rating,
+            "plot": movie.plot, "genre": movie.genre, "tag": movie.tag,
+            "module_type": "chinese",
+            "file_path": movie.file_path, "file_size": movie.file_size,
+            "play_count": movie.play_count, "view_status": movie.view_status,
+            "status": movie.status, "created_at": str(movie.created_at),
+        }
+    finally:
+        await session.close()
+
+
+# ========== 刮削端点 ==========
+
+
+async def _persist_chinese_scrape(db, movie_id: int, sr) -> None:
+    """把刮削结果写入 chinese 库（影片/演员/媒体/样图/NFO）。
+
+    与 fc2/uncensored 模块保持一致：封面/头像下载到本地、样图存 JSON、
+    演员写入 actors + movie_actors 关联表、回写 NFO（失败不阻断）。
+    """
+    from app.db.chinese_models import ChineseMovie, ChineseActor, MovieActor
+    from sqlalchemy import select
+    from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
+    from app.output.nfo import NFOGenerator
+
+    session = await db.get_session()
+    try:
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        mv = (await session.execute(stmt)).scalar_one_or_none()
+        if not mv:
+            return
+
+        mv.title = sr.title
+        if sr.original_title:
+            mv.original_title = sr.original_title
+        if sr.release_date:
+            mv.release_date = str(sr.release_date)
+        if sr.duration:
+            mv.duration = sr.duration
+        if sr.rating:
+            mv.rating = sr.rating
+        if sr.plot:
+            mv.plot = sr.plot
+        if sr.studio:
+            mv.studio = sr.studio
+        if sr.maker:
+            mv.maker = sr.maker
+        if sr.director:
+            mv.director = sr.director
+        if sr.series:
+            mv.series = sr.series
+        if sr.genres:
+            mv.genre = ",".join(sr.genres)
+        if sr.tags:
+            mv.tag = ",".join(sr.tags)
+
+        # ── 资源下载：远程封面/预览图下载到本地 ──
+        local_media = await ensure_movie_media_local(
+            module_name="chinese", code=mv.code,
+            cover_url=sr.cover_url,
+            fanart_url=sr.poster_url or sr.cover_url,
+            thumb_url=sr.sample_images[0] if sr.sample_images else sr.thumb_url,
+            referer=sr.cover_url,
+        )
+        if local_media.get("cover"):
+            mv.cover_url = local_media["cover"]
+        elif sr.cover_url:
+            mv.cover_url = sr.cover_url
+        if local_media.get("fanart"):
+            mv.poster_url = local_media["fanart"]
+        if local_media.get("thumb"):
+            mv.thumb_url = local_media["thumb"]
+        # 样图/剧照存 JSON 列表（与 NFO 解析器兼容）
+        if sr.sample_images:
+            mv.sample_images = json.dumps(sr.sample_images, ensure_ascii=False)
+
+        # ── 演员：写入 actors 表 + movie_actors 关联表 ──
+        if sr.actors:
+            mv.actor = ",".join(a.name for a in sr.actors)
+            for ai in sr.actors:
+                ex = await session.execute(select(ChineseActor).where(ChineseActor.name == ai.name))
+                existing = ex.scalar_one_or_none()
+                if not existing:
+                    local_avatar = None
+                    try:
+                        local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
+                    except Exception as ae:
+                        logger.warning("chinese actor avatar download failed for %s: %s", ai.name, ae)
+                    session.add(ChineseActor(
+                        name=ai.name,
+                        avatar_url=local_avatar or ai.avatar_url,
+                        source="scraper",
+                        source_site=sr.source,
+                        movie_count=1,
+                    ))
+            await session.flush()
+            try:
+                old_ma = (await session.execute(
+                    select(MovieActor).where(MovieActor.movie_id == mv.id)
+                )).scalars().all()
+                for row in old_ma:
+                    await session.delete(row)
+                for ai in sr.actors:
+                    ex2 = await session.execute(select(ChineseActor).where(ChineseActor.name == ai.name))
+                    db_a = ex2.scalar_one_or_none()
+                    if db_a:
+                        session.add(MovieActor(movie_id=mv.id, actor_id=db_a.id))
+            except Exception as ae:
+                logger.warning("chinese 写入 actor 关联失败 [%s]: %s", mv.code, ae)
+
+        mv.source = sr.source or "scraper"
+        if sr.source_url:
+            mv.source_url = sr.source_url
+        mv.status = "scraped"
+        await session.commit()
+
+        # ── NFO 生成（回写到影片所在目录，失败不阻断）──
+        try:
+            out_dir = (
+                str(mv.output_dir) if getattr(mv, "output_dir", None)
+                else (str(_Path(mv.file_path).parent) if mv.file_path else "")
+            )
+            if out_dir:
+                gen = NFOGenerator(output_dir=out_dir)
+                actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
+                gen.generate_from_movie(
+                    movie=mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
+                )
+        except Exception as nfo_err:
+            logger.warning("chinese NFO 生成失败 [%s]: %s", movie_id, nfo_err)
+    finally:
+        await session.close()
+
+
+@router.post("/movies/{movie_id}/scrape")
+async def scrape_chinese_movie(movie_id: int):
+    """刮削指定国产影片的元数据"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        movie = (await session.execute(stmt)).scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+    finally:
+        await session.close()
+
+    from app.scraper.engine import get_scraper_engine
+    engine = get_scraper_engine()
+    sr = await engine.scrape_number(movie.code, module="chinese")
+    if not sr or not sr.title:
+        return {"status": "error", "message": f"刮削失败: 未找到 {movie.code} 的数据"}
+
+    await _persist_chinese_scrape(db, movie_id, sr)
+    return {"status": "ok", "message": f"刮削成功: {sr.title}"}
+
+
+@router.post("/movies/scrape-all-pending")
+async def scrape_all_pending_chinese(background_tasks: BackgroundTasks):
+    """后台批量刮削所有 status=pending 的国产影片"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+        stmt = select(ChineseMovie).where(ChineseMovie.status == "pending").order_by(ChineseMovie.id.desc())
+        pending = (await session.execute(stmt)).scalars().all()
+    finally:
+        await session.close()
+
+    if not pending:
+        return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
+
+    targets = [(m.id, m.code) for m in pending]
+
+    async def _run():
+        from app.scraper.engine import get_scraper_engine
+        engine = get_scraper_engine()
+        local_db = get_chinese_db()
+        for mid, code in targets:
+            try:
+                sr = await engine.scrape_number(code, module="chinese")
+                if sr and sr.title:
+                    await _persist_chinese_scrape(local_db, mid, sr)
+            except Exception as e:
+                logger.warning("chinese 批量刮削失败 [%s]: %s", code, e)
+
+    background_tasks.add_task(_run)
+    return {"status": "ok", "message": f"已加入后台刮削队列，共 {len(targets)} 部", "total": len(targets)}
+
+
+# ========== 封面端点（纯本地查找，不连外网） ==========
+
+
+@router.get("/movies/{movie_id}/cover/file")
+async def get_chinese_cover_file(movie_id: int):
+    """获取国产影片封面图片文件"""
+    from fastapi.responses import FileResponse, HTMLResponse
+    from app.utils.media_helpers import (
+        fast_file_exists,
+        get_movie_cover_path,
+        get_movie_fanart_path,
+        get_movie_thumb_path,
+    )
+
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+
+        movie = await session.get(ChineseMovie, movie_id)
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        # 1) 规范目录：{data_base}/movies/chinese/{code}/poster.jpg
+        if movie.code:
+            for get_path in (get_movie_cover_path, get_movie_fanart_path, get_movie_thumb_path):
+                p = get_path("chinese", movie.code)
+                if fast_file_exists(str(p)):
+                    ext = _Path(str(p)).suffix.lower()
+                    mt = "image/jpeg"
+                    if ext == ".png":
+                        mt = "image/png"
+                    elif ext == ".webp":
+                        mt = "image/webp"
+                    return FileResponse(str(p), media_type=mt,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+
+        # 2) DB 中 cover_url/poster_url/thumb_url 的本地路径
+        for attr in ("cover_url", "poster_url", "thumb_url"):
+            url = getattr(movie, attr, None)
+            if not url:
+                continue
+            if not url.startswith(("http://", "https://", "/")):
+                if fast_file_exists(url):
+                    ext = _Path(url).suffix.lower()
+                    mt = "image/jpeg"
+                    if ext == ".png":
+                        mt = "image/png"
+                    elif ext == ".webp":
+                        mt = "image/webp"
+                    return FileResponse(url, media_type=mt,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+
+        # 3) 视频目录下
+        if movie.file_path:
+            try:
+                video_dir = _Path(movie.file_path).parent
+                import asyncio
+                for img_name in ["poster.jpg", "poster.png", "cover.jpg", "fanart.jpg", "thumb.jpg"]:
+                    img_path = video_dir / img_name
+                    if await asyncio.wait_for(
+                        asyncio.to_thread(lambda p=img_path: p.exists() and p.is_file()),
+                        timeout=3.0,
+                    ):
+                        ext = _Path(str(img_path)).suffix.lower()
+                        mt = "image/jpeg"
+                        if ext == ".png":
+                            mt = "image/png"
+                        elif ext == ".webp":
+                            mt = "image/webp"
+                        return FileResponse(str(img_path), media_type=mt,
+                                            headers={"Cache-Control": "public, max-age=86400"})
+            except asyncio.TimeoutError:
+                pass
+
+        # 4) SVG 占位图
+        placeholder = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" '
+            'viewBox="0 0 240 360"><rect fill="#f0f0f0" width="240" height="360"/>'
+            '<text x="120" y="180" text-anchor="middle" fill="#bbb" '
+            'font-size="14">暂无封面</text></svg>'
+        )
+        return HTMLResponse(content=placeholder, media_type="image/svg+xml",
+                            headers={"Cache-Control": "no-cache"})
+    finally:
+        await session.close()
+
+
+# ========== 播放端点 ==========
+
+
+@router.get("/movies/{movie_id}/play")
+async def play_chinese_movie(movie_id: int):
+    """获取国产影片播放信息"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie:
+            raise HTTPException(status_code=404, detail="影片不存在")
+
+        file_exists = False
+        if movie.file_path:
+            file_exists = _Path(movie.file_path).exists()
+
+        return {
+            "id": movie.id,
+            "code": movie.code,
+            "title": movie.title,
+            "file_path": movie.file_path,
+            "file_size": movie.file_size,
+            "file_exists": file_exists,
+            "cover_url": movie.cover_url,
+            "duration": movie.duration,
+            "status": movie.status,
+        }
+    finally:
+        await session.close()
+
+
+@router.get("/movies/{movie_id}/play/file")
+async def play_chinese_video_file(movie_id: int, request: _Request):
+    """国产影片视频流播放（支持 Range 请求）"""
+    from starlette.responses import StreamingResponse, Response
+
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+    finally:
+        await session.close()
+
+    if not movie or not movie.file_path:
+        raise HTTPException(status_code=404, detail="视频不存在")
+
+    file_path = _Path(movie.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+
+    ext = file_path.suffix.lower()
+    media_type = "video/mp4"
+    if ext == ".mkv":
+        media_type = "video/x-matroska"
+    elif ext == ".webm":
+        media_type = "video/webm"
+    elif ext == ".mov":
+        media_type = "video/quicktime"
+    elif ext == ".ts":
+        media_type = "video/mp2t"
+    elif ext == ".avi":
+        media_type = "video/x-msvideo"
+
+    file_size = file_path.stat().st_size
+
+    range_header = request.headers.get("range")
+    if range_header:
+        try:
+            range_str = range_header.replace("bytes=", "")
+            parts = range_str.split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else file_size - 1
+
+            if start >= file_size:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+
+            chunk_size = end - start + 1
+
+            async def _iter_chunk():
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk_size
+                    while remaining > 0:
+                        to_read = min(8192, remaining)
+                        data = f.read(to_read)
+                        if not data:
+                            break
+                        yield data
+                        remaining -= len(data)
+
+            return StreamingResponse(
+                _iter_chunk(),
+                status_code=206,
+                media_type=media_type,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(chunk_size),
+                    "Accept-Ranges": "bytes",
+                },
+            )
+        except (ValueError, IndexError):
+            pass
+
+    async def _iter_full():
+        with open(file_path, "rb") as f:
+            while True:
+                data = f.read(8192)
+                if not data:
+                    break
+                yield data
+
+    from app.utils.http_headers import safe_content_disposition
+    return StreamingResponse(
+        _iter_full(),
+        media_type=media_type,
+        headers={
+            "Content-Length": str(file_size),
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": safe_content_disposition(file_path),
+        },
+    )
+
+
+@router.get("/movies/{movie_id}/play/external")
+async def get_chinese_external_play_url(movie_id: int, request: _Request, protocol: str = "http"):
+    """获取国产影片外部播放地址"""
+    db = get_chinese_db()
+    session = await db.get_session()
+    try:
+        from app.db.chinese_models import ChineseMovie
+        from sqlalchemy import select
+
+        stmt = select(ChineseMovie).where(ChineseMovie.id == movie_id)
+        result = await session.execute(stmt)
+        movie = result.scalar_one_or_none()
+        if not movie or not movie.file_path:
+            raise HTTPException(status_code=404, detail="影片没有关联文件")
+        if not _Path(movie.file_path).exists():
+            raise HTTPException(status_code=404, detail="视频文件不存在")
+
+        from app.config.manager import get_config
+        from app.utils.play_url import build_play_base_url
+        config = get_config()
+        host = getattr(config.server, "host", "0.0.0.0")
+        port = getattr(config.server, "port", 8420)
+
+        base = build_play_base_url(request, host, port)
+
+        if protocol == "http":
+            play_url = f"{base}/api/v1/chinese/movies/{movie_id}/play/file"
+            return {"protocol": "http", "play_url": play_url, "player_command": play_url, "copy_text": play_url}
+        else:
+            return {"protocol": "direct", "play_url": movie.file_path, "player_command": movie.file_path, "copy_text": movie.file_path}
+    finally:
+        await session.close()

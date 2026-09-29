@@ -639,142 +639,24 @@ async def scrape_all_pending_fc2(background_tasks: BackgroundTasks):
 
     if not pending:
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
+    async def _run():
+        """统一走完整落盘流水线（workflow.persist）+ 失败重试 + 缺失补齐（刮到完成为止）。"""
+        from app.db.fc2_models import Fc2Movie
+        from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps
 
-    async def _run():
-        from app.db.fc2_models import Fc2Movie, Fc2Actor
-        from app.scraper.engine import get_scraper_engine
-        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
-        from app.output.nfo import NFOGenerator
-        engine = get_scraper_engine()
-        success = failed = 0
-        for m in pending:
-            try:
-                sr = await engine.scrape_number(m.code)
-                if sr and sr.title:
-                    s = await db.get_session()
-                    try:
-                        st = select(Fc2Movie).where(Fc2Movie.id == m.id)
-                        r = await s.execute(st)
-                        mv = r.scalar_one_or_none()
-                        if mv:
-                            old_actors = mv.actor.split(",") if mv.actor else []
-                            mv.title = sr.title
-                            if sr.original_title:
-                                mv.original_title = sr.original_title
-                            if sr.release_date:
-                                mv.release_date = str(sr.release_date)
-                            if sr.duration:
-                                mv.duration = sr.duration
-                            if sr.plot:
-                                mv.plot = sr.plot[:2000]
-                            if sr.studio:
-                                mv.studio = sr.studio
-                            if sr.maker:
-                                mv.maker = sr.maker
-                            if sr.director:
-                                mv.director = sr.director
-                            if sr.series:
-                                mv.series = sr.series
-                            if sr.genres:
-                                mv.genre = ",".join(sr.genres)
-                            if sr.tags:
-                                mv.tag = ",".join(sr.tags)
+        try:
+            ok, fail = await scrape_module_pending("fc2", db, Fc2Movie)
+            logger.info("fc2 批量刮削完成: 成功 %s 失败 %s", ok, fail)
+        except Exception as e:
+            logger.warning("fc2 批量刮削异常: %s", e)
 
-                            local_media = await ensure_movie_media_local(
-                                module_name="fc2", code=mv.code,
-                                cover_url=sr.cover_url,
-                                fanart_url=sr.poster_url or sr.cover_url,
-                                thumb_url=sr.sample_images[0] if sr.sample_images else sr.thumb_url,
-                                referer=sr.cover_url,
-                            )
-                            if local_media.get("cover"):
-                                mv.cover_url = local_media["cover"]
-                            elif sr.cover_url:
-                                mv.cover_url = sr.cover_url
-                            if local_media.get("fanart"):
-                                mv.poster_url = local_media["fanart"]
-                            if local_media.get("thumb"):
-                                mv.thumb_url = local_media["thumb"]
-                            # 样图/剧照(以 JSON 列表格式，与 NFO 解析器兼容)
-                            if sr.sample_images:
-                                mv.sample_images = json.dumps(sr.sample_images, ensure_ascii=False)
-                            if sr.actors:
-                                new_actor_names = set()
-                                mv.actor = ",".join(a.name for a in sr.actors)
-                                for ai in sr.actors:
-                                    new_actor_names.add(ai.name)
-                                    ex = await s.execute(select(Fc2Actor).where(Fc2Actor.name == ai.name))
-                                    existing = ex.scalar_one_or_none()
-                                    if not existing:
-                                        local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
-                                        new_actor = Fc2Actor(name=ai.name, source="scraper", movie_count=1)
-                                        new_actor.avatar_url = local_avatar or ai.avatar_url
-                                        s.add(new_actor)
-                                    else:
-                                        if existing.movie_count < 100:
-                                            existing.movie_count += 1
-                                        if not existing.avatar_url and ai.avatar_url:
-                                            local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
-                                            existing.avatar_url = local_avatar or ai.avatar_url
-                                # 写入 movie_actors 关联表
-                                await s.flush()
-                                try:
-                                    from app.db.fc2_models import MovieActor as FMovieActor
-                                    old_ma_q = select(FMovieActor).where(FMovieActor.movie_id == mv.id)
-                                    for ma_row in (await s.execute(old_ma_q)).scalars().all():
-                                        await s.delete(ma_row)
-                                    for ai in sr.actors:
-                                        ex2 = await s.execute(select(Fc2Actor).where(Fc2Actor.name == ai.name))
-                                        db_a = ex2.scalar_one_or_none()
-                                        if db_a:
-                                            s.add(FMovieActor(movie_id=mv.id, actor_id=db_a.id))
-                                except Exception as ae:
-                                    logger.warning(f"FC2 批量刮削写入actor关联失败 [{mv.code}]: {ae}")
-                                remove_count = 0
-                                for name in old_actors:
-                                    n = name.strip()
-                                    if n and n not in new_actor_names:
-                                        actor_stmt = select(Fc2Actor).where(Fc2Actor.name == n)
-                                        actor_result = await s.execute(actor_stmt)
-                                        actor_obj = actor_result.scalar_one_or_none()
-                                        if actor_obj and actor_obj.movie_count > 0:
-                                            actor_obj.movie_count -= 1
-                                            if remove_count < 30:
-                                                remove_count += 1
-                            if sr.rating:
-                                try:
-                                    mv.rating = float(sr.rating)
-                                except:
-                                    pass
-                            if sr.year:
-                                mv.year = sr.year
-                            if sr.description:
-                                mv.description = sr.description[:2000]
-                            mv.source = sr.source or "scraper"
-                            mv.status = "scraped"
-                            await s.commit()
-
-                            mv_dir = None
-                            if hasattr(mv, "output_dir") and mv.output_dir:
-                                mv_dir = str(mv.output_dir)
-                            elif hasattr(mv, "file_path") and mv.file_path:
-                                mv_dir = _os.path.dirname(str(mv.file_path))
-                            try:
-                                if mv_dir and _os.path.isdir(mv_dir):
-                                    actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
-                                    NFOGenerator(output_dir=mv_dir).generate_from_movie(
-                                        mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
-                                    )
-                            except Exception as nfo_err:
-                                logger.debug(f"FC2 批量NFO生成失败 [{mv.code}]: {nfo_err}")
-                            success += 1
-                    finally:
-                        await s.close()
-                else:
-                    failed += 1
-            except:
-                failed += 1
-        logger.info(f"FC2 批量刮削完成: 成功 {success}, 失败 {failed}")
+        # 二次闭环：补齐「状态已非 pending 但封面/NFO 缺失」的影片
+        try:
+            _all_ok, missing = await refill_module_gaps("fc2", db, Fc2Movie)
+            if missing:
+                logger.info("fc2 补齐后仍缺失 %s 部: %s", len(missing), missing[:20])
+        except Exception as e:
+            logger.warning("fc2 补齐异常: %s", e)
 
     background_tasks.add_task(_run)
     return {"status": "started", "total": len(pending), "message": f"FC2 批量刮削已启动，共 {len(pending)} 部"}

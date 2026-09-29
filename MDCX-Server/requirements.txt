@@ -105,8 +105,9 @@ onnxruntime>=1.19.0
 # ⚠️ mediapipe / onnxruntime 对 Python 3.14 轮子可能滞后，服务器若用 3.14 需确认有对应 wheel
 #    若装不上，可用: pip install -r requirements.txt --no-deps 跳过重量级包，再单独装能装的
 
-# --- 翻译工具（app.utils.translate）---
-googletrans==4.0.0rc1   # 预发布版，pip 安装需加 --pre
+# --- 翻译工具（app.utils.translate，已在代码内 try/except 兜底，装不上自动回退 httpx）---
+# 注：googletrans==4.0.0rc1 强制依赖 httpx==0.13.3，与主线 httpx==0.28.1 冲突，已从依赖中移除；
+#     translate.py 检测到 import 失败会回退到 httpx 翻译，不影响主服务。如需启用可单独 pip install googletrans --pre。
 
 # --- 去重 / 视频指纹（app.services.dedup / video_hash）---
 ImageHash==4.3.2

@@ -20,6 +20,21 @@ import webbrowser
 from pathlib import Path
 
 # =============================================================================
+# 控制台编码兜底（必须在任何 print 之前执行）
+# =============================================================================
+# 2026-09-29: Windows 控制台/重定向到文件时默认编码是 GBK(cp936)，而本启动器会打印
+# ✔ ✘ ⚠ ℹ ▸ 等符号，一旦编不出来就抛 UnicodeEncodeError，把整个进程带崩——
+# 服务化(python.exe run.py > log) 场景必现：明明只是"想打印一行警告"，结果服务起不来。
+# 这里统一切到 UTF-8 并允许替换，彻底消除"打印失败导致服务无法启动"。
+try:
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+# =============================================================================
 # 启动引导日志（必须在导入任何 app.* 模块之前执行）
 # =============================================================================
 # 2026-08-05: 此前日志初始化写在 app/main.py 的 lifespan 内部，进程跑到那一行
@@ -299,7 +314,9 @@ def _parse_args():
 def _load_config():
     try:
         sys.path.insert(0, str(Path(__file__).parent))
-        from app.config.models import get_config
+        # 2026-09-29 修正: get_config 的真身在 app.config.manager（config.models 只有 pydantic 模型，
+        # 从这里 import 必然 ImportError → 配置永远加载失败、静默退回默认 host/port）。
+        from app.config.manager import get_config
         return get_config()
     except Exception as e:
         _warn(f"配置加载失败: {e}")
@@ -414,6 +431,26 @@ def main():
     host = args.host or (cfg.server.host if cfg else "0.0.0.0")
     port = args.port or (cfg.server.port if cfg else 8420)
     workers = args.workers or (cfg.server.workers if cfg else 1)
+
+    # ===== 网络存储：非交互会话下重连持久映射（best-effort，后台线程，不阻塞启动）=====
+    def _restore_network_drives():
+        try:
+            from app.utils.net_drives import ensure_all
+
+            res = ensure_all()
+            if not res:
+                return
+            good = [r["drive"] for r in res if r.get("connected")]
+            bad = [r for r in res if not r.get("connected")]
+            if good:
+                _ok("网络存储已连接: " + ", ".join(good))
+            if bad:
+                _warn("网络存储不可达: " + ", ".join(f"{r['drive']}→{r['remote']}" for r in bad))
+                _info("可在 MDCXServerManager 的「网络存储」页填入共享账号密码，一键重连")
+        except Exception as e:  # noqa: BLE001
+            _warn(f"网络存储重连失败（不影响服务）: {e}")
+
+    threading.Thread(target=_restore_network_drives, daemon=True).start()
 
     # ===== 启动前端口清理 =====
     if not args.no_cleanup:

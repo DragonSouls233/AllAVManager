@@ -12,6 +12,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.utils import net_drives
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -101,6 +103,36 @@ def _get_parent_path(path_str: str) -> str | None:
         return None
 
 
+def _network_entries(known: set | None = None) -> list:
+    """把注册表里的持久网络映射转成浏览条目（未连接的也列出，便于用户选中）。"""
+    known = known or set()
+    out: list = []
+    try:
+        mappings = net_drives.list_persistent_mappings()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[browse] 读取网络映射失败: {e}")
+        return out
+
+    for m in mappings:
+        drive = m["drive"]
+        if (drive + "\\").upper() in known:
+            continue
+        remote = m.get("remote") or ""
+        share = remote.strip("\\").split("\\")[-1] if remote else ""
+        connected = net_drives.is_connected(drive, timeout=4.0) if IS_WINDOWS else False
+        suffix = "网络驱动器" if connected else "网络驱动器·未连接"
+        out.append({
+            "name": f"{drive} ({share}) {suffix}",
+            "path": drive + "\\",
+            "type": "directory",
+            "is_drive": True,
+            "drive_type": "网络驱动器",
+            "remote": remote,
+            "connected": connected,
+        })
+    return out
+
+
 @router.get("/browse")
 async def browse_directory(
     path: str = Query("", description="要浏览的目录路径"),
@@ -156,6 +188,11 @@ async def browse_directory(
                 })
             except (PermissionError, OSError):
                 continue
+
+        # 追加持久化的网络映射（即使当前未连接也列出）
+        # —— 服务端常以计划任务/服务运行在非交互会话，系统不会自动重建映射，
+        #    若不补列，"选择媒体目录"里将完全看不到网络存储。
+        entries.extend(_network_entries(known={e["path"].upper() for e in entries}))
 
         return {
             "current_path": "THIS_PC",
@@ -281,6 +318,31 @@ async def get_system_roots():
                 })
             except (PermissionError, OSError):
                 continue
+
+        # 追加持久网络映射（服务端非交互会话不会自动重建映射，需补列）
+        try:
+            mapped = {r["path"].upper() for r in roots}
+            for m in net_drives.list_persistent_mappings():
+                drive = m["drive"]
+                if (drive + "\\").upper() in mapped:
+                    continue
+                remote = m.get("remote") or ""
+                share = remote.strip("\\").split("\\")[-1] if remote else ""
+                connected = net_drives.is_connected(drive, timeout=4.0)
+                label = f"💾 {drive} ({share}) 网络驱动器" + ("" if connected else "·未连接")
+                roots.append({
+                    "name": label,
+                    "path": drive + "\\",
+                    "type": "directory",
+                    "is_mount": connected,
+                    "is_drive": True,
+                    "has_video": False,
+                    "drive_type": "网络驱动器",
+                    "remote": remote,
+                    "connected": connected,
+                })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[roots] 追加网络驱动器失败: {e}")
 
         logger.info(f"[roots] Windows 盘符数量: {len(roots)}")
         return {"roots": roots}
@@ -431,3 +493,70 @@ async def proxy_file(
         raise HTTPException(status_code=403, detail="无权限读取文件")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取文件失败: {e}")
+
+
+# ==================================================================
+# 网络存储（SMB 映射盘 / UNC）—— 让服务端在任意会话下都能用网络存储
+# ==================================================================
+
+
+@router.get("/network-drives")
+async def get_network_drives():
+    """列出持久化的网络映射及其当前连接状态。"""
+    return {"drives": net_drives.status()}
+
+
+@router.post("/network-mount")
+async def mount_network_drives():
+    """把「持久映射但当前不可用」的网络盘全部重连（在服务端会话内生效）。"""
+    results = net_drives.ensure_all()
+    return {
+        "total": len(results),
+        "connected": len([r for r in results if r.get("connected")]),
+        "drives": results,
+    }
+
+
+@router.get("/network-credentials")
+async def get_network_credentials():
+    """列出已保存的 SMB 凭据主机与已声明的盘符清单（绝不回口令）。"""
+    return {
+        "hosts": net_drives.list_credential_hosts(),
+        "mappings": net_drives.load_configured_mappings(),
+        "cred_file": str(net_drives._cred_file() or ""),
+    }
+
+
+@router.post("/network-credentials")
+async def set_network_credentials(payload: dict):
+    """写入 SMB 凭据（本机配置 + 尽力写凭据管理器）并重连全部网络盘。
+
+    payload: {
+        "host": "dragon 或 192.168.10.112",   # 必填
+        "user": "...",                         # 必填
+        "password": "...",
+        "mappings": [{"drive": "Z:", "remote": "\\\\dragon\\JAV1"}]   # 可选，整体替换
+    }
+    """
+    host = (payload.get("host") or "").strip()
+    user = (payload.get("user") or "").strip()
+    password = payload.get("password") or ""
+    if not host:
+        raise HTTPException(status_code=400, detail="host 不能为空（主机名或 IP）")
+    if not user:
+        raise HTTPException(status_code=400, detail="user 不能为空")
+
+    saved, msg = net_drives.set_credentials(host, user, password)
+    mappings = payload.get("mappings")
+    if isinstance(mappings, list) and mappings:
+        net_drives.save_configured_mappings(mappings)
+    results = net_drives.ensure_all()
+    return {
+        "credentials_saved": saved,
+        "message": msg,
+        "hosts": net_drives.list_credential_hosts(),
+        "mappings": net_drives.load_configured_mappings(),
+        "connected": len([r for r in results if r.get("connected")]),
+        "total": len(results),
+        "drives": results,
+    }

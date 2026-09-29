@@ -599,132 +599,24 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
 
     if not pending:
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
+    async def _run():
+        """统一走完整落盘流水线（workflow.persist）+ 失败重试 + 缺失补齐（刮到完成为止）。"""
+        from app.db.uncensored_models import UncensoredMovie
+        from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps
 
-    async def _run():
-        from app.db.uncensored_models import UncensoredMovie, UncensoredActor
-        from app.scraper.engine import get_scraper_engine
-        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
-        from app.output.nfo import NFOGenerator
-        from sqlalchemy import select
-        engine = get_scraper_engine()
-        success = failed = 0
-        affected_actors: set[str] = set()
-        for m in pending:
-            try:
-                sr = await engine.scrape_number(m.code, module="uncensored")
-                if sr and sr.title:
-                    s = await db.get_session()
-                    try:
-                        st = select(UncensoredMovie).where(UncensoredMovie.id == m.id)
-                        r = await s.execute(st)
-                        mv = r.scalar_one_or_none()
-                        if mv:
-                            mv.title = sr.title
-                            if sr.original_title: mv.original_title = sr.original_title
-                            if sr.release_date: mv.release_date = str(sr.release_date)
-                            if sr.duration: mv.duration = sr.duration
-                            if sr.rating: mv.rating = sr.rating
-                            if sr.plot: mv.plot = sr.plot
-                            if sr.studio: mv.studio = sr.studio
-                            if sr.genres: mv.genre = ",".join(sr.genres)
-                            if sr.tags: mv.tag = ",".join(sr.tags)
+        try:
+            ok, fail = await scrape_module_pending("uncensored", db, UncensoredMovie)
+            logger.info("uncensored 批量刮削完成: 成功 %s 失败 %s", ok, fail)
+        except Exception as e:
+            logger.warning("uncensored 批量刮削异常: %s", e)
 
-                            # 下载封面到本地
-                            local_media = await ensure_movie_media_local(
-                                module_name="uncensored", code=mv.code,
-                                cover_url=sr.cover_url,
-                                fanart_url=sr.poster_url or sr.cover_url,
-                                thumb_url=sr.sample_images[0] if sr.sample_images else sr.thumb_url,
-                                referer=sr.cover_url,
-                            )
-                            if local_media.get("cover"):
-                                mv.cover_url = local_media["cover"]
-                            elif sr.cover_url:
-                                mv.cover_url = sr.cover_url
-                            if local_media.get("fanart"):
-                                mv.poster_url = local_media["fanart"]
-                            if local_media.get("thumb"):
-                                mv.thumb_url = local_media["thumb"]
-                            if sr.sample_images:
-                                mv.sample_images = ",".join(sr.sample_images)
-
-                            if sr.actors:
-                                mv.actor = ",".join(a.name for a in sr.actors)
-                                for ai in sr.actors:
-                                    affected_actors.add(ai.name)
-                                    ex = await s.execute(select(UncensoredActor).where(UncensoredActor.name == ai.name))
-                                    a = ex.scalar_one_or_none()
-                                    if not a:
-                                        local_avatar = await ensure_actor_avatar_local(
-                                            ai.name, ai.avatar_url
-                                        )
-                                        s.add(UncensoredActor(
-                                            name=ai.name,
-                                            avatar_url=local_avatar or ai.avatar_url,
-                                            source="scraper",
-                                            source_site=sr.source,
-                                            movie_count=0,
-                                        ))
-                                # 批量刷新+写入 movie_actors 关联表
-                                await s.flush()
-                                try:
-                                    from app.db.uncensored_models import MovieActor as UMovieActor
-                                    old_ma_q = select(UMovieActor).where(UMovieActor.movie_id == mv.id)
-                                    for ma_row in (await s.execute(old_ma_q)).scalars().all():
-                                        await s.delete(ma_row)
-                                    for ai in sr.actors:
-                                        ex2 = await s.execute(select(UncensoredActor).where(UncensoredActor.name == ai.name))
-                                        db_actor = ex2.scalar_one_or_none()
-                                        if db_actor:
-                                            s.add(UMovieActor(movie_id=mv.id, actor_id=db_actor.id))
-                                except Exception as ae:
-                                    logger.debug(f"无码批量刮削写入演员关联失败 [{mv.code}]: {ae}")
-                            mv.source = sr.source or "scraper"
-                            mv.status = "scraped"
-                            await s.commit()
-                            mv_dir = None
-                            if hasattr(mv, "output_dir") and mv.output_dir:
-                                mv_dir = str(mv.output_dir)
-                            elif hasattr(mv, "file_path") and mv.file_path:
-                                mv_dir = _os.path.dirname(str(mv.file_path))
-                            try:
-                                if mv_dir and _os.path.isdir(mv_dir):
-                                    actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
-                                    NFOGenerator(output_dir=mv_dir).generate_from_movie(
-                                        mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
-                                    )
-                            except Exception as nfo_err:
-                                logger.debug(f"无码批量NFO生成失败 [{mv.code}]: {nfo_err}")
-                            success += 1
-                    finally:
-                        await s.close()
-                else:
-                    failed += 1
-            except:
-                failed += 1
-
-        # 批量重算受影响演员的作品数
-        if affected_actors:
-            try:
-                s = await db.get_session()
-                try:
-                    actors = (await s.execute(
-                        select(UncensoredActor).where(UncensoredActor.name.in_(list(affected_actors)))
-                    )).scalars().all()
-                    for actor in actors:
-                        actor.movie_count = await s.scalar(
-                            select(func.count(UncensoredMovie.id)).where(
-                                UncensoredMovie.actor.contains(actor.name),
-                                UncensoredMovie.status != "pending",
-                            )
-                        ) or 0
-                    await s.commit()
-                finally:
-                    await s.close()
-            except Exception as e:
-                logger.warning(f"无码批量刮削-重算作品数失败: {e}")
-
-        logger.info(f"无码批量刮削完成: 成功 {success}, 失败 {failed}")
+        # 二次闭环：补齐「状态已非 pending 但封面/NFO 缺失」的影片
+        try:
+            _all_ok, missing = await refill_module_gaps("uncensored", db, UncensoredMovie)
+            if missing:
+                logger.info("uncensored 补齐后仍缺失 %s 部: %s", len(missing), missing[:20])
+        except Exception as e:
+            logger.warning("uncensored 补齐异常: %s", e)
 
     background_tasks.add_task(_run)
     return {"status": "started", "total": len(pending), "message": f"无码批量刮削已启动，共 {len(pending)} 部"}

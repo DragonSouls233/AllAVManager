@@ -351,7 +351,7 @@ class ScraperWorkflow:
                 output_dir=str(movie_dir) if movie_dir else None,
                 director=director,
                 trailer_url=getattr(result, "trailer_url", None) or raw.get("trailer"),
-                status="completed",
+                status="scraped",
                 scraped_at=datetime.now(),
             )
 

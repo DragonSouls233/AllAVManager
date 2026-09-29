@@ -460,18 +460,24 @@ async def scrape_all_pending_chinese(background_tasks: BackgroundTasks):
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
 
     targets = [(m.id, m.code) for m in pending]
+    async def _run():
+        """统一走完整落盘流水线（workflow.persist）+ 失败重试 + 缺失补齐（刮到完成为止）。"""
+        from app.db.chinese_models import ChineseMovie
+        from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps
 
-    async def _run():
-        from app.scraper.engine import get_scraper_engine
-        engine = get_scraper_engine()
-        local_db = get_chinese_db()
-        for mid, code in targets:
-            try:
-                sr = await engine.scrape_number(code, module="chinese")
-                if sr and sr.title:
-                    await _persist_chinese_scrape(local_db, mid, sr)
-            except Exception as e:
-                logger.warning("chinese 批量刮削失败 [%s]: %s", code, e)
+        try:
+            ok, fail = await scrape_module_pending("chinese", db, ChineseMovie)
+            logger.info("chinese 批量刮削完成: 成功 %s 失败 %s", ok, fail)
+        except Exception as e:
+            logger.warning("chinese 批量刮削异常: %s", e)
+
+        # 二次闭环：补齐「状态已非 pending 但封面/NFO 缺失」的影片
+        try:
+            _all_ok, missing = await refill_module_gaps("chinese", db, ChineseMovie)
+            if missing:
+                logger.info("chinese 补齐后仍缺失 %s 部: %s", len(missing), missing[:20])
+        except Exception as e:
+            logger.warning("chinese 补齐异常: %s", e)
 
     background_tasks.add_task(_run)
     return {"status": "ok", "message": f"已加入后台刮削队列，共 {len(targets)} 部", "total": len(targets)}
