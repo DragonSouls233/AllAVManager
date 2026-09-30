@@ -169,15 +169,28 @@ class ScraperEngine:
         # 创建单次刮削共享上下文（复用 HTTP session / cookies / proxy / 指纹）
         from app.scraper.context import ScrapeContext
         async with ScrapeContext.create() as ctx:
-            # 分层调度：高命中源先跑，结果完整即返回，
-            # 避免 40 个源在 max_concurrent 下串行排队（实测单番号 30s~7min）
-            tier1, tier2 = self._split_tiers(crawlers)
             valid_results = []
 
+            # 第 0 层：主用源（JavDB 官方 App 协议）单源先跑。
+            # 用户口径「以 JavDB 官方协议为主要使用」：命中完整结果即直接返回，
+            # 不再请求任何其他源 —— 最快，且不与 javbus 抢配额（javbus 有 429 限流）。
+            primary, rest = self._split_primary(crawlers)
+            if primary:
+                r0 = await self._gather_all(primary, number, ctx)
+                valid_results += r0
+                merged0 = self._merge_results(r0, primary, number)
+                if merged0 is not None and self._is_complete(merged0):
+                    return merged0
+
+            # 分层调度：高命中源先跑，结果完整即返回，
+            # 避免 40 个源在 max_concurrent 下串行排队（实测单番号 30s~7min）
+            tier1, tier2 = self._split_tiers(rest)
+
             if tier1:
-                r1 = await self._gather_all(tier1, number, ctx)
-                valid_results += r1
-                merged1 = self._merge_results(r1, tier1, number)
+                valid_results += await self._gather_all(tier1, number, ctx)
+                # 连同主用源已刮到的字段一起合并（javdb 优先级最高，仍占主导），
+                # 避免此处只返回 tier1 结果而丢掉主用源已取到的字段。
+                merged1 = self._merge_results(valid_results, crawlers, number)
                 if merged1 is not None and self._is_complete(merged1):
                     return merged1
 
@@ -198,22 +211,34 @@ class ScraperEngine:
 
         return valid_results[0]
 
-    # 第一梯队（只保留 2 个源，命中即提前返回；其余全部降 TIER2 兜底）：
-    #   javdb  = JavDB「官方 App 协议」匿名通道：jdforrepam.com /api/v2/search +
-    #            /api/v4/movies/{id}/magnets，逆向 javdb-cli 的 jdsignature 签名，
-    #            免登录、不绑 IP、天然绕过 Cloudflare（见 services/javdb_app_client.py）
-    #   javbus = JavBus HTML 站
+    # ── 源分层（用户口径：以 JavDB 官方协议为主要使用，其余均属补充）────────────
+    #
+    # 主用源 —— 单源先跑，命中完整结果即直接返回：
+    #   javdb = JavDB「官方 App 协议」匿名通道：jdforrepam.com /api/v2/search +
+    #           /api/v4/movies/{id}/magnets，逆向 javdb-cli 的 jdsignature 签名，
+    #           免登录、不绑 IP、天然绕过 Cloudflare（见 services/javdb_app_client.py）。
+    #   每部影片先只请求它；完整（标题+封面+演员）就直接返回 —— 既最快，
+    #   也避免对 javbus 造成无谓请求（javbus 有 429 限流，实测被限 3226 次）。
+    PRIMARY_CRAWLERS = {"javdb"}
+
+    # 次选梯队：主用源结果不完整时才跑（JavBus HTML 站）。
+    TIER1_CRAWLERS = {"javbus"}
     #
     # ⚠️ 命名陷阱（易踩）：`javdbapi`（display_name=TheJavDB (API)）**不是** JavDB App 的 API，
     #    它是第三方开放 JSON API（https://api.thejavdb.net/v1，移植自 Kesuy/mdcx ref42），
-    #    与 JavDB 官方 App 无关，属于「其他源」→ 放 TIER2，不与 App 通道混为一谈。
-    #    另注：javdb_new（md/javdb_new.py）走的是同一个 AppClient，与 javdb 同通道，故不重复进 TIER1。
+    #    与 JavDB 官方 App 无关；`dmm_api` 也挂在同一第三方站点。
+    #    两者一律属「其他源」→ TIER2，不与 App 通道混为一谈。
+    #    另注：javdb_new（md/javdb_new.py）走同一个 AppClient，与 javdb 同通道，不重复进主用源。
     #
     # ⚠️ 曾把 10 个源全塞进 TIER1，导致每部影片至少并发 10 个源；
     # 与补刮并发(12)相乘后远超全局爬虫名额 → 信号量饥饿丢源。
-    TIER1_CRAWLERS = {
-        "javdb", "javbus",
-    }
+    def _split_primary(self, crawlers: list) -> tuple[list, list]:
+        """拆出主用源（JavDB 官方协议）与其余源"""
+        if not self.tiered:
+            return [], list(crawlers)
+        p = [c for c in crawlers if c.name in self.PRIMARY_CRAWLERS]
+        rest = [c for c in crawlers if c.name not in self.PRIMARY_CRAWLERS]
+        return p, rest
 
     def _split_tiers(self, crawlers: list) -> tuple[list, list]:
         """按命中率把爬虫分为 (第一梯队, 其余)"""
