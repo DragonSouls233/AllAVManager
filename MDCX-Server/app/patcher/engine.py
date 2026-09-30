@@ -140,15 +140,35 @@ def _get_module_model(module: str) -> type:
 async def _detect_module_missing_for_engine(
     module: str,
     directories: Optional[list[str]] = None,
+    movie_ids: Optional[list[int]] = None,
+    codes: Optional[list[str]] = None,
 ) -> list[MissingInfo]:
-    """检测模块数据库中的影片缺失字段，返回 MissingInfo dataclass 列表（供引擎使用）"""
-    from sqlalchemy import select, or_
+    """检测模块数据库中的影片缺失字段，返回 MissingInfo dataclass 列表（供引擎使用）
+
+    注意：``movie_ids`` / ``codes`` 是「选定补刮」的范围约束。
+    历史 bug：调用方只传了 directories，导致只要请求带 module，
+    选定/目录补刮都会被无视而退化成全库补刮。这里补齐范围过滤。
+    """
+    from sqlalchemy import select, or_, func
 
     db = ModuleDatabase.get_instance(module)
     model = _get_module_model(module)
     session = await db.get_session()
     try:
         stmt = select(model)
+        if movie_ids:
+            ids = []
+            for i in movie_ids:
+                try:
+                    ids.append(int(i))
+                except (TypeError, ValueError):
+                    continue
+            if ids:
+                stmt = stmt.where(model.id.in_(ids))
+        if codes:
+            codes_up = [str(c).strip().upper() for c in codes if str(c).strip()]
+            if codes_up and hasattr(model, "code"):
+                stmt = stmt.where(func.upper(model.code).in_(codes_up))
         if directories:
             filters = []
             for d in directories:
@@ -481,6 +501,15 @@ class PatchWorkflow:
         """检测缺失"""
         # 模块数据库优先
         if options.module:
+            if options.mode == PatchMode.SELECTED:
+                # 选定补刮必须带上 ids/codes 范围，否则会退化成全库补刮
+                if not options.movie_ids and not options.codes:
+                    return []
+                return await _detect_module_missing_for_engine(
+                    options.module,
+                    movie_ids=options.movie_ids or None,
+                    codes=options.codes or None,
+                )
             return await _detect_module_missing_for_engine(
                 options.module,
                 directories=options.directories if options.mode == PatchMode.DIRECTORY else None,
@@ -601,6 +630,7 @@ class PatchWorkflow:
         semaphore = asyncio.Semaphore(options.concurrency)
         patch_results = []
         completed = 0
+        started = 0          # 原子递增：并发下"已开始的序号"，避免多片共用同一 idx
         total = len(to_patch)
 
         def _emit_progress():
@@ -621,10 +651,11 @@ class PatchWorkflow:
                 })
 
         async def _patch_one(info: MissingInfo) -> PatchResult:
-            nonlocal completed
+            nonlocal completed, started
             async with semaphore:
+                started += 1          # 单线程事件循环内无 await，等价原子
+                idx = started
                 setattr(result, "_current_code", info.movie_code)
-                idx = completed + 1
                 logger.info(f"补刮进度 {idx}/{total}: 开始补刮 {info.movie_code}")
                 t0 = __import__("time").time()
                 try:

@@ -88,7 +88,7 @@ class ScraperEngine:
         max_concurrent: int = 8,
         timeout: int = 60,
         retry_count: int = 3,
-        sem_wait_timeout: int = 15,
+        sem_wait_timeout: int = 40,
         tiered: bool = True,
     ):
         """
@@ -198,10 +198,21 @@ class ScraperEngine:
 
         return valid_results[0]
 
-    # 第一梯队：实测 jav 模块 99% 的最终采纳源出自这批（javbus/javdb/javdbapi）
+    # 第一梯队（只保留 2 个源，命中即提前返回；其余全部降 TIER2 兜底）：
+    #   javdb  = JavDB「官方 App 协议」匿名通道：jdforrepam.com /api/v2/search +
+    #            /api/v4/movies/{id}/magnets，逆向 javdb-cli 的 jdsignature 签名，
+    #            免登录、不绑 IP、天然绕过 Cloudflare（见 services/javdb_app_client.py）
+    #   javbus = JavBus HTML 站
+    #
+    # ⚠️ 命名陷阱（易踩）：`javdbapi`（display_name=TheJavDB (API)）**不是** JavDB App 的 API，
+    #    它是第三方开放 JSON API（https://api.thejavdb.net/v1，移植自 Kesuy/mdcx ref42），
+    #    与 JavDB 官方 App 无关，属于「其他源」→ 放 TIER2，不与 App 通道混为一谈。
+    #    另注：javdb_new（md/javdb_new.py）走的是同一个 AppClient，与 javdb 同通道，故不重复进 TIER1。
+    #
+    # ⚠️ 曾把 10 个源全塞进 TIER1，导致每部影片至少并发 10 个源；
+    # 与补刮并发(12)相乘后远超全局爬虫名额 → 信号量饥饿丢源。
     TIER1_CRAWLERS = {
-        "javdb", "javdbapi", "javbus", "javdb_new", "thejavdb",
-        "javmenu", "javdatabase", "javmost", "avmoo", "javplace",
+        "javdb", "javbus",
     }
 
     def _split_tiers(self, crawlers: list) -> tuple[list, list]:

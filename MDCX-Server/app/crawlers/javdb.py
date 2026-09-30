@@ -706,9 +706,26 @@ class JavDBCrawler(BaseCrawler):
         return None
     
     def _get_sample_images(self, html: Selector) -> list[str]:
-        """获取样图列表"""
+        """获取样图列表
+
+        ⚠️ javdb 未登录/被拦时，预览区会退化成登录跳转链接（如 ``/samples//login``），
+        若原样返回会被图片下载器当成样图去下 → 稳定 403。这里统一丢弃非图片的
+        登录/空路径，与 ``_is_login_redirect`` 同一判定口径。
+        """
         results = html.xpath("//div[@class='tile-images preview-images']/a[@class='tile-item']/@href").getall()
-        return [r for r in results if r]
+        cleaned: list[str] = []
+        for r in results:
+            if not r:
+                continue
+            low = r.strip().lower()
+            if "login" in low or "return_to_url" in low:
+                continue
+            # 形如 .../samples/ 或 .../samples// 的目录级空路径不是图片
+            tail = low.rstrip("/").rsplit("/", 1)[-1]
+            if tail in ("samples", "sample", ""):
+                continue
+            cleaned.append(r)
+        return cleaned
     
     def _get_trailer(self, html: Selector) -> Optional[str]:
         """获取预告片URL"""
