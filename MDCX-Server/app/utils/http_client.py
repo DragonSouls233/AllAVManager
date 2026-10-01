@@ -55,6 +55,44 @@ BROWSER_IMPERSONATES = [
 ]
 
 
+# ── 站点级速率限制（进程级共享）────────────────────────────────────────────
+# ⚠️ 必修背景（2026-09-30）：原实现的域名限速状态挂在实例上（self._domain_limiters），
+# 而刮削时**每个番号都会新建一个 AsyncHttpClient** → 各实例状态互不可见，
+# 并发下等于完全没有域名限速。实测后果：并发 24 打 javbus → HTTP 429 限流 3226 次。
+# 修复：状态提到模块级，所有实例共享同一份「该域名上次请求时刻」。
+_GLOBAL_LAST_REQUEST: float = 0.0
+_GLOBAL_REQUEST_LOCK = asyncio.Lock()
+_GLOBAL_DOMAIN_LAST: dict = {}
+_GLOBAL_DOMAIN_LOCK = asyncio.Lock()
+
+# 未单独配置的域名使用的 QPS 上限
+DEFAULT_DOMAIN_QPS = 20.0
+
+# 站点级 QPS 覆盖表（req/s）—— 对并发/频率敏感的站点单独降速
+SITE_QPS_OVERRIDES: dict = {
+    "www.javbus.com": 3.0,      # javbus 对并发敏感，20 req/s 实测触发 429 限流
+    "javbus.com": 3.0,
+    "jdforrepam.com": 8.0,      # JavDB 官方 App API 镜像
+    "javdb.com": 8.0,
+    "api.thejavdb.net": 8.0,    # 第三方开放 API（thejavdb / dmm_api 共用）
+}
+
+
+def site_qps(domain: str) -> float:
+    """取域名的 QPS 上限（逐级回溯匹配子域，如 a.b.javbus.com → b.javbus.com）"""
+    if not domain:
+        return DEFAULT_DOMAIN_QPS
+    d = (domain or "").lower().strip(".")
+    if d in SITE_QPS_OVERRIDES:
+        return SITE_QPS_OVERRIDES[d]
+    parts = d.split(".")
+    for i in range(1, len(parts) - 1):
+        cand = ".".join(parts[i:])
+        if cand in SITE_QPS_OVERRIDES:
+            return SITE_QPS_OVERRIDES[cand]
+    return DEFAULT_DOMAIN_QPS
+
+
 class AsyncHttpClient:
     """
     异步 HTTP 客户端
@@ -287,33 +325,38 @@ class AsyncHttpClient:
             return resp
     
     async def _wait_for_rate_limit(self, url: str = "") -> None:
-        """等待以遵守速率限制（支持全局和域名级）"""
+        """等待以遵守速率限制（全局 + 域名级，状态均为【进程级共享】）
+
+        ⚠️ 域名限速状态必须全局共享：刮削每个番号都新建一个 AsyncHttpClient，
+        若状态挂在实例上，并发时各实例互不可见 → 等于不限速
+        （历史 bug → javbus 429 限流 3226 次）。站点级 QPS 见 SITE_QPS_OVERRIDES。
+        """
+        global _GLOBAL_LAST_REQUEST
         if self.rate_limit <= 0:
             return
 
-        # 全局速率限制
-        async with self._lock:
+        # 全局速率限制（进程级）
+        async with _GLOBAL_REQUEST_LOCK:
             now = time.monotonic()
             interval = 1.0 / self.rate_limit
-            wait_time = interval - (now - self._last_request_time)
-
+            wait_time = interval - (now - _GLOBAL_LAST_REQUEST)
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
+            _GLOBAL_LAST_REQUEST = time.monotonic()
 
-            self._last_request_time = time.monotonic()
-
-        # 域名级速率限制（每个域名独立限流，来自 Hazard804 MDCX）
+        # 域名级速率限制（进程级共享 + 站点级 QPS 覆盖）
         if url:
             domain = urlparse(url).hostname or ""
             if domain:
-                async with self._domain_lock:
-                    last = self._domain_limiters.get(domain, 0.0)
+                qps = site_qps(domain)
+                interval = (1.0 / qps) if qps > 0 else 0.0
+                async with _GLOBAL_DOMAIN_LOCK:
+                    last = _GLOBAL_DOMAIN_LAST.get(domain, 0.0)
                     now = time.monotonic()
-                    domain_interval = 1.0 / 20.0  # 每个域名 20 req/s
-                    wait = domain_interval - (now - last)
+                    wait = interval - (now - last)
                     if wait > 0:
                         await asyncio.sleep(wait)
-                    self._domain_limiters[domain] = time.monotonic()
+                    _GLOBAL_DOMAIN_LAST[domain] = time.monotonic()
     
     async def get(
         self,

@@ -133,11 +133,32 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="补刮来源">
-          <el-checkbox-group v-model="runForm.sources">
+          <!-- 精简模式：只列后端真实启用的主力/备用源（看 SOURCE_POOL） -->
+          <div v-if="hasCuratedSources" class="source-pool">
+            <div class="source-row">
+              <span class="source-tag primary">主力</span>
+              <el-checkbox-group v-model="runForm.sources">
+                <el-checkbox v-for="o in primaryOptions" :key="o.value" :value="o.value" border size="small">{{ o.label }}</el-checkbox>
+              </el-checkbox-group>
+            </div>
+            <div class="source-row">
+              <span class="source-tag">备用</span>
+              <el-checkbox-group v-model="runForm.sources">
+                <el-checkbox v-for="o in fallbackOptions" :key="o.value" :value="o.value" border size="small">{{ o.label }}</el-checkbox>
+              </el-checkbox-group>
+            </div>
+            <div class="source-actions">
+              <el-button link type="primary" size="small" @click="selectSources('all')">全选</el-button>
+              <el-button link size="small" @click="selectSources('primary')">仅主力</el-button>
+              <el-button link size="small" @click="selectSources('none')">清空</el-button>
+              <span class="hint">已选 {{ runForm.sources.length }} / {{ sourceOptions.length }} 个源</span>
+            </div>
+          </div>
+          <!-- 兼容模式：其他模块仍按爬虫注册表动态列出 -->
+          <el-checkbox-group v-else v-model="runForm.sources">
             <el-checkbox v-for="o in sourceOptions" :key="o.value" :value="o.value" border size="small">{{ o.label }}</el-checkbox>
           </el-checkbox-group>
           <span class="hint" v-if="sourceHint">{{ sourceHint }}</span>
-          <span class="hint" v-else>未指定模块，使用 JAV 可用源</span>
         </el-form-item>
         <el-form-item label="仅补刮缺失">
           <el-switch v-model="runForm.only_missing" />
@@ -270,13 +291,31 @@ const MODULE_TYPES = {
   pornhub: ['pornhub'],
   chinese: ['chinese'],
 }
-// 未指定模块（中心数据库）/ jav 的回退源列表
-const JAV_FALLBACK_SOURCES = [
-  { value: 'javbus', label: 'JavBus' },
-  { value: 'javdb', label: 'JavDB' },
-  { value: 'javdatabase', label: 'JavDatabase' },
-  { value: 'avmoo', label: 'Avmoo' },
-]
+// ── 补刮来源池（与后端 source pool 严格对齐）──────────────────────────────
+// 后端 app/scraper/engine.py：
+//   PRIMARY_CRAWLERS  = 主力源，按番号轮换错开起点，优先命中
+//   FALLBACK_CRAWLERS = 备用源，主力全部未命中时才启用
+// 补丁页只暴露这两个池。其余 60+ 注册源属历史遗留或已失效（实测 avmoo/avsox 502、
+// av123 404、missav_api 401、myjav 403、dmm 系无数据等），不再列出 ——
+// 既避免误选，也避免把请求发散到几十个源造成限流与信号量饥饿。
+const SOURCE_POOL = {
+  jav: {
+    primary: [
+      { value: 'javdb', label: 'JavDB（官方协议）' },
+      { value: 'javmenu', label: 'JavMenu' },
+      { value: 'javmost', label: 'JavMost' },
+      { value: 'javbus', label: 'JavBus' },
+    ],
+    fallback: [
+      { value: 'thejavdb', label: 'TheJavDB（第三方）' },
+      { value: 'javplace', label: 'JavPlace' },
+      { value: 'javdb_new', label: 'JavDB（新版）' },
+      { value: 'freejavbt', label: 'FreeJavBT' },
+      { value: 'mmtv', label: 'MMTV' },
+      { value: 'javdatabase', label: 'JavDatabase' },
+    ],
+  },
+}
 // 模块 → 补刮来源提示
 const SOURCE_HINTS = {
   fc2: 'FC2 专用刮削源（与「刮削管理 - FC2」完全一致）',
@@ -304,29 +343,51 @@ const runDirs = ref([])
 // 爬虫注册表（用于按模块动态生成「补刮来源」选项）
 const crawlers = ref([])
 
-// 当前模块可用的刮削源（从爬虫注册表按 supported_types 过滤，与「刮削管理」同源）
-const sourceOptions = computed(() => {
-  if (!currentModule.value || !MODULE_TYPES[currentModule.value]) {
-    return JAV_FALLBACK_SOURCES
-  }
-  const types = MODULE_TYPES[currentModule.value]
-  const opts = crawlers.value
-    .filter(c => (c.supported_types || []).some(t => types.includes(t)))
-    .map(c => ({ value: c.name, label: c.display_name || c.name }))
-  // 去重（同名可能注册多次）
+// 来源池键：未指定模块（中心数据库）时按 jav 处理
+const poolKey = computed(() => currentModule.value || 'jav')
+
+// 精简模式：jav（及中心数据库）直接用内置来源池，不依赖注册表接口
+const hasCuratedSources = computed(() => !!SOURCE_POOL[poolKey.value])
+const primaryOptions = computed(() => SOURCE_POOL[poolKey.value]?.primary || [])
+const fallbackOptions = computed(() => SOURCE_POOL[poolKey.value]?.fallback || [])
+
+// 兼容模式：其他模块仍从爬虫注册表按 supported_types 过滤（与「刮削管理」同源）
+const dynamicOptions = computed(() => {
+  const m = currentModule.value
+  if (!m || !MODULE_TYPES[m]) return []
+  const types = MODULE_TYPES[m]
   const seen = new Set()
   const uniq = []
-  for (const o of opts) {
-    if (!seen.has(o.value)) { seen.add(o.value); uniq.push(o) }
+  for (const c of crawlers.value) {
+    if (!(c.supported_types || []).some(t => types.includes(t))) continue
+    if (seen.has(c.name)) continue
+    seen.add(c.name)
+    uniq.push({ value: c.name, label: c.display_name || c.name })
   }
   return uniq
 })
 
+// 当前模块可用的刮削源
+const sourceOptions = computed(() =>
+  hasCuratedSources.value ? [...primaryOptions.value, ...fallbackOptions.value] : dynamicOptions.value
+)
+
 const sourceHint = computed(() => {
   const m = currentModule.value
-  if (!m || m === 'jav') return 'JAV 有码可用源（avmoo/avsox 的 API/搜索路径已失效，dmm 类型不支持 jav）'
+  if (!m || m === 'jav') {
+    return hasCuratedSources.value
+      ? '主力源按番号轮换错开，避免单站被限流；仅当主力全部未命中时才启用备用源'
+      : ''
+  }
   return SOURCE_HINTS[m] || ''
 })
+
+// 来源快捷选择（全选 / 仅主力 / 清空）
+const selectSources = (which) => {
+  if (which === 'all') runForm.value.sources = sourceOptions.value.map(o => o.value)
+  else if (which === 'primary') runForm.value.sources = primaryOptions.value.map(o => o.value)
+  else runForm.value.sources = []
+}
 
 const detectForm = ref({
   scope: 'incomplete',
@@ -388,7 +449,7 @@ const handleSelectAll = (val) => {
 const runForm = ref({
   mode: 'all',
   patch_type: 'smart',
-  sources: ['javbus', 'javdb', 'avmoo'],
+  sources: [],
   only_missing: true,
   skip_recent: true,
   skip_recent_days: 7,
@@ -406,7 +467,14 @@ const loadConfig = async () => {
   }
 }
 
-// 加载爬虫注册表，并按当前模块设置「补刮来源」默认值
+// 默认勾选：整个来源池（jav → 主力 + 备用）；仅在用户未手动改过时生效
+const applyDefaultSources = () => {
+  if (!runForm.value.sources.length) {
+    runForm.value.sources = sourceOptions.value.map(o => o.value)
+  }
+}
+
+// 加载爬虫注册表（仅非 jav 模块动态来源需要它），随后套用默认来源
 const loadCrawlers = async () => {
   try {
     const res = await getCrawlers()
@@ -414,8 +482,7 @@ const loadCrawlers = async () => {
   } catch (e) {
     console.error('加载爬虫列表失败', e)
   }
-  // 按模块设定默认勾选的刮削源（FC2 用 FC2 源，JAV/中心库用 JAV 源）
-  runForm.value.sources = sourceOptions.value.map(o => o.value)
+  applyDefaultSources()
 }
 
 const detectPercent = computed(() => {
@@ -519,9 +586,10 @@ const restart = () => {
   report.value = null
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadConfig()
-  loadCrawlers()
+  await loadCrawlers()
+  applyDefaultSources()
   loadHistory()
 })
 </script>
@@ -543,4 +611,23 @@ onMounted(() => {
 .job-info { display: flex; gap: 16px; margin-top: 10px; color: #606266; font-size: 13px; }
 .to-patch-num { font-weight: 600; color: var(--el-color-primary, #409eff); }
 .muted-num { color: #909399; }
+
+/* 补刮来源：主力 / 备用 分组 */
+.source-pool { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.source-row { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.source-tag {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #909399;
+  background: #f4f4f5;
+}
+.source-tag.primary { color: #409eff; background: rgba(64, 158, 255, 0.12); font-weight: 600; }
+.source-row :deep(.el-checkbox-group) { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.source-row :deep(.el-checkbox) { margin-right: 0; }
+.source-actions { display: flex; align-items: center; gap: 2px; }
+.source-actions .hint { margin-left: 6px; }
 </style>
