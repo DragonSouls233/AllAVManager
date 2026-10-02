@@ -8,8 +8,13 @@ API 端点：
 - GET  /api/v1/patch/report   - 补刮报告
 """
 
+import json
 import logging
+import os
+import threading
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
@@ -163,6 +168,158 @@ class PatchReportResponse(BaseModel):
 
 # 存储正在运行的补刮任务（实时状态）
 _active_jobs: dict[str, dict] = {}
+
+# ── 任务状态持久化（2026-10-01 加）───────────────────────────────────────────
+# 历史缺陷：_active_jobs 是**纯内存态**，而 _save_patch_records() 只在**整个任务收尾时**
+# 才落库 ⇒ 进程被原生崩溃打死（实测 Windows 0xC0000005 / APPCRASH，故障模块 ntdll.dll）后：
+#   · GET /patch/history 变空、patch_records 0 行
+#   · 没有任何续跑/恢复机制
+#   · 用户看到的就是「刮削走一半不动了 / 任务凭空消失」，而服务本身是健康的
+#   （守护进程 5s 后就把 run.py 拉起来了）。
+# 这里把任务状态**增量写盘**（原子替换），启动时再把上次遗留的 running 标为 interrupted，
+# 保证「崩了也看得见、说得清」，不再静默消失。
+_JOB_STATE_FILE: Optional[Path] = None
+_JOB_STATE_LOCK = threading.Lock()
+_last_persist_ts = 0.0
+_PERSIST_MIN_INTERVAL = 3.0   # 秒；进度回调很频繁，节流避免每片都写盘
+_MAX_JOBS_KEPT = 50
+
+
+def _job_state_path() -> Path:
+    """任务状态文件路径：<data_dir>/state/patch_jobs.json"""
+    global _JOB_STATE_FILE
+    if _JOB_STATE_FILE is None:
+        try:
+            from app.config.manager import get_config_manager
+            base = Path(get_config_manager().computed.data_dir)
+        except Exception:
+            # app/api/routes/patch.py -> parents[3] == 服务端根目录
+            base = Path(__file__).resolve().parents[3] / "data"
+        _JOB_STATE_FILE = base / "state" / "patch_jobs.json"
+    return _JOB_STATE_FILE
+
+
+def _job_public(job_id: str, st: dict) -> dict:
+    """把内部任务态转成「可 JSON 序列化 + 前端友好」的扁平结构
+
+    刻意**剔除 result**（PatchJobResult 不可序列化）。
+    同时给出前端补刮历史表格直接消费的别名字段（started_at/total/success/failed/status）。
+    """
+    started = st.get("started_at")
+    finished = st.get("finished_at")
+    return {
+        "id": job_id,
+        "job_id": job_id,
+        "module": st.get("module") or "jav",
+        "mode": st.get("mode"),
+        "status": st.get("status"),
+        "progress": st.get("progress", 0.0),
+        "started_at": started.isoformat() if hasattr(started, "isoformat") else started,
+        "finished_at": finished.isoformat() if hasattr(finished, "isoformat") else finished,
+        "total_detected": st.get("total_detected", 0),
+        "total_skipped": st.get("total_skipped", 0),
+        "total_to_patch": st.get("total_to_patch", 0),
+        "total_patched": st.get("total_patched", 0),
+        "total": st.get("total_to_patch", 0),
+        "total_success": st.get("total_success", 0),
+        "success": st.get("total_success", 0),
+        "total_partial": st.get("total_partial", 0),
+        "total_failed": st.get("total_failed", 0),
+        "failed": st.get("total_failed", 0),
+        "current_code": st.get("current_code"),
+        "error_message": st.get("error_message"),
+    }
+
+
+def _persist_jobs(force: bool = False) -> None:
+    """把 _active_jobs 落盘（节流 + 原子替换）
+
+    原子性：先写 .tmp 再 os.replace —— 即使在写盘途中被打死，也不会留下半个 JSON
+    把状态文件本身弄坏（下次启动读不出来就等于又丢一次）。
+    """
+    global _last_persist_ts
+    now = time.monotonic()
+    if not force and now - _last_persist_ts < _PERSIST_MIN_INTERVAL:
+        return
+    _last_persist_ts = now
+    try:
+        path = _job_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        items = [_job_public(jid, st) for jid, st in _active_jobs.items()]
+        items.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+        items = items[:_MAX_JOBS_KEPT]
+        payload = {
+            "version": 1,
+            "saved_at": datetime.now().isoformat(),
+            "jobs": items,
+        }
+        tmp = path.with_name(path.name + ".tmp")
+        with _JOB_STATE_LOCK:
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f"补刮任务状态持久化失败: {e}")
+
+
+def _load_persisted_jobs() -> list[dict]:
+    try:
+        path = _job_state_path()
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        jobs = data.get("jobs", []) if isinstance(data, dict) else []
+        return jobs if isinstance(jobs, list) else []
+    except Exception as e:
+        logger.warning(f"读取补刮任务状态失败: {e}")
+        return []
+
+
+def _restore_jobs_at_startup() -> None:
+    """启动时恢复任务可见性：把上次进程遗留的 running 任务标记为 interrupted。
+
+    原生崩溃（0xC0000005）不会给 Python 任何清理机会，所以状态文件里**必然**留着
+    status=running 的僵尸任务 —— 这里正是它的兜底出口。
+    """
+    jobs = _load_persisted_jobs()
+    if not jobs:
+        return
+    now = datetime.now()
+    interrupted = 0
+    for j in jobs:
+        if not isinstance(j, dict):
+            continue
+        st = dict(j)
+        jid = st.get("job_id") or st.get("id")
+        if not jid:
+            continue
+        if st.get("status") == "running":
+            st["status"] = "interrupted"
+            st["finished_at"] = now.isoformat()
+            st["error_message"] = (
+                "任务被中断（服务进程崩溃或重启）；已完成的部分已逐片入库，"
+                "未完成的可重新发起补刮，已完成的会被自动跳过"
+            )
+            interrupted += 1
+        # 字符串时间 → datetime，供 /status 的 duration 计算
+        for k in ("started_at", "finished_at"):
+            v = st.get(k)
+            if isinstance(v, str) and v:
+                try:
+                    st[k] = datetime.fromisoformat(v)
+                except Exception:
+                    st[k] = None
+        _active_jobs[str(jid)] = st
+    if interrupted:
+        logger.warning(
+            f"检测到 {interrupted} 个补刮任务在上次进程退出时处于运行中，已标记为 interrupted"
+        )
+    _persist_jobs(force=True)
+
+
+try:
+    _restore_jobs_at_startup()
+except Exception as _e:      # 绝不因为状态恢复失败而阻断路由注册
+    logger.warning(f"补刮任务状态恢复失败（忽略）: {_e}")
 
 
 async def _find_movie_ids_in_directories(
@@ -355,6 +512,7 @@ async def run_patch(
     _active_jobs[job_id] = {
         "job_id": job_id,
         "mode": mode.value,
+        "module": request.module or "jav",
         "status": "running",
         "progress": 0.0,
         "started_at": started_at,
@@ -371,6 +529,7 @@ async def run_patch(
         "error_message": None,
         "result": None,
     }
+    _persist_jobs(force=True)   # 立刻落盘：即使随后裸崩，也能在历史里看到"这个任务存在过"
 
     # 后台执行
     background_tasks.add_task(_run_patch_background, job_id, options)
@@ -457,29 +616,43 @@ async def get_patch_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     module: str = Query("jav", description="模块名（jav/fc2/uncensored/chinese/western/pornhub），不传默认 jav"),
+    include_records: bool = Query(False, description="同时附带逐片 patch_records 明细（旧行为）"),
 ):
     """
-    获取补刮历史记录
+    获取补刮历史（**任务级**）
 
-    从指定模块的 patch_records 表查询（patch_records 为每模块独立表，不再存于中心库 system.db）
+    2026-10-01 改：此前这里查的是逐片 ``patch_records``，而 ``patch_records`` 只在任务
+    **收尾时**才写入 ⇒ 任务被崩溃/重启打断时它恒为空，"上次跑到哪"永远看不到
+    （实测 0xC0000005 崩溃后 ``total=0``）。
+    现在改为返回**持久化的任务记录**（``<data_dir>/state/patch_jobs.json``）：
+      · 能显示被中断的任务（``status=interrupted``）及其进度（如 3721/9380）
+      · 字段与前端补刮历史表格对齐（id/started_at/total/success/failed/status）
     """
-    PatchRecord = get_module_model(module, "patch_record")
-    session = await get_module_session(module)
-    try:
-        query = select(PatchRecord).order_by(PatchRecord.patched_at.desc())
+    jobs = [
+        j for j in (_job_public(jid, st) for jid, st in _active_jobs.items())
+        if (j.get("module") or "jav") == module
+    ]
+    jobs.sort(key=lambda x: x.get("started_at") or "", reverse=True)
 
-        # 计算总数
-        count_query = select(func.count()).select_from(query.subquery())
-        total = await session.scalar(count_query)
+    start = (page - 1) * page_size
+    resp = {
+        "total": len(jobs),
+        "items": jobs[start:start + page_size],
+        "module": module,
+    }
 
-        # 分页
-        query = query.offset((page - 1) * page_size).limit(page_size)
-        result = await session.execute(query)
-        records = result.scalars().all()
-
-        return {
-            "total": total or 0,
-            "items": [
+    # 兼容出口：仍可取逐片明细（默认关闭）
+    if include_records:
+        PatchRecord = get_module_model(module, "patch_record")
+        session = await get_module_session(module)
+        try:
+            query = (
+                select(PatchRecord)
+                .order_by(PatchRecord.patched_at.desc())
+                .limit(page_size)
+            )
+            result = await session.execute(query)
+            resp["records"] = [
                 {
                     "id": r.id,
                     "movie_id": r.movie_id,
@@ -487,11 +660,12 @@ async def get_patch_history(
                     "status": r.status,
                     "patched_at": r.patched_at.isoformat() if r.patched_at else None,
                 }
-                for r in records
-            ],
-        }
-    finally:
-        await session.close()
+                for r in result.scalars().all()
+            ]
+        finally:
+            await session.close()
+
+    return resp
 
 
 # ===== Background Task =====
@@ -505,6 +679,8 @@ async def _run_patch_background(job_id: str, options: PatchOptions):
         if job_id not in _active_jobs:
             return
         _active_jobs[job_id].update(status_dict)
+        # 增量落盘（内部按 _PERSIST_MIN_INTERVAL 节流，不会每片都写盘）
+        _persist_jobs()
 
     try:
         result = await workflow.run(options, progress_callback=_on_progress)
@@ -524,6 +700,7 @@ async def _run_patch_background(job_id: str, options: PatchOptions):
                 "error_message": result.error_message,
                 "result": result,
             })
+            _persist_jobs(force=True)   # 终态立即落盘
 
         logger.info(
             f"后台补刮任务完成: {job_id} | "
@@ -544,6 +721,7 @@ async def _run_patch_background(job_id: str, options: PatchOptions):
                 "finished_at": datetime.now(),
                 "error_message": str(e),
             })
+            _persist_jobs(force=True)
 
 
 async def _save_patch_records(result: PatchJobResult, module: str = "jav"):

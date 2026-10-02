@@ -149,7 +149,7 @@ async def _detect_module_missing_for_engine(
     历史 bug：调用方只传了 directories，导致只要请求带 module，
     选定/目录补刮都会被无视而退化成全库补刮。这里补齐范围过滤。
     """
-    from sqlalchemy import select, or_, func
+    from sqlalchemy import select, or_, func, case
 
     db = ModuleDatabase.get_instance(module)
     model = _get_module_model(module)
@@ -176,6 +176,21 @@ async def _detect_module_missing_for_engine(
                     filters.append(model.file_path.like(f"%{d}%"))
             if filters:
                 stmt = stmt.where(or_(*filters))
+
+        # ── 「未完成优先」排序（2026-10-01 修）──────────────────────────────────
+        # 历史 bug：这里**没有 ORDER BY** ⇒ SQLite 按 rowid/id 顺序返回 ⇒ 从 id 头部开始啃。
+        # 换服务器/重建库后 id 常被 status 分区（实测 scraped=id 1~4424、
+        # pending=4417~9380），于是补刮跑掉的那些**全是已刮削**的片子：
+        # 2.4 小时处理 3512 部、pending 4957→4957、cover 7259→7260，净进度为零，
+        # 而 4957 部真正待刮的还没轮到（第一个 pending 的 id 是 4417）。
+        # 修法：未刮削的排到最前，其余按 id 升序 —— 保证"先把该干的干完"。
+        if hasattr(model, "status"):
+            stmt = stmt.order_by(
+                case((model.status == "scraped", 1), else_=0),
+                model.id,
+            )
+        elif hasattr(model, "id"):
+            stmt = stmt.order_by(model.id)
 
         result = await session.execute(stmt)
         movies = result.scalars().all()

@@ -66,6 +66,34 @@ except Exception as _boot_err:  # pragma: no cover - 引导失败不能阻止服
         return None
 
 
+# =============================================================================
+# 崩溃取证：faulthandler 落「独立 + 追加」文件（2026-10-01 加）
+# =============================================================================
+# 背景：进程被**原生崩溃**打死时（实测 Windows 0xC0000005 / APPCRASH，
+# 故障模块 ntdll.dll，异常偏移 0xaa83），Python 层拿不到任何异常对象，
+# 唯一可能的现场就是 faulthandler 的线程栈。
+# 但默认 faulthandler 输出走 stderr，而 stderr 被重定向到 data/logs/server_stderr.log，
+# 该文件不归 logging 体系管、历史上出现过被清空/覆盖的情况（实测崩溃后文件里只剩
+# 重启之后的启动横幅，崩溃栈永久丢失，最后只能靠 WER 的"故障模块"瞎猜）。
+# 这里把 faulthandler 固定写到**独立、追加模式**的 faulthandler.log，谁都别截断它。
+# 注意：`faulthandler.enable(all_threads=True)` 报错时会打印**所有**线程的栈，
+# 这正是判断"崩在哪个原生扩展（curl_cffi / lxml ）"的关键。
+_FAULT_LOG_FILE = None
+try:
+    import faulthandler as _faulthandler
+
+    _fault_dir = Path(LOG_DIR) if LOG_DIR else (Path(__file__).resolve().parent / "data" / "logs")
+    _fault_dir.mkdir(parents=True, exist_ok=True)
+    _FAULT_LOG_FILE = open(_fault_dir / "faulthandler.log", "a", encoding="utf-8", errors="replace")
+    _faulthandler.enable(file=_FAULT_LOG_FILE, all_threads=True)
+    try:
+        _faulthandler.register(signal.SIGABRT, file=_FAULT_LOG_FILE, all_threads=True, chain=False)
+    except Exception:
+        pass
+except Exception as _fh_err:  # pragma: no cover - 取证失败不能阻止服务启动
+    print(f"[警告] faulthandler 初始化失败（原生崩溃时将无 Python 层栈）: {_fh_err}")
+
+
 class Style:
     RESET = "\033[0m"
     BOLD = "\033[1m"

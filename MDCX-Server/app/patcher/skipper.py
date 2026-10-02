@@ -148,16 +148,21 @@ class Skipper:
         for field in missing_info.missing_fields:
             if field.importance == "critical":
                 return False
-        
+
         # 检查关键图片
         for image in missing_info.missing_images:
             if image.importance == "critical":
                 return False
-        
+
         # 检查 NFO
-        if not missing_info.nfo_exists:
+        # ⚠️ 只有当检测端**真的检查过** NFO（nfo_checked=True）时，nfo_exists 才是可信判据。
+        # 历史 bug：MissingInfo.nfo_exists 默认 False，而模块库检测
+        # （app/patcher/engine.py::_detect_module_missing_for_engine）从不赋值 ⇒
+        # 这里恒为 `not False = True` ⇒ 直接 return False ⇒ skip_complete 一个都跳不掉，
+        # 导致「检测数 = 库总数、已跳过 0」，补刮把已完成的片子全部重刮一遍。
+        if missing_info.nfo_checked and not missing_info.nfo_exists:
             return False
-        
+
         return True
     
     def _check_custom_rules(

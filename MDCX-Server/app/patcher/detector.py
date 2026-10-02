@@ -139,6 +139,11 @@ class MissingInfo:
     # NFO 文件状态
     nfo_exists: bool = False
     nfo_path: Optional[str] = None
+    # 检测端是否**真的检查过** NFO。
+    # False 表示"没检查过"，此时 nfo_exists 的默认 False 只是占位值，
+    # 不得当作"缺失"参与判据 —— 否则 Skipper._is_complete() 会永远返回 False，
+    # skip_complete 变成死开关（实测：全库 9380 部一部都跳不掉）。
+    nfo_checked: bool = False
     
     # 演员头像状态
     actor_images_missing: list[str] = field(default_factory=list)
@@ -492,6 +497,7 @@ class MissingDetector:
         if output_dir:
             info.missing_images, info.nfo_exists, info.nfo_path = \
                 await self._detect_missing_images(movie_data, output_dir)
+            info.nfo_checked = True   # 确实检查过 NFO，nfo_exists 此时是可信判据
 
             # 补丁刮削时用 DB 已有的远程封面URL（刮削失败时回退下载）
             db_cover = movie_data.get("cover_url") or movie_data.get("poster_url")
@@ -506,6 +512,7 @@ class MissingDetector:
             # 没有输出目录，所有图片都视为缺失
             info.missing_images = self._get_all_images_missing()
             info.nfo_exists = False
+            info.nfo_checked = True   # 无目录 = 明确认定 NFO 缺失，是可信判定
         
         return info
     
