@@ -31,11 +31,14 @@ class Database:
         self.echo = config.database.echo
 
         # 创建引擎 - SQLite aiosqlite 对并发写入敏感
+        # ⚠️ 2026-10-02：max_overflow 20 → 10，并显式 pool_timeout。
+        # aiosqlite 每个连接一个 worker 线程，池上限即线程上限。
         self.engine = create_async_engine(
             self.database_url,
             echo=self.echo,
             pool_size=config.database.pool_size,
-            max_overflow=20,
+            max_overflow=10,
+            pool_timeout=30,
             pool_pre_ping=True,
             pool_recycle=300,
             connect_args={"check_same_thread": False} if "sqlite" in self.database_url else {},

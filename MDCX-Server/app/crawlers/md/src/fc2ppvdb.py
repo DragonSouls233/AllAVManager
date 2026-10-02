@@ -101,18 +101,38 @@ async def main(
             }
         else:
             proxies = None
-        async with AsyncSession(cookies=cookies, proxies=proxies) as session:
-            # 访问详情页面，提交 cookie
-            url_article = f"https://fc2ppvdb.com/articles/{number}"
-            response_article = await session.get(url_article)
-            if response_article.status_code != 200:
-                raise Exception(f"详情页请求失败: {response_article.status_code}")
+        # curl_cffi 原生层在 Python 3.14 下可能整体损坏（cdata TypeError / 段错误）。
+        # 进程级降级标志由 app.utils.http_client 统一维护：已降级则快速失败，避免
+        # 继续踩同一个坑；本次若触发致命错误则置位全局标志，让其它直连点一并停用。
+        # （本文件是绕过 AsyncHttpClient 的裸 AsyncSession 调用点之一，
+        #   2026-10-02 补上保护 —— 此前它完全不受降级机制覆盖。）
+        from app.utils.http_client import (
+            is_curl_disabled,
+            is_fatal_curl_error,
+            mark_curl_unavailable,
+        )
 
-            # 访问 XHR 接口获取 JSON 数据
-            xhr_url = f"https://fc2ppvdb.com/articles/article-info?videoid={number}"
-            response_xhr = await session.get(xhr_url)
-            if response_xhr.status_code != 200:
-                raise Exception(f"XHR 请求失败: {response_xhr.status_code}")
+        if is_curl_disabled():
+            raise Exception("curl_cffi 已在进程级降级，跳过 fc2ppvdb 直连请求")
+
+        try:
+            async with AsyncSession(cookies=cookies, proxies=proxies) as session:
+                # 访问详情页面，提交 cookie
+                url_article = f"https://fc2ppvdb.com/articles/{number}"
+                response_article = await session.get(url_article)
+                if response_article.status_code != 200:
+                    raise Exception(f"详情页请求失败: {response_article.status_code}")
+
+                # 访问 XHR 接口获取 JSON 数据
+                xhr_url = f"https://fc2ppvdb.com/articles/article-info?videoid={number}"
+                response_xhr = await session.get(xhr_url)
+                if response_xhr.status_code != 200:
+                    raise Exception(f"XHR 请求失败: {response_xhr.status_code}")
+        except Exception as _curl_exc:
+            # 仅当明确是 curl_cffi 原生层致命错误时才全局降级；其余异常原样抛出
+            if is_fatal_curl_error(_curl_exc):
+                mark_curl_unavailable(f"fc2ppvdb 直连失败: {_curl_exc!r}")
+            raise
 
         html_info = response_xhr.json()  # json 传给旧变量
 

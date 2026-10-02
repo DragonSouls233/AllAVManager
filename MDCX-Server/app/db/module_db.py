@@ -58,8 +58,16 @@ class ModuleDatabase:
         self.engine = create_async_engine(
             db_url,
             echo=False,
-            pool_size=20,
-            max_overflow=30,
+            # ⚠️ 2026-10-02 收紧连接池：aiosqlite **每个连接都会起一个
+            # `_connection_worker_thread`**，因此「池上限 = 线程上限」。
+            # 旧配置 pool_size=20 + max_overflow=30 = 50 连接/模块 × 7 模块 = 350，
+            # 叠加 system_db(30) 与主库(30) 后 ≈ 410 —— 与崩溃时 faulthandler 里
+            # Thread-114 ~ Thread-383（近 400 个 aiosqlite worker 线程）精确吻合。
+            # SQLite 本身是单写文件库，并不需要大连接池；补刮并发上限 12，
+            # 5 + 10 = 15/模块 已足够，且把常驻线程从 160 降到 35。
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
             pool_pre_ping=True,
             pool_recycle=600,
             connect_args={"check_same_thread": False},

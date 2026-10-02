@@ -17,6 +17,44 @@ from app.utils.http_client import AsyncHttpClient
 logger = logging.getLogger(__name__)
 
 
+# ── 图片内容校验 ────────────────────────────────────────────────────────
+# 2026-10-02 补：此前只要 HTTP 200 就把 body 直接写盘成 .jpg，不校验内容。
+# 实测全库有 69 个 **0 字节**图片（cover/fanart/poster/thumb.jpg）——下载失败
+# 或返回空 body 时仍落了空文件，会污染媒体库（Kodi/Jellyfin 扫描报错、
+# 封面回退链 fanart→thumb→cover→poster 失效）。此处加魔数 + 长度校验。
+_IMAGE_MAGIC: tuple[bytes, ...] = (
+    b"\xff\xd8\xff",          # JPEG
+    b"\x89PNG\r\n\x1a\n",     # PNG
+    b"GIF87a",
+    b"GIF89a",
+    b"BM",                    # BMP
+)
+_MIN_IMAGE_BYTES = 128        # 小于此值不可能是有效图片（防 0 字节 / 截断）
+
+
+def _looks_like_image(content: bytes) -> bool:
+    """校验内容是否像一张真实图片（魔数 + 最小长度）。"""
+    if not content or len(content) < _MIN_IMAGE_BYTES:
+        return False
+    if content.startswith(_IMAGE_MAGIC):
+        return True
+    # WEBP: "RIFF" + <4字节长度> + "WEBP"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return True
+    return False
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """原子写文件：先写 .tmp 再 os.replace，避免崩溃瞬间留下半截文件。"""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+
 class ImageProcessor:
     """
     图片处理器
@@ -161,10 +199,17 @@ class ImageProcessor:
                 from app.utils.media_helpers import maybe_decrypt_javdb_image
                 content = maybe_decrypt_javdb_image(response.content)
 
-                # 保存图片
-                with open(save_path, "wb") as f:
-                    f.write(content)
-                
+                # 校验确实是图片再落盘：避免把空响应 / HTML 错误页写成 0 字节 .jpg
+                if not _looks_like_image(content):
+                    logger.warning(
+                        f"下载内容不是有效图片，跳过落盘: {url} "
+                        f"({len(content) if content else 0} bytes, head={(content or b'')[:8]!r})"
+                    )
+                    return None
+
+                # 原子写盘（先 .tmp 再 replace），防崩溃瞬间留下半截文件
+                _atomic_write_bytes(save_path, content)
+
                 logger.debug(f"Downloaded: {url} -> {save_path}")
                 return str(save_path)
             

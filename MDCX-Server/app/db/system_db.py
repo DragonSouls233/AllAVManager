@@ -47,8 +47,11 @@ class SystemDatabase:
         self.engine = create_async_engine(
             db_url,
             echo=False,
-            pool_size=10,
-            max_overflow=20,
+            # ⚠️ 2026-10-02 收紧连接池（与 module_db 同因）：aiosqlite 每连接一个
+            # worker 线程，池上限即线程上限。10+20=30 对 SQLite 属过大配置。
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
             pool_pre_ping=True,
             pool_recycle=300,
             connect_args={"check_same_thread": False},

@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import random
+import threading
 import time
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -53,6 +54,91 @@ BROWSER_IMPERSONATES = [
     "edge99", "edge101",
     "safari15_3", "safari15_5", "safari17_0", "safari18_0",
 ]
+
+
+# ── curl_cffi 原生层降级（进程级共享）──────────────────────────────────────
+# ⚠️ 必须背景（2026-10-02 事故，根因已由 faulthandler 锁定）：
+#   curl_cffi 0.11.4 的 C 扩展在 socket 事件回调里访问已失效 handle →
+#   `curl_cffi/aio.py:209 socket_action ← _asyncio_selector.py:250 _handle_event`
+#   恶性时直接 access violation（0xC0000005）整进程崩溃；
+#   良性时抛 `TypeError: initializer for ctype 'void *' must be a cdata pointer,
+#   not NoneType`，把整部片子（元数据+图片）打成 FAILED（实测持续出现 319 部）。
+#
+# 旧实现把 `_curl_failed` 放在**实例**上，而刮削每部片子都会新建一个
+# AsyncHttpClient → 探测到的降级状态无法跨实例共享，每片重踩一次。
+# 实测后果：「curl_cffi 不可用」日志 count=0（从未触发），只有
+# 「降级 httpx 再试」355 次 —— 说明整批片子一直在反复踩同一个坑。
+#
+# 现改为**进程级**：原生库一旦损坏就是全局损坏，全进程统一切换 httpx。
+# 另注：升级 curl_cffi 0.16.3 后该缺陷应已消除，此处作为兜底防线保留。
+_CURL_DISABLED: bool = False
+_CURL_DISABLED_REASON: str = ""
+_CURL_DISABLED_LOCK = threading.Lock()
+
+# 判定「致命 curl_cffi C 层错误」的特征串。命中即说明原生扩展已不可用，
+# 继续用下去只会重复失败（甚至段错误），应立即全局降级。
+#
+# ⚠️ 措辞必须精确：**不能**用 "libcurl" / "curl" 这类宽泛串 —— 普通超时错误的
+# 提示里就带 `See https://curl.se/libcurl/c/libcurl-errors.html`（实测），
+# 一旦误判就会把「网络超时」当成「原生库损坏」→ 全进程错误降级、白丢指纹。
+# 因此只匹配 cffi/原生层特有的措辞。
+_CURL_FATAL_MARKERS = (
+    "initializer for ctype",       # cffi: initializer for ctype 'void *' must be a cdata pointer
+    "must be a cdata pointer",
+    "cdata pointer",
+    "ffi.error",                   # cffi 层错误
+    "access violation",            # 原生层内存访问违规
+    "0xC0000005",
+)
+
+
+def is_fatal_curl_error(exc: BaseException) -> bool:
+    """判断异常是否属于「curl_cffi 原生扩展已不可用」的致命错误。
+
+    只在能明确归因于原生层时才返回 True，避免把普通业务异常
+    （如 4xx/5xx、超时、DNS 失败）误判为需要全局降级。
+    供本模块以外的直连调用点（如 crawlers/md/src/fc2ppvdb.py）复用。
+    """
+    if isinstance(exc, BaseException) and type(exc).__name__.startswith("Curl"):
+        return True
+    msg = str(exc)
+    return any(m in msg for m in _CURL_FATAL_MARKERS)
+
+
+def mark_curl_unavailable(reason: str = "") -> None:
+    """把 curl_cffi 标记为**进程级**不可用，后续所有请求一律降级 httpx。
+
+    幂等：首次置位时打一条 error 日志，之后静默（避免刷屏）。
+    """
+    global _CURL_DISABLED, _CURL_DISABLED_REASON
+    with _CURL_DISABLED_LOCK:
+        if _CURL_DISABLED:
+            return
+        _CURL_DISABLED = True
+        _CURL_DISABLED_REASON = str(reason)[:300]
+    logger.error(
+        f"[curl_cffi] 原生扩展已被标记为进程级不可用，全部请求降级 httpx。原因: "
+        f"{_CURL_DISABLED_REASON}"
+    )
+
+
+def is_curl_disabled() -> bool:
+    """curl_cffi 是否已在进程级被禁用（供其它直连调用点查询）。"""
+    return _CURL_DISABLED
+
+
+def curl_disabled_reason() -> str:
+    """返回进程级禁用的原因（未禁用时为空串），用于诊断。"""
+    return _CURL_DISABLED_REASON
+
+
+def reset_curl_state() -> None:
+    """清除进程级降级标记。仅供测试/诊断热切换使用，生产路径不要调用。"""
+    global _CURL_DISABLED, _CURL_DISABLED_REASON
+    with _CURL_DISABLED_LOCK:
+        _CURL_DISABLED = False
+        _CURL_DISABLED_REASON = ""
+
 
 
 # ── 站点级速率限制（进程级共享）────────────────────────────────────────────
@@ -131,10 +217,9 @@ class AsyncHttpClient:
         self._domain_lock = asyncio.Lock()
         # 上一次使用的指纹 ID（用于排除连续重复）
         self._last_fingerprint_id: str = ""
-        # curl_cffi 在本环境（Python3.14 + 预编译 native 库）下可能整体不可用
-        # （报 "initializer for ctype 'void *' must be a cdata pointer, not NoneType"）。
-        # 一旦探测到该致命错误，置此标志，后续请求全部降级到 httpx，避免反复重试浪费时间。
-        self._curl_failed: bool = False
+        # ⚠️ 注意：curl_cffi 是否可用**不是实例状态**，而是进程级状态
+        # （见模块顶部 `_CURL_DISABLED`）。本类通过只读属性 `_curl_failed`
+        # 暴露它，读写都落到全局，跨实例共享。此处不再持有实例副本。
 
         # === 全局并发 Semaphore（防 hang 死）===
         # 2026-09-03 事故：6:48 站群瞬时断流 → 数千个下载请求同时跑 3×30s 重试 →
@@ -146,6 +231,20 @@ class AsyncHttpClient:
         # 两路独立，单一图片洪水不会挤垮 API 刮削。
         self._api_sem: asyncio.Semaphore = asyncio.Semaphore(16)
         self._download_sem: asyncio.Semaphore = asyncio.Semaphore(8)
+
+    # ── curl_cffi 可用性（进程级，跨实例共享）─────────────────────────────
+    # 保留 `self._curl_failed` 这个旧名字，让既有读写点无需改动即可
+    # 升级为「进程级」语义：读 → 查全局；写 True → 全局置位。
+    @property
+    def _curl_failed(self) -> bool:  # type: ignore[override]
+        return _CURL_DISABLED
+
+    @_curl_failed.setter
+    def _curl_failed(self, value: bool) -> None:  # type: ignore[override]
+        if value:
+            mark_curl_unavailable("实例在使用 curl_cffi 时探测到致命原生错误")
+        # 写 False 视为 no-op：降级是不可逆的进程级决策，
+        # 不允许某个实例把它"复位"回去，否则又会踩同一个坑。
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """上下文管理器入口"""
@@ -177,7 +276,7 @@ class AsyncHttpClient:
             except Exception as e:
                 self._curl_failed = True
                 logger.warning(
-                    f"curl_cffi 会话初始化失败（{e}），后续请求将降级到 httpx"
+                    f"curl_cffi 会话初始化失败（{e}），进程内后续请求将降级到 httpx"
                 )
 
     def _select_fingerprint_for_request(
@@ -452,11 +551,13 @@ class AsyncHttpClient:
                         f"GET 失败 ({attempt + 1}/{self.max_retries}) {url}: "
                         f"{type(e).__name__}: {e}"
                     )
-                    # 致命的 curl_cffi C 层错误（Python3.14 下 native 库损坏）：
-                    # 直接禁用 curl_cffi，后续请求全部走 httpx 降级。
-                    if "void *" in str(e) or "cdata" in str(e) or type(e).__name__.startswith("Curl"):
-                        self._curl_failed = True
-                        logger.warning(f"curl_cffi 不可用（{e}），后续请求将降级到 httpx")
+                    # 致命的 curl_cffi C 层错误（native 库损坏 / handle 失效）：
+                    # 直接全局禁用 curl_cffi，进程内后续请求全部走 httpx 降级。
+                    if is_fatal_curl_error(e):
+                        self._curl_failed = True  # → 进程级置位
+                        logger.warning(
+                            f"curl_cffi 不可用（{e}），进程内全部请求将降级到 httpx"
+                        )
                         break
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(1.0 * (attempt + 1))
@@ -657,10 +758,12 @@ class AsyncHttpClient:
                         f"POST 失败 ({attempt + 1}/{self.max_retries}) {url}: "
                         f"{type(e).__name__}: {e}"
                     )
-                    # 致命的 curl_cffi C 层错误：禁用 curl_cffi，降级 httpx
-                    if "void *" in str(e) or "cdata" in str(e) or type(e).__name__.startswith("Curl"):
-                        self._curl_failed = True
-                        logger.warning(f"curl_cffi 不可用（{e}），后续请求将降级到 httpx")
+                    # 致命的 curl_cffi C 层错误：全局禁用 curl_cffi，降级 httpx
+                    if is_fatal_curl_error(e):
+                        self._curl_failed = True  # → 进程级置位
+                        logger.warning(
+                            f"curl_cffi 不可用（{e}），进程内全部请求将降级到 httpx"
+                        )
                         break
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(1.0 * (attempt + 1))

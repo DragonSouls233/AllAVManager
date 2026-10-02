@@ -112,6 +112,14 @@ async def _test_url(url: str, proxy: str | None = None, timeout: float = 10.0) -
             "time_ms": round(elapsed, 1),
         }
     except Exception as e:
+        # 若命中 curl_cffi 原生层致命错误，顺带置位**进程级**降级标志，
+        # 让后续刮削请求提前走 httpx（此处不 re-raise，仍返回错误 dict）。
+        try:
+            from app.utils.http_client import is_fatal_curl_error, mark_curl_unavailable
+            if is_fatal_curl_error(e):
+                mark_curl_unavailable(f"爬虫连通性测试命中 curl_cffi 致命错误: {e!r}")
+        except Exception:
+            pass
         elapsed = (time.time() - start) * 1000
         error_msg = str(e)
         if len(error_msg) > 80:

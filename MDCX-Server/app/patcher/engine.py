@@ -677,6 +677,14 @@ class PatchWorkflow:
                     # 单片超时：最多 120 秒，防止某个源挂起导致整个任务卡死
                     # module 透传：确保 western/pornhub 模块走各自专属爬虫，
                     # 即便 missing_info.output_dir 为空也不会回退到 JAV 有码爬虫。
+                    #
+                    # ⚠️ 2026-10-02 复验：这里的 wait_for 会**硬取消在途请求**，
+                    # 曾与 curl_cffi 0.11.4 的 handle 失效 bug 叠加成 0xC0000005
+                    # 段错误（faulthandler 栈：aio.py:209 socket_action ←
+                    # _asyncio_selector.py:250 _handle_event）。
+                    # 升级到 curl_cffi 0.16.3 后已做专项压测：60 路在途取消 +
+                    # 取消后复用同一 session 25/25 成功 + 5 轮「取消风暴」全 200，
+                    # 不再崩溃。故此处超时逻辑保持不动，仅保留为防挂死兜底。
                     pr = await asyncio.wait_for(
                         self.engine.patch(
                             info, options.patch_type,
