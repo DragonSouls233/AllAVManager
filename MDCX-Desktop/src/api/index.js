@@ -547,8 +547,9 @@ export const listGifs = (movieId) => api.get(`/player/${movieId}/gifs`)
 export const generateGif = (movieId, data) => api.post(`/player/${movieId}/gifs/generate`, data)
 export const deleteGif = (movieId, filename) => api.delete(`/player/${movieId}/gifs/${filename}`)
 
-// 章节标记
-export const listChapters = (movieId) => api.get(`/player/${movieId}/chapters`)
+// 章节标记（module 后端默认 jav，漏传则非 jav 模块 404）
+export const listChapters = (movieId, module) =>
+  api.get(`/player/${movieId}/chapters`, { params: module ? { module } : {} })
 export const addChapter = (movieId, data) => api.post(`/player/${movieId}/chapters`, data)
 export const updateChapter = (movieId, chapterId, data) =>
   api.put(`/player/${movieId}/chapters/${chapterId}`, data)
@@ -556,16 +557,19 @@ export const deleteChapter = (movieId, chapterId) =>
   api.delete(`/player/${movieId}/chapters/${chapterId}`)
 export const autoDetectChapters = (movieId, params = {}) =>
   api.post(`/player/${movieId}/chapters/auto-detect`, null, { params })
-export const generateChapterThumbnails = (movieId) =>
-  api.post(`/player/${movieId}/chapters/generate-thumbnails`)
+export const generateChapterThumbnails = (movieId, module) =>
+  api.post(`/player/${movieId}/chapters/generate-thumbnails`, null, { params: module ? { module } : {} })
 
 // 字幕
-export const listSubtitles = (movieId) => api.get(`/player/${movieId}/subtitles`)
+// 注意：/player/* 端点的 module 后端默认值是 jav，漏传会让非 jav 模块字幕 404
+export const listSubtitles = (movieId, module) =>
+  api.get(`/player/${movieId}/subtitles`, { params: module ? { module } : {} })
 
 // 音轨切换（v3.5 新增）
-export const listAudioTracks = (movieId) => api.get(`/player/${movieId}/audio-tracks`)
-export const switchAudioTrack = (movieId, trackIndex) =>
-  api.post(`/player/${movieId}/audio-tracks/${trackIndex}/switch`)
+export const listAudioTracks = (movieId, module) =>
+  api.get(`/player/${movieId}/audio-tracks`, { params: module ? { module } : {} })
+export const switchAudioTrack = (movieId, trackIndex, module) =>
+  api.post(`/player/${movieId}/audio-tracks/${trackIndex}/switch`, null, { params: module ? { module } : {} })
 
 // HLS 自适应码率（v3.5 新增）
 export const getHlsQualities = (movieId) => api.get(`/movies/${movieId}/hls/qualities`)

@@ -363,10 +363,23 @@ class ProxyManager:
 
     # ============ 对外查询 ============
     def get_current_socks5_url(self) -> str | None:
-        """给 http_client 用：优先使用内嵌代理。"""
-        if self._state.running:
-            return f"socks5://127.0.0.1:{self._state.socks_port}"
-        return None
+        """给 http_client 用：优先使用内嵌代理。
+
+        🔴 `running` 只是进程内的启动标志，不代表端口真的活着 —— xray 进程
+        崩溃 / 被用户关掉 / 端口被别的程序抢占时，`running` 仍是 True，
+        于是这里返回一个死端口。全项目会静默「连不上」且日志无异常
+        （表现：所有源 connect 失败，但没有任何代理相关告警）。
+        与下面的 config 回退路径不对称（那边有 _check_socks_port 存活检测）。
+        """
+        if not self._state.running:
+            return None
+        if not _check_socks_port("127.0.0.1", self._state.socks_port):
+            logger.warning(
+                "内置 xray 标记为运行中，但 socks 端口 %s 不可达，忽略内置代理。",
+                self._state.socks_port,
+            )
+            return None
+        return f"socks5://127.0.0.1:{self._state.socks_port}"
 
     def get_state(self) -> dict[str, Any]:
         return asdict(self._state)

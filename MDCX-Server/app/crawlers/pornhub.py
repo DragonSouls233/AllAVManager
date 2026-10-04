@@ -12,6 +12,7 @@ PORNHub 爬虫
 import asyncio
 import json
 import re
+from datetime import date
 from typing import Optional
 
 from app.crawlers.base import (
@@ -23,6 +24,8 @@ from app.crawlers.base import (
 from app.crawlers.provider import register_crawler
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
+from app.utils.release_date import parse_ph_publish_date, parse_release_date
+from app.scraper.number import is_valid_ph_viewkey
 
 logger = get_logger(__name__)
 
@@ -177,6 +180,31 @@ def _parse_duration_to_seconds(duration_str: str) -> Optional[int]:
         except ValueError:
             pass
     return None
+
+
+def _normalize_rating(raw) -> Optional[float]:
+    """把 PornHub 的百分制评分归一化到 ``ScrapeResult`` 契约的 **0-10**。
+
+    🔴 2026-10-04 修复：PH 的 ``class="percent"`` / ``__NEXT_DATA__.rating`` /
+    flashvars ``rating`` 都是 **0-100 百分制**，旧代码三处都原样 ``float()`` 写入
+    ⇒ 库里会出现 ``rating=92``（满分 10 的字段被塞进 92），Kodi 显示 92 星。
+    对照 ``pornhub_api.py`` 已做 ``*2`` 换算（源为 0-5）—— 同模块两源口径不一。
+
+    这里只做「0-100 → 0-10」换算 + 范围钳制，0-5 制的源仍应在自己那边换算。
+    """
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0:
+        return None
+    # 已经是 0-10 的（如 8.5）直接放行；0-100 的除以 10
+    if val > 10:
+        val = val / 10.0
+    # 钳制到契约范围，防御上游脏数据
+    return round(min(max(val, 0.0), 10.0), 2)
 
 
 @register_crawler
@@ -456,9 +484,10 @@ class PornhubCrawler(BaseCrawler):
 
         # 评分
         try:
-            rating = video_data.get("rating")
+            # 🔴 PH 是 0-100 百分制，必须归一化到契约的 0-10，否则 rating=92
+            rating = _normalize_rating(video_data.get("rating"))
             if rating is not None:
-                result.rating = float(rating)
+                result.rating = rating
         except (ValueError, TypeError):
             pass
 
@@ -537,7 +566,8 @@ class PornhubCrawler(BaseCrawler):
         rating_m = re.search(r'<span[^>]*class="percent"[^>]*>([^<]+)%', html_text)
         if rating_m:
             try:
-                result.rating = float(rating_m.group(1))
+                # 🔴 class="percent" 是 0-100 百分制，归一化到 0-10
+                result.rating = _normalize_rating(rating_m.group(1))
             except ValueError:
                 pass
 
@@ -586,6 +616,11 @@ class PornhubCrawler(BaseCrawler):
         views = self._extract_views_html(html_text)
         if views is not None:
             result.votes = views
+
+        # 发行日期（PH 详情页多处出现，取第一个能解析成功的）
+        release_date = self._extract_release_date_html(html_text)
+        if release_date:
+            result.release_date = release_date
 
         # 标签/分类（参考 VaultX: div class_='categoriesWrapper'）
         tags, categories = self._extract_tags_html(html_text)
@@ -733,6 +768,42 @@ class PornhubCrawler(BaseCrawler):
             return None
         return max(seconds // 60, 1)
 
+    def _extract_release_date_html(self, html: str) -> Optional[date]:
+        """从 HTML 提取发行日期 → `datetime.date`。
+
+        🔴 2026-10-04 新增：PH 的 HTML 主源此前**完全没有**发行日期解析
+        （整个文件搜不到任何日期相关代码），与 `pornhub_api.py` 把日期塞进
+        raw_data 无人读叠加 ⇒ **pornhub 两个源都产不出 release_date**，
+        库里该列永远为空，NFO 的 `<premiered>` 也缺失。
+
+        PH 详情页的日期出现在多处（按可靠性排序，命中即止）：
+          ① `<meta property="video:release_date" content="2024-01-31T08:00:00">`
+          ② `<span class="videoUploaded">Jan 31, 2024</span>`
+          ③ `__NEXT_DATA__` JSON 里的 `publishDate`（unix 秒）
+          ④ flashvars 的 `uploadDate`（形如 `20240131000000`）
+        统一交给 `release_date` 真相源解析，解析不出返 None（不填今天）。
+        """
+        patterns = (
+            r'<meta\s+property="video:release_date"\s+content="([^"]+)"',
+            r'<meta\s+itemprop="uploadDate"\s+content="([^"]+)"',
+            r'class="[^"]*videoUploaded[^"]*"[^>]*>\s*([^<]+?)\s*<',
+            r'"uploadDate"\s*:\s*"(\d{10,14})"',
+            r'"publishDate"\s*:\s*"?(\d{10,13})"?',
+            r'class="[^"]*videoUploaded[^"]*"[^>]*>.*?(\d{4}-\d{2}-\d{2})',
+        )
+        for pat in patterns:
+            m = re.search(pat, html, re.I | re.DOTALL)
+            if not m:
+                continue
+            raw = m.group(1).strip()
+            parsed = parse_ph_publish_date(raw)      # unix / 紧凑日期
+            if parsed:
+                return parsed
+            parsed = parse_release_date(raw)          # 带分隔日期 / 英文月份
+            if parsed:
+                return parsed
+        return None
+
     def _extract_rating_html(self, html: str) -> Optional[float]:
         """提取评分（参考 VaultX 第126-132行: span class='percent'）"""
         m = re.search(r'<span[^>]*class="[^"]*percent[^"]*"[^>]*>\s*(\d+(?:\.\d+)?)\s*%', html)
@@ -870,8 +941,9 @@ class PornhubCrawler(BaseCrawler):
 
         # 评分
         try:
-            rating = float(data.get("rating", 0) or 0)
-            if rating > 0:
+            # 🔴 flashvars rating 同为 0-100 百分制
+            rating = _normalize_rating(data.get("rating", 0))
+            if rating:
                 result.rating = rating
         except (ValueError, TypeError):
             pass
@@ -961,37 +1033,48 @@ class PornhubCrawler(BaseCrawler):
             # 从搜索结果中提取视频
             seen = set()
 
-            # 方案1: viewkey 提取 - 多种属性
-            for m in re.finditer(r'viewkey=([a-f0-9]+)', html_text):
+            # 🔴 2026-10-04 修复两处致命问题：
+            # 1) 旧正则 `viewkey=([a-f0-9]+)` 只吃 a-f，而真实 viewkey 是 13 位 a-z0-9
+            #    （含 p/q/x/y/z 等 g-z 字母）⇒ 实测 4 个样本错 3 个，含字母 p 的那个直接提不出来。
+            #    现统一走全仓唯一判据 number.PH_VIEWKEY_RE（先取出候选再交给 is_valid 校验）。
+            # 2) 旧「方案1」循环体只 `seen.add()` 从不 `results.append()` ⇒ 40 行零产出死代码；
+            #    「方案2」又完全不查 seen ⇒ 同一 viewkey 重复入库。
+            # 现合并为单一路径：扫描所有 viewkey 候选 → 校验 → 去重 → 抓标题。
+            for m in re.finditer(r'viewkey=([a-zA-Z0-9]{10,20})', html_text):
                 vk = m.group(1)
-                if vk not in seen:
-                    seen.add(vk)
+                if not is_valid_ph_viewkey(vk):
+                    continue
+                if vk in seen:
+                    continue
+                seen.add(vk)
 
-            # 方案2: data-video-title + viewkey 匹配
-            for m in re.finditer(
-                r'viewkey=([a-f0-9]+)[^"]*".*?data-movie-title="([^"]+)"',
-                html_text,
-                re.DOTALL,
-            ):
-                vk = m.group(1)
-                title = m.group(2)
-                if vk and title:
-                    result = ScrapeResult(
-                        code="ph" + vk,
-                        title=title.strip(),
-                        source="pornhub",
-                    )
-                    # 提取缩略图
-                    thumb_m = re.search(
-                        rf'viewkey={vk}[^"]*".*?(?:data-src|src)="([^"]*phncdn[^"]+\.jpg)"',
-                        html_text[:html_text.find(f"viewkey={vk}") + 2000],
-                        re.DOTALL,
-                    )
-                    if thumb_m:
-                        result.cover_url = thumb_m.group(1)
-                    results.append(result)
-                    if len(results) >= 20:
-                        break
+                # 在该 viewkey 附近的前置片段里找标题（卡片标题在链接之前或之后）
+                start = max(0, m.start() - 800)
+                window = html_text[start:m.end() + 1200]
+                title_m = re.search(r'data-movie-title="([^"]+)"', window)
+                if not title_m:
+                    title_m = re.search(r'<span[^>]*class="videoBoxTitle"[^>]*>(.*?)</span>', window, re.DOTALL)
+
+                result = ScrapeResult(
+                    code="ph" + vk,
+                    title=(title_m.group(1).strip() if title_m else vk),
+                    source="pornhub",
+                )
+                # 缩略图：只在切片里找，且切片边界要防 find 返回 -1
+                head = html_text.find(f"viewkey={vk}")
+                region = html_text[start:head + 2000] if head != -1 else window
+                thumb_m = re.search(
+                    r'(?:data-src|src)="([^"]*phncdn[^"]+\.jpg[^"]*)"',
+                    region,
+                )
+                if thumb_m:
+                    result.cover_url = thumb_m.group(1)
+                results.append(result)
+                if len(results) >= 20:
+                    break
+
+            if not results:
+                logger.warning(f"PornHub 搜索未提取到 viewkey [{keyword}]")
 
         except Exception as e:
             logger.error(f"PornHub 搜索失败 [{keyword}]: {e}")
@@ -1054,20 +1137,28 @@ class PornhubCrawler(BaseCrawler):
         cards: list[dict] = []
         seen: set[str] = set()
         for m in re.finditer(
-            r'viewkey=([a-f0-9]+)[^"]*".*?data-movie-title="([^"]+)"',
+            r'viewkey=([a-zA-Z0-9]{10,20})',
             html_text,
-            re.DOTALL,
         ):
             vk = m.group(1)
+            if not is_valid_ph_viewkey(vk):
+                continue
             if vk in seen:
                 continue
             seen.add(vk)
-            title = m.group(2).strip()
-            seg_end = html_text.find(f"viewkey={vk}") + 3000
+
+            # 🔴 2026-10-04 修复：旧正则 `[a-f0-9]+` 只吃 a-f，真实 viewkey 含 g-z
+            # 字母（实测含 p 的直接提不出来）⇒ 演员视频列表整个失效。
+            # 改用「附近窗口」找标题/缩略图，且切片边界要防 find() 返回 -1。
+            start = max(0, m.start() - 800)
+            window = html_text[start:m.end() + 1200]
+            title_m = re.search(r'data-movie-title="([^"]+)"', window)
+            title = title_m.group(1).strip() if title_m else ""
+            head = html_text.find(f"viewkey={vk}")
+            region = html_text[start:head + 3000] if head != -1 else window
             thumb_m = re.search(
-                rf'viewkey={vk}[^"]*".*?(?:data-src|src)="([^"]*phncdn[^"]+\.jpg)"',
-                html_text[:seg_end],
-                re.DOTALL,
+                r'(?:data-src|src)="([^"]*phncdn[^"]+\.jpg[^"]*)"',
+                region,
             )
             cards.append({
                 "code": "ph" + vk,
@@ -1081,8 +1172,10 @@ class PornhubCrawler(BaseCrawler):
 
         # 兜底：无 data-movie-title 时，从 viewkey 链接提取
         if not cards:
-            for m in re.finditer(r'/view_video\.php\?viewkey=([a-f0-9]+)', html_text):
+            for m in re.finditer(r'/view_video\.php\?viewkey=([a-zA-Z0-9]{10,20})', html_text):
                 vk = m.group(1)
+                if not is_valid_ph_viewkey(vk):
+                    continue
                 if vk in seen:
                     continue
                 seen.add(vk)

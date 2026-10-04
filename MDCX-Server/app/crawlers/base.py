@@ -105,9 +105,43 @@ class ScrapeResult:
     is_exact_match: bool = True         # 是否精确匹配
     
     def is_valid(self) -> bool:
-        """检查结果是否有效"""
-        return bool(self.code and self.title and self.source)
-    
+        """检查结果是否有效
+
+        🔴 2026-10-04 修复：原实现只查 code/title/source **三者皆非空**，
+        而「空壳结果」恰好把这三个都填成番号（`title = f"FC2-PPV-{code}"`）
+        ⇒ is_valid() 恒为 True，穿透所有防线，产生三重危害：
+          ① patcher/strategy.py 的 `if result:` 判定通过 ⇒ NFO/目录名回退**被跳过**
+             ⇒ 用空值覆盖库里已有的正确数据
+          ② engine.py 调 record_success() + breaker.record_success() ⇒ 坏源**永不熔断**
+          ③ 上层以为「已刮到」，用户看到的是一片空白的条目
+        ⇒ 追加 `has_content` 判定：除身份三字段外，必须至少有一项**实质元数据**。
+        """
+        if not (self.code and self.source):
+            return False
+        return self.has_content()
+
+    def has_content(self) -> bool:
+        """是否携带实质元数据（而非仅有番号的空壳）。
+
+        供爬虫在返回前自检、以及 strategy 层拦截历史遗留的空壳结果。
+        raw_data 不计入：调试字段（如 magnets 抓取失败时的空列表）不代表刮削成功。
+        """
+        # title 单独不算内容——空壳的典型特征就是 title == code
+        meaningful_title = bool(self.title) and self.title.strip() != self.code.strip()
+        if any([
+            meaningful_title,
+            self.plot,
+            self.original_title,
+            self.cover_url or self.poster_url or self.thumb_url,
+            self.actors or self.all_actors or self.directors,
+            self.genres or self.tags or self.series or self.label,
+            self.studio or self.maker,
+            self.release_date,
+            self.duration,
+        ]):
+            return True
+        return False
+
     def get_missing_fields(self) -> list[str]:
         """获取缺失的字段名"""
         missing = []

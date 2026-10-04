@@ -21,8 +21,50 @@ from lxml import etree
 from app.crawlers.base import ActorInfo, BaseCrawler, CrawlerPriority, CrawlerStatus, ScrapeResult
 from app.crawlers.provider import register_crawler
 from app.utils.http_client import AsyncHttpClient
+from app.utils.nfo_runtime import parse_runtime_minutes
 
 logger = logging.getLogger(__name__)
+
+
+# ==========================================
+# 共用：时长抽取（DMM 系模板）
+# ==========================================
+
+def extract_moviepage_duration(html: etree._Element) -> Optional[int]:
+    """从 DMM 系无码站详情页抽时长（分钟）。
+
+    🔴 2026-10-04 新增：Caribbeancompr / Ragdoll / Kin8tengoku / Pacopacomama /
+    Gachi / T28 这 6 个源此前**完全没解析 duration**（同文件另外 4 个源有），
+    结果：无码模块一半的源产出条目 `duration=None`，NFO 里的 `<runtime>` 空缺。
+    静默缺字段比解析错更难发现（不报错，只是少了东西）。
+
+    这 6 家都是同一套 DMM `moviepages` 模板，所以共用本函数；
+    多写几个 xpath 变体是因为模板字段位置有细微差异。
+    解析统一走 `parse_runtime_minutes`（唯一真相源，契约=分钟）。
+    """
+    # 防御：`etree.HTML('')` 对空字符串返回 None（不是根元素）
+    if html is None:
+        return None
+    # 变体1（主流）：<td>再生時間</td><td>01:52:37</td> —— DMM 标准详情表
+    elems = html.xpath(
+        '//td[contains(text(), "再生時間")]/following-sibling::td[1]/text()'
+    )
+    # 变体2：<span>再生時間</span>：01:52:37
+    if not elems:
+        elems = html.xpath('//span[contains(text(), "動画時間")]/../text()')
+    # 变体3：<div class="info">再生時間：01:52:37</div>（同一节点内）
+    if not elems:
+        for node in html.xpath('//*[contains(text(), "再生時間")]'):
+            raw = "".join(node.itertext()).strip()
+            elems = [raw]
+            break
+    for raw in elems:
+        if raw and raw.strip():
+            parsed = parse_runtime_minutes(raw.strip())
+            if parsed:
+                return parsed
+    return None
+
 
 
 # ==========================================
@@ -141,9 +183,8 @@ class CaribbeancomCrawler(BaseCrawler):
             duration_elem = html.xpath('//td[contains(text(), "再生時間")]/following-sibling::td/text()')
             duration = None
             if duration_elem:
-                duration_str = duration_str = duration_elem[0].strip()
-                if match := re.search(r"(\d+)", duration_str):
-                    duration = int(match.group(1))
+                duration_str = duration_elem[0].strip()
+                duration = parse_runtime_minutes(duration_str)
 
             # 演员
             actors = []
@@ -299,8 +340,7 @@ class HeyzoCrawler(BaseCrawler):
             duration = None
             if duration_elem:
                 duration_str = duration_elem[0].strip()
-                if match := re.search(r"(\d+)", duration_str):
-                    duration = int(match.group(1))
+                duration = parse_runtime_minutes(duration_str)
 
             # 演员
             actors = []
@@ -441,8 +481,7 @@ class S1StyleCrawler(BaseCrawler):
             duration = None
             if duration_elem:
                 duration_str = duration_elem[0].strip()
-                if match := re.search(r"(\d+)", duration_str):
-                    duration = int(match.group(1))
+                duration = parse_runtime_minutes(duration_str)
 
             # 演员
             actors = []
@@ -583,8 +622,7 @@ class TenMusumeCrawler(BaseCrawler):
             duration = None
             if duration_elem:
                 duration_str = duration_elem[0].strip()
-                if match := re.search(r"(\d+)", duration_str):
-                    duration = int(match.group(1))
+                duration = parse_runtime_minutes(duration_str)
 
             # 演员
             actors = []
@@ -724,6 +762,7 @@ class CaribbeancomprCrawler(BaseCrawler):
                 actors=actors,
                 cover_url=cover_url,
                 poster_url=cover_url,
+                duration=extract_moviepage_duration(html),
                 is_uncensored=True,
                 is_mosaic=False,
             )
@@ -787,14 +826,26 @@ class RagdollCrawler(BaseCrawler):
                 return None
 
     def _convert_code(self, code: str) -> Optional[str]:
-        """转换番号格式"""
-        code = code.upper()
-        # RAGDOLL-123 -> 0123
-        if match := re.match(r"RAGDOLL-?(\d{3})", code):
-            return match.group(1).zfill(4)
-        # RGD-123 -> 0123
-        if match := re.match(r"RGD-?(\d{3})", code):
-            return match.group(1).zfill(4)
+        """转换番号格式
+
+        🔴 2026-10-04 修复：原正则 `RAGDOLL-?(\\d{3})` **硬编码只取 3 位数字**。
+        真实 Ragdoll 番号是 4 位（站点 URL 就是 `/movie/0123/`、`/movie/1234/`），
+        所以 `RAGDOLL-1234` 会被截成 `0123` ⇒ 去抓了**另一部影片**（张冠李戴），
+        而且是静默的：能返回 200、标题也是真的，只是内容跟番号对不上。
+        现在改成 `\\d{3,4}`，并按位数决定 zfill 目标。
+        """
+        code = code.upper().strip()
+        # RAGDOLL-1234 -> 1234（4 位已是最终值）；RAGDOLL-123 -> 0123（3 位补零）
+        if match := re.match(r"RAGDOLL-?(\d{3,4})\b", code):
+            digits = match.group(1)
+            return digits.zfill(4) if len(digits) == 3 else digits
+        # RGD-1234 -> 同上（RGD 是 Ragdoll 的短前缀）
+        if match := re.match(r"RGD-?(\d{3,4})\b", code):
+            digits = match.group(1)
+            return digits.zfill(4) if len(digits) == 3 else digits
+        # 🔴 纯数字输入（如 1234 / 0123）也应能直接用，此前一律返 None
+        if re.fullmatch(r"\d{3,4}", code):
+            return code.zfill(4)
         return None
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
@@ -837,6 +888,7 @@ class RagdollCrawler(BaseCrawler):
                 actors=actors,
                 cover_url=cover_url,
                 poster_url=cover_url,
+                duration=extract_moviepage_duration(html),
                 is_uncensored=True,
                 is_mosaic=False,
             )
@@ -899,6 +951,7 @@ class Kin8tengokuCrawler(BaseCrawler):
             return ScrapeResult(
                 code=code, title=title, source=self.name, studio="KIN8TENGOKU",
                 cover_url=cover_url, actors=actors,
+                duration=extract_moviepage_duration(html),
                 is_uncensored=True, is_mosaic=False,
             )
         except Exception as e:
@@ -957,7 +1010,8 @@ class PacopacomamaCrawler(BaseCrawler):
             cover_url = cover[0] if cover else None
             return ScrapeResult(
                 code=code, title=title, source=self.name, studio="PACOPACOMAMA",
-                cover_url=cover_url, is_uncensored=True, is_mosaic=False,
+                cover_url=cover_url, duration=extract_moviepage_duration(html),
+                is_uncensored=True, is_mosaic=False,
             )
         except Exception as e:
             logger.debug(f"pacopacomama 解析失败 {code}: {e}")
@@ -1016,6 +1070,7 @@ class GachiCrawler(BaseCrawler):
             return ScrapeResult(
                 code=code, title=title, source=self.name, studio="GACHI",
                 cover_url=cover_url, actors=actors,
+                duration=extract_moviepage_duration(html),
                 is_uncensored=True, is_mosaic=False,
             )
         except Exception as e:
@@ -1073,7 +1128,8 @@ class T28Crawler(BaseCrawler):
             cover_url = cover[0] if cover else None
             return ScrapeResult(
                 code=code, title=title, source=self.name, studio="T28",
-                cover_url=cover_url, is_uncensored=True, is_mosaic=False,
+                cover_url=cover_url, duration=extract_moviepage_duration(html),
+                is_uncensored=True, is_mosaic=False,
             )
         except Exception as e:
             logger.debug(f"t28 解析失败 {code}: {e}")

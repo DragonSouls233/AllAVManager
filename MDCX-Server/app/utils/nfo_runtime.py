@@ -61,6 +61,14 @@ def parse_runtime_minutes(raw: object) -> Optional[int]:
     if not s:
         return None
 
+    # 源站常把标签名和值挤在一起，xpath 取文本时会带上前导分隔符。
+    # 真实样本：FC2 的 ``//span[contains(text(),"動画時間")]/../text()`` 取到 ``": 01:52:37"``，
+    # uncensored 的 ``"再生時間"`` 表格取到 ``"：113分"``（全角冒号）。
+    # 不剥掉的话正则全部匹配不上 ⇒ 静默返回 None（比返回错值更隐蔽，因为看不出异常）。
+    s = s.lstrip(":：﹕∣|").strip()
+    if not s:
+        return None
+
     minutes: Optional[int] = None
     m = _RUNTIME_HMS_RE.match(s)
     if m:

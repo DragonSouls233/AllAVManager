@@ -28,8 +28,13 @@ from app.crawlers.base import (
 from app.crawlers.provider import register_crawler
 from app.utils.cf_bypass import get_cf_bypass
 from app.utils.http_client import AsyncHttpClient
+from app.utils.nfo_runtime import parse_runtime_minutes
 
 logger = logging.getLogger(__name__)
+
+#: FC2 页面上的**无码**标记。必须在有码判定前剔除 ——
+#: 因为 ``"修正" in "無修正"`` 为 True，裸用「修正」当有码关键词会把无码内容全部判反。
+UNCENSORED_MARKERS = {"無修正", "无修正", "無修正版", "uncensored"}
 
 
 @register_crawler
@@ -282,28 +287,16 @@ class FC2Crawler(BaseCrawler):
         return None
     
     def _get_duration(self, html: etree._Element) -> Optional[int]:
-        """获取时长"""
+        """获取时长（分钟）
+
+        统一走 ``parse_runtime_minutes``（duration 唯一真相源）。
+        旧实现手写 ``int(parts[0])*60 + int(parts[1])`` 会把 ``01:52:37`` 算成 **112**
+        （正确 113），且完全不支持 ``113分`` / ``1時間52分`` 这类中文写法。
+        """
         result = html.xpath('//span[contains(text(), "動画時間")]/../text()')
         if not result:
             return None
-        
-        duration_str = result[0].strip()
-        
-        # 格式: HH:MM:SS 或 MM:SS
-        if ":" in duration_str:
-            parts = duration_str.split(":")
-            if len(parts) >= 2:
-                try:
-                    minutes = int(parts[0]) * 60 + int(parts[1]) if len(parts) >= 3 else int(parts[0])
-                    return minutes
-                except ValueError:
-                    pass
-        
-        # 格式: XX分
-        if match := re.search(r"(\d+)", duration_str):
-            return int(match.group(1))
-        
-        return None
+        return parse_runtime_minutes(result[0].strip())
     
     def _get_actors(self, html: etree._Element) -> list[ActorInfo]:
         """获取演员列表"""
@@ -382,12 +375,19 @@ class FC2Crawler(BaseCrawler):
         """
         FC2 PPV 内容绝大多数为无码(無修正)。
         默认标记为无码，仅当页面明确出现"有码"标记时才反向标记。
+
+        🔴 关键：``"修正" in "無修正"`` 为 **True**（子串包含），
+        所以必须先把「無修正」这类**无码**标记剔除，再判定有码关键词；
+        且关键词不能用裸「修正」，否则命中的是「無修正」。
         """
-        tag_str = ",".join(genres)
-        # 显式有码标记
-        mosaic_keywords = ["有码", "修正", "モザイク"]
+        # 先剔除无码标记，避免「無修正」被裸「修正」子串误判成有码
+        tags = [g for g in genres if g not in UNCENSORED_MARKERS]
+        tag_str = ",".join(tags)
+        # 显式有码标记（用精确词，"修正" 已被上面的剔除逻辑挡掉，这里不再裸匹配）
+        mosaic_keywords = ["有码", "有碼", "モザイク", "mosaic"]
+        haystack = tag_str + "," + (title or "")
         for kw in mosaic_keywords:
-            if kw in tag_str or kw in title:
+            if kw in haystack:
                 return False
         # FC2 默认无码
         return True

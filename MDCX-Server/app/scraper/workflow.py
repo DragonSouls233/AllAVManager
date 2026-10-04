@@ -289,9 +289,17 @@ class ScraperWorkflow:
 
         # 从 raw_data 提取额外字段
         raw = result.raw_data or {}
-        director = raw.get("director") or raw.get("directors")
-        if isinstance(director, list):
-            director = ",".join(director) if director else None
+        # 🔴 2026-10-04 修复：原先**只**读 raw_data["director"]/["directors"]，
+        # 而 merge() 产出的 raw_data 只有 covers/field_sources/merged_from，
+        # 导演只挂在 `result.directors` 上 ⇒ **多源合并路径下导演 100% 丢失**
+        # （单源路径正常 ⇒ 只在启用多源时复现，极隐蔽）。
+        # 改成「结构化字段优先，raw_data 兜底」。
+        director = None
+        directors = getattr(result, "directors", None) or raw.get("director") or raw.get("directors")
+        if isinstance(directors, (list, tuple, set)):
+            director = ",".join(str(d).strip() for d in directors if str(d).strip()) or None
+        elif directors:
+            director = str(directors).strip() or None
         original_title = result.original_title or raw.get("original_title") or raw.get("originaltitle")
 
         # 提取文件信息
@@ -384,9 +392,16 @@ class ScraperWorkflow:
                 common_fields["studio"] = result.studio
             if hasattr(MovieCls, "series") and result.series:
                 common_fields["series"] = result.series
-            if hasattr(MovieCls, "is_uncensored"):
+            # 🔴 2026-10-04 修复：这两个**三值布尔**字段原先是无条件写入。
+            # 它们的合法值包含 None（= 源站没说），而下面更新分支是
+            # `for key, value in common_fields.items(): setattr(movie, key, value)`
+            # —— 无条件覆盖 ⇒ **任何一次没判出无码的补刮，都会把库里已经是
+            # True 的 is_uncensored/is_mosaic 清成 NULL**。这是"静默产出错误数据"
+            # 的典型：库里已有的正确判定被无声抹掉，用户只在筛选"仅无码"时才发现少了片。
+            # 与 studio/series 一致地只写**有值的**（None 表示未知，不该覆盖已知）。
+            if hasattr(MovieCls, "is_uncensored") and result.is_uncensored is not None:
                 common_fields["is_uncensored"] = result.is_uncensored
-            if hasattr(MovieCls, "is_mosaic"):
+            if hasattr(MovieCls, "is_mosaic") and result.is_mosaic is not None:
                 common_fields["is_mosaic"] = result.is_mosaic
 
             if movie:
@@ -424,6 +439,17 @@ class ScraperWorkflow:
                 )
             except Exception as e:
                 logger.debug(f"写入演员关联失败 [{module}] {result.code}: {e}")
+
+            # 🔴 2026-10-04 修复（实测：写完后用新 session 查，行数 = 0）：
+            # 上游只有 `await session.flush()`，**从不 commit**。
+            # 而本函数用的是 `async with mod_db.session_factory() as session:`
+            # —— SQLAlchemy 的 AsyncSession 上下文管理器退出时只做 close()，
+            # 对未提交事务执行 **ROLLBACK**（它不是 session_scope()，那个也不提交，
+            # 只是异常时额外 rollback）。⇒ 整段落盘**全部被回滚**，
+            # 表现为「日志打印『已保存到模块数据库』但库里查不到任何行」——
+            # 静默失败，比抛异常更难发现。
+            # 必须显式 commit；放在演员关联之后，保证 movie + movie_actors 同一事务。
+            await session.commit()
 
         logger.info(f"已保存到模块数据库 [{module}]: {result.code}")
 

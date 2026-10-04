@@ -17,6 +17,7 @@ from app.crawlers.base import (
 from app.crawlers.provider import register_crawler
 from app.utils.http_client import AsyncHttpClient
 from app.utils.cookie_manager import get_cookie_headers
+from app.utils.nfo_runtime import parse_runtime_minutes
 
 
 def _cookie_str_to_dict(cookie_str: str) -> dict:
@@ -230,28 +231,9 @@ class FC2PPVDBCrawler(BaseCrawler):
         return None, None
 
     def _get_duration(self, article: dict) -> Optional[int]:
-        """获取时长（分钟）"""
-        duration_str = article.get("duration", "")
-        if not duration_str:
-            return None
+        """获取时长（分钟）
 
-        # 格式: HH:MM:SS 或 MM:SS
-        if ":" in str(duration_str):
-            parts = str(duration_str).split(":")
-            try:
-                if len(parts) == 3:
-                    return int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 2:
-                    return int(parts[0])
-            except ValueError:
-                pass
-
-        # 格式: 纯数字（秒或分钟）
-        if match := re.search(r"(\d+)", str(duration_str)):
-            val = int(match.group(1))
-            # 如果值大于 300，假设是秒，转为分钟
-            if val > 300:
-                return val // 60
-            return val
-
-        return None
+        统一走 ``parse_runtime_minutes``（duration 唯一真相源）。
+        旧实现把 ``01:52:37`` 算成 112（丢秒），且对 ``MM:SS`` 只取首段。
+        """
+        return parse_runtime_minutes(article.get("duration", ""))

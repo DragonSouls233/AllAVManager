@@ -12,12 +12,16 @@
 支持的字幕格式：.srt / .ass / .ssa / .vtt / .sub
 """
 
+import json
 import logging
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 from app.config.manager import get_config_manager
+from app.utils.bin_tools import get_ffprobe_path
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +69,17 @@ def find_local_subtitles(file_path: str, code: Optional[str] = None) -> list[dic
     """
     video_path = Path(file_path)
     results = []
+    seen: set[str] = set()
 
-    if not video_path.exists():
+    def _add(candidate: Path, source: str) -> None:
+        """去重后追加（同一文件可能被多条规则命中）"""
+        key = str(candidate.resolve()).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        results.append(_build_subtitle_info(candidate, source))
+
+    if not str(file_path).strip() or not video_path.exists():
         return results
 
     video_dir = video_path.parent
@@ -76,42 +89,42 @@ def find_local_subtitles(file_path: str, code: Optional[str] = None) -> list[dic
     # 1. 同目录同名
     for ext in SUPPORTED_EXTS:
         candidate = video_dir / f"{video_stem}{ext}"
-        if candidate.exists():
-            results.append(_build_subtitle_info(candidate, "same_dir"))
+        if candidate.is_file():
+            _add(candidate, "same_dir")
 
     # 2. 同目录含番号
     if detected_code:
         for candidate in video_dir.glob(f"*{detected_code}*"):
-            if candidate.suffix.lower() in SUPPORTED_EXTS and candidate not in [r["path"] for r in results if isinstance(r["path"], Path)]:
-                results.append(_build_subtitle_info(candidate, "sibling"))
+            if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_EXTS:
+                _add(candidate, "sibling")
 
     # 3. 同目录的 subtitles 子目录
     sub_dir = video_dir / "subtitles"
-    if sub_dir.exists() and sub_dir.is_dir():
-        for candidate in sub_dir.glob("*"):
-            if candidate.suffix.lower() in SUPPORTED_EXTS:
-                results.append(_build_subtitle_info(candidate, "subdir"))
+    if sub_dir.is_dir():
+        for candidate in sub_dir.iterdir():
+            if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_EXTS:
+                _add(candidate, "subdir")
 
     # 4. 全局字幕库
     library_dir = _get_subtitle_library_dir()
-    if library_dir.exists():
+    if library_dir.is_dir():
         # 按番号匹配
         if detected_code:
             for candidate in library_dir.glob(f"*{detected_code}*"):
-                if candidate.suffix.lower() in SUPPORTED_EXTS:
-                    results.append(_build_subtitle_info(candidate, "library"))
+                if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_EXTS:
+                    _add(candidate, "library")
         # 按文件名匹配
         for ext in SUPPORTED_EXTS:
             candidate = library_dir / f"{video_stem}{ext}"
-            if candidate.exists() and candidate not in [r["path"] for r in results if isinstance(r["path"], Path)]:
-                results.append(_build_subtitle_info(candidate, "library"))
+            if candidate.is_file():
+                _add(candidate, "library")
 
     return results
 
 
 def _build_subtitle_info(path: Path, source: str) -> dict:
     """构建字幕信息 dict"""
-    return {
+    info = {
         "path": str(path),
         "filename": path.name,
         "language": _detect_language(path.name),
@@ -119,6 +132,62 @@ def _build_subtitle_info(path: Path, source: str) -> dict:
         "source": source,
         "size": path.stat().st_size if path.exists() else 0,
     }
+    # 附带嗅探到的源编码，前端加载时可据此设置 Artplayer 的 encoding，
+    # 避免非 UTF-8 字幕（GBK/Big5）中文字幕整片乱码。
+    try:
+        raw = path.read_bytes()
+        info["encoding"] = detect_subtitle_encoding(raw)
+    except OSError:
+        info["encoding"] = "utf-8"
+    return info
+
+
+# ===== 字幕编码嗅探 =====
+
+def detect_subtitle_encoding(raw: bytes) -> str:
+    """
+    嗅探字幕文件编码。
+
+    真实样本里 UTF-8 / UTF-8-BOM / GBK / Big5 混杂，浏览器默认按 UTF-8 解码，
+    非 UTF-8 的中文字幕会整片乱码，所以这里必须先定编码再返回。
+
+    判定顺序（严格按可信度，先命中先返回）：
+    1. UTF-8 BOM（EF BB BF）→ utf-8-sig
+    2. UTF-16 BOM → utf-16
+    3. 严格 UTF-8 解码成功 → utf-8
+    4. GB18030 / Big5 / cp1252 依次尝试，取第一个严格解码成功的
+    5. 全失败 → latin-1 兜底，保证不抛异常
+    """
+    if not raw:
+        return "utf-8"
+
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+
+    for enc in ("utf-8", "gb18030", "big5", "cp1252"):
+        try:
+            raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        return enc
+
+    return "latin-1"
+
+
+def read_subtitle_text(path) -> tuple[str, str]:
+    """
+    读取字幕文本内容。
+
+    返回:
+        (文本, 编码名)。文本已统一为 str，调用方负责按需转码输出。
+    """
+    raw = Path(path).read_bytes()
+    enc = detect_subtitle_encoding(raw)
+    text = raw.decode(enc, errors="replace")
+    # 统一剥掉 BOM，避免第一行时间轴前混入 U+FEFF
+    return text.lstrip("\ufeff"), enc
 
 
 def _detect_language(filename: str) -> str:
@@ -173,11 +242,8 @@ def list_subtitle_tracks(movie_id: int, file_path: str) -> list[dict]:
             }
         ]
     """
-    import subprocess
-    from app.utils.bin_tools import get_tool_path
-
-    ffprobe = get_tool_path("ffprobe")
-    if not os.path.isfile(ffprobe):
+    ffprobe = get_ffprobe_path()
+    if not ffprobe or not os.path.isfile(ffprobe):
         return []
 
     try:
@@ -193,7 +259,6 @@ def list_subtitle_tracks(movie_id: int, file_path: str) -> list[dict]:
         if result.returncode != 0:
             return []
 
-        import json
         data = json.loads(result.stdout)
         tracks = []
         for stream in data.get("streams", []):

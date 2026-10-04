@@ -39,6 +39,7 @@ from app.crawlers.base import (
 )
 from app.crawlers.provider import register_crawler
 from app.utils.logger import get_logger
+from app.utils.release_date import parse_ph_publish_date
 
 
 def _as_int(val) -> Optional[int]:
@@ -89,6 +90,11 @@ class PornhubApiCrawler(BaseCrawler):
             source_url=f"{self.base_url}/view_video.php?viewkey={viewkey}",
             plot=meta.description or None,
             duration=(meta.duration // 60) if meta.duration else None,  # 秒 → 分钟
+            # 🔴 2026-10-04 修复：旧代码只把 publish_date 塞进 raw_data，
+            #    而没有任何调用方读它（strategy.py 读 release_date）⇒
+            #    **pornhub 的两个源都产不出发行日期**，库里该列永远为空。
+            #    parse_ph_publish_date 同时收 unix 时间戳与紧凑日期两种形态。
+            release_date=parse_ph_publish_date(meta.publish_date),
             cover_url=meta.thumbnail or None,
             sample_images=list(meta.sample_images),
             extrafanart=[],  # 与 sample_images 同源，避免重复下载

@@ -517,6 +517,34 @@ class ResultMerger:
         # 因为 _auto_add_genres 依赖 is_chinese/is_mosaic 判断
         merged.is_mosaic = self._merge_bool_or([r.is_mosaic for r in sorted_results])
         merged.is_chinese = self._merge_bool_or([r.is_chinese for r in sorted_results])
+        # 🔴 2026-10-04 修复：is_uncensored 原先**从未被赋值**（恒 None）。
+        # 后果不是"字段为空"而是**污染已有数据**：workflow.persist() 里
+        # `if hasattr(MovieCls, "is_uncensored"): common_fields["is_uncensored"] = result.is_uncensored`
+        # 是**无条件 setattr**（不像 maker/studio 那样判空），于是走多源合并路径时
+        # 会把库里已经是 True 的无码标记**覆盖成 None** —— 已有正确值被清空。
+        # 语义与 is_mosaic 严格互反（无码 ⇔ 非有码），故优先用 is_mosaic 推导；
+        # 只有全部源的 is_mosaic 都是 None 时，才回退读各源自己的 is_uncensored。
+        merged.is_uncensored = self._derive_uncensored(sorted_results, merged.is_mosaic)
+
+        # === 2026-10-04 修复：以下字段原先从未被合并，合并结果恒为空 ===
+        # directors：workflow.persist() 只读 raw_data["director"]，而 merge() 的
+        #   raw_data 只放 covers/field_sources 等 ⇒ **走多源合并时导演 100% 丢失**
+        #   （单源路径反而正常 ⇒ 非常隐蔽，只在启用多源时才复现）。
+        merged.directors = self._merge_lists([r.directors or [] for r in sorted_results])
+        merged.male_actors = self._merge_lists([r.male_actors or [] for r in sorted_results])
+        merged.extrafanart = self._merge_lists([r.extrafanart or [] for r in sorted_results])
+        # all_actors 是"全部女优名"补充表；源没给就由已合并的 actors 派生
+        merged.all_actors = self._merge_lists([r.all_actors or [] for r in sorted_results])
+        if not merged.all_actors:
+            merged.all_actors = [
+                a.name for a in (merged.actors or []) if getattr(a, "name", None)
+            ]
+        # source_url 供 NFO <website>；thumb_url 供缩略图回退
+        merged.source_url = self._merge_field_from("source_url", sorted_results)
+        merged.thumb_url = self._merge_field_from("thumb_url", sorted_results)
+        merged.votes = self._merge_int([r.votes for r in sorted_results])
+        merged.javdb_id = self._merge_field_from("javdb_id", sorted_results)
+        merged.wanted = self._merge_field_from("wanted", sorted_results)
 
         # === 第 4 轮新增:自动检测并添加 genre 标签 ===
         if self.config.auto_add_genres:
@@ -1031,6 +1059,39 @@ class ResultMerger:
         if not has_value:
             return None
         return has_true
+
+    def _merge_int(self, values: list[Optional[int]]) -> Optional[int]:
+        """合并整数字段：取第一个**大于 0** 的值。
+
+        🔴 不能用 `_merge_field_from`：那个方法只排除 None/""/[]，
+        而 votes=0（源站明确"0 人评分"）会被当成有效值抢在真实值前面。
+        """
+        for v in values:
+            if v is not None and not isinstance(v, bool):
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if iv > 0:
+                    return iv
+        return None
+
+    def _derive_uncensored(
+        self, results: list[ScrapeResult], merged_is_mosaic: Optional[bool]
+    ) -> Optional[bool]:
+        """推导合并后的 is_uncensored（2026-10-04 新增）。
+
+        优先用 `merged.is_mosaic` 取反 —— 二者在数据模型里严格互反
+        （`sync.py::_resolve_version_flags` 就是 `is_mosaic = not is_uncensored`），
+        所以同一份 `is_mosaic` 投票结果直接取反即可，不会出现自相矛盾。
+
+        仅当所有源的 `is_mosaic` 都是 None（没有任何源表态）时，
+        才回退用 `_merge_bool_or` 读各源自己的 `is_uncensored`。
+        全程无值 ⇒ None（**不是 False**）：把"未知"写成"有码"同样是静默错误。
+        """
+        if merged_is_mosaic is not None:
+            return not merged_is_mosaic
+        return self._merge_bool_or([r.is_uncensored for r in results])
 
     def _merge_lists(self, lists: list[list]) -> list:
         """合并列表（去重保持顺序）"""

@@ -18,7 +18,9 @@ from lxml import etree
 
 from app.crawlers.base import ActorInfo, BaseCrawler, CrawlerPriority, CrawlerStatus, ScrapeResult
 from app.crawlers.provider import register_crawler
+from app.scraper.number import extract_fc2_id
 from app.utils.http_client import AsyncHttpClient
+from app.utils.nfo_runtime import parse_runtime_minutes
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +76,13 @@ class FC2FanclubCrawler(BaseCrawler):
                         detail_url = f"{self.base_url}{link}" if not link.startswith("http") else link
                         break
 
-                # 取第一个结果
-                if not detail_url and links:
-                    detail_url = f"{self.base_url}{links[0]}" if not links[0].startswith("http") else links[0]
-
+                # 🔴 2026-10-04 删除原「取第一个结果」兜底：
+                #    搜索页命中的是**别的番号**时，links[0] 是搜索结果的第一条，
+                #    与目标番号无关 ⇒ 会把别的影片的标题/封面/时长写进目标番号
+                #    （张冠李戴）。**静默产出错误数据比返回 None 危害大得多** ——
+                #    用户无从察觉，只会在 NFO 里看到别人的内容。
+                #    搜索页没有精确匹配时，正确做法是诚实返回 None，
+                #    让 strategy 层回退 NFO/目录名或换下一个源。
                 if not detail_url:
                     self.mark_error()
                     return None
@@ -104,12 +109,8 @@ class FC2FanclubCrawler(BaseCrawler):
                 return None
 
     def _extract_number_id(self, code: str) -> Optional[str]:
-        """提取 FC2 ID"""
-        code = code.upper()
-        code = code.replace("FC2PPV", "").replace("FC2-PPV-", "").replace("FC2-", "").replace("-", "").strip()
-        if code.isdigit():
-            return code
-        return None
+        """提取 FC2 ID（并入真相源 number.extract_fc2_id，消除重复实现）"""
+        return extract_fc2_id(code)
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """搜索 FC2 内容"""
@@ -232,12 +233,8 @@ class FC2VideoCrawler(BaseCrawler):
                 return None
 
     def _extract_number_id(self, code: str) -> Optional[str]:
-        """提取 FC2 ID"""
-        code = code.upper()
-        code = code.replace("FC2PPV", "").replace("FC2-PPV-", "").replace("FC2-", "").replace("-", "").strip()
-        if code.isdigit():
-            return code
-        return None
+        """提取 FC2 ID（并入真相源 number.extract_fc2_id，消除重复实现）"""
+        return extract_fc2_id(code)
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """搜索 FC2 内容"""
@@ -276,8 +273,7 @@ class FC2VideoCrawler(BaseCrawler):
             duration = None
             if duration_elem:
                 duration_str = duration_elem[0].strip()
-                if match := re.search(r"(\d+)", duration_str):
-                    duration = int(match.group(1))
+                duration = parse_runtime_minutes(duration_str)
 
             # 标签
             genres = []
@@ -381,12 +377,8 @@ class FC2SearchCrawler(BaseCrawler):
                 return None
 
     def _extract_number_id(self, code: str) -> Optional[str]:
-        """提取 FC2 ID"""
-        code = code.upper()
-        code = code.replace("FC2PPV", "").replace("FC2-PPV-", "").replace("FC2-", "").replace("-", "").strip()
-        if code.isdigit():
-            return code
-        return None
+        """提取 FC2 ID（并入真相源 number.extract_fc2_id，消除重复实现）"""
+        return extract_fc2_id(code)
 
     async def search(self, keyword: str) -> list[ScrapeResult]:
         """搜索 FC2 内容"""
@@ -426,8 +418,7 @@ class FC2SearchCrawler(BaseCrawler):
             duration = None
             if duration_elem:
                 duration_str = duration_elem[0].strip()
-                if match := re.search(r"(\d+)", duration_str):
-                    duration = int(match.group(1))
+                duration = parse_runtime_minutes(duration_str)
 
             # 演员
             actors = []

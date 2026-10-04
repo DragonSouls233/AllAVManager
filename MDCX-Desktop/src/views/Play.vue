@@ -322,6 +322,19 @@
                 </template>
               </el-table-column>
               <el-table-column label="格式" width="80" prop="ext" />
+              <el-table-column label="源编码" width="100">
+                <template #default="{ row }">
+                  <el-tooltip
+                    :content="row.encoding === 'utf-8' || row.encoding === 'utf-8-sig'
+                      ? 'UTF-8 编码，可直接显示'
+                      : `${row.encoding} 编码，服务端已转码为 UTF-8 下发`"
+                    placement="top">
+                    <el-tag size="small" :type="row.encoding?.startsWith('utf-8') ? 'success' : 'warning'">
+                      {{ row.encoding || 'utf-8' }}
+                    </el-tag>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
               <el-table-column label="来源" width="100">
                 <template #default="{ row }">
                   <el-tag size="small" type="info">{{ sourceLabel(row.source) }}</el-tag>
@@ -330,15 +343,16 @@
               <el-table-column label="大小" width="80">
                 <template #default="{ row }">{{ formatSize(row.size) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="120">
+              <el-table-column label="操作" width="180">
                 <template #default="{ row }">
                   <el-button text size="small" @click="loadExternalSubtitle(row)">加载</el-button>
+                  <el-button text size="small" @click="previewSubtitle(row)">预览</el-button>
                 </template>
               </el-table-column>
             </el-table>
           </div>
         </div>
-        <el-empty v-else description="未找到字幕文件。可将 .srt/.ass/.vtt 字幕放到视频同目录" :image-size="60" />
+        <el-empty v-else description="未找到字幕文件。支持 .srt / .ass / .ssa / .vtt / .sub，可放到视频同目录（同名或含番号）、同目录 subtitles/ 子目录，或 data/subtitles/ 字幕库" :image-size="60" />
       </el-tab-pane>
 
       <!-- 缩略图进度条 -->
@@ -1101,6 +1115,21 @@ const loadMovie = async () => {
       // 模块数据库：从模块 API 加载
       movie.value = await getModulePlayInfo(mod, id)
       ratingInput.value = Number(movie.value.rating) || 0
+
+      // 模块影片同样要拉播放器配置（字幕/章节/音轨/缩略图进度条）
+      // 此前只走通用 Movie 表分支，导致 fc2/uncensored/anime 等模块字幕永远为空。
+      if (movie.value.file_path) {
+        try {
+          const cfg = await getPlayerConfig(id, mod)
+          chapters.value = cfg.chapters || []
+          gifs.value = cfg.gifs || []
+          subtitles.value = cfg.subtitles || { embedded: [], external: [] }
+          spriteMeta.value = cfg.thumbnail_sprite || null
+          audioTracks.value = cfg.audio_tracks || []
+        } catch (e) {
+          console.warn('getPlayerConfig(module) failed', e)
+        }
+      }
     } else {
       // 通用 Movie 表
       movie.value = await getMovie(id)
@@ -1108,7 +1137,7 @@ const loadMovie = async () => {
 
       // 一次性获取播放器配置
       try {
-        const cfg = await getPlayerConfig(id)
+        const cfg = await getPlayerConfig(id, currentModule.value || undefined)
         chapters.value = cfg.chapters || []
         gifs.value = cfg.gifs || []
         subtitles.value = cfg.subtitles || { embedded: [], external: [] }
@@ -1431,18 +1460,25 @@ const removeGif = async (filename) => {
 }
 
 // ===== 字幕 =====
+// module 必须传：后端 /player/* 端点 module 默认 jav，漏传非 jav 模块会 404
+const activeModule = () => currentModule.value || movie.value?.module_type || ''
+
 const loadSubtitles = async () => {
   try {
-    const res = await listSubtitles(route.params.id)
+    const res = await listSubtitles(route.params.id, activeModule())
     subtitles.value = res
-  } catch (e) {}
+  } catch (e) {
+    console.warn('loadSubtitles failed', e)
+  }
 }
 
 const loadExternalSubtitle = (sub) => {
   if (!art) return
   // 通过 URL 加载外挂字幕(使用工具函数统一 base URL)
-  const subtitleUrl = getSubtitleFileUrl(route.params.id, sub.path)
+  const subtitleUrl = getSubtitleFileUrl(route.params.id, sub.path, activeModule())
   // Artplayer 5 用 art.subtitle.init 加载
+  // encoding 用后端嗅探到的源编码；后端已统一转码为 UTF-8 下发，
+  // 这里仍传 utf-8 是因为 Artplayer 收到的是 UTF-8 字节流。
   art.subtitle = {
     url: subtitleUrl,
     type: sub.ext === '.vtt' ? 'vtt' : 'srt',
@@ -1452,10 +1488,35 @@ const loadExternalSubtitle = (sub) => {
   ElMessage.success(`已加载字幕：${sub.filename}`)
 }
 
+// 预览字幕内容（确认时间轴与中文是否正常，避免加载后才发现乱码）
+const previewSubtitle = async (sub) => {
+  const url = getSubtitleFileUrl(route.params.id, sub.path, activeModule())
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const text = await resp.text()
+    if (!text.trim()) {
+      ElMessage.warning('字幕文件内容为空')
+      return
+    }
+    // 最多展示前 40 条，避免超长字幕撑爆弹窗
+    const blocks = text.split(/\r?\n\r?\n/).filter(b => b.trim())
+    const preview = blocks.slice(0, 40).join('\n\n')
+    const more = blocks.length > 40 ? `\n\n…（共 ${blocks.length} 条，仅显示前 40 条）` : ''
+    await ElMessageBox.alert(preview + more, `字幕预览：${sub.filename}`, {
+      confirmButtonText: '关闭',
+      customClass: 'subtitle-preview-box',
+      dangerouslyUseHTMLString: false,
+    }).catch(() => {})
+  } catch (e) {
+    ElMessage.error(`字幕预览失败：${e.message || e}`)
+  }
+}
+
 // ===== 缩略图进度条 =====
 const loadSprite = async () => {
   try {
-    spriteMeta.value = await getThumbnailSprite(route.params.id)
+    spriteMeta.value = await getThumbnailSprite(route.params.id, activeModule() || 'jav')
   } catch (e) {
     spriteMeta.value = null
   }
@@ -1466,7 +1527,8 @@ const generateSprite = async () => {
   try {
     spriteMeta.value = await generateThumbnailSprite(route.params.id, {
       interval: spriteForm.interval,
-      cols: spriteForm.cols
+      cols: spriteForm.cols,
+      ...(activeModule() ? { module: activeModule() } : {})
     })
     ElMessage.success('精灵图生成完成')
   } catch (e) {
@@ -2008,6 +2070,18 @@ onUnmounted(() => {
 
 .subtitle-group {
   margin-bottom: 16px;
+}
+
+/* 字幕预览弹窗：等宽字体 + 可滚动，长字幕不撑破布局 */
+:global(.subtitle-preview-box .el-message-box__message) {
+  max-height: 55vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
 }
 
 .group-title {

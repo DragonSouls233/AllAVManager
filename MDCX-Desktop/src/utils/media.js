@@ -115,13 +115,18 @@ export const getAvatarSrc = (actor) => {
 }
 
 /**
- * 获取字幕文件 URL(用于 <track> 标签加载 VTT/SRT)
+ * 获取字幕文件 URL(用于 Artplayer subtitle / <track> 标签加载 VTT/SRT)
  * @param {number|string} movieId - 影片 ID
- * @param {string} [subPath] - 字幕文件子路径(可选)
+ * @param {string} [subPath] - 字幕文件绝对路径(可选)
+ * @param {string} [module] - 模块名(jav/fc2/uncensored/chinese/western/pornhub/anime)
+ *   必须传：后端 /player/* 端点的 module 默认值是 jav，漏传会让非 jav 模块字幕 404。
  */
-export const getSubtitleFileUrl = (movieId, subPath) => {
+export const getSubtitleFileUrl = (movieId, subPath, module) => {
   const base = `${getServerBaseUrl()}/api/v1/player/${movieId}/subtitles/file`
-  return subPath ? `${base}?path=${encodeURIComponent(subPath)}` : base
+  const params = []
+  if (subPath) params.push(`path=${encodeURIComponent(subPath)}`)
+  if (module) params.push(`module=${encodeURIComponent(module)}`)
+  return params.length ? `${base}?${params.join('&')}` : base
 }
 
 /**

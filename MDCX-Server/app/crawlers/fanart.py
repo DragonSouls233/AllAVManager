@@ -102,7 +102,14 @@ class FanartCrawler:
             "User-Agent": "MDCX/4.1 (https://github.com/MDCX)",
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        # 🔴 代理：fanart.tv 是墙外站点，不传代理在墙内必然 RequestError
+        # （原实现裸 httpx.AsyncClient 无 proxy，enabled=true 时 100% 静默失败）。
+        from app.services.proxy_manager import get_effective_proxy_url
+
+        async with httpx.AsyncClient(
+            timeout=self.timeout, proxy=get_effective_proxy_url()
+        ) as client:
+
             try:
                 response = await client.get(url, params=params, headers=headers)
                 response.raise_for_status()
@@ -166,7 +173,14 @@ class FanartCrawler:
         save_path_obj = Path(save_path)
         save_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+        # 🔴 同上：图片下载也在墙外，必须走代理
+        from app.services.proxy_manager import get_effective_proxy_url
+
+        async with httpx.AsyncClient(
+            timeout=self.timeout, follow_redirects=True,
+            proxy=get_effective_proxy_url(),
+        ) as client:
+
             try:
                 response = await client.get(url)
                 response.raise_for_status()

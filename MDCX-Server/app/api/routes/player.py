@@ -13,14 +13,16 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 from app.services import ffmpeg_thumbnail, gif_generator, chapter_marker, subtitle_matcher
+from app.utils.bin_tools import get_ffprobe_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -252,10 +254,22 @@ async def serve_chapter_thumbnail(movie_id: int, filename: str):
 
 # ===== 字幕 =====
 
+#: 各字幕扩展名的 MIME 映射
+_SUBTITLE_MEDIA_TYPES = {
+    ".srt": "application/x-subrip",
+    ".ass": "text/plain",
+    ".ssa": "text/plain",
+    ".vtt": "text/vtt",
+    ".sub": "text/plain",
+    ".smi": "text/plain",
+    ".lrc": "text/plain",
+}
+
+
 @router.get("/{movie_id}/subtitles")
 async def list_subtitles(
     movie_id: int,
-    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub/anime"),
 ):
     """列出所有可用字幕（内嵌 + 外挂）"""
     movie = await _get_movie(module, movie_id)
@@ -269,28 +283,47 @@ async def list_subtitles(
 async def serve_subtitle_file(
     movie_id: int,
     path: str = Query(..., description="字幕文件绝对路径"),
-    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub/anime"),
 ):
-    """提供字幕文件内容"""
+    """
+    提供字幕文件内容。
+
+    关键：非 UTF-8 字幕（GBK/Big5 等）在此**转码为 UTF-8** 后再下发。
+    直接 FileResponse 原始字节时浏览器一律按 UTF-8 解码，中文字幕会整片乱码。
+    """
     movie = await _get_movie(module, movie_id)
-    # 安全检查：字幕必须在该影片的可用列表中
-    available = subtitle_matcher.find_local_subtitles(movie.file_path or "")
+    if not movie.file_path:
+        raise HTTPException(status_code=400, detail="影片无关联文件")
+
+    # 安全检查：字幕必须在该影片的可用列表中（防止任意文件读取）
+    available = subtitle_matcher.find_local_subtitles(movie.file_path)
     target_path = Path(path).resolve()
-    for sub in available:
-        if Path(sub["path"]).resolve() == target_path:
-            if not target_path.exists():
-                raise HTTPException(status_code=404, detail="字幕文件不存在")
-            ext = target_path.suffix.lower()
-            media_type_map = {
-                ".srt": "application/x-subrip",
-                ".ass": "text/plain",
-                ".ssa": "text/plain",
-                ".vtt": "text/vtt",
-                ".sub": "text/plain",
-            }
-            media_type = media_type_map.get(ext, "application/octet-stream")
-            return FileResponse(str(target_path), media_type=media_type)
-    raise HTTPException(status_code=404, detail="字幕文件不在可用列表中")
+    matched = next(
+        (s for s in available if Path(s["path"]).resolve() == target_path),
+        None,
+    )
+    if matched is None:
+        raise HTTPException(status_code=404, detail="字幕文件不在可用列表中")
+    if not target_path.is_file():
+        raise HTTPException(status_code=404, detail="字幕文件不存在")
+
+    ext = target_path.suffix.lower()
+    media_type = _SUBTITLE_MEDIA_TYPES.get(ext, "application/octet-stream")
+
+    # 转码为 UTF-8（已经是 UTF-8/UTF-8-SIG 的原样返回，仅统一去掉 BOM）
+    try:
+        text, source_enc = subtitle_matcher.read_subtitle_text(target_path)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"字幕读取失败: {e}")
+
+    headers = {
+        # 明确 charset，防止浏览器/播放器猜错编码
+        "Content-Type": f"{media_type}; charset=utf-8",
+        # 原文件名供前端按名展示（RFC 5987 编码，兼容中文文件名）
+        "X-Subtitle-Filename": quote(target_path.name),
+        "X-Subtitle-Source-Encoding": source_enc,
+    }
+    return Response(content=text.encode("utf-8"), media_type=media_type, headers=headers)
 
 
 # ===== 播放器配置 =====
@@ -363,10 +396,9 @@ def get_audio_tracks_info(file_path: str) -> list[dict]:
     """
     import json
     import subprocess
-    from app.utils.bin_tools import get_ffprobe_path
 
     ffprobe = get_ffprobe_path()
-    if not os.path.isfile(ffprobe):
+    if not ffprobe or not os.path.isfile(ffprobe):
         return []
 
     try:

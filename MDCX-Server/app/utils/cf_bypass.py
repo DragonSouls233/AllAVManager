@@ -90,11 +90,19 @@ class CurlCffiStrategy(BaseBypassStrategy):
             session = curl_requests.Session()
             session.impersonate = "chrome120"
 
+            # 🔴 代理：必须走项目唯一定义源，否则本层会静默直连。
+            # 直连在国内必然 timeout/reset —— 表现为「所有 CF 绕过策略均失败」，
+            # 但根因不是 CF 拦截，而是这条路径压根没走代理（与 http_client 无关）。
+            from app.services.proxy_manager import get_effective_proxy_url
+
+            proxy = get_effective_proxy_url()
+
             resp = session.get(
                 url,
                 headers=default_headers,
                 timeout=timeout,
                 verify=False,
+                proxy=proxy,
             )
 
             elapsed = (time.monotonic() - start) * 1000
@@ -142,7 +150,15 @@ class CfWorkerProxyStrategy(BaseBypassStrategy):
 
             target_url = f"{worker_url}?url={url}"
 
-            async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            # 🔴 代理：worker_url 通常部署在墙外（需经代理才能访问）。
+            # 不传 ⇒ httpx 直连 localhost/公网失败，日志只报「CF_WORKER_URL 未配置/
+            # 连接失败」，根因却完全不可见。
+            from app.services.proxy_manager import get_effective_proxy_url
+
+            _proxy = get_effective_proxy_url()
+            async with httpx.AsyncClient(
+                timeout=timeout, verify=False, proxy=_proxy
+            ) as client:
                 resp = await client.get(target_url, headers=headers or {})
 
             elapsed = (time.monotonic() - start) * 1000
@@ -246,7 +262,13 @@ class FallbackCacheStrategy(BaseBypassStrategy):
         try:
             import httpx
 
-            async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+            # 🔴 代理：这是唯一真正直连目标站的一层，不传代理在墙内必然超时。
+            from app.services.proxy_manager import get_effective_proxy_url
+
+            _proxy = get_effective_proxy_url()
+            async with httpx.AsyncClient(
+                timeout=timeout, verify=False, follow_redirects=True, proxy=_proxy
+            ) as client:
                 resp = await client.get(url, headers=headers or {})
 
             elapsed = (time.monotonic() - start) * 1000

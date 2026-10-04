@@ -84,7 +84,13 @@ class YAMLScraperPlugin:
         url = self._render_url(self.search_url, {"keyword": keyword})
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            # 🔴 代理：yaml 爬虫的 base_url 由用户配置，指向墙外站点时
+            # 不传代理必然超时（原实现裸 httpx.AsyncClient 无 proxy）。
+            from app.services.proxy_manager import get_effective_proxy_url
+
+            async with httpx.AsyncClient(
+                timeout=15, follow_redirects=True, proxy=get_effective_proxy_url()
+            ) as client:
                 resp = await client.request(self.search_method, url, headers=self.search_headers)
                 resp.raise_for_status()
 
@@ -129,7 +135,12 @@ class YAMLScraperPlugin:
         """刮削详情页"""
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            # 🔴 同上：详情页同样必须走代理
+            from app.services.proxy_manager import get_effective_proxy_url
+
+            async with httpx.AsyncClient(
+                timeout=15, follow_redirects=True, proxy=get_effective_proxy_url()
+            ) as client:
                 resp = await client.request(self.detail_method, url, headers=self.detail_headers)
                 resp.raise_for_status()
 

@@ -67,6 +67,34 @@ AMATEUR_PATTERN = re.compile(r"\d{2,}[A-Z]{2,}-\d{2,}[A-Z]?", re.IGNORECASE)
 #   FC2-1234567 / FC2_1234567 / FC2PPV-1234567 / fc2ppv1234567 / FC2PPV1234567
 FC2_PATTERN = re.compile(r"FC2[-_]?(?:PPV[-_]?)?\d{5,}", re.IGNORECASE)
 
+
+def extract_fc2_id(raw: str) -> Optional[str]:
+    """从任意写法的 FC2 番号中提取纯数字 ID，失败返 None。
+
+    🔴 2026-10-04 新增（消除 11 处重复且互不一致的手写实现）。
+
+    历史 bug：`fc2_enhanced.py` 写的是
+        `code.upper().replace("FC2-PPV-","").replace("FC2-","").replace("FC2PPV","").strip()`
+    清洗顺序把 `FC2PPV` 放在**最后** ⇒ 输入 `FC2PPV-1234567` 时，
+    先删掉 `FC2-PPV-`（不匹配）与 `FC2-`（不匹配），最后删 `FC2PPV`
+    留下一个**孤立的前导横杠** ⇒ 结果 `"-1234567"`，非纯数字
+    ⇒ 拼进搜索 URL（`searchstr=-1234567`）必然搜不到任何东西。
+
+    其余 10 处（fc2club / fc2_extended_detail×3 / md/*）末尾多了一步
+    `.replace("-", "")` 才侥幸正确，但那是**巧合**不是设计：任何新增写法
+    都会再次分叉。这里以 FC2_PATTERN 为唯一真相源。
+    """
+    if not raw:
+        return None
+    text = str(raw).strip().upper()
+    # 先剥离 FC2 前缀（含紧连写法 fc2ppv1234567），**再**提数字 ——
+    # 🔴 不能直接对原文 `re.sub(r"\D", "", ...)`：那会把前缀里的
+    #    "FC2" 中的 2 也留下（'FC2-1234567' → '21234567'，实测踩过）。
+    stripped = re.sub(r"^FC2[-_]?(?:PPV[-_]?)?", "", text, flags=re.IGNORECASE)
+    digits = re.sub(r"\D", "", stripped)
+    # FC2 ID 是 5~7 位；位数过短/过长都不像 FC2（防把别的东西当 ID）
+    return digits if 5 <= len(digits) <= 7 else None
+
 # HEYZO: HEYZO-1234
 HEYZO_PATTERN = re.compile(r"HEYZO[-_]?\d{3,}", re.IGNORECASE)
 

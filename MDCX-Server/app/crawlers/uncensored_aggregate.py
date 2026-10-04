@@ -22,6 +22,7 @@ from app.crawlers.provider import register_crawler
 from app.services.uncensored_utils import is_uncensored_code
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
+from app.utils.release_date import parse_release_date
 
 logger = get_logger(__name__)
 
@@ -164,59 +165,90 @@ class UncensoredAggregateCrawler(BaseCrawler):
         if date_section:
             parent = date_section.parent or date_section.find_parent()
             if parent:
-                date_match = re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", parent.text)
-                if date_match:
-                    result.release_date = date_match.group()
+                # 🔴 契约是 Optional[date]，旧代码赋 str 会一路穿到 DB 才炸
+                result.release_date = parse_release_date(parent.text)
 
         result.source = "avsox"
         return result
 
     async def _scrape_prefix(self, code: str, prefix: str, base_url: str) -> Optional[ScrapeResult]:
-        """按前缀路由到专用站点。"""
+        """按前缀路由到专用站点。
+
+        🔴 2026-10-04 修复：原 `search_urls` 把**搜索页排在第一个**
+        （`{base_url}/search/{code}`），而循环里的成功判定只有
+        `html 非空 and "404" not in html and len(html) > 500`
+        —— 搜索结果页完全满足这三个条件（内容还很长）⇒
+        **永远命中第一个 URL 就 return，真正的详情页 URL 根本访问不到**。
+        后果是拿到搜索页的 h1（通常是「搜索结果」或站点名）当标题、
+        把列表页的 og:image 当封面 ⇒ 产出一条字段全错的条目，且是静默的。
+
+        修法：把搜索页从「当作详情页」的候选里去掉，改成**两阶段**——
+        先按详情页 URL 规律取；都取不到时，才用搜索页，并在解析前
+        显式校验「页面确实含目标番号」，否则视为未命中。
+        """
         async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
-                # 通用站点搜索模式
-                search_urls = [
-                    f"{base_url}/search/{code}",
+                # 阶段 1：直取详情页（这些站点的详情页 URL 是确定的）
+                detail_urls = [
                     f"{base_url}/moviepages/{code}/index.html",
                     f"{base_url}/movies/{code}",
+                    f"{base_url}/movie/{code}",
+                    f"{base_url}/{code}",
                 ]
-                for url in search_urls:
+                for url in detail_urls:
                     html = await client.get_text(url, headers={"User-Agent": _USER_AGENT})
                     if html and "404" not in html and len(html) > 500:
-                        result = ScrapeResult(code=code.upper(), title=code.upper(), source=prefix.lower(), source_url=url)
-                        result.code = code.upper()
-                        result.source = prefix.lower()
-                        result.source_url = url
+                        result = self._build_from_html(html, code, prefix, url)
+                        if result:
+                            return result
 
-                        soup = BeautifulSoup(html, "html.parser")
-                        title_el = soup.select_one("h1, title, .title")
-                        result.title = title_el.text.strip() if title_el else code
-
-                        cover_el = soup.select_one(
-                            "img.cover, img.poster, img[src*='cover'], "
-                            "img[src*='poster'], img[src*='cap'], "
-                            'meta[property="og:image"]'
-                        )
-                        if cover_el:
-                            if cover_el.name == "meta":
-                                result.cover_url = cover_el.get("content", "")
-                                if result.cover_url.startswith("//"):
-                                    result.cover_url = "https:" + result.cover_url
-                                elif result.cover_url.startswith("/"):
-                                    result.cover_url = urljoin(base_url, result.cover_url)
-                            else:
-                                result.cover_url = cover_el.get("src", "")
-                                if result.cover_url.startswith("//"):
-                                    result.cover_url = "https:" + result.cover_url
-                                elif result.cover_url.startswith("/"):
-                                    result.cover_url = urljoin(base_url, result.cover_url)
-
-                        result.studio = prefix
+                # 阶段 2：兜底走搜索页，但**必须**校验页面里确实有目标番号，
+                # 否则搜索页会被误当详情页（这正是原 bug）。
+                search_url = f"{base_url}/search/{code}"
+                html = await client.get_text(search_url, headers={"User-Agent": _USER_AGENT})
+                if html and "404" not in html and len(html) > 500 and code.upper() in html.upper():
+                    result = self._build_from_html(html, code, prefix, search_url)
+                    if result:
                         return result
             except Exception as e:
                 logger.debug("prefix scrape failed for %s: %s", code, e)
         return None
+
+    def _build_from_html(self, html: str, code: str, prefix: str, url: str) -> Optional[ScrapeResult]:
+        """从已抓到的 HTML 构造 ScrapeResult，实质字段缺失时返 None。"""
+        soup = BeautifulSoup(html, "html.parser")
+        title_el = soup.select_one("h1, title, .title")
+        title = title_el.text.strip() if title_el else ""
+
+        # 🔴 空壳防线：标题为空、或标题就是番号本身（说明只抓到了列表/搜索页）
+        # ⇒ 返 None 让上层回退到下一个 URL，而不是产出「标题=番号」的假条目。
+        if not title or title.upper() == code.upper():
+            return None
+
+        result = ScrapeResult(
+            code=code.upper(),
+            title=title,
+            source=prefix.lower(),
+            source_url=url,
+            studio=prefix,
+        )
+
+        cover_el = soup.select_one(
+            "img.cover, img.poster, img[src*='cover'], "
+            "img[src*='poster'], img[src*='cap'], "
+            'meta[property="og:image"]'
+        )
+        if cover_el:
+            if cover_el.name == "meta":
+                result.cover_url = cover_el.get("content", "")
+            else:
+                result.cover_url = cover_el.get("src", "")
+            if result.cover_url.startswith("//"):
+                result.cover_url = "https:" + result.cover_url
+            elif result.cover_url.startswith("/"):
+                result.cover_url = urljoin(url, result.cover_url)
+
+        return result
 
     async def _scrape_javdb_generic(self, code: str) -> Optional[ScrapeResult]:
         """JavDB 通用搜索兜底（匿名 App API，免登录、不绑定 IP）。
@@ -331,7 +363,8 @@ class HeyzoEnhancedCrawler(BaseCrawler):
                 result.genres = [g.strip() for g in genre_els if g.strip()]
 
                 date_els = doc.xpath('//span[@class="date"]/text() | //span[contains(@class,"release")]/text()')
-                result.release_date = date_els[0].strip() if date_els else ""
+                # 🔴 旧代码 `= ... if date_els else ""` 违反 Optional[date] 契约
+                result.release_date = parse_release_date(date_els[0]) if date_els else None
 
                 result.studio = "HEYZO"
                 return result
