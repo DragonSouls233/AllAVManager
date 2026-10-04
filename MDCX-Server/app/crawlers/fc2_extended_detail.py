@@ -22,6 +22,27 @@ from app.scraper.number import extract_fc2_id
 from app.utils.http_client import AsyncHttpClient
 from app.utils.nfo_runtime import parse_runtime_minutes
 
+# 共享解析器单例（定义必须在使用点之前，否则运行期 NameError）
+_FC2_PARSER_SINGLETON = None
+
+
+def _shared_fc2_parser():
+    """返回 FC2Crawler 实例（仅用其纯解析方法，不触发任何网络请求）。
+
+    🔴 同一站点（adult.contents.fc2.com）曾被 ``FC2Crawler`` 与 ``FC2SearchCrawler``
+    各复制一份 xpath，改一处漏一处 ⇒ 字段静默丢失。这里共用一个实例，
+    让「同站点的解析逻辑只有一份」成为结构性约束而不是靠自觉。
+
+    延迟 import 以避免 fc2.py ↔ 本文件的循环 import。
+    """
+    from app.crawlers.fc2 import FC2Crawler
+
+    global _FC2_PARSER_SINGLETON
+    if _FC2_PARSER_SINGLETON is None:
+        _FC2_PARSER_SINGLETON = FC2Crawler.__new__(FC2Crawler)  # 绕过 __init__ 的网络预热
+    return _FC2_PARSER_SINGLETON
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -386,39 +407,37 @@ class FC2SearchCrawler(BaseCrawler):
         return []
 
     def _parse_detail(self, html: etree._Element, code: str, number_id: str) -> Optional[ScrapeResult]:
-        """解析详情页"""
+        """解析详情页
+
+        🔴 2026-10-04 真实抓取核实：本源与 ``FC2Crawler`` 抓的是**同一个站点**
+        （``adult.contents.fc2.com``），但这里曾各自复制一份 xpath，导致三处
+        与真实结构不匹配、且改一处漏一处：
+          - 标题  `//div[@data-section="userInfo"]//h3/span/../text()`
+                  ⇒ 只取到 span **之前**的「【激レア/炎上必須】」（实测 10 字）
+          - 日期  `//span[contains(text(),"販売日")]` ⇒ 中文版页面写的是
+                  「上架时间」，实测**恒 None**
+          - 时长  `//span[contains(text(),"動画時間")]` ⇒ 真实时长在
+                  `<p class="items_article_info">01:52:37</p>`，实测**恒 None**
+        现在统一复用 FC2Crawler 已修正的解析方法（单一真相源，避免再次漂移）。
+        """
         try:
+            # 复用 FC2Crawler 的已修正解析器（同站点，逻辑只应有一份）
+            _fc2 = _shared_fc2_parser()
+
             # 标题
-            title_elem = html.xpath('//div[@data-section="userInfo"]//h3/span/../text()')
-            if not title_elem:
-                title_elem = html.xpath('//h3/text()')
-            title = "".join(title_elem).strip() if title_elem else ""
+            title = _fc2._get_title(html)
 
             if not title:
                 return None
 
             # 封面
-            cover_elem = html.xpath('//ul[@class="items_article_SampleImagesArea"]/li/a/@href')
-            cover_url = None
-            if cover_elem:
-                cover_url = cover_elem[0]
-                if cover_url.startswith("//"):
-                    cover_url = "https:" + cover_url
+            cover_url, sample_images = _fc2._get_cover_and_samples(html)
 
-            # 发行日期
-            date_elem = html.xpath('//span[contains(text(), "販売日")]/../text()')
-            release_date = None
-            if date_elem:
-                date_str = date_elem[0].strip()
-                if match := re.search(r"(\d{4})-(\d{2})-(\d{2})", date_str):
-                    release_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            # 发行日期（真相源 app/utils/release_date.py）
+            release_date = _fc2._get_release_date(html)
 
-            # 时长
-            duration_elem = html.xpath('//span[contains(text(), "動画時間")]/../text()')
-            duration = None
-            if duration_elem:
-                duration_str = duration_elem[0].strip()
-                duration = parse_runtime_minutes(duration_str)
+            # 时长（真相源 app/utils/nfo_runtime.py，契约=分钟）
+            duration = _fc2._get_duration(html)
 
             # 演员
             actors = []
@@ -457,6 +476,7 @@ class FC2SearchCrawler(BaseCrawler):
                 actors=actors,
                 cover_url=cover_url,
                 poster_url=cover_url,
+                sample_images=sample_images,
                 is_uncensored=True,
                 is_mosaic=False,
             )

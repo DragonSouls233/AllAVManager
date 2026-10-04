@@ -15,7 +15,39 @@ from app.db.module_db import ModuleDatabase
 from app.output.images import ImageProcessor, download_movie_images
 from app.output.nfo import NFOGenerator, generate_nfo
 from app.scraper.engine import ScraperEngine, get_scraper_engine
-from app.scraper.number import extract_number
+from app.scraper.number import extract_number, infer_module
+
+# 模块名 → (models 模块路径, Movie 类名, Actor 类名, Base 类名)
+# 全仓唯一映射：`_get_module_models` 与 `_module_base_class` 共用，避免两处漂移。
+_MODULE_MODEL_MAP: dict[str, tuple[str, str, str, str]] = {
+    "jav":        ("app.db.jav_models",        "JavMovie",       "JavActor",       "JAV_BASE"),
+    "chinese":    ("app.db.chinese_models",    "ChineseMovie",   "ChineseActor",   "CHINESE_BASE"),
+    "uncensored": ("app.db.uncensored_models", "UncensoredMovie", "UncensoredActor", "UNCENSORED_BASE"),
+    "fc2":        ("app.db.fc2_models",        "Fc2Movie",       "Fc2Actor",       "FC2_BASE"),
+    "pornhub":    ("app.db.pornhub_models",    "PornhubMovie",   "PornhubActor",   "PORNHUB_BASE"),
+    "western":    ("app.db.western_models",    "WesternMovie",   "WesternActor",   "WESTERN_BASE"),
+    # 🔴 2026-10-04 补：里番 = anime 模块，但本表从来没有 anime 键
+    # ⇒ `_get_module_models("anime")` 恒返回 None ⇒ 走本路径的里番落盘
+    #    静默失效（无异常、无日志）。anime_models.py 确实存在。
+    "anime":      ("app.db.anime_models",      "AnimeMovie",     "AnimeActor",     "ANIME_BASE"),
+}
+
+
+def _module_base_class(module: str):
+    """取某模块模型的 Declarative Base 类（供 ModuleDatabase.get_instance 首调注册用）。
+
+    🔴 `ModuleDatabase.get_instance()` 首调不传 base_class 会抛 ValueError，
+    而 base_class 只在 `ModuleDatabase.init_all()` 里注册、且 `init_all()` 仅由
+    `main.py` 启动流程调用 ⇒ 独立脚本/一次性任务/测试走 workflow 落盘必炸。
+    这里按模型模块里的 `<MODULE>_BASE` 补齐，做到「谁需要谁自举」。
+    """
+    import importlib
+
+    entry = _MODULE_MODEL_MAP.get(module)
+    if not entry:
+        return None
+    mod_path, _movie, _actor, base_name = entry
+    return getattr(importlib.import_module(mod_path), base_name)
 
 logger = logging.getLogger(__name__)
 
@@ -77,96 +109,129 @@ class ScraperWorkflow:
         return _SOURCE_MODULE_MAP.get(source, source)
 
     @staticmethod
-    def _get_module_models(module: str):
+    async def _get_module_models(module: str):
         """根据模块名动态加载对应的模块模型类
 
         返回 (MovieModel, ActorModel, ModuleDatabase) 三元组。
         如果模块名无效或未注册，返回 None。
         """
-        _MODEL_MAP = {
-            "jav":       ("app.db.jav_models",       "JavMovie",       "JavActor"),
-            "chinese":   ("app.db.chinese_models",   "ChineseMovie",   "ChineseActor"),
-            "uncensored":("app.db.uncensored_models","UncensoredMovie","UncensoredActor"),
-            "fc2":       ("app.db.fc2_models",       "Fc2Movie",       "Fc2Actor"),
-            "pornhub":   ("app.db.pornhub_models",   "PornhubMovie",   "PornhubActor"),
-            "western":   ("app.db.western_models",   "WesternMovie",   "WesternActor"),
-        }
-        entry = _MODEL_MAP.get(module)
+        entry = _MODULE_MODEL_MAP.get(module)
         if not entry:
             return None
+        mod_path, movie_name, actor_name, _base_name = entry
         import importlib
-        mod = importlib.import_module(entry[0])
-        MovieCls = getattr(mod, entry[1])
-        ActorCls = getattr(mod, entry[2])
-        db = ModuleDatabase.get_instance(module)
+        mod = importlib.import_module(mod_path)
+        MovieCls = getattr(mod, movie_name)
+        ActorCls = getattr(mod, actor_name)
+        # 🔴 `ModuleDatabase.get_instance()` 首调**必须**传 base_class，否则抛
+        #   ValueError。而 base_class 只在 `init_all()` 里被注册，且 `init_all()`
+        #   仅由 `main.py` 启动流程调用 ⇒ 任何非服务器进程（独立脚本 /
+        #   一次性任务 / 测试）走 workflow 落盘必然抛异常：
+        #   「模块 'fc2' 首次初始化必须提供 base_class」。
+        #   这里自举：按模型模块里的 *_BASE 补注册。
+        db = ModuleDatabase.get_instance(module, base_class=_module_base_class(module))
+        # 🔴 `get_instance()` 只做**注册**，不建表也不建库文件。建表是 `init()` 的活，
+        #   而 `init()` 只在 `ModuleDatabase.init_all()`（main.py 启动）里被调
+        #   ⇒ 独立进程里 `session_factory()` 会在**不存在的库文件**上建 engine，
+        #   首次查询即 OperationalError（no such table），或静默 0 行。
+        if not getattr(db, "_workflow_self_inited", False):
+            await db.init()
+            db._workflow_self_inited = True
         return MovieCls, ActorCls, db
     
     async def process_file(
         self,
         file_path: str,
         sources: Optional[list[str]] = None,
+        module: Optional[str] = None,
     ) -> Optional[ScrapeResult]:
         """
         处理单个文件
-        
+
         Args:
             file_path: 文件路径
             sources: 指定站点列表
-            
+            module: 显式指定归属模块。**强烈建议传入**（扫描器/批处理都已知自己在
+                扫哪个模块）；不给时按 infer_module() 推断。
+
         Returns:
             最终的刮削结果
         """
         logger.info(f"正在处理文件: {file_path}")
-        
+
         # 1. 番号识别
         filename = os.path.basename(file_path)
         number_result = extract_number(filename)
-        
+
         if not number_result.number:
             logger.warning(f"无法提取番号: {filename}")
             return None
-        
+
         number = number_result.number
         logger.info(f"已提取番号: {number} (type={number_result.number_type})")
-        
+
+        # 1.5 归属模块 —— 必须在刮削**之前**确定：
+        # ① 决定用哪些爬虫（否则 FC2 番号会走 get_crawlers_for_number 选到 JAV 爬虫）
+        # ② 决定写哪个模块库
+        module_name = module or infer_module(file_path, number_result=number_result)
+        logger.info(f"归属模块: {module_name}")
+
         # 2. 多站点刮削
-        result = await self.engine.scrape_number(number, sources)
-        
+        result = await self.engine.scrape_number(number, sources, module=module_name)
+
         if not result:
             logger.warning(f"刮削失败: {number}")
             return None
-        
+
+        # 🔴 2026-10-04：`if not result` 只挡 None，**挡不住「有对象但无实质内容」**。
+        # 实测里番 DV-109：源返回 title="猜你喜欢"（推荐区块文案）+ duration=67
+        # （页面里**别的条目**的时长），对象非 None ⇒ 直接落库 ⇒
+        # 库里写入标题「猜你喜欢」的垃圾记录，且该源被记为健康、永不熔断。
+        # `has_content()` 就是为此存在（与 patcher/strategy 同一口径），
+        # 这里必须补上，否则该防护只在一半链路上生效。
+        if not result.has_content():
+            logger.warning(
+                f"刮削结果无实质内容，放弃落盘: {number} "
+                f"(source={result.source}, title={result.title!r})"
+            )
+            return None
+
         logger.info(f"刮削来源: {result.source}")
-        
+
         # 3~6. 建目录 → 下载图片 → 生成 NFO → 写库（统一走 persist）
-        module_name = self._source_to_module(result.source or "")
+        # 🔴 不能用 _source_to_module(result.source) 决定落盘模块：
+        #    主源 javdb/javbus 是**跨模块共用源**，FC2 番号由 javdb 命中时会被
+        #    映射成 "jav" ⇒ FC2 影片写进 JAV 库（跨模块污染）。
+        #    落盘模块必须以「这条影片属于哪个模块」为准，即上面推断出的 module_name。
         await self.persist(result, file_path=file_path, module=module_name, number=number)
 
         logger.info(f"处理完成: {number}")
-        
+
         return result
     
     async def process_batch(
         self,
         file_paths: list[str],
         sources: Optional[list[str]] = None,
+        module: Optional[str] = None,
     ) -> dict[str, Optional[ScrapeResult]]:
         """
         批量处理文件
-        
+
         Args:
             file_paths: 文件路径列表
             sources: 指定站点列表
-            
+            module: 归属模块（透传给 process_file；不给则每个文件各自推断）
+
         Returns:
             文件路径 -> 结果 的映射
         """
         results = {}
-        
+
         for file_path in file_paths:
-            result = await self.process_file(file_path, sources)
+            result = await self.process_file(file_path, sources, module=module)
             results[file_path] = result
-        
+
         return results
     
     async def persist(
@@ -323,10 +388,10 @@ class ScraperWorkflow:
                 module = "jav"
 
         # ---- 写入模块数据库 ----
-        models = self._get_module_models(module)
+        models = await self._get_module_models(module)
         if models is None:
             logger.warning(f"未知模块 [{module}]，默认回退到 jav")
-            models = self._get_module_models("jav")
+            models = await self._get_module_models("jav")
             if models is None:
                 logger.error("无法获取任何模块数据库，跳过保存")
                 return
@@ -403,6 +468,20 @@ class ScraperWorkflow:
                 common_fields["is_uncensored"] = result.is_uncensored
             if hasattr(MovieCls, "is_mosaic") and result.is_mosaic is not None:
                 common_fields["is_mosaic"] = result.is_mosaic
+            # 🟢 模块级语义兜底：uncensored 模块里的影片**按定义就是无码**。
+            # 源站（尤其 javdb）对素人番号普遍不给无码标记 ⇒ 落库为 NULL
+            # ⇒ 前端 `MovieCard.vue` 的「无码」徽章（`v-if="movie.is_uncensored"`）
+            #    不显示 ⇒ 整个无码库在界面上看起来「不是无码」。
+            # 实测生产 uncensored.db：15 条里 13 条 NULL、2 条竟是有码(0)。
+            # 兜底规则：
+            #   ① 源站给了值（哪怕 False）→ 以源站为准，不兜底
+            #   ② 源站没说（None）→ 按模块语义填 True
+            # 副作用（已知且可接受）：本模块里源站明确判「有码」的记录，
+            # 后续任何一次源站没判定的补刮都会把它翻成 True。这符合
+            # 「进了 uncensored 模块就是无码」的分类约定；若将来需要
+            # 保留「源站判有码」这种例外，应在扫描侧拒绝入库而不是靠此字段区分。
+            elif module == "uncensored" and hasattr(MovieCls, "is_uncensored"):
+                common_fields["is_uncensored"] = True
 
             if movie:
                 # 更新现有记录
@@ -429,14 +508,18 @@ class ScraperWorkflow:
             try:
                 from app.db.movie_actor_sync import sync_movie_actors
 
-                await sync_movie_actors(
-                    session,
-                    module,
-                    _movie_id,
-                    female_names or [
-                        a.name for a in (result.actors or []) if getattr(a, "name", None)
-                    ],
-                )
+                _names = female_names or [
+                    a.name for a in (result.actors or []) if getattr(a, "name", None)
+                ]
+                # ⚠️ 曾试过「源站无演员时用目录名 `[Anna Cherry7]` 兜底」，
+                # 已撤回：`extract_actor_from_folder()` 是为 chinese 模块设计的
+                # （假设目录名**无**方括号），实测在本场景产出错误演员：
+                #   `[Channel] Anna Cherry7` → ['Anna']        （丢了 Cherry7）
+                #   `[Rosi Lane]`            → ['Chica','Guapa']（从西语标题切词）
+                # 写入错误演员比不写更糟（会污染演员表并影响按演员筛选）。
+                # pornhub 演员为空的根因是**站点改版后演员只在登录后可见**，
+                # 需登录态才能补齐，不该靠猜。
+                await sync_movie_actors(session, module, _movie_id, _names)
             except Exception as e:
                 logger.debug(f"写入演员关联失败 [{module}] {result.code}: {e}")
 

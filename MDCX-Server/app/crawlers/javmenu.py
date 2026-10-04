@@ -18,6 +18,7 @@ from app.crawlers.base import (
     BaseCrawler,
     CrawlerPriority,
     ScrapeResult,
+    is_ui_placeholder_title,
 )
 from app.crawlers.provider import register_crawler
 from app.utils.http_client import AsyncHttpClient
@@ -263,6 +264,25 @@ class JavmenuCrawler(BaseCrawler):
             thumbs = html.xpath('//a[@data-fancybox="gallery"]/@href')
 
             if not title and not cover_url:
+                self.mark_error()
+                return None
+
+            # 🔴 2026-10-04 修复「抓错条目」：站点搜不到该番号时会返回**推荐页**，
+            # 页面里仍含目标番号（出现在推荐列表中）⇒ 上面的番号校验通过，
+            # 随后 `_extract_labeled_span_value(html_text, "时长")` 从**页面上任意
+            # 一个**「时长」标签取值 —— 那是**别的条目**的时长。
+            # 实测里番 DV-109：title="猜你喜欢"（推荐区块标题）+
+            # duration=67（另一条视频的时长）+ 无封面/无演员/无日期，
+            # 却因「对象非 None」被 engine 当命中返回并落库。
+            # 判据：主标题必须是**真实影片标题** —— 排除 UI 占位文案，
+            # 且不能等于番号本身（等于说明只抓到了编号没抓到标题）。
+            if title and (
+                is_ui_placeholder_title(title) or title.strip().upper() == code_upper
+            ):
+                logger.info(
+                    f"JavMenu {code_upper}: 标题为占位/编号（{title!r}），"
+                    f"判定为未收录，放弃本次抓取"
+                )
                 self.mark_error()
                 return None
 

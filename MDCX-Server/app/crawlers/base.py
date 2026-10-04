@@ -37,6 +37,38 @@ class ActorInfo:
     avatar_url: Optional[str] = None    # 头像URL
 
 
+# 🔴 2026-10-04：UI 占位文案黑名单。
+# 某些源（如 javmenu）抓不到目标条目时，会把**推荐区块的标题**当主标题返回，
+# 实测 anime 模块 `DV-109` 拿到 title="猜你喜欢"（duration=67 让它通过
+# 旧版 has_content 的「有任一字段非空」判定）⇒ 库里写入「猜你喜欢」这种
+# 垃圾标题，且被记为「该源健康」永不熔断。
+# 判据：标题命中这些**通用 UI 文案**即视为无实质内容。
+_UI_PLACEHOLDER_TITLES: frozenset[str] = frozenset({
+    "猜你喜欢", "猜你喜歡", "you may also like", "you might also like",
+    "related videos", "recommended", "more like this", "trending now",
+    "热门推荐", "相關影片", "相关影片", "为您推荐", "猜你喜欢以下内容",
+    "load more", "查看更多", "more videos", "see more",
+})
+
+
+def _is_ui_placeholder_title(title: Optional[str]) -> bool:
+    """标题是否为 UI 占位文案（推荐区块标题等）而非真实影片标题。"""
+    if not title:
+        return False
+    t = title.strip().lower().rstrip("…").rstrip("。")
+    if not t:
+        return False
+    if t in _UI_PLACEHOLDER_TITLES:
+        return True
+    # 「猜你喜欢：xxx」这类前缀式
+    return any(t.startswith(p) and len(t) <= len(p) + 12
+               for p in _UI_PLACEHOLDER_TITLES)
+
+
+# 公开别名（供爬虫模块 import —— 带下划线前缀的私有命名不适合跨模块引用）
+is_ui_placeholder_title = _is_ui_placeholder_title
+
+
 @dataclass
 class ScrapeResult:
     """刮削结果"""
@@ -127,7 +159,27 @@ class ScrapeResult:
         raw_data 不计入：调试字段（如 magnets 抓取失败时的空列表）不代表刮削成功。
         """
         # title 单独不算内容——空壳的典型特征就是 title == code
-        meaningful_title = bool(self.title) and self.title.strip() != self.code.strip()
+        _t = (self.title or "").strip()
+        _placeholder = _is_ui_placeholder_title(_t)
+        meaningful_title = bool(_t) and _t != (self.code or "").strip() and not _placeholder
+
+        # 🔴 2026-10-04：占位标题 + 「除时长外一无所有」= 抓错了条目。
+        # 实测 anime `DV-109` → title="猜你喜欢"、duration=67、其余全空。
+        # duration 是页面侧栏/推荐卡里的**别的条目**的时长，跟着错条目一起被抓回来，
+        # 于是旧判定「任一字段非空即算有内容」被它单独撑起来 ⇒ 垃圾入库 +
+        # 记为该源健康、永不熔断。这种情况必须整体判为无内容，
+        # 让上层回退到其它源（getchu/kin8 等专用源），而不是写入「猜你喜欢」。
+        if _placeholder and not any([
+            self.plot,
+            self.original_title,
+            self.cover_url or self.poster_url or self.thumb_url,
+            self.actors or self.all_actors or self.directors,
+            self.genres or self.tags or self.series or self.label,
+            self.studio or self.maker,
+            self.release_date,
+        ]):
+            return False
+
         if any([
             meaningful_title,
             self.plot,

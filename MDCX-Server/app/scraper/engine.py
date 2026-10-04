@@ -213,7 +213,17 @@ class ScraperEngine:
                 valid_results += await self._gather_all(tier2, number, ctx, module)
 
         # 过滤有效结果
-        valid_results = [r for r in valid_results if isinstance(r, ScrapeResult)]
+        # 🔴 2026-10-04：原来只判 `isinstance(r, ScrapeResult)` —— 任何**非 None 的
+        # 对象**都被当成有效结果，包括「有对象但无实质内容」的空壳：
+        # 实测里番 DV-109，源返回 title="猜你喜欢"（推荐区块文案）+
+        # duration=67（页面里别的条目的时长）⇒ 一路返回并落库，库里出现
+        # 标题为「猜你喜欢」的垃圾记录，且该源被记为健康、永不熔断。
+        # `is_valid()` = code + source + has_content()，与 patcher 侧同口径。
+        # 这里过滤掉，engine 才会继续尝试后续源，而不是把垃圾当命中返回。
+        valid_results = [
+            r for r in valid_results
+            if isinstance(r, ScrapeResult) and r.is_valid()
+        ]
 
         if not valid_results:
             return None

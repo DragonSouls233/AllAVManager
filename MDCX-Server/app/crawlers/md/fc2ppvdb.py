@@ -62,23 +62,64 @@ def get_video_url(data):  # 获取视频URL
     #     return f"https://example.com/videos/{video_id}.mp4"
     return ""
 
+def extract_inertia_props(html_text: Optional[str]) -> Optional[dict]:
+    """从 Inertia.js 页面 HTML 中提取 JSON props。
+
+    🔴 2026-10-04：fc2cmadb.com 改版为 Inertia.js，数据内嵌在
+    ``<script type="application/json">{...}</script>``（Inertia v2）或
+    ``<div id="app" data-page="{...}">``（v1 早期）里。
+    兼容两种形态；解析失败返回 None（由调用方给出可诊断的错误信息）。
+    """
+    if not html_text:
+        return None
+    import html as _html
+    import json as _json
+
+    # 形态 1：data-page="..."（属性值里的 HTML 实体已转义）
+    for m in re.finditer(r'data-page="([^"]+)"', html_text, re.DOTALL):
+        try:
+            obj = _json.loads(_html.unescape(m.group(1)))
+        except (_json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            props = obj.get("props")
+            if isinstance(props, dict):
+                return props
+            return obj
+
+    # 形态 2：<script type="application/json">…</script>（Inertia v2）
+    for m in re.finditer(
+        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>',
+        html_text, re.DOTALL,
+    ):
+        raw = m.group(1).strip()
+        if not raw:
+            continue
+        try:
+            obj = _json.loads(_html.unescape(raw))
+        except (_json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            props = obj.get("props")
+            if isinstance(props, dict):
+                return props
+            return obj
+    return None
+
+
 def get_video_time(data):  # 获取视频时长（上游统一为分钟，与库内其它模块一致）
+    """时长（分钟）—— 统一走 ``parse_runtime_minutes``（duration 唯一真相源）。
+
+    🔴 旧实现手写 ``int(h)*60 + int(m)`` 会把 ``01:52:37`` 算成 **112**
+    （正确 113），且不认 ``113分`` / ``1時間52分`` 这类写法。
+    """
+    from app.utils.nfo_runtime import parse_runtime_minutes
+
     duration = str(data.get("article", {}).get("duration", "")).strip()
     if not duration:
         return ""
-    temp_list = duration.split(":")
-    if len(temp_list) == 3:
-        hours, minutes, seconds = temp_list
-        try:
-            total_minutes = int(hours) * 60 + int(minutes)
-            if total_minutes == 0 and int(seconds) > 0:
-                return "1"
-            return str(total_minutes)
-        except ValueError:
-            return duration
-    if len(temp_list) <= 2 and temp_list[0].isdigit():
-        return str(int(temp_list[0]))
-    return duration
+    minutes = parse_runtime_minutes(duration)
+    return str(minutes) if minutes is not None else ""
 
 def cookie_str_to_dict(cookie_str: str) -> dict:  # cookie 转为字典（用 SimpleCookie 解析，兼容带引号/特殊字符的 value）
     cookie = SimpleCookie()
@@ -122,7 +163,7 @@ async def main(
         # aiohttp 新版 API：ClientSession + request 级 proxy（旧版 AsyncSession/proxies 已移除）
         # 同一 session 的 cookie jar 会在两次请求间保持，先访问详情页可让站点接受独立 cookie（warmup）
         async with aiohttp.ClientSession(cookies=cookies) as session:
-            # 1) 先访问详情页，让站点接受配置中的独立 cookie
+            # 1) 访问详情页，让站点接受配置中的独立 cookie
             url_article = f"{base_url}/articles/{number}"
             response_article = await session.get(url_article, proxy=proxy)
             if response_article.status != 200:
@@ -131,28 +172,24 @@ async def main(
             if "/login" in str(response_article.url):
                 response_article.close()
                 raise Exception("详情页跳转到登录页，fc2ppvdb Cookie 可能无效或已过期")
+            article_html = await response_article.text()
             response_article.close()
 
-            # 2) 再访问 XHR 接口获取 JSON 数据（带 XHR 头，模拟页面内请求）
-            xhr_url = f"{base_url}/articles/article-info?videoid={number}"
-            xhr_headers = {
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Referer": url_article,
-                "X-Requested-With": "XMLHttpRequest",
-            }
-            response_xhr = await session.get(xhr_url, proxy=proxy, headers=xhr_headers)
-            if response_xhr.status != 200:
-                raise Exception(f"XHR 请求失败: {response_xhr.status}")
-            try:
-                html_info = await response_xhr.json()
-            except Exception as e:
-                text = await response_xhr.text()
-                text_preview = " ".join(text.strip().split())[:120]
-                # 接口返回登录页/HTML 而非 JSON，通常是 cookie 失效
-                if "login" in text.lower() or text.lstrip().startswith("<!DOCTYPE html"):
-                    raise Exception(f"XHR 返回登录页/HTML（cookie 可能失效）：{text_preview}")
-                raise Exception(f"XHR 返回内容不是有效 JSON: {e}；响应摘要={text_preview}")
-            response_xhr.close()
+            # 2) 🔴 2026-10-04 真实抓取核实：fc2cmadb.com 已改版为 **Inertia.js**。
+            #    旧 XHR 接口 `/articles/article-info?videoid=<id>` **已废弃** ——
+            #    现在返回站点首页 HTML（实测 Accept: application/json 也一样），
+            #    ⇒ `response_xhr.json()` 必抛异常 ⇒ **该源 100% 失效**
+            #    （表现为「fc2ppvdb NONE」，且被误判成「cookie 失效」）。
+            #    新数据内嵌在详情页的
+            #    `<script type="application/json">{...}</script>`（Inertia v2 props）
+            #    里，直接从详情页 HTML 提取。
+            html_info = extract_inertia_props(article_html)
+            if not html_info or not html_info.get("article"):
+                preview = " ".join((article_html or "").strip().split())[:120]
+                raise Exception(
+                    "未从详情页 Inertia props 提取到数据"
+                    f"（站点结构可能再变，len={len(article_html or '')}）：{preview}"
+                )
 
         title = get_title(html_info)
         if not title:

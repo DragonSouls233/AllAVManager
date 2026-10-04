@@ -212,6 +212,59 @@ def _to_tags(api_object: dict) -> list[str]:
     return result
 
 
+_IMAGE_SIZE_ORDER = ("xx", "xl", "lg", "md", "sm")
+
+
+def _pick_image_url(images) -> Optional[str]:
+    """从 Aylo 的 ``images`` 字段里挑一张头像 URL（尽量大）。
+
+    兼容两种真实形态（同一字段在不同品牌/接口版本里形态不同）：
+      1. dict：``{"master_profile": {"xx": {"url": ...}, "lg": {...}}, ...}``
+      2. list：``[{"size": "xx", "url": ...}, {"size": "lg", "url": ...}]``
+      3. 其它（None / 字符串）→ 返回 None，**绝不抛异常**
+    """
+    if not images:
+        return None
+
+    if isinstance(images, dict):
+        buckets = []
+        master = images.get("master_profile")
+        if isinstance(master, dict):
+            buckets.append(master)
+        buckets.append(images)          # 扁平形态：{xx:{url}, lg:{url}}
+        for bucket in buckets:
+            for size in _IMAGE_SIZE_ORDER:
+                item = bucket.get(size)
+                if isinstance(item, dict):
+                    url = item.get("url")
+                    if url:
+                        return url
+                elif isinstance(item, str) and item:
+                    return item
+        # 兜底：任意含 url 的 dict
+        for bucket in buckets:
+            for value in bucket.values():
+                if isinstance(value, dict) and value.get("url"):
+                    return value["url"]
+        return None
+
+    if isinstance(images, list):
+        # 按 size 排序后取最大；无 size 时取第一个带 url 的
+        def _size_of(item) -> int:
+            if not isinstance(item, dict):
+                return 99
+            s = str(item.get("size") or item.get("type") or "").lower()
+            return _IMAGE_SIZE_ORDER.index(s) if s in _IMAGE_SIZE_ORDER else 99
+
+        candidates = [i for i in images if isinstance(i, dict) and i.get("url")]
+        if not candidates:
+            return None
+        candidates.sort(key=_size_of)
+        return candidates[0].get("url")
+
+    return None
+
+
 def _to_actor(performer_from_api: dict, site: Optional[str] = None) -> ActorInfo:
     """演员数据转换（参考 P0 to_scraped_performer）"""
     name = performer_from_api.get("name") or ""
@@ -270,12 +323,16 @@ def _to_actor(performer_from_api: dict, site: Optional[str] = None) -> ActorInfo
         actor.extra["measurements"] = measurements
 
     # 头像（取最大版本）
-    images = performer_from_api.get("images", {}).get("master_profile", {}) or {}
-    for size in ("xx", "xl", "lg", "md", "sm"):
-        img_url = images.get(size, {}).get("url") if isinstance(images.get(size), dict) else None
-        if img_url:
-            actor.avatar_url = re.sub(r"/m=[^/]+", "", img_url)
-            break
+    # 🔴 2026-10-04 修复：`images` 字段在不同品牌/接口版本里是 **dict**（含
+    # master_profile.xx/xl/...）**或 list**（每项自带 size/url）。
+    # 原实现无条件 `.get("master_profile", {})` ⇒ 遇到 list 直接抛
+    # `AttributeError: 'list' object has no attribute 'get'`，
+    # 而它发生在 `_to_performers` 里 ⇒ **整个 search() 崩溃**（不是单条跳过），
+    # 实测 western 的 aylo 源对任何关键词都直接抛异常。
+    images = performer_from_api.get("images")
+    img_url = _pick_image_url(images)
+    if img_url:
+        actor.avatar_url = re.sub(r"/m=[^/]+", "", img_url)
 
     return actor
 
@@ -427,8 +484,25 @@ class AyloAPICrawler(BaseCrawler):
             return ""
 
     def _domain_to_url(self, domain: str) -> str:
-        """domain -> 完整 URL（参考 P0 domains.get_token_for）"""
-        return f"https://www.{domain}.com"
+        """domain -> 完整站点 URL（参考 P0 domains.get_token_for）
+
+        🔴 2026-10-04 修复：原实现无条件拼 ``https://www.{domain}.com``，
+        传入已是完整域名时产出 **``https://www.brazzers.com.com``** 这种废地址
+        （实测 SSLV3_ALERT_HANDSHAKE_FAILURE，日志里一眼能看出域名重复），
+        导致 token 永远取不到 ⇒ 该品牌整站不可用。
+        现在按输入形态分派：
+          - 完整 URL      → 原样返回
+          - 带子域的域名  → https://{domain}（如 pornhub.com、www.xxx.com）
+          - 裸站点名      → https://www.{name}.com
+        """
+        d = (domain or "").strip()
+        if not d:
+            return ""
+        if d.startswith("http://") or d.startswith("https://"):
+            return d.rstrip("/")
+        if "." in d:
+            return f"https://{d.rstrip('/')}"
+        return f"https://www.{d}.com"
 
     async def _get_instance_token(self, domain: str) -> Optional[str]:
         """获取 instance_token（先查缓存，否则请求站点根域）"""

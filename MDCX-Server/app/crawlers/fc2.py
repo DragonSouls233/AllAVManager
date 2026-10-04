@@ -29,6 +29,7 @@ from app.crawlers.provider import register_crawler
 from app.utils.cf_bypass import get_cf_bypass
 from app.utils.http_client import AsyncHttpClient
 from app.utils.nfo_runtime import parse_runtime_minutes
+from app.utils.release_date import parse_release_date
 
 logger = logging.getLogger(__name__)
 
@@ -222,14 +223,58 @@ class FC2Crawler(BaseCrawler):
             return None
     
     def _get_title(self, html: etree._Element) -> str:
-        """获取标题"""
-        result = html.xpath('//div[@data-section="userInfo"]//h3/span/../text()')
-        if result:
-            return result[0].strip()
-        
-        # 备用选择器
-        result = html.xpath("//h3/text()")
-        return result[0].strip() if result else ""
+        """获取标题
+
+        🔴 真实结构（2026-10-04 抓 adult.contents.fc2.com 核实）：
+        ```html
+        <div class="items_article_headerInfo" data-section="userInfo">
+          <h3>【激レア/炎上必須】<span style="zoom:0.01;color:#fff;width:1px;height:1px;
+              display:inline-block;overflow:hidden;">**zjponpjjx </span>
+              福岡県で活動するリアルご当地アイドル…</h3>
+        ```
+        两个坑：
+        1. ``data-section="userInfo"`` 在同一页出现**两次**（标题区 + 卖家资讯区），
+           不能用 `//div[@data-section="userInfo"]//h3`（会随文档顺序命中错的那个）。
+        2. `<span>` 是站点插入的**防爬虫混淆字符**（1px 隐藏），必须剔除；
+           且标题横跨 span 前后多个文本节点，`h3/span/../text()` 只能拿到
+           span **之前**的那一段（旧实现实测只返回「【激レア/炎上必須】」10 字）。
+        正确做法：取 h3 的全部直接子文本节点，剔除 span 内的混淆字符后拼接。
+        """
+        for xp in (
+            '//div[contains(@class,"items_article_headerInfo")]//h3',
+            '//div[@data-section="userInfo"][not(.//a[@data-pdp-seller-profile-link])]//h3',
+        ):
+            nodes = html.xpath(xp)
+            if not nodes:
+                continue
+            h3 = nodes[0]
+            # ① 剔除所有 span（站点插入的 1px 隐藏防爬虫混淆字符）——
+            #    用 textContent 语义而非删节点，避免改动整棵 tree 影响其它解析。
+            parts: list[str] = []
+            if h3.text:
+                parts.append(h3.text)
+            for child in h3:
+                tag = child.tag if isinstance(child.tag, str) else ""
+                if tag != "span" and child.text:
+                    parts.append(child.text)
+                if tag == "span":
+                    # span 之后可能还有 tail 文本（真正的正文），必须保留
+                    pass
+                if child.tail:
+                    parts.append(child.tail)
+            text = "".join(parts).strip()
+            if text:
+                return text
+
+        # 备用：取 <title>（含完整标题，格式为「标题 - FC2」）
+        t = html.xpath("//title/text()")
+        if t:
+            raw = t[0].strip()
+            for sep in (" - FC2", " | FC2", " - FC2動画"):
+                if raw.endswith(sep):
+                    return raw[: -len(sep)].strip()
+            return raw
+        return ""
     
     def _get_cover_and_samples(self, html: etree._Element) -> tuple[Optional[str], list[str]]:
         """获取封面和样图"""
@@ -270,33 +315,58 @@ class FC2Crawler(BaseCrawler):
         return [r.strip() for r in results if r.strip()]
     
     def _get_release_date(self, html: etree._Element) -> Optional[date]:
-        """获取发行日期"""
-        result = html.xpath('//span[contains(text(), "販売日")]/../text()')
-        if not result:
-            return None
-        
-        date_str = result[0].strip()
-        date_str = date_str.replace("/", "-").replace(".", "-")
-        
-        if match := re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", date_str):
-            try:
-                return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-            except ValueError:
-                return None
-        
+        """获取发行日期
+
+        🔴 真实结构（2026-10-04 抓 adult.contents.fc2.com 核实）：FC2 官方**中文版**
+        页面写的是 `<div class="items_article_softDevice"><p>上架时间 : 2025/10/26</p></div>`，
+        日文版才是「販売日」。旧实现只认 `//span[contains(text(),"販売日")]` ⇒
+        在中文版页面**恒返回 None**（FC2 全部日期缺失）。
+        这里两种语言都认，并统一交给 release_date 真相源解析。
+        """
+        for xp in (
+            '//p[contains(text(), "上架时间")]',
+            '//span[contains(text(), "販売日")]/..',
+            '//p[contains(text(), "販売日")]',
+            '//span[contains(text(), "上架时间")]/..',
+        ):
+            nodes = html.xpath(xp)
+            if not nodes:
+                continue
+            raw = "".join(nodes[0].itertext()) if hasattr(nodes[0], "itertext") \
+                else str(nodes[0])
+            parsed = parse_release_date(raw)
+            if parsed is not None:
+                return parsed
         return None
-    
+
     def _get_duration(self, html: etree._Element) -> Optional[int]:
         """获取时长（分钟）
 
         统一走 ``parse_runtime_minutes``（duration 唯一真相源）。
         旧实现手写 ``int(parts[0])*60 + int(parts[1])`` 会把 ``01:52:37`` 算成 **112**
         （正确 113），且完全不支持 ``113分`` / ``1時間52分`` 这类中文写法。
+
+        🔴 真实结构（2026-10-04 抓 adult.contents.fc2.com 核实）：时长在**缩略图下方**
+        `<p class="items_article_info">01:52:37</p>`，页面上**根本不存在**「動画時間」
+        这段日文文本 ⇒ 旧 xpath `//span[contains(text(),"動画時間")]/../text()`
+        恒返回 None（FC2 全部时长缺失）。
         """
-        result = html.xpath('//span[contains(text(), "動画時間")]/../text()')
-        if not result:
-            return None
-        return parse_runtime_minutes(result[0].strip())
+        for xp in (
+            '//p[contains(@class,"items_article_info")]',
+            '//span[contains(text(), "動画時間")]/..',
+            '//p[contains(text(), "動画時間")]',
+            '//p[contains(text(), "时长")]',
+            '//span[contains(text(), "时长")]/..',
+        ):
+            nodes = html.xpath(xp)
+            if not nodes:
+                continue
+            node = nodes[0]
+            raw = "".join(node.itertext()) if hasattr(node, "itertext") else str(node)
+            minutes = parse_runtime_minutes(raw.strip())
+            if minutes is not None:
+                return minutes
+        return None
     
     def _get_actors(self, html: etree._Element) -> list[ActorInfo]:
         """获取演员列表"""
