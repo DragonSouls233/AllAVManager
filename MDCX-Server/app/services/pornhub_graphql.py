@@ -47,6 +47,11 @@ class PHVideoMeta:
     hls_master: Optional[str] = None
     is_live: bool = False
     is_hd: bool = False
+    # 以下为 2026-10-03 按实测返回补充的字段
+    sample_images: list[str] = field(default_factory=list)  # 实测 thumbs 列表（样图/剧照）
+    segment: dict = field(default_factory=dict)             # 实测 segment 分段信息
+    video_id: str = ""                                      # 实测 video_id
+    url: str = ""                                            # 实测 url
     raw_response: dict = field(default_factory=dict)
 
 
@@ -78,37 +83,88 @@ async def fetch_video_metadata(viewkey: str) -> Optional[PHVideoMeta]:
 
         meta = PHVideoMeta(viewkey=viewkey, raw_response=data)
 
-        meta.title = str(data.get("title", ""))
-        meta.description = str(data.get("description", ""))
-        meta.duration = int(data.get("duration", 0))
-        meta.thumbnail = str(data.get("thumbnail", ""))
-        meta.views = int(data.get("views", 0))
-        meta.publish_date = str(data.get("publish_date", ""))
-        meta.date_updated = str(data.get("date_updated", ""))
-        meta.likes = int(data.get("likes", 0))
-        meta.dislikes = int(data.get("dislikes", 0))
-        meta.rating = float(data.get("rating", 0.0))
-        meta.video_status = str(data.get("video_status", ""))
-        meta.is_premium = bool(data.get("is_premium", False))
-        meta.is_live = bool(data.get("is_live", False))
-        meta.is_hd = bool(data.get("is_hd", False))
+        # ⚠️ 修复(2026-10-03)：以下字段名全部按**实测返回**对齐，旧代码用的是
+        # 臆测名（thumbnail/likes/dislikes/is_premium/performers…），实测一个都对不上：
+        #   实测 video 对象键 = categories, default_thumb, duration, pornstars,
+        #   publish_date, rating, ratings, segment, tags, thumb, thumbs, title, url, video_id, views
+        #   另 duration 是 "10:44" 字符串（见 _to_int），rating 是 0-100 浮点（不是 0-5）。
+        meta.title = _to_text(data.get("title"))
+        meta.description = _to_text(data.get("description"))
+        meta.duration = _to_int(data.get("duration"))
+        meta.thumbnail = _to_text(data.get("thumb") or data.get("default_thumb"))
+        meta.views = _to_int(data.get("views"))
+        meta.publish_date = _to_text(data.get("publish_date"))
+        meta.date_updated = _to_text(data.get("date_updated"))
+        meta.likes = _to_int(data.get("likes"))
+        meta.dislikes = _to_int(data.get("dislikes"))
+        # 实测 rating = 89.204（0-100 制），转成 0-5 需要 /20
+        raw_rating = _to_float(data.get("rating"))
+        meta.rating = round(raw_rating / 20.0, 2) if raw_rating > 5 else raw_rating
+        meta.video_status = _to_text(data.get("video_status"))
+        meta.is_premium = bool(data.get("is_premium") or data.get("premium"))
+        meta.is_live = bool(data.get("is_live"))
+        meta.is_hd = bool(data.get("is_hd"))
+        meta.video_id = _to_text(data.get("video_id"))
+        meta.url = _to_text(data.get("url"))
 
+        # tags 实测是 [{'tag_name': 'xxx'}, …]（旧代码按 list[str] 处理 → 拿到 dict 列表）
         tags = data.get("tags") or []
         if isinstance(tags, list):
-            meta.tags = [str(t) for t in tags]
+            for t in tags:
+                if isinstance(t, dict):
+                    name = t.get("tag_name") or t.get("name")
+                    if name:
+                        meta.tags.append(str(name).strip())
+                elif isinstance(t, str):
+                    meta.tags.append(t.strip())
 
+        # categories 实测是 [{'category': 'asian'}, …]
         cats = data.get("categories") or []
         if isinstance(cats, list):
-            meta.categories = cats
+            for c_ in cats:
+                if isinstance(c_, dict):
+                    name = c_.get("category") or c_.get("name")
+                    if name:
+                        meta.categories.append({"category": str(name).strip()})
+                elif isinstance(c_, str):
+                    meta.categories.append({"category": c_.strip()})
 
-        performers = data.get("performers") or data.get("pornstars") or []
+        # performers 实测键是 pornstars（不是 performers），元素含 name/id
+        performers = data.get("pornstars") or data.get("performers") or []
         if isinstance(performers, list):
             for p in performers:
                 if isinstance(p, dict):
                     if p.get("name"):
-                        meta.performer_names.append(str(p["name"]))
-                    if p.get("id") or p.get("pornstar_id"):
-                        meta.performer_ids.append(str(p.get("id") or p.get("pornstar_id", "")))
+                        meta.performer_names.append(str(p["name"]).strip())
+                    pid = p.get("id") or p.get("pornstar_id")
+                    if pid:
+                        meta.performer_ids.append(str(pid))
+
+        # thumbs 实测是 16 条 dict：{'size':'320x240','width','height','src':...}
+        # （旧代码完全没处理）——取 src，按 width*height 降序优先大图
+        thumbs = data.get("thumbs") or []
+        if isinstance(thumbs, list):
+            sized: list[tuple[int, str]] = []
+            for t in thumbs:
+                if isinstance(t, str) and t:
+                    sized.append((0, t))
+                elif isinstance(t, dict):
+                    src = t.get("src") or t.get("url")
+                    if not src:
+                        continue
+                    try:
+                        w = int(t.get("width") or 0)
+                        h = int(t.get("height") or 0)
+                    except (TypeError, ValueError):
+                        w = h = 0
+                    sized.append((w * h, str(src)))
+            sized.sort(key=lambda x: x[0], reverse=True)
+            meta.sample_images = [u for _, u in sized]
+
+        # segment 是分段信息，与 mediaDefinitions 互补
+        segment = data.get("segment")
+        if isinstance(segment, dict):
+            meta.segment = segment
 
         media_defs = data.get("mediaDefinitions") or data.get("media_definitions") or []
         if isinstance(media_defs, list):
@@ -120,6 +176,57 @@ async def fetch_video_metadata(viewkey: str) -> Optional[PHVideoMeta]:
     except Exception as e:
         logger.warning("GraphQL 元数据获取失败 [%s]: %s", viewkey, e)
         return None
+
+
+def _to_int(value, default: int = 0) -> int:
+    """宽松转 int。
+
+    修复(2026-10-03)：实测 ``webmasters/video_by_id`` 返回的 duration 是
+    ``"10:44"`` 这种 mm:ss 字符串，原代码直接 ``int(data.get("duration", 0))``
+    会抛 ValueError → 被外层 except 吞掉 → **兜底源 100% 静默失效**
+    （日志只有一行"invalid literal for int() with base 10"）。
+    同理 likes/dislikes 可能缺失或为 None。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return default
+    # mm:ss 或 hh:mm:ss → 秒
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return default
+        total = 0
+        for n in nums:
+            total = total * 60 + n
+        return total
+    try:
+        return int(float(s))
+    except ValueError:
+        return default
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    """宽松转 float（rating 可能是 str）。"""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_text(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _parse_graphql_response(text: str) -> Optional[dict]:

@@ -206,9 +206,14 @@ class PornhubCrawler(BaseCrawler):
         self._proxy = get_effective_proxy_url()
 
     def _extract_viewkey(self, code: str) -> Optional[str]:
-        code = code.strip().lower()
-        m = re.search(r'(?:ph)?([a-f0-9]{10,20})', code)
-        return m.group(1) if m else None
+        """从 code 提取裸 viewkey。
+
+        修复(2026-10-03)：旧正则 `(?:ph)?([a-f0-9]{10,20})` 只接受 a-f，
+        而扫描器 pornhub_scanner 早已要求"13位且必含 g-z"才入库 ⇒ 扫进来的
+        真实 viewkey 绝大多数解不出来，补刮静默全灭。改走全仓统一判据。
+        """
+        from app.scraper.number import normalize_ph_viewkey
+        return normalize_ph_viewkey(code)
 
     async def scrape(self, code: str, ctx=None) -> Optional[ScrapeResult]:
         viewkey = self._extract_viewkey(code)
@@ -433,6 +438,7 @@ class PornhubCrawler(BaseCrawler):
             code=viewkey,
             title=title,
             source="pornhub",
+            source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
             original_title=title,
             cover_url=cover,
         )
@@ -502,6 +508,7 @@ class PornhubCrawler(BaseCrawler):
             code=viewkey,
             title=title,
             source="pornhub",
+            source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
         )
 
         # 尝试从页面中提取更多信息
@@ -552,6 +559,7 @@ class PornhubCrawler(BaseCrawler):
             code=viewkey,
             title=title,
             source="pornhub",
+            source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
         )
 
         # 封面
@@ -697,25 +705,33 @@ class PornhubCrawler(BaseCrawler):
         return actors
 
     def _extract_duration_html(self, html: str) -> Optional[int]:
-        """提取时长（参考 VaultX: var class='duration'）"""
-        # duration 元素
+        """从 HTML 提取时长 → **返回分钟**（ScrapeResult.duration 契约单位）。
+
+        修复(2026-10-03)：原实现返回**秒**（三处分支：var.duration / meta[video:duration]
+        / data-duration），却直接赋给 result.duration。统一在末尾折算成分钟。
+        """
+        seconds: Optional[int] = None
+
+        # duration 元素（<var class="duration">10:44</var>）
         m = re.search(r'<var[^>]*class="[^"]*duration[^"]*"[^>]*>\s*([^<]+)', html)
         if m:
-            dur = _parse_duration_to_seconds(m.group(1).strip())
-            if dur:
-                return dur
+            seconds = _parse_duration_to_seconds(m.group(1).strip())
 
-        # meta duration
-        m = re.search(r'<meta\s+property="video:duration"\s+content="(\d+)"', html, re.I)
-        if m:
-            return int(m.group(1))
+        # meta video:duration（ISO 8601 或纯秒数）
+        if seconds is None:
+            m = re.search(r'<meta\s+property="video:duration"\s+content="(\d+)"', html, re.I)
+            if m:
+                seconds = int(m.group(1))
 
-        # data-duration
-        m = re.search(r'data-duration\s*=\s*["\'](\d+)["\']', html)
-        if m:
-            return int(m.group(1))
+        # data-duration（PH 惯例为秒）
+        if seconds is None:
+            m = re.search(r'data-duration\s*=\s*["\'](\d+)["\']', html)
+            if m:
+                seconds = int(m.group(1))
 
-        return None
+        if not seconds or seconds <= 0:
+            return None
+        return max(seconds // 60, 1)
 
     def _extract_rating_html(self, html: str) -> Optional[float]:
         """提取评分（参考 VaultX 第126-132行: span class='percent'）"""
@@ -804,6 +820,7 @@ class PornhubCrawler(BaseCrawler):
             code=viewkey,
             title=title,
             source="pornhub",
+            source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
             original_title=title,
         )
 
@@ -884,19 +901,39 @@ class PornhubCrawler(BaseCrawler):
 
     @staticmethod
     def _parse_duration_value(value) -> Optional[int]:
-        """解析时长值"""
+        """解析时长值 → **返回分钟**（ScrapeResult.duration 契约单位是分钟）。
+
+        修复(2026-10-03)：本方法原实现返回**秒**（含 >3600 时按毫秒 /1000 的处理），
+        但调用处 :454 / :876 直接赋给 `result.duration`，而 `ScrapeResult.duration`
+        的契约注释明写「时长（分钟）」。后果：NFO/入库写进 865 分钟（实际 14 分钟），
+        比正确值大 60 倍，且新写的 pornhub_api 兜底源按分钟换算 → 两源同一影片
+        时长相差 60 倍，合并时互相污染。
+
+        PH 的时长来源有两种形态，本方法统一收敛到分钟：
+          - "10:44" / "1:12:34" 字符串 → 由 _parse_duration_to_seconds 转秒再 /60
+          - 纯数字            → 视作秒（>3600 视作毫秒）；视作分钟则 >3600 判断会失效
+        """
         if value is None:
             return None
+
+        # 形态 1：mm:ss / hh:mm:ss 字符串
+        if isinstance(value, str) and ":" in value:
+            seconds = _parse_duration_to_seconds(value.strip())
+            if seconds:
+                return max(seconds // 60, 1)
+            return None
+
+        # 形态 2：纯数字
         try:
-            duration = int(value)
-            if duration <= 0:
-                return None
-            if duration > 3600:
-                duration = duration // 1000
-            return duration
+            num = int(value)
         except (ValueError, TypeError):
-            pass
-        return None
+            return None
+        if num <= 0:
+            return None
+        if num > 3600:  # 视作毫秒 → 秒
+            num //= 1000
+        # 到这里 num 是秒 → 折算分钟（不足 1 分钟按 1 分钟记，避免落 0）
+        return max(num // 60, 1)
 
     # ===== 搜索 =====
 

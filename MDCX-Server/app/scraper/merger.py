@@ -18,8 +18,32 @@ from enum import Enum
 from typing import Optional
 
 from app.crawlers.base import ActorInfo, ScrapeResult
+from app.scraper.number import normalize_number
 
 logger = logging.getLogger(__name__)
+
+
+def _avid_key(code: str) -> str:
+    """番号等价归一：用于跨源比较"是不是同一个番号"。
+
+    🔴 2026-10-04 修正。原实现只做大写 + 去 `-`/`_`/空格，导致**语义前缀没归一**：
+      `FC2-PPV-1234567` → `FC2PPV1234567`
+      `FC2-1234567`     → `FC21234567`
+    两者被当成**两个不同番号**，于是 >=2 票就能把规范番号 `FC2-1234567`
+    投票改写成 `FC2-PPV-1234567`（实测复现）。
+    而全仓已在 2026-10-04 统一为 `FC2-{id}`（见 number.py::FC2_PATTERN），
+    库内既有 code 也是这个形态 ⇒ 投票结果会与库里对不上号。
+
+    修法：先走 number.normalize_number（它会处理 FC2/PPV 前缀与分隔符），
+    再去掉剩余分隔符做纯比较键。比较键仅用于投票，**返回给调用方的仍是原 code**。
+    """
+    if not code:
+        return ""
+    try:
+        norm = normalize_number(code)
+    except Exception:
+        norm = code.upper()
+    return re.sub(r"[-_\s]", "", norm)
 
 
 class UseJavDBCover(str, Enum):
@@ -76,6 +100,13 @@ class MergeConfig:
 
     # 自动检测并添加 genre 标签
     auto_add_genres: bool = True
+
+    # === 逐字段来源优先级（2026-10-04）===
+    # 全局 source_priority 的隐含假设是"最优先的源在每个字段上都最好"，
+    # 实测不成立。field_priority 只写**差异项**，未列出的源沿用全局表。
+    #   key   = ScrapeResult 字段名
+    #   value = {源名: 优先级数字，越小越优先}
+    field_priority: dict[str, dict[str, int]] = None
 
     def __post_init__(self):
         if self.source_priority is None:
@@ -234,6 +265,69 @@ class MergeConfig:
                 "theporndb_movies": 60,
             }
 
+        if self.field_priority is None:
+            # 逐字段优先级：只写与全局表**不一致**的字段。
+            # 未列出的源沿用 source_priority（_field_order 用它做二级排序）。
+            self.field_priority = {
+                # ---- 标题：中文源优先 ----
+                # 全局表里 pornhub 与 javbus 同为 10，但 PH 的 HTML 源只有英文标题，
+                # 让位给有中文标题的聚合源。
+                "title": {
+                    "pornhub": 30, "pornhub_api": 30,
+                    "javdb": 5, "javbus": 10, "avmoo": 8, "airav": 20,
+                },
+                # ---- 厂商 / 厂牌：官方厂商源最权威 ----
+                # 聚合站会把 "S1 NO.1 STYLE" 之类简写或译名当成厂商名。
+                "studio": {
+                    "faleno": 5, "dahlia": 5, "prestige": 5, "giga": 5,
+                    "kin8": 5, "mywife": 5, "xcity": 5, "getchu": 8,
+                    "s1style": 5, "caribbeancom": 5, "heyzo": 5,
+                    "10musume": 5, "caribbeancompr": 5, "ragdoll": 5,
+                    "pornhub": 40, "javbus": 20,
+                },
+                "maker": {
+                    "faleno": 5, "dahlia": 5, "prestige": 5, "giga": 5,
+                    "kin8": 5, "mywife": 5, "xcity": 5, "getchu": 8,
+                    "pornhub": 40,
+                },
+                "label": {
+                    "s1style": 5, "caribbeancom": 5, "heyzo": 5,
+                    "10musume": 5, "caribbeancompr": 5, "ragdoll": 5,
+                    "pornhub": 40,
+                },
+                # ---- 评分：JavDB 评分最全，PH 用 0-100 折算值可作交叉验证 ----
+                "rating": {
+                    "javdb": 5, "dmm": 10, "dmm_web": 10,
+                    "javlibrary": 20, "pornhub": 20, "pornhub_api": 20,
+                },
+                # ---- 封面：结构化 JSON 源的图更稳定，聚合站常有防盗链/占位图 ----
+                "cover_url": {
+                    "javdb": 5, "avmoo": 8, "dmm": 10,
+                    "pornhub": 15, "pornhub_api": 12,
+                    "javlibrary": 30, "missav": 35,
+                },
+                "poster_url": {
+                    "javdb": 5, "avmoo": 8, "dmm": 10,
+                    "pornhub": 15, "pornhub_api": 12,
+                },
+                # ---- 简介：中文源优先；无码片 FC2 官方描述最准 ----
+                "plot": {
+                    "airav": 10, "javdb": 12, "avmoo": 15,
+                    "fc2": 8, "fc2ppvdb": 15,
+                    "pornhub": 30, "javbus": 25,
+                },
+                # ---- 演员：官方/结构化源的演员表最完整 ----
+                "actors": {
+                    "javdb": 5, "javlibrary": 10, "dmm": 12,
+                    "pornhub": 20, "theporndb": 20,
+                },
+                # ---- 时长：PH 返回 mm:ss 字符串，与其他源单位不同，排在后面 ----
+                "duration": {
+                    "javdb": 5, "javbus": 8, "dmm": 10,
+                    "pornhub": 30, "pornhub_api": 30,
+                },
+            }
+
 
 class ResultMerger:
     """
@@ -313,6 +407,11 @@ class ResultMerger:
                 covers, big_covers = self._merge_covers(sorted_results)
                 merged.raw_data["covers"] = covers
                 merged.raw_data["big_covers"] = big_covers
+            # 2026-10-04：单源路径也要有字段溯源，否则"单源"与"多源合并"
+            # 在可观测性上表现不一致（排查时会误以为字段没被合并过）。
+            merged.raw_data["field_sources"] = self._build_field_sources(
+                merged, sorted_results, {"changed": False, "candidates": {}}
+            )
             return merged
 
         # 按优先级排序
@@ -327,8 +426,13 @@ class ResultMerger:
         # === 第 4 轮新增:番号投票(纠正文件名错误) ===
         # 多源番号投票:如果多数源返回不同番号,采用多数票结果
         voted_code = base.code
+        voted_marker: dict = {"changed": False, "candidates": {}}
         if self.config.respect_site_avid:
             voted_code = self._vote_avid(sorted_results, base.code)
+            voted_marker = {
+                "changed": voted_code != base.code,
+                "candidates": self._count_avid_votes(sorted_results),
+            }
 
         # 创建合并结果
         merged_title, merged_original_title = self._merge_title(sorted_results)
@@ -337,18 +441,18 @@ class ResultMerger:
             title=merged_title,
             source=base.source,
         )
-        merged.original_title = merged_original_title or self._merge_field(
-            "original_title", [r.original_title for r in sorted_results]
+        merged.original_title = merged_original_title or self._merge_field_from(
+            "original_title", sorted_results
         )
 
-        # 合并各个字段
-        merged.studio = self._merge_field("studio", [r.studio for r in sorted_results])
-        merged.maker = self._merge_field("maker", [r.maker for r in sorted_results])
-        merged.label = self._merge_field("label", [r.label for r in sorted_results])
-        merged.series = self._merge_field("series", [r.series for r in sorted_results])
+        # 合并各个字段（逐字段来源优先级，见 MergeConfig.field_priority）
+        merged.studio = self._merge_field_from("studio", sorted_results)
+        merged.maker = self._merge_field_from("maker", sorted_results)
+        merged.label = self._merge_field_from("label", sorted_results)
+        merged.series = self._merge_field_from("series", sorted_results)
         merged.release_date = self._merge_date([r.release_date for r in sorted_results])
-        merged.duration = self._merge_field("duration", [r.duration for r in sorted_results])
-        merged.plot = self._merge_field("plot", [r.plot for r in sorted_results])
+        merged.duration = self._merge_field_from("duration", sorted_results)
+        merged.plot = self._merge_field_from("plot", sorted_results)
         merged.rating = self._merge_rating([r.rating for r in sorted_results])
 
         # 合并标签（带优先级排序和去重）
@@ -370,7 +474,9 @@ class ResultMerger:
         merged.tags = self._merge_lists([r.tags or [] for r in sorted_results])
 
         if self.config.merge_actors:
-            actor_lists = [r.actors or [] for r in sorted_results]
+            # 演员按 actors 字段优先级排序：结构化源（javdb/官方）的演员表最完整，
+            # 同名演员去重时保留靠前来源的档案信息。
+            actor_lists = [r.actors or [] for r in self._field_order("actors", sorted_results)]
             merged.actors = self._merge_actors(actor_lists)
 
             # === 第 4 轮新增:女优别名统一 ===
@@ -395,10 +501,10 @@ class ResultMerger:
             if big_covers:
                 merged.poster_url = big_covers[0]
         else:
-            merged.cover_url = self._merge_field("cover_url", [r.cover_url for r in sorted_results])
-            merged.poster_url = self._merge_field("poster_url", [r.poster_url for r in sorted_results])
+            merged.cover_url = self._merge_field_from("cover_url", sorted_results)
+            merged.poster_url = self._merge_field_from("poster_url", sorted_results)
 
-        merged.trailer_url = self._merge_field("trailer_url", [r.trailer_url for r in sorted_results])
+        merged.trailer_url = self._merge_field_from("trailer_url", sorted_results)
 
         # 合并原始数据
         merged.raw_data["merged_from"] = [r.source for r in sorted_results]
@@ -410,7 +516,113 @@ class ResultMerger:
                 "votes": self._count_avid_votes(sorted_results),
             }
 
+        # === 2026-10-04 新增:字段级来源溯源 ===
+        merged.raw_data["field_sources"] = self._build_field_sources(
+            merged, sorted_results, voted_marker
+        )
+
         return merged
+
+    def _build_field_sources(
+        self,
+        merged: ScrapeResult,
+        sorted_results: list[ScrapeResult],
+        voted_marker: Optional[dict] = None,
+    ) -> dict:
+        """回溯每个字段最终值来自哪个源，写入 raw_data["field_sources"]。
+
+        动机：原实现只有**源级**溯源（`merged_from` = 参与合并的源列表），
+        无法回答"这个标题/这张封面到底是哪个源贡献的"。排查字段污染时
+        只能逐个源重跑对比。
+
+        实现要点：
+        - 纯标量字段（str/int/float/bool/date）：取第一个值等于最终值的源；
+          都为空则记 base 源（表示"所有源都没有，是兜底"）。
+        - 列表字段（genres/actors/sample_images/tags）：记录贡献了元素的源集合，
+          因为列表是多源并集，逐元素溯源会过于冗长。
+        - 数值容差：rating/duration 用近似比较，避免浮点/秒分钟换算误差导致
+          明明来自该源却匹配不上。
+        """
+        out: dict = {}
+
+        def pick_scalar(field_name: str, final_value, approx: bool = False):
+            if final_value in (None, "", [], {}):
+                out[field_name] = {"source": base_src, "value": None, "status": "empty"}
+                return
+            for r in sorted_results:
+                v = getattr(r, field_name, None)
+                if v in (None, "", [], {}):
+                    continue
+                if approx:
+                    try:
+                        if abs(float(v) - float(final_value)) < 1e-6:
+                            out[field_name] = {"source": r.source, "value": v, "status": "from_source"}
+                            return
+                    except (TypeError, ValueError):
+                        if v == final_value:
+                            out[field_name] = {"source": r.source, "value": v, "status": "from_source"}
+                            return
+                elif v == final_value:
+                    out[field_name] = {"source": r.source, "value": v, "status": "from_source"}
+                    return
+            # 有最终值但没匹配到任何源（如被 _apply_suffix / 归一化改写过）
+            out[field_name] = {"source": base_src, "value": final_value, "status": "derived"}
+
+        def pick_list(field_name: str, final_list: list):
+            if not final_list:
+                out[field_name] = {"sources": [], "count": 0, "status": "empty"}
+                return
+            contributors = []
+            final_set = {str(x) for x in final_list}
+            for r in sorted_results:
+                v = getattr(r, field_name, None) or []
+                if not v:
+                    continue
+                # 该源的元素有出现在最终列表里 → 视为贡献者
+                if final_set & {str(x) for x in v}:
+                    contributors.append(r.source)
+            out[field_name] = {
+                "sources": contributors,
+                "count": len(final_list),
+                "status": "from_sources" if contributors else "derived",
+            }
+
+        base_src = sorted_results[0].source if sorted_results else None
+
+        # 标量字段
+        for fname in (
+            "title", "original_title", "plot", "studio", "maker",
+            "label", "series", "release_date", "cover_url",
+            "poster_url", "trailer_url", "source_url", "javdb_id",
+        ):
+            pick_scalar(fname, getattr(merged, fname, None))
+        # 数值用近似比较
+        pick_scalar("duration", getattr(merged, "duration", None), approx=True)
+        pick_scalar("rating", getattr(merged, "rating", None), approx=True)
+        pick_scalar("is_mosaic", getattr(merged, "is_mosaic", None))
+        pick_scalar("is_chinese", getattr(merged, "is_chinese", None))
+        # 番号是投票产物，单独记
+        out["code"] = {
+            "source": "vote" if voted_marker.get("changed") else base_src,
+            "value": getattr(merged, "code", None),
+            "status": "voted" if voted_marker.get("changed") else "from_source",
+            **({"candidates": voted_marker["candidates"]} if voted_marker.get("changed") else {}),
+        }
+        # 列表字段
+        for fname in ("genres", "tags", "sample_images", "extrafanart"):
+            pick_list(fname, getattr(merged, fname, None) or [])
+        # 演员取名字集合
+        actors = merged.actors or []
+        if actors:
+            names = {a.name for a in actors if hasattr(a, "name")}
+            contributors = [r.source for r in sorted_results
+                            if names & {a.name for a in (r.actors or []) if hasattr(a, "name")}]
+            out["actors"] = {"sources": contributors, "count": len(actors),
+                             "status": "from_sources" if contributors else "derived"}
+        else:
+            out["actors"] = {"sources": [], "count": 0, "status": "empty"}
+
+        return out
 
     # ============================================
     # 标题合并（中文优先）
@@ -495,8 +707,10 @@ class ResultMerger:
             avid = result.code
             if not avid:
                 continue
-            # 番号归一化(大写、去横线空格)以便跨源对比
-            normalized = avid.upper().replace("-", "").replace("_", "").replace(" ", "")
+            # 番号等价归一（走 _avid_key，含 FC2/PPV 前缀处理），
+            # 不能再用"只去分隔符"的写法 —— 那会把 FC2-1234567 与
+            # FC2-PPV-1234567 判成两个番号，>=2 票就能把规范番号改写掉。
+            normalized = _avid_key(avid)
             votes.setdefault(normalized, []).append(result.source)
 
         if not votes:
@@ -514,12 +728,11 @@ class ResultMerger:
 
         top_avid, top_voters = sorted_avids[0]
         # 仅当多数源(>=2 票)一致,且与文件名提取的番号不同时,才纠正
-        normalized_fallback = fallback_code.upper().replace("-", "").replace("_", "").replace(" ", "")
+        normalized_fallback = _avid_key(fallback_code)
         if len(top_voters) >= 2 and top_avid != normalized_fallback:
             # 还原原始格式(从 sorted_results 中找到对应结果)
             for result in sorted_results:
-                normalized = result.code.upper().replace("-", "").replace("_", "").replace(" ", "")
-                if normalized == top_avid:
+                if _avid_key(result.code) == top_avid:
                     logger.info(f"番号投票纠正: 文件名={fallback_code} → 多源一致={result.code} (票数 {len(top_voters)})")
                     return result.code
 
@@ -553,7 +766,9 @@ class ResultMerger:
         javdb_cover: Optional[str] = None
         seen_covers: set[str] = set()
 
-        for result in sorted_results:
+        # 候选列表按 cover_url 字段优先级排序：下载端是「按序尝试直到成功」，
+        # 所以越可靠的源越靠前，能显著减少 403/占位图导致的失败重试。
+        for result in self._field_order("cover_url", sorted_results):
             # cover_url → covers
             if result.cover_url and result.cover_url not in seen_covers:
                 if result.source == "javdb":
@@ -651,6 +866,43 @@ class ResultMerger:
             if value is not None and value != "" and value != []:
                 return value
 
+        return None
+
+    def _field_order(
+        self, field_name: str, results: list[ScrapeResult]
+    ) -> list[ScrapeResult]:
+        """按**该字段专属**的源优先级重排结果（逐字段优先级）。
+
+        2026-10-04 新增。此前只有一张全局 `source_priority` 管所有字段，
+        隐含假设是"最优先的源在每个字段上都最好"——实测不成立：
+        PH 的 HTML 源评分/样图强但没有中文标题，JavBus 反之；
+        厂商名（studio/label）应该信官方厂商源而不是聚合站。
+
+        `field_priority` 只需写**差异项**，未列出的源沿用全局 `source_priority`。
+        """
+        overrides = self.config.field_priority.get(field_name)
+        if not overrides:
+            return results
+        base_pri = self.config.source_priority
+        return sorted(
+            results,
+            key=lambda r: (
+                overrides.get(r.source, base_pri.get(r.source, 100)),
+                base_pri.get(r.source, 100),
+            ),
+        )
+
+    def _merge_field_from(
+        self, field_name: str, results: list[ScrapeResult]
+    ) -> Optional[any]:
+        """逐字段优先级版取值：先按该字段的源优先级排序，再取首个非空值。"""
+        if not self.config.prefer_non_empty:
+            ordered = self._field_order(field_name, results)
+            return getattr(ordered[0], field_name, None) if ordered else None
+        for r in self._field_order(field_name, results):
+            value = getattr(r, field_name, None)
+            if value is not None and value != "" and value != []:
+                return value
         return None
 
     def _merge_date(self, dates: list[Optional[date]]) -> Optional[date]:

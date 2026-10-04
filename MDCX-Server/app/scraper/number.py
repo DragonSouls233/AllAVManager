@@ -55,7 +55,12 @@ JAV_PATTERN = re.compile(r"[A-Z]{2,}-\d{2,}[Z]?", re.IGNORECASE)
 AMATEUR_PATTERN = re.compile(r"\d{2,}[A-Z]{2,}-\d{2,}[A-Z]?", re.IGNORECASE)
 
 # FC2 番号: FC2-123456, FC2PPV-123456
-FC2_PATTERN = re.compile(r"FC2[-_]?(?:PPV[-_])?\d{5,}", re.IGNORECASE)
+# 🔴 2026-10-04 修正：原式 `(?:PPV[-_])?` 的分隔符挂在 PPV **之后**，
+# 于是 `fc2ppv1234567`（PPV 后直接跟数字、无分隔符）匹配不上 ——
+# 而这恰恰是站点/文件名里最常见的紧凑写法。实测原式对 fc2ppv1234567 返回 None。
+# 现在 PPV 自身也允许可选分隔符，覆盖
+#   FC2-1234567 / FC2_1234567 / FC2PPV-1234567 / fc2ppv1234567 / FC2PPV1234567
+FC2_PATTERN = re.compile(r"FC2[-_]?(?:PPV[-_]?)?\d{5,}", re.IGNORECASE)
 
 # HEYZO: HEYZO-1234
 HEYZO_PATTERN = re.compile(r"HEYZO[-_]?\d{3,}", re.IGNORECASE)
@@ -154,6 +159,110 @@ UNCENSORED_PREFIXES = [
     "N-", "KT-", "GANA-", "SIRO-", "ARA-", "LULU-",
     "MIUM-", "MAAN-", "JUFD-", "T28-", "T-28-", "HEZ-",
 ]
+
+
+# ============================================
+# PornHub viewkey 统一判据（单一真值来源）
+# ============================================
+# ⚠️ 修复过程中的实测结论（2026-10-03，两次诊断纠错，务必先读）：
+#
+# 【错误假设一】旧扫描器注释称「真实 PH viewkey 必定包含 g-z 范围的字母」——**这是错的**。
+#   实测抓 pornhub.com 首页 + 3 个分类页，68 个真实 viewkey 样本：
+#     必含 g-z = 0 个 (0.0%)，纯 a-f 十六进制 = 68 个 (100.0%)。
+#   真实 viewkey 就是 13 位十六进制（6a488932e1d19 / 69ec001b86c55 …）。
+#   照抄"必含 g-z"会把 100% 的真实数据判为非法。
+#
+# 【错误假设二】以为问题在"扫描端要 g-z、刮削端只吃 a-f"两端口径不一致——**这不是根因**。
+#   真实根因是 `\b` 边界失效：PH 的 code 实际是**整段目录名**，形如
+#     `_Channel__Anna_Cherry__…__6a488932e1d19_`
+#   而 `_` 属于正则的 \w 字符类，于是 viewkey 前后都是"单词字符"，`\b` 永不成立。
+#   实测：同一条目录名，`\b…\b` 匹配结果 = None；改用"非字母数字"边界 = 6a488932e1d19 ✅
+#   ⇒ 扫描器对**所有**下划线/中文命名的目录（PH 实际主流命名）一律返回 None，
+#     库里的 code 退化成整条目录名（实测 6/6 条），这也解释了为何补刮对不上号。
+#
+# 【正确判据】viewkey = 恰好 13 位 a-z0-9，边界为「非字母数字」或字符串首尾。
+#   长度 13 是唯一可靠约束（实测 68/68 命中）；不再要求含 g-z。
+
+_PH_VIEWKEY_LEN = 13
+_PH_VIEWKEY_RE = re.compile(r"^[a-z0-9]{%d}$" % _PH_VIEWKEY_LEN)
+# 边界用「非字母数字」而非 \b —— 下划线属于 \w，PH 目录名里 viewkey 前后必是下划线
+_PH_IN_TEXT_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:ph)?([a-z0-9]{%d})(?![a-z0-9])" % _PH_VIEWKEY_LEN,
+    re.IGNORECASE,
+)
+
+# 🔴 2026-10-04 回归修复：本判据只看「长度 13 + a-z0-9」，会被恰好 13 位的
+# **FC2 番号**误吞。实测 `fc2ppv1234567`（13 位）被判成 pornhub，
+# 而它真实类型是 FC2 ⇒ FC2 模块的番号被路由到 PH 源，必然刮不到。
+# 真实 PH viewkey 是十六进制串（含数字且字母只到 f 是常态，但不是硬约束），
+# 而 `fc2`/`ppv` 这种**有意义的英文单词前缀**绝不可能出现在随机 viewkey 里。
+# 故显式排除已知番号前缀，而不是靠"必须是十六进制"（那会误杀实测到的非十六进制 viewkey）。
+_PH_VIEWKEY_DENY_PREFIXES = (
+    "fc2", "fc2ppv", "ppv", "fc2club", "adult", "uncensored",
+)
+
+
+def is_valid_ph_viewkey(s: str) -> bool:
+    """判断是否为 PornHub viewkey：恰好 13 位 a-z0-9，且不含已知番号前缀。
+
+    这是全仓唯一判据，扫描器 / 爬虫 / 番号识别都必须调用本函数。
+
+    ⚠️ 不要加"必含 g-z"之类附加条件——实测 68/68 真实 viewkey 都是纯 a-f 十六进制。
+    长度 13 配合"非字母数字"边界已足够区分噪声；宽松匹配 + 失败后可重试
+    远优于严格匹配 + 100% 漏判。
+
+    ⚠️ 但必须排除 `fc2ppv1234567` 这类恰好 13 位的番号串（见上方 DENY 前缀），
+    否则 FC2 番号会被误判成 PH viewkey。
+    """
+    if not s:
+        return False
+    t = s.strip().lower()
+    if not _PH_VIEWKEY_RE.match(t):
+        return False
+    if t.startswith(_PH_VIEWKEY_DENY_PREFIXES):
+        return False
+    return True
+
+
+def normalize_ph_viewkey(code: str) -> Optional[str]:
+    """从任意形态的 code / 文件名 / 目录名中提取裸 viewkey，失败返回 None。
+
+    支持：``6a488932e1d19``、``ph6a488932e1d19``、``PH6A488932E1D19``，
+    以及**内嵌在目录名中**的形态（PH 实际主流命名，下划线分隔）：
+        ``_Channel__Anna__…__6a488932e1d19_`` → ``6a488932e1d19``
+
+    ⚠️ 边界绝不能用 \\b：下划线属于 \\w，会导致 viewkey 前后无边界而永不匹配。
+    """
+    if not code:
+        return None
+    text = code.strip().lower()
+
+    # 快路径：整串就是带/不带 ph 前缀的 13 位
+    if len(text) == _PH_VIEWKEY_LEN + 2 and text.startswith("ph"):
+        body = text[2:]
+        if is_valid_ph_viewkey(body):
+            return body
+    if is_valid_ph_viewkey(text):
+        return text
+
+    # 退化：从任意字符串（目录名 / 文件名）中扫描内嵌的 13 位候选。
+    # 一次匹配可能命中多个候选（如目录名里既有 ph 前缀形态又有裸形态），
+    # 逐个验证直到找到合法项。
+    for m in _PH_IN_TEXT_RE.finditer(text):
+        cand = m.group(1)
+        if is_valid_ph_viewkey(cand):
+            return cand
+    return None
+
+
+def ph_viewkey_to_code(viewkey: str) -> str:
+    """裸 viewkey → 落库 code。
+
+    ⚠️ 历史包袱：库里现存 6/6 条 code 是**整段目录名**（扫描器正则失效导致），
+    新旧两种形态并存。这里只保证"以后新扫的都带 ph 前缀"，
+    旧数据的清洗需要单独一次性脚本，不在本函数职责内。
+    """
+    return f"ph{viewkey.strip().lower()}"
 
 
 # ============================================
@@ -579,6 +688,25 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
     # v3.0: 方括号中字标记扫描（在 clean_filename 移除方括号前）
     bracket_chinese = detect_chinese_bracket(filename)
 
+    # 🔴 2026-10-04：FC2 判据必须**最先**跑。
+    # 原来它排在第 30+ 位，前面已有一堆宽松模式会先命中并吃掉 FC2 前缀：
+    #   实测 `fc2ppv1234567`（无分隔符写法）→ 被 JAV 模式截成 `PPV-1234567`，
+    #   **FC2 前缀丢失、类型判成 jav** ⇒ 后续按 JAV 源去搜必然刮不到。
+    # FC2_PATTERN 的分隔符全是可选的，能同时覆盖
+    #   FC2-1234567 / FC2_1234567 / FC2PPV-1234567 / fc2ppv1234567 四种写法。
+    # 统一归一为 `FC2-{id}`（与站点 URL 及 fc2ppvdb 源一致，见 normalize_number）。
+    if match := FC2_PATTERN.search(filename):
+        number = re.sub(r"^FC2[-_]?(?:PPV[-_]?)?", "FC2-", match.group(), flags=re.IGNORECASE)
+        return _apply_suffix(
+            NumberResult(
+                number=number.upper(),
+                original=original,
+                number_type=NumberType.FC2,
+                confidence=0.95,
+            ),
+            bracket_chinese,
+        )
+
     # 先在原始文件名上尝试匹配带后缀的番号（传入 bracket_chinese）
     raw_suffix_result = _try_match_raw_with_suffix(filename, bracket_chinese)
     if raw_suffix_result:
@@ -596,11 +724,11 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
         number = f"{site}.{y}.{m}.{d}"
         return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.WESTERN, confidence=0.90), bracket_chinese)
 
-    # 5b. Pornhub 视频 ID（viewkey）：6a488932e1d19（13 位十六进制数）或 ph6a488932e1d19
-    # 匹配纯 13 位十六进制字符串（排除文件名中其他数字干扰）
-    if re.search(r"\b(?:ph)?([a-f0-9]{13})\b", filename, re.IGNORECASE):
-        number = re.search(r"\b(?:ph)?([a-f0-9]{13})\b", filename, re.IGNORECASE).group(1)
-        return _apply_suffix(NumberResult(number=number.upper(), original=original, number_type=NumberType.PORNHUB, confidence=0.90), bracket_chinese)
+    # 5b. Pornhub 视频 ID（viewkey）：6a488932e1d19 或 ph6a488932e1d19
+    # 修复(2026-10-03)：旧正则 [a-f0-9]{13} 只吃 a-f，而扫描器要求"必含 g-z"，
+    # 导致扫描入库的真实 viewkey 在这里解不出来。改走全仓统一判据。
+    if _ph := normalize_ph_viewkey(filename):
+        return _apply_suffix(NumberResult(number=_ph.upper(), original=original, number_type=NumberType.PORNHUB, confidence=0.90), bracket_chinese)
 
     cleaned = clean_filename(filename, escape_strings)
 
@@ -891,8 +1019,9 @@ def get_number_type(number: str) -> NumberType:
     if upper.startswith("FC2"):
         return NumberType.FC2
 
-    # 纯 13 位十六进制 → Pornhub viewkey
-    if re.match(r"^[A-F0-9]{13}$", upper):
+    # 纯 13 位 a-z0-9 且必含 g-z → Pornhub viewkey
+    # 修复(2026-10-03)：旧式 ^[A-F0-9]{13}$ 与扫描器判据不一致，见 is_valid_ph_viewkey
+    if is_valid_ph_viewkey(number):
         return NumberType.PORNHUB
 
     # HEYZO

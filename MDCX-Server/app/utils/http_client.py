@@ -429,19 +429,38 @@ class AsyncHttpClient:
         ⚠️ 域名限速状态必须全局共享：刮削每个番号都新建一个 AsyncHttpClient，
         若状态挂在实例上，并发时各实例互不可见 → 等于不限速
         （历史 bug → javbus 429 限流 3226 次）。站点级 QPS 见 SITE_QPS_OVERRIDES。
+
+        🔴 2026-10-04 修复并发穿透（实测 8 并发间隔全部 = 0ms，等于不限速）：
+        原实现是「锁内 读 last → await sleep(wait) → 写 last = now」。
+        asyncio.Lock 只保证**同一时刻只有一个协程进入**，但 `await asyncio.sleep()`
+        会把锁让出 —— 后继协程此时读到的仍是**旧的 last**（还没被前一个写回），
+        于是大家都算出"不需要等"，一起冲出去。
+        javbus 3 QPS 配 24 并发，就是这样打出 429 的。
+
+        正确做法：**锁内单调递增地预约时刻**（不留 await 间隙），
+            预约值 = max(now, 上次预约值 + interval)；
+        锁外只 await 到自己的预约时刻。锁内无 await ⇒ 天然串行，无法穿透。
+        这等价于一个容量为 1 的漏桶（amane/net/http.py 用的就是 AsyncLimiter(1, 1/rate)）。
         """
         global _GLOBAL_LAST_REQUEST
-        if self.rate_limit <= 0:
+        if self.rate_limit <= 0 and not url:
             return
 
-        # 全局速率限制（进程级）
-        async with _GLOBAL_REQUEST_LOCK:
-            now = time.monotonic()
+        # 全局速率限制（进程级，锁内预约、锁外等待）
+        if self.rate_limit > 0:
             interval = 1.0 / self.rate_limit
-            wait_time = interval - (now - _GLOBAL_LAST_REQUEST)
-            if wait_time > 0:
-                await asyncio.sleep(wait_time)
-            _GLOBAL_LAST_REQUEST = time.monotonic()
+            async with _GLOBAL_REQUEST_LOCK:
+                now = time.monotonic()
+                last = _GLOBAL_LAST_REQUEST
+                # 首次：直接放行（否则第一个请求白等 1/rate_limit）
+                if not last:
+                    _GLOBAL_LAST_REQUEST = now
+                    return
+                target = max(now, last + interval)
+                _GLOBAL_LAST_REQUEST = target
+            delay = target - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
 
         # 域名级速率限制（进程级共享 + 站点级 QPS 覆盖）
         if url:
@@ -449,13 +468,22 @@ class AsyncHttpClient:
             if domain:
                 qps = site_qps(domain)
                 interval = (1.0 / qps) if qps > 0 else 0.0
-                async with _GLOBAL_DOMAIN_LOCK:
-                    last = _GLOBAL_DOMAIN_LAST.get(domain, 0.0)
-                    now = time.monotonic()
-                    wait = interval - (now - last)
-                    if wait > 0:
-                        await asyncio.sleep(wait)
-                    _GLOBAL_DOMAIN_LAST[domain] = time.monotonic()
+                if interval > 0:
+                    async with _GLOBAL_DOMAIN_LOCK:
+                        now = time.monotonic()
+                        last = _GLOBAL_DOMAIN_LAST.get(domain, 0.0)
+                        # 首次访问该域名：不等待，直接放行并记为"刚刚发生过"。
+                        # ⚠️ 不能无条件 `last + interval`——那会让第一个请求
+                        # 白等 1/qps（javbus = 333ms），纯属浪费。
+                        if not last:
+                            _GLOBAL_DOMAIN_LAST[domain] = now
+                            return
+                        # 锁内单调预约：next = max(now, last + interval)
+                        target = max(now, last + interval)
+                        _GLOBAL_DOMAIN_LAST[domain] = target
+                    delay = target - time.monotonic()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
     
     async def get(
         self,

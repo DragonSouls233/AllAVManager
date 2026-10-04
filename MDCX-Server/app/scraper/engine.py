@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Optional, Callable
 
 from app.crawlers.base import ScrapeResult
+from app.scraper.failure_reason import FailureAggregator
 from app.scraper.number import extract_number, NumberResult
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,17 @@ class ScraperEngine:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._progress = ScrapeProgress()
         self._callbacks: list[Callable] = []
+        # 2026-10-04：失败原因分级聚合。此前所有异常统一 return None，
+        # 只留一行日志，上层无法区分「网络抖动（该重试）」与
+        # 「站点无此资源（换源即可）」，也无法按原因给失败源降权。
+        self.failures = FailureAggregator()
+
+    def failure_summary(self) -> dict:
+        """任务级失败健康度（按源 × 原因），供 API / 日志 / 运维查看。"""
+        return self.failures.as_dict()
+
+    def reset_failures(self) -> None:
+        self.failures.reset()
     
     def add_progress_callback(self, callback: Callable) -> None:
         """添加进度回调"""
@@ -351,6 +363,11 @@ class ScraperEngine:
                 f"信号量等待超时 {self.sem_wait_timeout}s，放弃爬虫 "
                 f"{crawler.name} 刮削 {number}"
             )
+            self.failures.record_any(
+                f"semaphore wait timeout after {self.sem_wait_timeout}s",
+                source=crawler.name,
+                number=number,
+            )
             return None
         try:
             started = time.monotonic()
@@ -372,12 +389,24 @@ class ScraperEngine:
                     f"爬虫 {crawler.name} 刮削 {number} 完成，耗时 "
                     f"{time.monotonic() - started:.1f}s"
                 )
+                if result is None:
+                    # 无异常但无结果：部分源对不存在的资源会返回「非常抱歉…」页面并
+                    # 当成功解析（见 fc2 源），这类必须记为 no_resource 而不是 unknown，
+                    # 否则会把「站点确认没有」和「站点临时挂了」混在一起统计。
+                    self.failures.record_any(
+                        None, source=crawler.name, number=number
+                    )
                 return result
 
             except asyncio.TimeoutError:
                 logger.warning(
                     f"爬虫 {crawler.name} 刮削 {number} 超时 "
                     f"({self.timeout}s，耗时 {time.monotonic() - started:.1f}s)"
+                )
+                self.failures.record_any(
+                    f"scrape timeout after {self.timeout}s",
+                    source=crawler.name,
+                    number=number,
                 )
                 return None
 
@@ -386,6 +415,16 @@ class ScraperEngine:
                     f"爬虫 {crawler.name} 刮削 {number} 出错: "
                     f"{type(e).__name__}: {e}"
                 )
+                info = self.failures.record_any(
+                    e, source=crawler.name, number=number
+                )
+                # 拦截类与永久失败要显式提示：这类重试同一源无意义，应换源
+                if info.is_blocking or info.is_permanent:
+                    logger.warning(
+                        f"爬虫 {crawler.name} 对 {number} 判定为 "
+                        f"{info.reason.value}（{info.matched_rule}），"
+                        f"换源继续；本源建议降权"
+                    )
                 return None
         finally:
             self._semaphore.release()

@@ -108,6 +108,41 @@ def _json_safe(o):
     return str(o)
 
 
+def _raw_get(result, key):
+    """从 ScrapeResult.raw_data 安全取值（缺失/None 一律返回 None）。
+
+    模块专属列（pornhub 的 source_id / source_views / …）由爬虫放在 raw_data 里，
+    而 _scrape_missing 的返回是白名单 dict，不会自动展开 raw_data，
+    所以必须由各专属列显式经此函数取，避免散落的 try/except。
+    """
+    raw = getattr(result, "raw_data", None)
+    if not isinstance(raw, dict):
+        return None
+    val = raw.get(key)
+    return val if val not in ("", [], {}) else None
+
+
+def _join_names(items, name_key):
+    """把 [{'tag_name': 'x'}, ...] 之类结构压成 "x, y" 文本（对应 DB 的 Text 列）。
+
+    实测 pornhub webmasters 接口的 categories 是 [{'category': 'x'}]，
+    直接 str() 会写出 "{'category': 'x'}" 这种脏值，不能入库。
+    """
+    if not items:
+        return None
+    if isinstance(items, str):
+        return items or None
+    out = []
+    for it in items:
+        if isinstance(it, dict):
+            v = it.get(name_key) or it.get("name") or it.get(name_key.rstrip("s"))
+            if v:
+                out.append(str(v))
+        elif it:
+            out.append(str(it))
+    return ", ".join(out) if out else None
+
+
 class PatchType(str, Enum):
     """补刮类型"""
     IMAGES_ONLY = "images_only"       # 只补图片
@@ -787,6 +822,23 @@ class PatchEngine:
                     "source": getattr(result, "source", None),
                     "is_uncensored": getattr(result, "is_uncensored", None),
                     "is_chinese": getattr(result, "is_chinese", None),
+                    # ---- 模块专属列（2026-10-04 补）----
+                    # 此前本函数返回的是**白名单 dict**，raw_data 里的键从未被展开，
+                    # 而 pornhub 表的 5 个专属列既不在白名单、也不在 _MODULE_COLUMN_MAP
+                    # ⇒ source_id / source_views / source_score / uploader / categories
+                    #    永远是 NULL（不是没数据，是链路断了）。
+                    # 现在从 raw_data 显式取出并用**与 DB 列同名**的键传出，
+                    # 这样 _MODULE_COLUMN_MAP 只需登记一次即可落库。
+                    # 注意 categories 列是 Text（逗号分隔或 JSON），需在此序列化。
+                    "source_id": _raw_get(result, "ph_video_id") or _raw_get(result, "viewkey"),
+                    "source_views": _raw_get(result, "ph_views"),
+                    # source_score 是 Float，语义 = 站点原始评分（PH 为 0-5 制，
+                    # 顶层 rating 才是折算后的 0-10 制，故取 raw_data 里的站点原值）。
+                    "source_score": _raw_get(result, "ph_rating"),
+                    "uploader": _raw_get(result, "ph_uploader"),
+                    "categories": _join_names(
+                        _raw_get(result, "ph_categories"), "category"
+                    ),
                 }
         
         except Exception as e:
@@ -1014,7 +1066,39 @@ class PatchEngine:
         "series": "series",
         "maker": "maker",
         "director": "director",
+        # ---- pornhub 模块专属列（2026-10-04 补）----
+        # 这些列物理存在于 pornhub.movies 表，但此前既不在本映射、也不在
+        # _scrape_missing 的返回白名单里 ⇒ 永远 NULL。补登记后才会落库。
+        # 其他模块没有这些列，SQL 会因未知列报错吗？不会 —— 见 _update_module_database
+        # 的容错：只有值非 None 时才拼 UPDATE，而本映射仅在值为 None 时被跳过。
+        "source_id": "source_id",
+        "source_views": "source_views",
+        "source_score": "source_score",
+        "uploader": "uploader",
+        "categories": "categories",
     }
+
+    # 模块表列名缓存：{表名: frozenset(列)}。SQLite 表结构运行期不变，缓存即可。
+    _TABLE_COLUMNS_CACHE: dict = {}
+
+    @classmethod
+    async def _get_table_columns(cls, session, table: str) -> frozenset:
+        """取模块表真实列集合（带缓存）。
+
+        用于 _MODULE_COLUMN_MAP 的落地过滤：全局映射里含各模块专属列，
+        直接拼 SQL 会在别的模块上报 "no such column" 并回滚整条 UPDATE。
+        """
+        cached = cls._TABLE_COLUMNS_CACHE.get(table)
+        if cached is not None:
+            return cached
+        try:
+            result = await session.execute(text(f"PRAGMA table_info({table})"))
+            cols = frozenset(str(row[1]) for row in result.fetchall())
+        except Exception as e:
+            logger.warning(f"读取表结构失败 ({table}): {e}")
+            cols = frozenset()
+        cls._TABLE_COLUMNS_CACHE[table] = cols
+        return cols
 
     async def _update_module_database(
         self,
@@ -1070,12 +1154,20 @@ class PatchEngine:
                 if scraped_data:
                     updates = []
                     params = {}
+                    # 2026-10-04：只拼目标表**真实存在**的列。
+                    # _MODULE_COLUMN_MAP 是全局映射（给全部模块共用），但像
+                    # source_id / source_views / source_score / uploader / categories
+                    # 只存在于 pornhub 表。若不校验就拼进 UPDATE，JAV/uncensored 等模块
+                    # 补刮会报 "no such column" ⇒ 整条 UPDATE 回滚 ⇒
+                    # **该次所有字段（标题/封面/演员…）全部不落库**。
+                    # 用 PRAGMA table_info 查一次并按表缓存，避免每条记录重复查询。
+                    table_cols = await self._get_table_columns(session, movie_table)
 
                     for key, value in scraped_data.items():
                         if value is None:
                             continue
                         col = self._MODULE_COLUMN_MAP.get(key)
-                        if col is None:
+                        if col is None or col not in table_cols:
                             continue
                         if isinstance(value, list):
                             value = json.dumps(value, ensure_ascii=False, default=_json_safe)
@@ -1095,11 +1187,26 @@ class PatchEngine:
                         if joined:
                             updates.append("actor = :actor")
                             params["actor"] = joined
+                            # 同事务内维护 movie_actors 关联表（各模块均存在该表）。
+                            # 此前补刮只 UPDATE 文本列，关联表全模块为 0 行 ⇒
+                            # actors.movie_count 恒 0、按演员查影片只能回退 actor LIKE。
+                            patcher_movie_actors = actor_names
+                        else:
+                            patcher_movie_actors = None
+                    else:
+                        patcher_movie_actors = None
 
                     if updates:
                         params["id"] = mod_movie_id
                         query = f"UPDATE {movie_table} SET {', '.join(updates)} WHERE id = :id"
                         await session.execute(text(query), params)
+
+                    if patcher_movie_actors:
+                        from app.db.movie_actor_sync import sync_movie_actors
+
+                        await sync_movie_actors(
+                            session, module, mod_movie_id, patcher_movie_actors
+                        )
 
                     # 标记刮削完成 + 更新 scraped_at，让 skip_recent_days 机制生效
                     await session.execute(

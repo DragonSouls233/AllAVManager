@@ -202,6 +202,11 @@ class ScraperWorkflow:
                     "javdb": "https://javdb.com",
                     "javbus": "https://www.javbus.com",
                     "avsox": "https://avsox.click",
+                    # 2026-10-04 实测：pix-cdn*.phncdn.com 无 Referer 直接 403，
+                    # 带主站 Referer 才返回完整 image/jpeg（无 Referer 只给 avif 缩略）。
+                    "pornhub": "https://www.pornhub.com",
+                    "pornhub_api": "https://www.pornhub.com",
+                    "javmenu": "https://javmenu.com",
                 }
                 _referer = _origin_map.get(result.source)
 
@@ -403,33 +408,20 @@ class ScraperWorkflow:
             _movie_id = movie.id
 
             # ---- 维护 actors / movie_actors 关联 ----
-            # 旧注释「模块模型没有该表」是错的：MovieActor 在各模块模型中均存在，
-            # 漏写导致演员 movie_count 恒为 0、按演员查影片只能靠 actor 文本 LIKE。
+            # 统一走 app/db/movie_actor_sync.py：补刮路径（patcher/strategy.py）也复用它，
+            # 否则只有走本流水线（batch_scrape / jav_routes）的影片才有关联，
+            # 扫描器与补刮进来的影片全部缺失 ⇒ actors.movie_count 恒 0。
             try:
-                from app.utils.module_helper import get_module_model
+                from app.db.movie_actor_sync import sync_movie_actors
 
-                MovieActorCls = get_module_model(module, "movie_actor")
-                _names = female_names or [
-                    a.name for a in (result.actors or []) if getattr(a, "name", None)
-                ]
-                for _n in _names:
-                    _n = str(_n).strip()
-                    if not _n:
-                        continue
-                    _ex = await session.execute(select(ActorCls).where(ActorCls.name == _n))
-                    _actor = _ex.scalar_one_or_none()
-                    if not _actor:
-                        _actor = ActorCls(name=_n, source="scraper", movie_count=0)
-                        session.add(_actor)
-                        await session.flush()
-                    _lk = await session.execute(
-                        select(MovieActorCls).where(
-                            MovieActorCls.movie_id == _movie_id,
-                            MovieActorCls.actor_id == _actor.id,
-                        )
-                    )
-                    if not _lk.scalar_one_or_none():
-                        session.add(MovieActorCls(movie_id=_movie_id, actor_id=_actor.id))
+                await sync_movie_actors(
+                    session,
+                    module,
+                    _movie_id,
+                    female_names or [
+                        a.name for a in (result.actors or []) if getattr(a, "name", None)
+                    ],
+                )
             except Exception as e:
                 logger.debug(f"写入演员关联失败 [{module}] {result.code}: {e}")
 

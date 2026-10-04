@@ -50,6 +50,7 @@ from app.crawlers import fc2_javbus
 from app.crawlers.western import vixen_network, naughtyamerica, adulttime, aylo_api, theporndb
 from app.crawlers import western_aggregate
 from app.crawlers import pornhub
+from app.crawlers import pornhub_api
 from app.services import stash_scraper_bridge
 
 # 导入国产模块增强爬虫
@@ -119,4 +120,6 @@ __all__ = [
     "missav",
     "theporndb_movies",
     "pornhub",
+    # 兜底源：官方 webmasters JSON 接口（不碰 HTML / JS Challenge）
+    "pornhub_api",
 ]

@@ -98,31 +98,19 @@ def extract_pornhub_code(filename: str) -> str | None:
     支持格式:
       - phXXXXXXXXXXXXX  (带 ph 前缀，13位，必含 g-z 字母)
       - XXXXXXXXXXXXX    (不带 ph 前缀，13位，必含 g-z 字母)
+
+    修复(2026-10-03)：判据下沉到 app.scraper.number 单一真值来源，
+    原先此处一份、crawlers/pornhub.py 一份、scraper/number.py 两份，共四处正则
+    各自演化（扫描要 g-z、刮削只吃 a-f）导致补刮静默全灭。
     """
+    from app.scraper.number import normalize_ph_viewkey
+
     stem = Path(filename).stem
-
-    def _is_valid_viewkey(s: str) -> bool:
-        """验证是否为真实 PH viewkey: 13位，必含 g-z 范围字母"""
-        if len(s) != 13:
-            return False
-        has_gz_letter = any(c >= 'g' and c <= 'z' for c in s)
-        return has_gz_letter
-
-    # 优先匹配带 ph 前缀的 viewkey（ph + 13位字母数字）
-    pattern = r'\bph([a-z0-9]{13})\b'
-    match = re.search(pattern, stem, re.IGNORECASE)
-    if match:
-        code = match.group(1).lower()
-        if _is_valid_viewkey(code):
-            return "ph" + code
-    # 回退匹配纯 13 位字母数字（不含ph前缀）
-    pattern2 = r'\b([a-z0-9]{13})\b'
-    match2 = re.search(pattern2, stem, re.IGNORECASE)
-    if match2:
-        code = match2.group(1).lower()
-        if _is_valid_viewkey(code):
-            return code
-    return None
+    viewkey = normalize_ph_viewkey(stem)
+    if not viewkey:
+        return None
+    # 落库统一补 ph 前缀（与爬虫回查口径一致，见 ph_viewkey_to_code）
+    return f"ph{viewkey}"
 
 
 def extract_actor_and_nationality(folder_name: str) -> tuple[str | None, str | None]:
