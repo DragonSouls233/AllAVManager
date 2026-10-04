@@ -580,3 +580,48 @@ class ScanRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class ScrapeAttempt(Base):
+    """单次 (源 × 番号) 刮削尝试记录 —— 源健康度的唯一数据来源
+
+    ## 为什么必须有这张表（2026-10-04 实测）
+
+    此前 `app/scraper/failure_reason.py` 做好了 19 类失败分级，
+    但 `ScraperEngine.failures` 只是**进程内存里的 dict**：
+
+    - `failure_summary()` / `reset_failures()` **全仓零调用方** ——
+      分级做完了却没有出口，数据没人看；
+    - 重启即丢，历史趋势无从谈起；
+    - **成功次数根本没记**，只有失败计数 ⇒ 算不出成功率。
+      而"哪个源在拖后腿"恰恰要靠 `成功/(成功+失败)` 才能判断：
+      只看失败数会把「量大但命中率高」的源和「几乎全败」的源混为一谈。
+
+    所以这张表记录**成功与失败两侧**，外加耗时，才能算出真实成功率。
+    写库必须走旁路：观测数据绝不能因写库失败而让刮削主流程回滚。
+    """
+    __tablename__ = "scrape_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # --- 维度 ---
+    source: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    number: Mapped[str | None] = mapped_column(String(100), index=True)
+    module: Mapped[str | None] = mapped_column(String(20), index=True)
+
+    # --- 结果 ---
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    #: FailureReason 的字符串值；成功时为 "none"
+    reason: Mapped[str] = mapped_column(String(30), nullable=False, default="none", index=True)
+    #: 分类命中的规则名，调试"为什么判成这个原因"
+    matched_rule: Mapped[str | None] = mapped_column(String(50))
+
+    # --- 性能 ---
+    #: 单次尝试耗时（毫秒）。成功的源普遍快、被拦截的源普遍慢，是重要信号
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    # --- 上下文 ---
+    error_type: Mapped[str | None] = mapped_column(String(80))
+    message: Mapped[str | None] = mapped_column(Text)
+    task_id: Mapped[str | None] = mapped_column(String(50), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)

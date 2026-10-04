@@ -10,6 +10,11 @@ JAV 有码模块 API 路由
 import asyncio
 import logging
 import re
+# 🔴 2026-10-04 修复：模块顶层的 `_pick_video_dir()` 在签名和函数体里用了裸 `Path`，
+# 但本文件其它位置都是「函数内from pathlib import Path as _Path」。
+# 模块级没有 `Path` 名字 ⇒ **import 本文件即抛 NameError** ⇒
+# `app.api` 整包导入失败 ⇒ 服务端直接起不来（不是运行期才炸）。
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query

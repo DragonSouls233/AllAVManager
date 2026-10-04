@@ -5,7 +5,8 @@ API 端点：
 - GET  /api/v1/crawlers              - 可用站点列表
 - POST /api/v1/crawlers/ping         - 一键测速所有站点
 - POST /api/v1/crawlers/priority     - 设置站点优先级
-- GET  /api/v1/crawlers/stats        - 站点统计
+- GET  /api/v1/crawlers/stats        - 站点统计（仅成功入库的来源分布）
+- GET  /api/v1/crawlers/health       - 源健康度：逐源成功率/失败原因/是否该降权
 - POST /api/v1/crawlers/{name}/test  - 测试站点刮削
 - POST /api/v1/crawlers/{name}/ping  - 单站点测速
 - GET  /api/v1/crawlers/{name}       - 获取站点详情
@@ -316,6 +317,52 @@ async def get_crawler_stats(module: str = "jav"):
     return {
         "total_movies": sum(s["count"] for s in stats),
         "sources": stats,
+    }
+
+
+@router.get("/health")
+async def get_source_health(
+    hours: int = Query(24, ge=1, le=720, description="统计时间窗（小时）"),
+    module: Optional[str] = Query(None, description="按模块过滤，如 jav / uncensored"),
+    prune: bool = Query(False, description="是否顺带清理过期记录"),
+):
+    """源健康度：谁在拖后腿
+
+    与上面的 `/stats` 区别在于：`/stats` 统计的是**最终入库来源**
+    （只反映成功结果，看不到抓不到的那些），本端点统计**每一次尝试**
+    （含失败），因此能算出真实成功率。
+
+    这是判断「某个源还该不该留在源池里」的唯一依据 ——
+    只看失败数会把「量大但命中率高」和「几乎全败」混为一谈。
+
+    返回按成功率升序，最差的排最前。
+    """
+    from app.scraper.recorder import (
+        failure_breakdown,
+        get_recorder,
+        source_health,
+    )
+
+    # 顺带把内存缓冲落库，否则刚跑完的任务数据看不到
+    recorder = get_recorder()
+    flushed = await recorder.flush()
+
+    rows = await source_health(hours=hours, module=module)
+    breakdown = await failure_breakdown(hours=hours)
+
+    pruned = 0
+    if prune:
+        pruned = await recorder.prune()
+
+    return {
+        "window_hours": hours,
+        "module": module,
+        "sources": rows,
+        "failure_reasons": breakdown,
+        "recorder": recorder.stats,
+        "flushed_now": flushed,
+        "pruned": pruned,
+        "demote_candidates": [r["source"] for r in rows if r["demote"]],
     }
 
 

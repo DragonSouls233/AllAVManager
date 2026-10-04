@@ -14,6 +14,7 @@ from typing import Optional, Callable
 from app.crawlers.base import ScrapeResult
 from app.scraper.failure_reason import FailureAggregator
 from app.scraper.number import extract_number, NumberResult
+from app.scraper.recorder import get_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,10 @@ class ScraperEngine:
         # 只留一行日志，上层无法区分「网络抖动（该重试）」与
         # 「站点无此资源（换源即可）」，也无法按原因给失败源降权。
         self.failures = FailureAggregator()
+        # 2026-10-04：把每次尝试（含成功）落到 scrape_attempts 表。
+        # 此前 failures 只在内存里，failure_summary() 全仓零调用方，
+        # 且**成功次数压根没记** ⇒ 无法算成功率，也就看不出「哪个源在拖后腿」。
+        self.recorder = get_recorder()
 
     def failure_summary(self) -> dict:
         """任务级失败健康度（按源 × 原因），供 API / 日志 / 运维查看。"""
@@ -189,7 +194,7 @@ class ScraperEngine:
             primary, rest = self._split_primary(crawlers)
             if primary:
                 for crawler in self._rotate_primary(primary, number):
-                    valid_results += await self._gather_all([crawler], number, ctx)
+                    valid_results += await self._gather_all([crawler], number, ctx, module)
                     merged = self._merge_results(valid_results, crawlers, number)
                     if merged is not None and self._is_complete(merged):
                         return merged
@@ -197,14 +202,14 @@ class ScraperEngine:
             # 第 1 层：备用源池 —— 主力全部未命中时才启用
             fallback, tier2 = self._split_fallback(rest)
             if fallback:
-                valid_results += await self._gather_all(fallback, number, ctx)
+                valid_results += await self._gather_all(fallback, number, ctx, module)
                 merged_fb = self._merge_results(valid_results, crawlers, number)
                 if merged_fb is not None and self._is_complete(merged_fb):
                     return merged_fb
 
             # 第 2 层：其余源兜底
             if tier2:
-                valid_results += await self._gather_all(tier2, number, ctx)
+                valid_results += await self._gather_all(tier2, number, ctx, module)
 
         # 过滤有效结果
         valid_results = [r for r in valid_results if isinstance(r, ScrapeResult)]
@@ -298,11 +303,13 @@ class ScraperEngine:
             return [], list(crawlers)
         return t1, t2
 
-    async def _gather_all(self, crawlers: list, number: str, ctx) -> list:
+    async def _gather_all(
+        self, crawlers: list, number: str, ctx, module: Optional[str] = None
+    ) -> list:
         """并发执行一批爬虫，返回有效结果列表"""
         try:
             results = await asyncio.gather(
-                *[self._scrape_with_crawler(c, number, ctx) for c in crawlers],
+                *[self._scrape_with_crawler(c, number, ctx, module) for c in crawlers],
                 return_exceptions=True,
             )
         except Exception as e:
@@ -346,6 +353,7 @@ class ScraperEngine:
         crawler,
         number: str,
         ctx=None,
+        module: Optional[str] = None,
     ) -> Optional[ScrapeResult]:
         """使用指定爬虫刮削
 
@@ -362,6 +370,16 @@ class ScraperEngine:
             logger.warning(
                 f"信号量等待超时 {self.sem_wait_timeout}s，放弃爬虫 "
                 f"{crawler.name} 刮削 {number}"
+            )
+            # 本地并发问题，不是源的锅⇒ 记local 类原因，不降权该源
+            self.recorder.record_failure(
+                TimeoutError(
+                    f"信号量等待超时 {self.sem_wait_timeout}s（本地并发耗尽）"
+                ),
+                source=crawler.name,
+                number=number,
+                module=module,
+                duration_ms=int(self.sem_wait_timeout * 1000),
             )
             self.failures.record_any(
                 f"semaphore wait timeout after {self.sem_wait_timeout}s",
@@ -389,12 +407,24 @@ class ScraperEngine:
                     f"爬虫 {crawler.name} 刮削 {number} 完成，耗时 "
                     f"{time.monotonic() - started:.1f}s"
                 )
+                elapsed_ms = int((time.monotonic() - started) * 1000)
                 if result is None:
                     # 无异常但无结果：部分源对不存在的资源会返回「非常抱歉…」页面并
                     # 当成功解析（见 fc2 源），这类必须记为 no_resource 而不是 unknown，
                     # 否则会把「站点确认没有」和「站点临时挂了」混在一起统计。
                     self.failures.record_any(
                         None, source=crawler.name, number=number
+                    )
+                    self.recorder.record_failure(
+                        None, source=crawler.name, number=number,
+                        module=module, duration_ms=elapsed_ms,
+                    )
+                else:
+                    # 🔴 成功也必须记：只有失败数就算不出成功率，
+                    # 「试了10次成1次」与「试了1000次成900次」在统计上无法区分。
+                    self.recorder.record_success(
+                        crawler.name, number,
+                        module=module, duration_ms=elapsed_ms,
                     )
                 return result
 
@@ -408,12 +438,21 @@ class ScraperEngine:
                     source=crawler.name,
                     number=number,
                 )
+                self.recorder.record_failure(
+                    TimeoutError(f"scrape timeout after {self.timeout}s"),
+                    source=crawler.name, number=number, module=module,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
                 return None
 
             except Exception as e:
                 logger.error(
                     f"爬虫 {crawler.name} 刮削 {number} 出错: "
                     f"{type(e).__name__}: {e}"
+                )
+                self.recorder.record_failure(
+                    e, source=crawler.name, number=number, module=module,
+                    duration_ms=int((time.monotonic() - started) * 1000),
                 )
                 info = self.failures.record_any(
                     e, source=crawler.name, number=number
