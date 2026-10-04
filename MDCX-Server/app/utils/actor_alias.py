@@ -148,20 +148,28 @@ def actor_movie_condition(movie_cls, variants: List[str], include_folder: bool =
     """构造「影片属于该演员（含所有别名）」的 SQLAlchemy 条件
 
     :return: SQLAlchemy 条件对象；variants 为空时返回 None（调用方需自行处理）
+
+    2026-10-04：原为逐别名 `actor LIKE '%v%'`。别名场景下子串误匹配更容易
+    发生（别名 `Anna` 会命中 `Anna Cherry7`），改为 token 边界匹配。
     """
     if not variants:
         return None
 
+    from app.db.actor_query import actor_name_conditions_for_columns
+
     folder_col = getattr(movie_cls, "folder_based_actors", None) if include_folder else None
+    # 同一列可能在两个别名分支里重复出现，去重避免 SQL 里出现冗余 OR 项
+    cols: list = []
+    for c in (movie_cls.actor, folder_col):
+        if c is not None and not any(c is seen for seen in cols):
+            cols.append(c)
+    if not cols:
+        return None
 
-    clauses = []
-    for v in variants:
-        like = f"%{v}%"
-        clauses.append(movie_cls.actor.like(like))
-        if folder_col is not None:
-            clauses.append(folder_col.like(like))
-
-    return clauses[0] if len(clauses) == 1 else or_(*clauses)
+    names = [v for v in (str(x).strip() for x in variants) if v]
+    if not names:
+        return None
+    return actor_name_conditions_for_columns(cols, ", ".join(names))
 
 
 def actor_movie_condition_for(movie_cls, actor, include_folder: bool = True):

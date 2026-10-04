@@ -16,6 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request as _Request
 
+from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db.module_db import ModuleDatabase
 
 import os as _os
@@ -54,8 +55,7 @@ async def list_movies(
             kw = f"%{keyword.replace('%', '').replace('_', '')}%"
             filters.append(or_(WesternMovie.title.like(kw), WesternMovie.actor.like(kw), WesternMovie.site.like(kw)))
         if actor:
-            safe_actor = actor.replace('%', '').replace('_', '')
-            filters.append(WesternMovie.actor.like(f"%{safe_actor}%"))
+            filters.append(actor_name_condition(WesternMovie.actor, actor))
         if series:
             filters.append(WesternMovie.series == series)
         if maker:

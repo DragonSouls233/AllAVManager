@@ -14,12 +14,14 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
 
 from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size
 from app.utils.logger import get_logger
+from app.utils.nfo_fields import EMPTY_NFO_META, parse_nfo_fields
 
 logger = get_logger(__name__)
 
@@ -221,12 +223,41 @@ class WesternScanner(BaseScanner):
                         continue
                     existing_codes.add(code)
 
+                    # 🔴 NFO 富字段入库（此前 title 写死 Path(file_name).stem，
+                    #    把 NFO 里已有的 premiered/runtime/tag/actor 全丢了）。
+                    #    实测 G:\TEST\欧美 样本 NFO 带 premiered+year+runtime+38 个
+                    #    tag+2 个 actor，而库里 8 条只有 1 条有 duration。
+                    #    解析器为全仓唯一实现 app/utils/nfo_fields.py。
+                    nfo_meta: dict = {
+                        k: ([] if isinstance(v, list) else v)
+                        for k, v in EMPTY_NFO_META.items()
+                    }
+                    for nfo_candidate in (file_path.parent / "movie.nfo",
+                                          file_path.parent / f"{file_path.stem}.nfo"):
+                        if nfo_candidate.exists():
+                            nfo_meta = parse_nfo_fields(nfo_candidate)
+                            break
+
                     # 写入新影片记录
                     new_movie = WesternMovie(
                         code=code,
-                        title=Path(file_name).stem,
+                        # 标题：NFO 优先（真实作品标题），否则回退文件名
+                        title=nfo_meta.get("title") or Path(file_name).stem,
+                        original_title=nfo_meta.get("original_title"),
                         site=site,
                         network=network,
+                        release_date=nfo_meta.get("release_date"),
+                        duration=nfo_meta.get("duration"),
+                        rating=nfo_meta.get("rating"),
+                        plot=nfo_meta.get("plot"),
+                        plot_short=nfo_meta.get("plot_short"),
+                        actor=",".join(nfo_meta.get("actors") or []) or None,
+                        studio=nfo_meta.get("studio"),
+                        series=nfo_meta.get("series"),
+                        # genre/tag 存 JSON 字符串（与 workflow.py::persist 同口径，
+                        # API 侧 movies.py::_apply_nfo 两种格式都兼容）
+                        genre=json.dumps(nfo_meta["genre"], ensure_ascii=False) if nfo_meta.get("genre") else None,
+                        tag=json.dumps(nfo_meta["tag"], ensure_ascii=False) if nfo_meta.get("tag") else None,
                         file_path=str(file_path),
                         file_size=_file_size(file_path),
                         status="pending",

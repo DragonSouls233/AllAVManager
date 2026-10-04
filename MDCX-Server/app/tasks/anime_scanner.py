@@ -29,6 +29,7 @@ from xml.etree import ElementTree as ET
 
 from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries
 from app.utils.logger import get_logger
+from app.utils.nfo_runtime import parse_runtime_minutes
 
 logger = get_logger(__name__)
 
@@ -213,10 +214,13 @@ def parse_nfo(nfo_path: Path) -> dict:
     if year and year.isdigit():
         out["year"] = int(year)
 
-    # 时长（分钟）
+    # 时长（分钟）—— 走统一换算，兼容 hh:mm:ss / mm:ss / "42分鍾" / 纯分钟。
+    # ⚠️ 旧实现用 runtime.isdigit()，"01:52:37" 这类会被整条丢弃。
     runtime = txt("runtime")
-    if runtime and runtime.isdigit():
-        out["runtime"] = int(runtime)
+    if runtime:
+        rt = parse_runtime_minutes(runtime)
+        if rt:
+            out["runtime"] = rt
 
     # 类型
     genres = [g.text.strip() for g in root.findall("genre") if g.text and g.text.strip()]
@@ -463,6 +467,14 @@ class AnimeScanner(BaseScanner):
             await session.commit()
         finally:
             await session.close()
+
+        # 演员关联表回填：2026-10-04 新增（此前 5 个模块有、本模块漏了）。
+        # ⚠️ 实测 G:\TEST\动漫 15 个 NFO **0 个**含 <actor>，且番号是素人形态
+        #    （ACDDL-1006 / BBBH-1749 / DV-109），所以本模块回填通常是 0 条 ——
+        #    这是**数据源本身没有演员**，不是 bug。仍然接上是为了：
+        #      ① 未来 NFO 若带 <actor> 能自动生效，不必再改代码；
+        #      ② 与其它模块行为一致，避免"某些模块能按演员筛、某些不能"的困惑。
+        await self._sync_actor_links()
 
         return result
 

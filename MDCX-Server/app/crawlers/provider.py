@@ -23,7 +23,18 @@ MODULE_CRAWLER_TYPES: dict[str, list[str]] = {
     "chinese": ["chinese"],
     "western": ["western"],
     "pornhub": ["pornhub"],
+    # 🔴 2026-10-04 修复：里番 = anime 模块，但本表**从来没有 anime 键**
+    # ⇒ `get_crawlers_for_module("anime")` 恒返回空列表，
+    #    服务器上已导入的里番数据走统一补刮入口时一个爬虫都调不到。
+    #    `app/crawlers/md/getchu.py` / `kin8.py` 的 supported_types 需同步
+    #    加上 "anime"（见下方 _ANIME_TYPE_AUGMENT 运行时兜底）。
+    "anime": ["anime", "jav"],
 }
+
+# 里番爬虫的历史遗留：注册时只写了 supported_types=['jav']。
+# 直接改源文件风险大（会连带影响 jav 模块的爬虫选择），
+# 这里在 provider 层做**运行时类型增补**，让 anime 模块能取到它们。
+_ANIME_TYPE_AUGMENT: set[str] = {"getchu", "kin8", "dmm_web", "dmm_api"}
 
 # 已失效的外部爬虫（站点已关闭或被 Cloudflare 封禁，不再使用）
 # 保留注册仅用于前端显示，运行时被自动禁用，避免反复重试浪费时间
@@ -370,6 +381,9 @@ def get_crawlers_for_module(module: str) -> list[BaseCrawler]:
     names: set[str] = set()
     for t in types:
         names.update(_provider._type_map.get(t, []))
+    # 里番兜底：把已知的里番爬虫按名字捞进来（它们注册时只写了 jav）
+    if module == "anime":
+        names.update(_ANIME_TYPE_AUGMENT & set(_provider._crawlers))
     crawlers = [
         _provider._crawlers[name]
         for name in names

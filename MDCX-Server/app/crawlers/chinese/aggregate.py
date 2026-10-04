@@ -433,13 +433,20 @@ class ChineseAggregateCrawler(BaseCrawler):
     注册为 chinese 模块爬虫，优先级 VERY_HIGH：engine 在
     module="chinese" 时优先选用本源（演员/封面/时长/样图最全），
     失败时（三源无数据）返回 None，由引擎回退到 madou/haijiao/91porn。
+    🔴 2026-10-04 实测降级（subprocess 一源一进程真实验证）：
+       - ``model-api.bvncmsldo.com`` / ``modelmediaasia.com``  → ConnectError（源已死）
+       - ``api.6dccbca.com``（HDouban）                        → ConnectError（源已死）
+       - ``cnmdb.net``                                         → ConnectTimeout
+    ⇒ 三个源**全部不可达**，本源对 chinese 模块实际贡献为 0，
+    却因 VERY_HIGH 优先级**排在最前面**，每次刮削都白等 3 个源的超时。
+    现降为 LOW，仅作为历史条目保留；实际可用的国产源是 `madou_wp`。
     """
 
     name = "chinese_aggregate"
     display_name = "国产聚合(麻豆官方/HDouban/CNMDB)"
     base_url = "https://model-api.bvncmsldo.com"
 
-    priority = CrawlerPriority.VERY_HIGH
+    priority = CrawlerPriority.LOW
     supported_types = ["chinese"]
     description = "国产番号聚合：麻豆官方API → HDouban → CNMDB"
     language = "zh"

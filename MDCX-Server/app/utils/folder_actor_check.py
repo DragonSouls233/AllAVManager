@@ -256,15 +256,23 @@ async def apply_fill(actor_filter: str | None = None) -> int:
                         movie.actor = new_actor
                 await session.flush()
             await session.commit()
-        # 重算 movie_count
-        actors = await session.execute(select(JavActor))
-        for actor_row in actors.scalars().all():
-            count = await session.scalar(
-                select(func.count()).select_from(JavMovie).where(
-                    JavMovie.actor.like(f"%{actor_row.name}%")
-                )
-            ) or 0
-            actor_row.movie_count = count
+        # 2026-10-04：原为逐演员 `actor LIKE '%name%'` 重算 movie_count。
+        # 两个问题：
+        #   1) LIKE 大小写不敏感会虚增（实测 pornhub 库因此并存 Ruth Lee /
+        #      Ruth lee，两行 movie_count 都是 1）；
+        #   2) 与扫描器口径不一致 —— app/tasks/*_scanner.py 早已改用
+        #      关联表精确计数。
+        # ⚠️ 但**不能只重算**：本函数刚改了 movies.actor 文本，关联表还是旧的，
+        # 直接重算会得到偏小的值。必须先按新文本回填关联表再重算。
+        from app.db.movie_actor_sync import (
+            backfill_links_from_text,
+            recount_actor_movie_counts,
+        )
+
+        await session.commit()
+        await backfill_links_from_text(session, "jav", recount=False)
+        await session.commit()
+        await recount_actor_movie_counts(session, "jav")
         await session.commit()
         return len(updates)
     finally:

@@ -102,6 +102,27 @@ class Database:
             # 直到 INSERT 时才报 "no column named removed_files"。
             await apply_required_columns(conn, db_label=self.database_url)
 
+        # 🔴 2026-10-04 修复：app/db/models.py 的模型挂在**本文件的 Base** 上，
+        # 而上面只建了 SystemBase 的表 ⇒ Base.metadata 里那 19 张表
+        # （scrape_attempts / missing_info / patch_records / import_records …）
+        # 在全新库里**根本不会被创建**。
+        # 表现为静默失效而非报错：ScrapeRecorder.flush() 吞掉异常只
+        # logger.warning("刮削记录落库失败，丢弃 N 条")，于是上一轮做的
+        # 可观测性（/crawlers/health、熔断器）在生产上读到的永远是空表。
+        # 实测：init_database() 只建 11 张表，Base.metadata 有 30 张。
+        #
+        # 这里必须**显式 import models** 才会把表注册进 Base.metadata；
+        # 顺带保证"用到才建"不会漏。
+        try:
+            import app.db.models  # noqa: F401
+
+            async with self.engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("核心 ORM 表已就绪（Base.metadata）")
+        except Exception as e:
+            # 不能因为建表失败阻断启动：老库里这些表可能已存在且被占用
+            logger.warning("Base.metadata 建表跳过（可能已存在）: %s", e)
+
         # 标记为已初始化
         self._initialized = True
 

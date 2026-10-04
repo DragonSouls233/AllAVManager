@@ -4,14 +4,32 @@ FC2 扫描器
 """
 
 import asyncio
+import json
 import os
 import re
 from pathlib import Path
 
 from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags
 from app.utils.logger import get_logger
+from app.utils.nfo_fields import empty_nfo_fields, parse_nfo_fields
 
 logger = get_logger(__name__)
+
+
+def find_nfo_sibling(video_path: Path) -> Path | None:
+    """找视频同目录的 NFO：先 {stem}.nfo，再退回通用 movie.nfo。
+
+    只做两次 ``in`` 目录列表判断，不逐个 exists 探测（网络盘上每次 stat 都很贵）。
+    """
+    parent = video_path.parent
+    try:
+        entries = set(os.listdir(parent))
+    except OSError:
+        return None
+    for cand in (f"{video_path.stem}.nfo", "movie.nfo"):
+        if cand in entries:
+            return parent / cand
+    return None
 
 
 def extract_fc2_code(filename: str) -> str | None:
@@ -106,10 +124,35 @@ class Fc2Scanner(BaseScanner):
                     # 检测版本标记（-C 中文 / -U 无码 / -UC 无码中文 / -Leak 破解 / -4K）
                     flags = detect_version_flags(file_name)
 
+                    # 🔴 旧实现完全不读 NFO，title 直接用文件名（FC2-4802082 这种
+                    # 就是纯番号），把本地已存在的 premiered/plot/genre/runtime 全丢掉。
+                    # 实测 G:\TEST 43 个 NFO：premiered 81%、genre 81%、runtime 79%、
+                    # plot 39% —— 数据一直在磁盘上。解析实现见 app/utils/nfo_fields.py。
+                    nfo_meta: dict = empty_nfo_fields()
+                    nfo_path = find_nfo_sibling(file_path)
+                    if nfo_path is not None:
+                        nfo_meta = parse_nfo_fields(nfo_path)
+
+                    genre_list = nfo_meta.get("genre") or []
+                    tag_list = nfo_meta.get("tag") or []
+
                     # 写入新影片记录
                     new_movie = Fc2Movie(
                         code=code,
-                        title=Path(file_name).stem,
+                        title=nfo_meta.get("title") or Path(file_name).stem,
+                        original_title=nfo_meta.get("original_title"),
+                        studio=nfo_meta.get("studio"),
+                        maker=nfo_meta.get("maker"),
+                        series=nfo_meta.get("series"),
+                        plot=nfo_meta.get("plot"),
+                        plot_short=nfo_meta.get("plot_short"),
+                        release_date=nfo_meta.get("release_date"),
+                        duration=nfo_meta.get("duration"),
+                        rating=nfo_meta.get("rating"),
+                        genre=json.dumps(genre_list, ensure_ascii=False) if genre_list else None,
+                        tag=json.dumps(tag_list, ensure_ascii=False) if tag_list else None,
+                        actor=",".join(nfo_meta["actors"]) if nfo_meta.get("actors") else None,
+                        source="nfo" if nfo_path is not None else None,
                         file_path=str(file_path),
                         file_size=_file_size(file_path),
                         is_chinese=flags["is_chinese"],
@@ -132,5 +175,12 @@ class Fc2Scanner(BaseScanner):
             await session.commit()
         finally:
             await session.close()
+
+        # 演员关联表回填：2026-10-04 新增。
+        # 本扫描器此前**完全没有**这个步骤（jav/uncensored/pornhub/chinese 都有），
+        # 而 FC2 的 NFO 是带演员的（实测 5/5：KING POWER D / えぽす。/ オナキング），
+        # 于是 fc2 库 movie_actors 恒为 0 行，"按演员查影片" 只能靠文本 LIKE 兜底。
+        # 失败不中断扫描（基类内部已 try/except）。
+        await self._sync_actor_links()
 
         return result

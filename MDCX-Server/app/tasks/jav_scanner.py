@@ -357,22 +357,16 @@ class JavScanner(BaseScanner):
             await session.close()
 
     async def _update_actor_counts(self):
-        """更新演员表的 movie_count"""
-        from app.db.module_db import ModuleDatabase
-        from app.db.jav_models import JavActor, JavMovie
-        from sqlalchemy import select, func
+        """更新演员表的 movie_count
 
-        db = ModuleDatabase.get_instance("jav")
-        session = await db.get_session()
-        try:
-            actors = await session.execute(select(JavActor))
-            for actor_row in actors.scalars().all():
-                count = await session.scalar(
-                    select(func.count()).select_from(JavMovie).where(
-                        JavMovie.actor.like(f"%{actor_row.name}%")
-                    )
-                ) or 0
-                actor_row.movie_count = count
-            await session.commit()
-        finally:
-            await session.close()
+        2026-10-04：原实现对每个演员跑一次
+        ``WHERE actor LIKE '%name%'``，有两个实测问题：
+
+        1. SQLite ``LIKE`` **默认大小写不敏感** ⇒ ``Ruth lee`` 与 ``Ruth Lee``
+           各虚增一次（pornhub 库 id=12/201 即是这么来的，且两者都在
+           ``movie_actors`` 里 0 行，movie_count 是纯假数据）。
+        2. 子串匹配无法区分 ``Anna Cherry`` 与 ``Anna Cherry7``。
+
+        改为走基类的关联表回填 + 精确计数。
+        """
+        await self._sync_actor_links()

@@ -88,6 +88,21 @@ DESCRIPTIVE_KEYWORDS = (
     # 身体 / 感官描述（"白嫩白虎美穴""声音好嗲"这类标题碎片）
     "白嫩", "粉嫩", "美穴", "白虎", "黑木耳", "骚穴", "浪穴", "巨骚",
     "好嗲", "喷水", "水多", "紧致",
+    # 场所 / 机构后缀（"国风按摩院""极乐圣诞"这类是作品名不是人名）。
+    # 🔴 用正则而非词表：场所后缀能自由组合（XX院/XX馆/XX阁/XX堂…），
+    #    枚举词表永远补不全。命中的是**结构**而非具体词，精度高。
+    #    代价：真演员名里带这些字尾的会被误杀（如"金院"?不存在，风险极低），
+    #    但"玉堂""锦堂"这类可能是艺名 —— 故要求长度 ≥3 且不以姓氏常见字打头。
+)
+
+#: 场所 / 机构类后缀 —— 命中即判为作品名而非人名。
+#: 必须 ≥3 字（"XX院"最短），单字"院/馆"不触发，避免误伤"院"这类真名片段。
+PLACE_SUFFIX_RE = re.compile(
+    r"(按摩院|按摩店|养生院|养生馆| SPA |会所|夜总会|娱乐城|"
+    r"医院|学院|书苑|书院|会馆|茶馆|酒馆|饭馆|面馆|车行|"
+    r"故宫|天宫|地宫|皇宫|金殿|神殿|"
+    r"圣诞|元旦|春节|中秋|端午|情人节|母亲节|"
+    r"之约|物语|纪事|奇缘|物语|传奇|序章|终章|后记|前传|续集)"
 )
 
 # 画质 / 编码 / 来源标签
@@ -102,6 +117,58 @@ QUALITY_RE = re.compile(
 # 年份 / 纯序号
 YEAR_RE = re.compile(r"^(19|20)\d{2}$")
 EPISODE_RE = re.compile(r"^第?\s*\d+\s*(弹|期|集|部|话|話|章|季|辑|輯)$")
+
+# ─────────────────────────── 片商名（2026-10-04 从 folder_actor 下沉） ───────────────────────────
+# 为什么放在这个模块：守卫本身漏掉了片商名 —— 实测 chinese 库回填
+# `movie_actors` 时，`麻豆传媒映画`（片商）被当成演员写进了 `actors` 表。
+# 而 `app/scraper/folder_actor.py` 本来就 import 本模块，若这里反向 import
+# `folder_actor` 会形成循环依赖 ⇒ 常量必须落在这**下游**模块。
+STUDIO_NAMES = {
+    "麻豆传媒", "天美传媒", "果冻传媒", "精东影业",
+    "糖心VLOG", "蜜桃传媒", "星空无限", "SWAG",
+    "大象传媒", "爱豆传媒", "皇家华人", "猫爪影像",
+    "狂点映像", "映秀传媒", "抖阴传媒", "涩会传媒",
+    "乌鸦传媒", "乐播传媒", "优蜜传媒", "偶蜜国际",
+    "叮叮映画", "哔哩传媒", "开心鬼传媒",
+}
+
+#: 片商名的通用后缀（"麻豆传媒映画" 里 "麻豆传媒" 命中后，剩下 "映画" 是后缀）。
+#: 实测 chinese 库 extracted_actor 里混着 `麻豆传媒映画`，因为只按
+#: `name in STUDIO_NAMES` 全等匹配，带后缀的一个都拦不住。
+STUDIO_SUFFIXES = (
+    "传媒", "映画", "影业", "影视", "文化", "娱乐",
+    "VLOG", "vlog", "Video", "video", "Studio", "studio", "Works",
+    "Productions", "Inc", "Group", "社",
+)
+
+#: 超过这个长度就几乎必然是标题而不是片商名，交给分片判定处理。
+#: 🔴 子串匹配**必须**限定在短名上：目录名经常是整条标题
+#: （`麻豆传媒映画.MDCM-0006.梁佳芯.国风按摩院.新欢夺爱享情欲`），
+#: 无条件做 `s in n` 会把整条标题一起拦掉，连里面的合法演员 `梁佳芯`
+#: 都丢掉 —— 2026-10-04 实测到的回归。
+_STUDIO_MAX_LEN = 12
+
+
+def is_studio_name(name: str) -> bool:
+    """名字是否本质上是片商/工作室名（而非人名）。
+
+    三层判定：全等 → 短名包含 → 去后缀后全等。
+    """
+    n = (name or "").strip()
+    if not n:
+        return False
+    if n in STUDIO_NAMES:
+        return True
+    if len(n) >= _STUDIO_MAX_LEN:
+        return False
+    for s in STUDIO_NAMES:
+        if len(s) >= 3 and s in n:
+            return True
+    for suf in STUDIO_SUFFIXES:
+        if n.endswith(suf) and len(n) - len(suf) >= 2:
+            if n[: -len(suf)] in STUDIO_NAMES:
+                return True
+    return False
 
 # HTML / 刮削器噪声
 # 两类：成对标签 <b>...</b>、以及未闭合的标签碎片（如线上 jav 库里真实存在的 "<img"）
@@ -167,6 +234,10 @@ def reject_reason(name: str, extra_blacklist: set[str] | None = None) -> str | N
         return "平台名"
     if n in NATIONALITY_WORDS:
         return "国籍/地区"
+    # 片商/工作室名：国产目录的第一层就是片商，不拦住会被当演员入库
+    # （实测 chinese 库 `麻豆传媒映画` 被写进 actors 表）
+    if is_studio_name(n):
+        return "片商名"
     if extra_blacklist and (n in extra_blacklist or low in {w.lower() for w in extra_blacklist}):
         return "配置黑名单"
 
@@ -188,6 +259,13 @@ def reject_reason(name: str, extra_blacklist: set[str] | None = None) -> str | N
     for kw in DESCRIPTIVE_KEYWORDS:
         if kw in n:
             return f"描述语:{kw}"
+
+    # ---- 场所 / 机构 / 节庆类后缀（作品名的典型结构，不是人名）----
+    # 2026-10-04 实测：chinese 库 extracted_actor 里混着
+    #   极乐圣诞 / 国风按摩院 / 新欢夺爱享情欲
+    # 全部通过了原有规则（纯 CJK、2-7 字、无描述词），只能靠结构识别。
+    if len(n) >= 3 and PLACE_SUFFIX_RE.search(n):
+        return "场所/机构/节庆后缀"
 
     # ---- 句子级标点 / 装饰括号（整条文件标题的典型特征）----
     if any(p in n for p in _SENTENCE_PUNCT):

@@ -36,6 +36,31 @@ THEPORNDB_DETAIL = f"{THEPORNDB_API_BASE}/scenes/{{slug}}"
 _NO_KEY_WARNED = False
 
 
+def _pick_matching_scene(scenes: list, query: str) -> Optional[dict]:
+    """从搜索结果里挑**标题真正匹配**的一条。
+
+    🔴 2026-10-04：ThePornDB 的 ?q= 是模糊搜索，直接取 scenes[0] 会返回
+    完全无关的热门场景（写进库就是一部错的电影）。必须逐条用
+    is_scene_match()（difflib ≥ 0.75，与 CommunityScrapers 同阈值）校验。
+    标题完全相等时优先。
+    """
+    from app.services.western_utils import is_scene_match
+
+    if not scenes:
+        return None
+    q = (query or "").strip().lower()
+    fallback = None
+    for s in scenes[:20]:
+        t = (s.get("title") or "").strip()
+        if not t:
+            continue
+        if t.lower() == q:
+            return s
+        if fallback is None and is_scene_match(query, t):
+            fallback = s
+    return fallback
+
+
 def _parse_theporndb_response(data: dict) -> Optional[ScrapeResult]:
     """解析 ThePornDB API 响应（参考 mdcx theporndb.py read_data）"""
     if not data:
@@ -67,12 +92,12 @@ def _parse_theporndb_response(data: dict) -> Optional[ScrapeResult]:
     except (KeyError, TypeError):
         poster_url = data.get("poster") or ""
 
-    # 时长（ThePornDB 返回秒，DB 也存秒）
+    # 时长（ThePornDB API 返回**秒**，而 ScrapeResult.duration 契约是**分钟**
+    #——见 javbus._get_duration / javdb._get_duration，两者都返回整数分钟，
+    #  NFO <runtime> 也是分钟。不转换会造成 60 倍偏差。）
     duration = None
     try:
-        duration = int(data.get("duration", 0))
-        if duration <= 0:
-            duration = None
+        duration = int(data.get("duration", 0)) // 60 or None
     except (ValueError, TypeError):
         pass
 
@@ -226,8 +251,14 @@ class ThePornDBCrawler(BaseCrawler):
                     self.mark_error()
                     return None
 
-                # 取第一个结果
-                scene_data = scenes[0]
+                # 🔴 2026-10-04：旧代码直接取 scenes[0] ⇒ 模糊搜索必返**假数据**
+                #    （实测无关关键词也会命中一条热门场景）。改为逐条校验标题。
+                scene_data = _pick_matching_scene(scenes, code)
+                if not scene_data:
+                    logger.info(f"ThePornDB 无标题匹配项: {code}")
+                    self.mark_error()
+                    return None
+
                 result = _parse_theporndb_response(scene_data)
                 if not result:
                     self.mark_error()
@@ -263,7 +294,19 @@ class ThePornDBCrawler(BaseCrawler):
                 resp = await client.get_json(search_url, headers=headers)
 
                 scenes = resp.get("data", []) if resp else []
-                for scene_data in scenes[:20]:  # 最多 20 条
+                # 🔴 2026-10-04：search() 语义是「返回候选列表」，
+                #    保持最多 20 条不变（供上层做人工挑选）；
+                #    但**排序**改为匹配度优先，避免无关条目排在最前被误选。
+                if scenes:
+                    from app.services.western_utils import title_similarity
+                    scenes = sorted(
+                        scenes[:20],
+                        key=lambda s: title_similarity(
+                            keyword, (s.get("title") or "")
+                        ),
+                        reverse=True,
+                    )
+                for scene_data in scenes:
                     result = _parse_theporndb_response(scene_data)
                     if result:
                         results.append(result)

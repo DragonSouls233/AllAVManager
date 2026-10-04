@@ -20,6 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db.module_db import ModuleDatabase
 
 logger = logging.getLogger(__name__)
@@ -671,7 +672,9 @@ async def list_movies(
             kw = f"%{keyword}%"
             filters.append(or_(JavMovie.title.like(kw), JavMovie.code.like(kw)))
         if actor:
-            filters.append(JavMovie.actor.like(f"%{actor}%"))
+            # token 边界匹配：查 `Anna` 不会命中 `Anna Cherry7`
+            # （裸 LIKE '%name%' 会，实测 pornhub 库查 Anna 返回 3 部全是误命中）
+            filters.append(actor_name_condition(JavMovie.actor, actor))
         if status_filter:
             filters.append(JavMovie.status == status_filter)
         if series:

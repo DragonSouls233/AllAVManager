@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db import get_session
 from app.db.chinese_models import ChineseMovie, ChineseActor
 from app.services.chinese_rename_service import get_rules, update_rules, clean_title
@@ -228,7 +229,14 @@ async def list_movies(skip: int = 0, limit: int = 20,
         from sqlalchemy import select, func, or_
         filters = []
         if actor:
-            filters.append(ChineseMovie.folder_based_actors.like(f"%{actor}%"))
+            # chinese 的 `actor` 列全为 NULL（演员走 extracted_actor /
+            # folder_based_actors），用多列并集，见 _verify_actor_query.py [1]
+            filters.append(actor_name_conditions_for_columns(
+                [ChineseMovie.extracted_actor,
+                 ChineseMovie.folder_based_actors,
+                 ChineseMovie.actor],
+                actor,
+            ))
         if keyword:
             kw = f"%{keyword}%"
             filters.append(or_(ChineseMovie.title.like(kw), ChineseMovie.code.like(kw)))
@@ -460,7 +468,8 @@ async def scrape_all_pending_chinese(background_tasks: BackgroundTasks):
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
 
     targets = [(m.id, m.code) for m in pending]
-    async def _run():
+
+    async def _run():
         """统一走完整落盘流水线（workflow.persist）+ 失败重试 + 缺失补齐（刮到完成为止）。"""
         from app.db.chinese_models import ChineseMovie
         from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps

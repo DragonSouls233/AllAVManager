@@ -7,6 +7,7 @@ JAV 无码扫描器
 """
 
 import asyncio
+import json
 import os
 import re
 from pathlib import Path
@@ -26,6 +27,7 @@ from app.tasks.base_scanner import (
     detect_version_flags,
 )
 from app.utils.logger import get_logger
+from app.utils.nfo_fields import EMPTY_NFO_META, clean_nfo_text, parse_nfo_fields
 
 logger = get_logger(__name__)
 
@@ -35,6 +37,7 @@ ACTOR_BLACKLIST = {
     "JAV", "无码", "uncensored", "HD", "高清", "合集", "精选",
     "新建文件夹", "unknown", "Other", "others",
 }
+
 
 
 def _is_acceptable_code(code: str, stem: str) -> bool:
@@ -68,40 +71,16 @@ def _extract_uncensored_code(file_path: Path) -> str | None:
 
 def _clean_text(s: str) -> str:
     """清洗 NFO 文本：去 CDATA 包裹与残留标签，折叠空白。"""
-    if not s:
-        return s
-    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", s, flags=re.DOTALL)
-    s = re.sub(r"<[^>]+>", "", s)
-    return re.sub(r"\s+", " ", s).strip()
+    return clean_nfo_text(s)
 
 
 def _parse_nfo_metadata(nfo_path: Path) -> dict:
-    """从 movie.nfo 提取 title / actors / studio（正则容错，避免畸形 XML 崩溃）。"""
-    meta: dict = {"title": None, "actors": [], "studio": None}
-    try:
-        text = nfo_path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return meta
-    # title
-    m = re.search(r"<title>\s*(.*?)\s*</title>", text, re.DOTALL | re.IGNORECASE)
-    if m:
-        meta["title"] = _clean_text(m.group(1))
-    # studio / maker
-    for tag in ("studio", "maker"):
-        m = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.DOTALL | re.IGNORECASE)
-        if m and m.group(1).strip():
-            meta["studio"] = _clean_text(m.group(1))
-            break
-    # actors
-    seen: set[str] = set()
-    for block in re.finditer(r"<actor\b[^>]*>(.*?)</actor>", text, re.DOTALL | re.IGNORECASE):
-        nm = re.search(r"<name>\s*(.*?)\s*</name>", block.group(1), re.DOTALL | re.IGNORECASE)
-        if nm:
-            name = _clean_text(nm.group(1))
-            if name and name not in seen:
-                seen.add(name)
-                meta["actors"].append(name)
-    return meta
+    """从 movie.nfo 提取富字段。
+
+    实现已下沉到 ``app/utils/nfo_fields.py::parse_nfo_fields``（全仓唯一），
+    供 fc2 等其它模块扫描器共用。此处仅保留薄封装以兼容历史调用方。
+    """
+    return parse_nfo_fields(nfo_path)
 
 
 class UncensoredScanner(BaseScanner):
@@ -189,7 +168,11 @@ class UncensoredScanner(BaseScanner):
 
                     # 解析同目录 NFO（兼容 movie.nfo 与 {番号}.nfo 两种命名）
                     video_dir = file_path.parent
-                    nfo_meta: dict = {"title": None, "actors": [], "studio": None}
+                    # 找不到 NFO 时的空壳（键与 parse_nfo_fields 返回值一致）
+                    nfo_meta: dict = {
+                        k: ([] if isinstance(v, list) else v)
+                        for k, v in EMPTY_NFO_META.items()
+                    }
                     for nfo_candidate in (video_dir / "movie.nfo", video_dir / f"{file_path.stem}.nfo"):
                         if nfo_candidate.exists():
                             nfo_meta = _parse_nfo_metadata(nfo_candidate)
@@ -212,13 +195,28 @@ class UncensoredScanner(BaseScanner):
                     # 检测版本标记（-C 中文 / -U 无码 / -UC 无码中文 / -Leak 破解 / -4K）
                     flags = detect_version_flags(file_name)
 
-                    # 写入新影片记录
+                    # 🔴 NFO 富字段入库（此前只用了 title/studio/actor，其余全丢）。
+                    # genre/tag 统一存 JSON 字符串，与 scraper/workflow.py::persist 口径一致；
+                    # API 侧读法（movies.py::_apply_nfo）两种格式都兼容。
+                    genre_list = nfo_meta.get("genre") or []
+                    tag_list = nfo_meta.get("tag") or []
                     new_movie = UncensoredMovie(
                         code=code,
                         title=title,
+                        original_title=nfo_meta.get("original_title"),
                         source_platform="uncensored",
                         actor=actor_str,
                         studio=studio,
+                        maker=nfo_meta.get("maker"),
+                        series=nfo_meta.get("series"),
+                        plot=nfo_meta.get("plot"),
+                        plot_short=nfo_meta.get("plot_short"),
+                        release_date=nfo_meta.get("release_date"),
+                        duration=nfo_meta.get("duration"),
+                        rating=nfo_meta.get("rating"),
+                        genre=json.dumps(genre_list, ensure_ascii=False) if genre_list else None,
+                        tag=json.dumps(tag_list, ensure_ascii=False) if tag_list else None,
+                        source="nfo" if nfo_meta.get("title") else None,
                         cover_url=cover_url,
                         file_path=str(file_path),
                         file_size=_file_size(file_path),
@@ -299,22 +297,11 @@ class UncensoredScanner(BaseScanner):
             await session.close()
 
     async def _update_actor_counts(self):
-        """更新演员表的 movie_count"""
-        from app.db.module_db import ModuleDatabase
-        from app.db.uncensored_models import UncensoredActor, UncensoredMovie
-        from sqlalchemy import select, func
+        """更新演员表的 movie_count
 
-        db = ModuleDatabase.get_instance("uncensored")
-        session = await db.get_session()
-        try:
-            actors = await session.execute(select(UncensoredActor))
-            for actor_row in actors.scalars().all():
-                count = await session.scalar(
-                    select(func.count()).select_from(UncensoredMovie).where(
-                        UncensoredMovie.actor.like(f"%{actor_row.name}%")
-                    )
-                ) or 0
-                actor_row.movie_count = count
-            await session.commit()
-        finally:
-            await session.close()
+        2026-10-04：原实现是逐演员 ``actor LIKE '%name%'``，SQLite 的
+        ``LIKE`` 默认大小写不敏感且做子串匹配，既会因大小写变体重复
+        虚增，也会把 ``Anna Cherry`` 算进 ``Anna Cherry7`` 的影片。
+        改为走基类的关联表回填 + 精确计数。
+        """
+        await self._sync_actor_links()

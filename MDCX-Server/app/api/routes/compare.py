@@ -35,6 +35,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.manager import get_config_manager, DATA_DIR
+from app.db.actor_query import actor_movie_ids_condition
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -544,7 +545,8 @@ async def compare_online_by_actor(
             Movie = get_module_model(module, "movie")
             names = [n.strip() for n in actor_name.split(",") if n.strip()]
             if names:
-                cond = or_(*[Movie.actor.ilike(f"%{n}%") for n in names])
+                cond = actor_movie_ids_condition(module, actor_name,
+                                                  movie_cls=Movie)
                 rows = await session.execute(
                     select(Movie.code).where(cond, Movie.code.isnot(None))
                 )
@@ -667,7 +669,8 @@ async def compare_actor_all_sources(
             Movie = get_module_model(module, "movie")
             names = [n.strip() for n in actor_name.split(",") if n.strip()]
             if names:
-                cond = or_(*[Movie.actor.ilike(f"%{n}%") for n in names])
+                cond = actor_movie_ids_condition(module, actor_name,
+                                                  movie_cls=Movie)
                 rows = await session.execute(
                     select(Movie.code).where(cond, Movie.code.isnot(None))
                 )
@@ -1228,7 +1231,8 @@ async def scan_all_compare_actors(
     Movie = get_module_model(module, "movie")
     MovieActor = _get_mod_cls(module, "MovieActor")
 
-    # 作品数直接取自 actors.movie_count 列（MovieActor 关联表为空不可靠）
+    # 作品数直接取自 actors.movie_count 列（已由关联表精确计数重算，见
+    # app/db/movie_actor_sync.py::recount_actor_movie_counts）
     query = (
         select(Actor, func.coalesce(Actor.movie_count, 0))
         .where(func.coalesce(Actor.movie_count, 0) >= min_movies)
@@ -1243,12 +1247,12 @@ async def scan_all_compare_actors(
         scanned += 1
 
         detected_dir = None
-        # MovieActor 关联表为空，改用 movie.actor 文本 LIKE 取该演员影片路径
+        # 关联表 ∪ token 边界 LIKE（anime/chinese 关联表尚未回填，只用关联表会查空）
         paths = []
         if actor.name:
             fp_res = await session.execute(
                 select(Movie.file_path).where(
-                    Movie.actor.like(f"%{actor.name}%"),
+                    actor_movie_ids_condition(module, actor.name, movie_cls=Movie),
                     Movie.file_path.isnot(None),
                     Movie.file_path != "",
                 ).limit(500)
@@ -1310,11 +1314,11 @@ async def detect_actor_local_dir(
     if not actor:
         raise HTTPException(status_code=404, detail="演员不存在")
 
-    # MovieActor 关联表在所有模块均为空，改用 movie.actor 文本 LIKE 匹配
+    # 关联表 ∪ token 边界 LIKE（见 actor_movie_ids_condition 文档）
     result = await session.execute(
         select(Movie.file_path)
         .where(
-            Movie.actor.like(f"%{actor.name}%"),
+            actor_movie_ids_condition(module, actor.name, movie_cls=Movie),
             Movie.file_path.isnot(None),
             Movie.file_path != "",
         )

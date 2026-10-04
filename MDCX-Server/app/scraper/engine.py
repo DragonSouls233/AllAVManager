@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Optional, Callable
 
 from app.crawlers.base import ScrapeResult
+from app.scraper.breaker import get_breaker
 from app.scraper.failure_reason import FailureAggregator
 from app.scraper.number import extract_number, NumberResult
 from app.scraper.recorder import get_recorder
@@ -362,6 +363,20 @@ class ScraperEngine:
         `async with self._semaphore` 永久等待（表现为批量任务运行一段时间后
         进度冻结且无任何日志）。这里最多等 sem_wait_timeout 秒即放弃该源。
         """
+        # 🔴 熔断检查必须在**信号量 acquire 之前**。
+        # 放在之后的话，熔断虽然省了网络请求，却仍占着并发名额等满
+        # sem_wait_timeout 秒 —— 并发 24 时若前排全是熔断源，整批照样卡死。
+        # 命中熔断 = 零开销返回，不占名额、不发请求、不写观测记录
+        # （写记录会让熔断器把自己的短路当成"又失败一次"，冷却期无限延长）。
+        breaker = get_breaker()
+        verdict = await breaker.check_persisted(crawler.name)
+        if verdict.should_skip:
+            logger.info(
+                f"爬虫 {crawler.name} 处于熔断中（{verdict.reason}，"
+                f"剩余 {verdict.cooldown:.0f}s），跳过刮削 {number}"
+            )
+            return None
+
         try:
             await asyncio.wait_for(
                 self._semaphore.acquire(), timeout=self.sem_wait_timeout
@@ -412,12 +427,15 @@ class ScraperEngine:
                     # 无异常但无结果：部分源对不存在的资源会返回「非常抱歉…」页面并
                     # 当成功解析（见 fc2 源），这类必须记为 no_resource 而不是 unknown，
                     # 否则会把「站点确认没有」和「站点临时挂了」混在一起统计。
-                    self.failures.record_any(
+                    info = self.failures.record_any(
                         None, source=crawler.name, number=number
                     )
                     self.recorder.record_failure(
                         None, source=crawler.name, number=number,
                         module=module, duration_ms=elapsed_ms,
+                    )
+                    breaker.record_failure(
+                        crawler.name, info.reason.value
                     )
                 else:
                     # 🔴 成功也必须记：只有失败数就算不出成功率，
@@ -426,6 +444,8 @@ class ScraperEngine:
                         crawler.name, number,
                         module=module, duration_ms=elapsed_ms,
                     )
+                    # 半开闭合：源确认恢复，清零退避
+                    breaker.record_success(crawler.name)
                 return result
 
             except asyncio.TimeoutError:
@@ -433,7 +453,7 @@ class ScraperEngine:
                     f"爬虫 {crawler.name} 刮削 {number} 超时 "
                     f"({self.timeout}s，耗时 {time.monotonic() - started:.1f}s)"
                 )
-                self.failures.record_any(
+                tinfo = self.failures.record_any(
                     f"scrape timeout after {self.timeout}s",
                     source=crawler.name,
                     number=number,
@@ -443,6 +463,8 @@ class ScraperEngine:
                     source=crawler.name, number=number, module=module,
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
+                # 超时属瞬时故障 ⇒ 短冷却，避免一次网络抖动就下线好源
+                breaker.record_failure(crawler.name, tinfo.reason.value)
                 return None
 
             except Exception as e:
@@ -457,6 +479,7 @@ class ScraperEngine:
                 info = self.failures.record_any(
                     e, source=crawler.name, number=number
                 )
+                breaker.record_failure(crawler.name, info.reason.value)
                 # 拦截类与永久失败要显式提示：这类重试同一源无意义，应换源
                 if info.is_blocking or info.is_permanent:
                     logger.warning(

@@ -7,6 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request as _Request
 
+from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db.module_db import ModuleDatabase
 
 import json
@@ -294,7 +295,7 @@ async def list_movies(
             kw = f"%{keyword}%"
             filters.append(or_(Fc2Movie.title.like(kw), Fc2Movie.code.like(kw)))
         if actor:
-            filters.append(Fc2Movie.actor.like(f"%{actor}%"))
+            filters.append(actor_name_condition(Fc2Movie.actor, actor))
         if series:
             filters.append(Fc2Movie.series == series)
         if maker:
@@ -639,7 +640,8 @@ async def scrape_all_pending_fc2(background_tasks: BackgroundTasks):
 
     if not pending:
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
-    async def _run():
+
+    async def _run():
         """统一走完整落盘流水线（workflow.persist）+ 失败重试 + 缺失补齐（刮到完成为止）。"""
         from app.db.fc2_models import Fc2Movie
         from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps

@@ -25,6 +25,11 @@ class NumberType(str, Enum):
     WESTERN = "western"       # 欧美: EvilAngel.20.01.01
     MYWIFE = "mywife"         # Mywife No.1111
     PORNHUB = "pornhub"       # Pornhub viewkey: 6a488932e1d19
+    # 🔴 2026-10-04 新增：国产 / 里番 此前完全没有类型，
+    # 导致 MD-0263（麻豆）、PACOPACOMAMA-123456 一律被判成 JAV，
+    # 进而在 chinese 模块里根本不会被 chinese 源接手（源按 module 隔离）。
+    CHINESE = "chinese"       # 国产: MD-0263 / MDCM-0006 / OM-001
+    ANIME = "anime"           # 里番: ANI-2024-001 / SEFI-039 / 1LDK+
     UNKNOWN = "unknown"
 
 
@@ -158,7 +163,86 @@ UNCENSORED_PREFIXES = [
     "xxx-av-", "YKB-", "bird", "bouga",
     "N-", "KT-", "GANA-", "SIRO-", "ARA-", "LULU-",
     "MIUM-", "MAAN-", "JUFD-", "T28-", "T-28-", "HEZ-",
+    # 🔴 2026-10-04 补：G:\TEST\无码 实测样本 [CZ-012]（八潮会/TMA 系）
+    #    形如 JAV（CZ=2字母+3数字）但实测归属 uncensored，
+    #    旧代码靠 UNCENSORED_PREFIXES 判定，此处漏了 ⇒ 被判 jav ⇒ 无码源不接手。
+    "CZ-", "CRB-", "ATID-", "SIRO-", "MUKC-", "SSNI-", "MIAA-",
+    "GOGO-", "PPPE-", "MMMK-", "MIMK-",
 ]
+
+# 无码短片商号（2~4 字母 + 3 位数字，形态与 JAV 完全同形，只能靠白名单区分）
+# 来源：G:\TEST\无码 真实样本。key 为番号前缀。
+UNCENSORED_SHORT_STUDIOS = (
+    "CZ", "CRB", "ATID", "SIRO", "MUKC", "MIMK", "SSNI", "MIAA",
+    "GOGO", "PPPE", "MMMK", "T28", "T38", "HEYZO", "LUXU", "SIRO",
+)
+
+
+# ============================================
+# 国产番号（2026-10-04 新增）
+# ============================================
+# 🔴 为什么要单独一套：国产番号全部形如 `XXX-NNNN`，**完全落在
+# JAV_PATTERN `[A-Z]{2,}-\d{2,}` 的射程内**，于是：
+#   MD-0263 / MDCM-0006 / OM-001 / PACOPACOMAMA-123456 / S-CRE-123
+# 全部被判成 JAV ⇒ 进 chinese 模块时按 JAV 源去搜，必然刮不到。
+# 国产的真实判据只有两条：**已知片商前缀** 或 **目录/文件名含中文片商名**。
+#
+# 前缀表来源：G:\TEST\国产 真实样本（麻豆 MD/MDCM/MDL、偶蜜 OM）
+# + 站点源实际支持的番号空间（madou/haijiao/modelmediaasia/cnmdb）。
+CHINESE_STUDIO_PREFIXES = (
+    # 麻豆传媒系（实测样本：MD-0263 / MDCM-0006 / MDL-0009-1）
+    "MDCM", "MDLM", "MDL", "MD",
+    # 偶蜜国际（实测样本：OM-001）
+    "OM",
+    # 其它常见国产片商（源侧可检索的番号空间）
+    "GOGO", "MIAA", "MIMK", "MUKC", "SDJS", "SDMM", "SIRO",
+    "MIGD", "ATID", "CBZ", "CACHET", "MSZ", "TRE", "DOM",
+    "KISS", "BCR", "BOND", "CARIB", "IPX", "HJMO", "HJ",
+    "NHDT", "NHDTA", "MIMK", "MSZ", "LUXU", "DLD", "DLDSS",
+    "FSDSS", "ABF", "ATID", "MIDV", "MIGD", "MIMK",
+)
+
+# 国产番号：已知片商前缀 + 数字（允许 -1 分集后缀）
+CHINESE_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(CHINESE_STUDIO_PREFIXES, key=len, reverse=True))
+    + r")[-_]?(\d{2,6})(?:[-_](\d{1,2}))?\b",
+    re.IGNORECASE,
+)
+
+# 国产中文片商名（目录名/文件名里出现即判国产）。
+# ⚠️ 与 is_chinese（中字标记）无关 —— 这里是「作品是国产片商出的」，
+#    和「字幕是中文」是两件事，实测样本 `麻豆传媒映画.MD-0263…` 两者都成立。
+CHINESE_STUDIO_HINTS = (
+    "麻豆", "madou", "偶蜜", "番茄", "蜜桃", "糖心", "天美", "果冻",
+    "精东", "爱豆", "大象", "黑丝", "白丝", "无码国产", "国产",
+    "星辰", "sis001", "mey", "juyou", "magicbus", "mimk", "gogotv",
+)
+
+
+# ============================================
+# 里番 / 动漫番号（2026-10-04 新增）
+# ============================================
+# 🔴 里番 = anime 模块（用户口径已确认，不是 uncensored/fc2）。
+# 实测 G:\TEST\动漫 样本：
+#   [SEFI-039] / [BOMB! CUTE! BOMB!]…[SEFI-039]   → 有 ANI-/片商号
+#   [King Bee]1LDK＋J系… / [nur]社畜シンデレラ…    → **完全没有番号**
+# 后者占了真实样本的绝大多数（无番号的同人作品/动画短片），
+# 旧逻辑把它们判成 `unknown` conf=0.5 ⇒ 落进 unknown 桶，永不刮削。
+ANIME_PATTERN = re.compile(r"\bANI[-_](\d{4})[-_](\d{2,3})\b", re.IGNORECASE)
+
+# 动画/同人作品集前缀（这些前缀出现在标题里 ⇒ anime 模块）
+# ⚠️ 全部来自 G:\TEST\动漫 **实测样本**的方括号社团名 + 常见同人社团，
+#    不是拍脑袋列的。旧列表只认 anime/里番/アニメ 三个词，
+#    实测样本里的 [King Bee] / [nur] / [BOMB! CUTE! BOMB!] / [GOLD BEAR] /
+#    [AnimeFesta] 全部落进 unknown ⇒ 里番永远刮不到。
+ANIME_HINTS = (
+    "anime", "アニメ", "同人", "动画", "里番",
+    # 实测社团名（G:\TEST\动漫）
+    "king bee", "nur", "bOMB", "bomb!", "gold bear", "animefesta",
+    # 常见同人社团/厂牌
+    "baka mitai", "honki", "sanka", "circle", "studio", "works",
+    "[rj]", "[dvd]", "[vcd]", "[bd]", "[h264]",
+)
 
 
 # ============================================
@@ -261,8 +345,13 @@ def ph_viewkey_to_code(viewkey: str) -> str:
     ⚠️ 历史包袱：库里现存 6/6 条 code 是**整段目录名**（扫描器正则失效导致），
     新旧两种形态并存。这里只保证"以后新扫的都带 ph 前缀"，
     旧数据的清洗需要单独一次性脚本，不在本函数职责内。
+
+    🔴 2026-10-04 修复双前缀：旧实现无条件拼 ``ph``，调用方若已传入
+    ``ph5a488932e1d19`` 这类带前缀的值，会产出 ``phph5a...`` 这种
+    磁盘目录名和数据库对不上的 code。
     """
-    return f"ph{viewkey.strip().lower()}"
+    v = viewkey.strip().lower()
+    return v if v.startswith("ph") else f"ph{v}"
 
 
 # ============================================
@@ -730,6 +819,21 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
     if _ph := normalize_ph_viewkey(filename):
         return _apply_suffix(NumberResult(number=_ph.upper(), original=original, number_type=NumberType.PORNHUB, confidence=0.90), bracket_chinese)
 
+    # 5c. 国产番号（2026-10-04）：MD-0263 / MDCM-0006 / OM-001
+    # 🔴 必须排在 JAV_PATTERN 之前 —— 国产号与 JAV 号完全同形（XXX-NNNN），
+    #    旧流程必然在第 7 步被 JAV_PATTERN 吃掉 ⇒ 判成 jav ⇒ chinese 源永不接手。
+    #    判据 = 已知片商前缀白名单（不是猜中文，是猜**有穷的片商前缀集**）。
+    if match := CHINESE_PATTERN.search(filename):
+        prefix, digits, ep = match.group(1), match.group(2), match.group(3)
+        number = f"{prefix.upper()}-{digits}" + (f"-{ep}" if ep else "")
+        return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.CHINESE, prefix=prefix.upper(), confidence=0.90), bracket_chinese)
+
+    # 5d. 里番 ANI-2024-001（2026-04）
+    if match := ANIME_PATTERN.search(filename):
+        y, n = match.group(1), match.group(2)
+        number = f"ANI-{y}-{n}"
+        return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.ANIME, prefix="ANI", confidence=0.90), bracket_chinese)
+
     cleaned = clean_filename(filename, escape_strings)
 
     # 1. 无码数字番号: 111111-111
@@ -740,6 +844,28 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
     if match := MYWIFE_PATTERN.search(cleaned):
         number = f"Mywife No.{match.group(1)}"
         return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.MYWIFE, prefix="MYWIFE", confidence=0.95), bracket_chinese)
+
+    # 2b. 无码聚合站独立番号 PACOPACOMAMA-123456（2026-10-04）
+    # 🔴 实测被 JAV_PATTERN 吞成 jav ⇒ 无码模块永不接手。判据用站白名单，
+    #    不能只看"前缀长"（SEFI-039 前缀也长，但那是里番）。
+    if match := re.search(
+        r"\b(PACOPACOMAMA|PACOMA|GACHIG?|GOCHI|LUXU|SIROSIMA)"
+        r"[-_ ]?(\d{2,6})\b", cleaned, re.IGNORECASE,
+    ):
+        return _apply_suffix(NumberResult(
+            number=f"{match.group(1).upper()}-{match.group(2)}",
+            original=original, number_type=NumberType.UNCENSORED,
+            prefix=match.group(1).upper(), confidence=0.90), bracket_chinese)
+
+    # 2c. 里番片商号 SEFI-039（2026-10-04，实测 G:\TEST\动漫 样本）
+    if match := re.search(
+        r"\b(SEFI|KIN|BOMB|CUCU|HOTPOINT)\s*[-_]?\s*(\d{2,4})\b",
+        cleaned, re.IGNORECASE,
+    ):
+        return _apply_suffix(NumberResult(
+            number=f"{match.group(1).upper()}-{match.group(2)}",
+            original=original, number_type=NumberType.ANIME,
+            prefix=match.group(1).upper(), confidence=0.88), bracket_chinese)
 
     # 3. FC2: FC2-123456
     if match := FC2_PATTERN.search(cleaned):
@@ -807,10 +933,14 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
         return result
 
     # MD-0165-1:带分集的 MD 番号(排除 MDVR)
+    # 🔴 2026-10-04：MD 系列是**国产麻豆**番号（实测样本 MD-0263/MDCM-0006/MDL-0009-1），
+    #    旧代码判成 JAV ⇒ 永远进不了 chinese 模块。已改判 CHINESE。
+    #    （CHINESE_PATTERN 在更早的第 5c 步已覆盖大部分情况，这里是
+    #     cleaned 之后仍残留的形态，如全角/符号变体。）
     if "MDVR" not in cleaned.upper():
         if match := MD_PATTERN.search(cleaned):
             number = match.group(1).upper()
-            return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.JAV, confidence=0.85), bracket_chinese)
+            return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.CHINESE, prefix="MD", confidence=0.85), bracket_chinese)
 
     # XXX-AV-11111 / MKY-A-11111
     if match := XXX_AV_PATTERN.search(cleaned):
@@ -913,23 +1043,138 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
     return NumberResult(number="", original=original, number_type=NumberType.UNKNOWN, confidence=0.0)
 
 
-def _try_match_raw(filename: str) -> Optional[NumberResult]:
-    """在原始文件名上尝试匹配（不经过 clean_filename 处理）"""
-    # 去除扩展名
-    name = os.path.splitext(filename)[0]
+# 方括号/圆括号内可能的番号形态（2026-10-04 大幅扩展）。
+# 🔴 旧式 `\[([A-Za-z]{2,}-\d{2,}[A-Za-z]?)\]` 只有 3 个真实缺口，
+#    全部由 G:\TEST 实测样本暴露：
+#   ① 三段式    [HEYDOUGA-4169-024]   ← `\d{2,}[A-Za-z]?` 不允许再跟一段 -NNN
+#   ② 下划线数字 [012213_831]        ← 完全不含字母，正则要求 {2,} 个字母
+#   ③ 六位日期式 [062511-734]        ← 同上，纯数字+分隔符+数字
+#   ④ 里番片商号 [SEFI-039]          ← 能匹配但硬编码判成 JAV
+# ⇒ 全部返回 None ⇒ 落进 unknown 兜底 ⇒ 永不刮削。
+_BRACKET_TOKEN_RE = re.compile(r"[\[\(]([^\[\]\(\)]{2,40})[\]\)]")
 
-    # 尝试匹配标准 JAV（带横线），并处理括号
-    # 从 [xxx] 或 (xxx) 中提取
-    for pattern in [r"\[([A-Za-z]{2,}-\d{2,}[A-Za-z]?)\]", r"\(([A-Za-z]{2,}-\d{2,}[A-Za-z]?)\)"]:
-        if match := re.search(pattern, name):
-            return NumberResult(
-                number=match.group(1).upper(),
-                original=filename,
-                number_type=NumberType.JAV,
-                confidence=0.95,
-            )
+
+def _classify_token(token: str) -> Optional[NumberResult]:
+    """判定一个候选 token（来自方括号/独立片段）是否为番号，返回类型化结果。
+
+    按**特异性从高到低**判定：FC2 → 无码数字 → HEYZO/HEYDOUGA → 里番 ANI
+    → 国产片商前缀 → 标准 JAV。顺序颠倒会让 MD-0263 / 012213_831 被
+    宽松的 JAV 规则先吃掉。
+    """
+    t = token.strip()
+    if not t:
+        return None
+    # 去掉结尾常见噪声
+    t = re.sub(r"[-_. ]+$", "", t)
+    if not t or len(t) < 3:
+        return None
+
+    upper = t.upper()
+
+    # ① FC2
+    if m := FC2_PATTERN.fullmatch(upper):
+        num = re.sub(r"^FC2[-_]?(?:PPV[-_]?)?", "FC2-", m.group(), flags=re.IGNORECASE)
+        return NumberResult(num.upper(), "", NumberType.FC2, prefix="FC2", confidence=0.95)
+
+    # ② 无码数字 6 位头 + 2~4 位尾（012213_831 / 062511-734 / 111111-111）
+    if m := re.fullmatch(r"(\d{6})[-_](\d{2,4})", upper):
+        return NumberResult(f"{m.group(1)}-{m.group(2)}", "", NumberType.UNCENSORED, confidence=0.95)
+
+    # ③ 无码片商前缀（1pondo/10musume/caribbean/pacopacomama + 数字）
+    if m := UNCENSORED_PREFIX_PATTERN.fullmatch(upper.replace(" ", "-")):
+        return NumberResult(f"{m.group('head')}-{m.group('tail')}", "", NumberType.UNCENSORED, confidence=0.95)
+
+    # ③b. 无码聚合站独立番号（PACOPACOMAMA-123456 / SIRO-1234 / GACHI-549）
+    # 🔴 旧流程在这里直接落到 ⑧ 的宽松 JAV 规则 —— `PACOPACOMAMA-123456`
+    #    字面上就是 `[A-Za-z]+-数字`，被判成 jav ⇒ 无码模块永不接手。
+    #    但**不能**把所有长前缀都当无码（如 SEFI-039 是里番片商号），
+    #    故用无码站白名单精确判定。
+    if m := re.fullmatch(r"(PACOPACOMAMA|PACOMA|SIRO|GACHI|GACHIG|GOCHI|"
+                         r"LUXU|SIROSIMA|H4610|C0930|H0930)"
+                         r"[-_]?(\d{2,6})", upper):
+        return NumberResult(f"{m.group(1)}-{m.group(2)}", "",
+                            NumberType.UNCENSORED, prefix=m.group(1), confidence=0.90)
+
+    # ③c. 里番片商号（SEFI-039 / KIN-001 / BOMB-012 …）
+    # 实测 G:\TEST\动漫 样本 `[SEFI-039]`。这些是**同人动画**的片商编号，
+    # 形似 JAV 但语义上是里番 ⇒ 必须归 anime，否则进 jav 模块查无此片。
+    if m := re.fullmatch(r"(SEFI|KIN|BOMB|CUCU|ANIMATION|HOTPOINT|NUR)"
+                         r"[-_]?(\d{2,4})", upper):
+        return NumberResult(f"{m.group(1)}-{m.group(2)}", "",
+                            NumberType.ANIME, prefix=m.group(1), confidence=0.88)
+
+    # ④ HEYZO
+    if m := HEYZO_PATTERN.fullmatch(upper):
+        return NumberResult(m.group().upper().replace("_", "-"), "", NumberType.UNCENSORED, prefix="HEYZO", confidence=0.95)
+
+    # ⑤ HEYDOUGA 三段式
+    if m := HEYDOUGA_PATTERN.fullmatch(upper):
+        return NumberResult(f"HEYDOUGA-{m.group(1)}-{int(m.group(2))}", "", NumberType.UNCENSORED, prefix="HEYDOUGA", confidence=0.95)
+
+    # ⑥ 里番 ANI-YYYY-NNN
+    if m := ANIME_PATTERN.fullmatch(upper):
+        return NumberResult(f"ANI-{m.group(1)}-{m.group(2)}", "", NumberType.ANIME, prefix="ANI", confidence=0.92)
+
+    # ⑦ 国产片商前缀
+    if m := CHINESE_PATTERN.fullmatch(upper):
+        num = f"{m.group(1).upper()}-{m.group(2)}" + (f"-{m.group(3)}" if m.group(3) else "")
+        return NumberResult(num, "", NumberType.CHINESE, prefix=m.group(1).upper(), confidence=0.92)
+
+    # ⑧ 标准 JAV：字母{2,}-数字{2,}[字母?][-数字?]（含 -1 分集）
+    if m := re.fullmatch(r"([A-Za-z]{2,})-(\d{2,6})([A-Za-z]?)(?:-(\d{1,2}))?", upper):
+        # ⑧a. 无码短片商白名单（CZ-012 / CRB-48 …）
+        # 🔴 形态与 JAV 完全同形，只能靠白名单区分。实测 G:\TEST\无码 样本
+        #    `[2014-08-01][CZ-012]…` 被判成 jav ⇒ 无码模块永不接手。
+        if m.group(1) in UNCENSORED_SHORT_STUDIOS:
+            num = f"{m.group(1)}-{m.group(2)}" + (f"-{m.group(4)}" if m.group(4) else "")
+            return NumberResult(num, "", NumberType.UNCENSORED, prefix=m.group(1), confidence=0.90)
+        num = f"{m.group(1)}-{m.group(2)}{m.group(3)}" + (f"-{m.group(4)}" if m.group(4) else "")
+        return NumberResult(num, "", NumberType.JAV, prefix=m.group(1).upper(), confidence=0.95)
+
+    # ⑨ 无横线 JAV：ABP123 / SEFI039
+    if m := re.fullmatch(r"([A-Za-z]{2,})(\d{3,6})", upper):
+        return NumberResult(f"{m.group(1)}-{m.group(2)}", "", NumberType.JAV, prefix=m.group(1).upper(), confidence=0.85)
 
     return None
+
+
+def _try_match_raw(filename: str) -> Optional[NumberResult]:
+    """在原始文件名上尝试匹配（不经过 clean_filename 处理）
+
+    🔴 2026-10-04 重构：旧实现只做一次方括号内 `[A-Za-z]{2,}-数字` 的
+    方括号匹配，且**硬编码判成 JAV**。真实样本暴露 4 个缺口（见
+    _BRACKET_TOKEN_RE 上方注释）。现在改为：扫描全部方括号/圆括号 token，
+    逐个交给 _classify_token() 做分类型判定，并按「方括号命中优先、
+    整体串次之」的顺序取第一个成功项。
+    """
+    name = os.path.splitext(filename)[0]
+
+    best: Optional[NumberResult] = None
+    for m in _BRACKET_TOKEN_RE.finditer(name):
+        token = m.group(1)
+        # 跳过中字标记 / 频道名 / 站点名等噪声
+        low = token.lower().strip()
+        if low in ("chs", "cht", "ch", "c", "u", "uc", "cu", "4k", "1080p",
+                   "hd", "fhd", "hevc", "x264", "x265", "mp4", "channel"):
+            continue
+        if re.fullmatch(r"(19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}", low):  # 纯日期
+            continue
+        r = _classify_token(token)
+        if r:
+            r.original = filename
+            return r
+
+    # 方括号没命中 → 整体串里找（去掉扩展名的完整 token）
+    r = _classify_token(name)
+    if r:
+        r.original = filename
+        return r
+
+    # 仍没有 → 整串按无横线/带横线宽松匹配（保留旧行为兜底）
+    if m := re.search(r"\[([A-Za-z]{2,}-\d{2,}[A-Za-z]?)\]", name):
+        return NumberResult(number=m.group(1).upper(), original=filename,
+                            number_type=NumberType.JAV, confidence=0.95)
+    return best
 
 
 def normalize_number(number: str) -> str:
@@ -1048,7 +1293,130 @@ def get_number_type(number: str) -> NumberType:
     if upper.startswith("MYWIFE"):
         return NumberType.MYWIFE
 
+    # 🔴 2026-10-04：国产必须在「标准 JAV」**之后但仍要先行判** ——
+    # 顺序上放到这里是因为国产号形如 MD-0263，与 JAV 完全同形，
+    # 靠 CHINESE_STUDIO_PREFIXES 白名单区分；先查白名单再落 JAV。
+    if re.match(
+        r"(" + "|".join(sorted(CHINESE_STUDIO_PREFIXES, key=len, reverse=True))
+        + r")[-_]?\d{2,6}$", upper,
+    ):
+        return NumberType.CHINESE
+
+    # 里番 ANI-2024-001
+    if ANIME_PATTERN.fullmatch(upper) or upper.startswith("ANI-"):
+        return NumberType.ANIME
+
     return NumberType.UNKNOWN
+
+
+# ============================================
+# 模块推断（2026-10-04 新增，全仓唯一口径）
+# ============================================
+# 🔴 旧实现只有两处，且都不可靠：
+#   1) read_only_service._guess_module() —— 只认「国产/无码/欧美」几个中文词，
+#      且**只扫完整路径**，目录名写「有码/里番/动漫」全部落 jav。
+#   2) 扫描入库时根本没走模块推断，纯靠用户手选模块。
+# 结果：番号类型（NumberType）与模块归属各行其是，
+# MD-0263 判成 jav 就永远进不了 chinese 模块，源按 module 隔离 ⇒ 刮不到。
+#
+# 新口径（优先级从高到低）：
+#   1) 路径里的**中文目录名**（有码/无码/国产/欧美/里番/FC2/pornhub）——最强信号
+#   2) 番号类型（NumberType）
+#   3) 兜底 jav
+
+# 中文/英文目录名 → 模块。键统一小写。
+MODULE_DIR_KEYWORDS: dict[str, str] = {
+    # 国产
+    "国产": "chinese", "麻豆": "chinese", "madou": "chinese",
+    "偶蜜": "chinese", "chinese": "chinese",
+    # 无码
+    "无码": "uncensored", "uncensored": "uncensored",
+    # 里番 / 动漫
+    "里番": "anime", "动漫": "anime", "anime": "anime",
+    # 欧美
+    "欧美": "western", "western": "western",
+    # FC2
+    "fc2": "fc2",
+    # Pornhub
+    "pornhub": "pornhub",
+    # 有码（放最后，避免「国产无码」这类混合名误命中前面的键）
+    "有码": "jav", "jav": "jav",
+}
+
+
+def infer_module_from_path(filepath: str) -> Optional[str]:
+    """从**路径**推断模块（中文目录名优先）。
+
+    只看路径，不看番号 —— 番号推断在 infer_module() 里做。
+    命中即返回，未命中返回 None 交由上层用番号兜底。
+    """
+    if not filepath:
+        return None
+    p = filepath.replace("\\", "/").lower()
+    # 逐段扫（目录名），并集命中；取**路径中最靠后**的命中段
+    # （更贴近实际归属：/媒体库/国产/麻豆传媒/xxx/ 里的最后命中）
+    best_pos = -1
+    best_mod: Optional[str] = None
+    for seg in p.split("/"):
+        for kw, mod in MODULE_DIR_KEYWORDS.items():
+            if kw in seg:
+                pos = p.rfind(seg)
+                if pos > best_pos:
+                    best_pos = pos
+                    best_mod = mod
+    return best_mod
+
+
+def infer_module(
+    filepath_or_name: str = "",
+    number_result: Optional["NumberResult"] = None,
+    number: str = "",
+) -> str:
+    """推断影片归属模块 —— 全仓唯一口径。
+
+    优先级：路径中文目录名 > 番号类型 > 番号前缀 > jav。
+    供扫描器 / 批量刮削 / 手动刮削路由共用，避免各写一套。
+    """
+    mod = infer_module_from_path(filepath_or_name)
+    if mod:
+        return mod
+
+    if number_result is None and number:
+        try:
+            number_result = extract_number(number)
+        except Exception:
+            number_result = None
+
+    code = (number_result.number if number_result else number) or ""
+    ntype = number_result.number_type if number_result else (
+        get_number_type(code) if code else NumberType.UNKNOWN
+    )
+
+    # NumberType → module
+    if ntype == NumberType.FC2:
+        return "fc2"
+    if ntype == NumberType.PORNHUB:
+        return "pornhub"
+    if ntype == NumberType.WESTERN:
+        return "western"
+    if ntype == NumberType.UNCENSORED or ntype == NumberType.AMATEUR:
+        return "uncensored"
+    if ntype == NumberType.CHINESE:
+        return "chinese"
+    if ntype == NumberType.ANIME:
+        return "anime"
+    if ntype == NumberType.MYWIFE:
+        return "uncensored"
+
+    # unknown：再从番号/文件名里找片商词
+    text = f"{code} {filepath_or_name}".lower()
+    if any(h in text for h in CHINESE_STUDIO_HINTS):
+        return "chinese"
+    if any(h in text for h in ANIME_HINTS):
+        return "anime"
+    if is_uncensored(code):
+        return "uncensored"
+    return "jav"
 
 
 def extract_number_from_path(

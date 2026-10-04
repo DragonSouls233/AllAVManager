@@ -46,6 +46,58 @@ def _avid_key(code: str) -> str:
     return re.sub(r"[-_\s]", "", norm)
 
 
+#: 番号里不可能出现的字符（CJK / 日文假名 / 韩文 / 全角）。
+#: 真实库 839 个 code 里只有 2 个含 CJK，且都是 pornhub 的目录名误填
+#: （`_Channel__Anna_Cherry7__…__6a488932e1d19_`），属脏数据。
+_CODE_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u3000-\u303f\uff00-\uffef]")
+
+#: 日期式素人番号：`012213-831` / `012213831`（6 位日期 + 3 位序号）。
+#: 真实库 uncensored 模块 8 条实测样本全部符合此形态。
+_DATE_AVID_RE = re.compile(r"^\d{9}$")
+
+
+def _is_avid_shaped(code: str) -> bool:
+    """判断字符串是否长得像一个**番号**，而不是标题/路径/演员名。
+
+    🔴 2026-10-04 新增。番号投票有个结构性风险：它只数"几个源返回了同一个
+    字符串"。于是**任何被误填进 ``ScrapeResult.code`` 的脏值**，只要有 >=2 个源
+    同样脏，就能把正确的文件名番号投票改写掉。实测复现两种：
+
+      - 标题/CJK：2 个源都返回 ``【2024】年 美熟女`` ⇒ 1 票的 ``SSIS-018``
+        被改写成中文标题
+      - 裸数字：2 个源都只返回 ``3000``（厂商站常见，缺 ``HEYZO-`` 前缀）
+        ⇒ 规范番号 ``HEYZO-3000`` 被降级成 ``3000``
+
+    而**这不是假想**：pornhub 扫描器的回退分支（文件名无 viewkey 时用相对路径
+    当 code）产出的是 83~139 字符的路径串，库里已有 6 条这样的脏记录。
+
+    规则刻意保守 —— 只排除"确定不是番号"的形态，避免误杀真实番号：
+      - 含 CJK / 假名 / 韩文 / 全角  → 一定是标题或中文目录名
+      - 归一后长度 > 40            → 真实番号最长 23 字符（`TOKYO-HOT N2040` 之类），
+                                      超过必是标题/路径
+
+    ⚠️⚠️ **不能简单要求"含 ASCII 字母"**。无码片的**日期式素人番号**
+    （`012213-831` / `041207-923`）归一后是纯数字，实测真实库 uncensored 模块
+    有 8 条。第一版用 `if not re.search(r"[A-Za-z]", s): return False` 把它们
+    **全部误杀** —— 被自己的验收脚本 [H] 段当场抓住。
+    纯数字是否合法取决于**形态**：
+      - ``6 位日期 + 3 位序号``（`012213-831` / `012213831`）→ 合法素人番号
+      - 其他纯数字（`3000`、`9999`）→ 是厂商站的 movie_id / 降级形态，
+        已在 :func:`_vote_avid` 里用"裸数字不降级完整番号"单独处理
+    """
+    if not code:
+        return False
+    s = str(code).strip()
+    if not s or _CODE_CJK_RE.search(s):
+        return False
+    if len(_avid_key(s)) > 40:
+        return False
+    if re.search(r"[A-Za-z]", s):
+        return True
+    # 纯数字：只接受日期式素人番号（YYMMDD-NNN / YYMMDDNNN）
+    return bool(_DATE_AVID_RE.match(_avid_key(s)))
+
+
 class UseJavDBCover(str, Enum):
     """JavDB 水印封面策略(借鉴 JavSP UseJavDBCover)
 
@@ -700,8 +752,17 @@ class ResultMerger:
         - 按出现次数投票,取票数最多的
         - 票数相同则按 source_priority 优先级决定
         - 1 票或全相同则用 fallback_code(文件名提取的)
+
+        🔴 2026-10-04 加形态保护。原实现只数"几个源返回了同一字符串"，
+        于是**任何被误填进 code 的脏值只要有 >=2 票就能改写正确番号**。实测两种：
+          - 标题/CJK：2 源返回 ``【2024】年 美熟女`` ⇒ ``SSIS-018`` 被改写成中文标题
+          - 裸数字：2 源只返回 ``3000`` ⇒ ``HEYZO-3000`` 被降级成 ``3000``
+        （裸数字来自厂商站只给 movie_id 不给番号前缀，是真实常见形态。）
+        现在进入投票的 code 必须通过 :func:`_is_avid_shaped`；
+        裸数字胜出时若 fallback 带前缀，则保持 fallback（不降级）。
         """
         votes: dict[str, list[str]] = {}  # avid -> [source1, source2, ...]
+        rejected: list[str] = []  # "source:code" 被形态保护拒掉
 
         for result in sorted_results:
             avid = result.code
@@ -710,8 +771,17 @@ class ResultMerger:
             # 番号等价归一（走 _avid_key，含 FC2/PPV 前缀处理），
             # 不能再用"只去分隔符"的写法 —— 那会把 FC2-1234567 与
             # FC2-PPV-1234567 判成两个番号，>=2 票就能把规范番号改写掉。
+            if not _is_avid_shaped(avid):
+                rejected.append(f"{result.source}:{str(avid)[:50]}")
+                continue
             normalized = _avid_key(avid)
             votes.setdefault(normalized, []).append(result.source)
+
+        if rejected:
+            logger.debug(
+                "番号投票: 形态保护拒掉 %d 条疑似脏 code（不计入票数）: %s",
+                len(rejected), rejected,
+            )
 
         if not votes:
             return fallback_code
@@ -727,6 +797,18 @@ class ResultMerger:
             return fallback_code
 
         top_avid, top_voters = sorted_avids[0]
+
+        # 裸数字降级保护：厂商站常只给 movie_id（`3000`）而不带番号前缀
+        # （`HEYZO-3000`）。这类票数再多也不能把完整番号降级掉。
+        # ⚠️ 反向不拦：日期式素人番号 `012213-831` 归一后也是纯数字，
+        #    但它的 fallback 通常本身就是纯数字，条件不成立。
+        if top_avid.isdigit() and not _avid_key(fallback_code).isdigit():
+            logger.debug(
+                "番号投票: 胜出者 %r 是裸数字而 fallback %r 带前缀 ⇒ 保持 fallback",
+                top_avid, fallback_code,
+            )
+            return fallback_code
+
         # 仅当多数源(>=2 票)一致,且与文件名提取的番号不同时,才纠正
         normalized_fallback = _avid_key(fallback_code)
         if len(top_voters) >= 2 and top_avid != normalized_fallback:
@@ -738,12 +820,27 @@ class ResultMerger:
 
         return fallback_code
 
-    def _count_avid_votes(self, sorted_results: list[ScrapeResult]) -> dict[str, list[str]]:
-        """统计番号投票结果(用于调试日志)"""
+    def _count_avid_votes(self, sorted_results: list[ScrapeResult]) -> dict:
+        """统计番号投票结果(写入 raw_data["avid_vote"] 供排查)
+
+        🔴 2026-10-04 修正：原先直接用**原始 code** 分组，而
+        :meth:`_vote_avid` 用的是**归一后**的 ``_avid_key``。两者口径不一致
+        ⇒ 排查时看到的票数与实际投票依据对不上（实测 FC2 三源
+        ``FC2-1234567`` / ``FC2-PPV-1234567`` / ``fc2ppv1234567``：
+        实际是 1 组 3 票，统计却显示 3 组各 1 票）。
+        同时把被形态保护拒掉的脏值单列，便于定位是哪个源在污染番号。
+        """
         votes: dict[str, list[str]] = {}
+        rejected: list[str] = []
         for result in sorted_results:
-            if result.code:
-                votes.setdefault(result.code, []).append(result.source)
+            if not result.code:
+                continue
+            if not _is_avid_shaped(result.code):
+                rejected.append(f"{result.source}:{str(result.code)[:50]}")
+                continue
+            votes.setdefault(_avid_key(result.code), []).append(result.source)
+        if rejected:
+            votes["__rejected__"] = rejected
         return votes
 
     def _merge_covers(

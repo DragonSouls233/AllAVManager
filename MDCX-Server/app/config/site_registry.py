@@ -31,17 +31,20 @@ CHINESE_SITES = {
     # ---- 麻豆传媒系列（官方地址）----
     "madou": {
         "name": "麻豆传媒",
-        "primary": "https://madou.com",
+        # 🔴 2026-10-04 实测修正：原 primary 是 `https://madou.com`（不可达）。
+        #    真实可用的是 `https://www.madouqu.com`（71KB 完整 WordPress 站）。
+        "primary": "https://www.madouqu.com",
         "fallbacks": [
-            # 官方发布页（GitLab 持续更新）
-            "https://lwabe.com",              # 最新国内访问地址 2025-12-31
-            # 麻豆官方 APP 合作域���（从 mod.run 提取）
-            "https://d2marrs9oi8z8w.cloudfront.net",
-            # 历史备用域名（从 P1 PSP 提取）
-            "https://madouqu.sbs",
-            "https://madouqu.club",
+            "https://madou.club",
             "https://madouqu.cc",
             "https://madouqu.net",
+            # 官方发布页（GitLab 持续更新）
+            "https://lwabe.com",              # 最新国内访问地址 2025-12-31
+            # 麻豆官方 APP 合作域名（从 mod.run 提取）
+            "https://d2marrs9oi8z8w.cloudfront.net",
+            # 历史备用域名（从 P1 PSP 提取，实测多数已死）
+            "https://madouqu.sbs",
+            "https://madouqu.club",
             "https://madouqu.org",
         ],
         "type": "official",

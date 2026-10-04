@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request as _Request
 from sqlalchemy import func, select
 
+from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db.module_db import ModuleDatabase
 
 import os as _os
@@ -339,7 +340,7 @@ async def list_movies(
             kw = f"%{keyword}%"
             filters.append(or_(UncensoredMovie.title.like(kw), UncensoredMovie.code.like(kw)))
         if actor:
-            filters.append(UncensoredMovie.actor.like(f"%{actor}%"))
+            filters.append(actor_name_condition(UncensoredMovie.actor, actor))
         if series:
             filters.append(UncensoredMovie.series == series)
         if maker:
@@ -599,7 +600,8 @@ async def scrape_all_pending_uncensored(background_tasks: BackgroundTasks):
 
     if not pending:
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
-    async def _run():
+
+    async def _run():
         """统一走完整落盘流水线（workflow.persist）+ 失败重试 + 缺失补齐（刮到完成为止）。"""
         from app.db.uncensored_models import UncensoredMovie
         from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps

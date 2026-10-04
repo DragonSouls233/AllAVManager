@@ -89,18 +89,30 @@ def get_switchers_by_category(category: SiteCategory) -> dict[str, DomainSwitche
 # ============================================================
 
 def make_madouqu_switcher() -> DomainSwitcher:
-    """麻豆专用切换器（5+ 个备用域名，含官方地址）"""
+    """麻豆专用切换器。
+
+    🔴 2026-10-04 实测重排（`scripts/probe_ref_each.py` 一源一进程）：
+       **可用**（200 且是真页面）
+         www.madouqu.com   200 / 71294 B / 标题「麻豆区 - 麻豆传媒…」（唯一完整站）
+         madou.club        200 / 33258 B / 标题「麻豆社-专注国产剧情…」
+       **不可用**（DNS 不解析 或 522）
+         lwabe.com  ConnectError     madou.com        522
+         madouqu.sbs ConnectError     madouqu.net     ConnectError
+         madouqu.org ConnectError     madouqu.club     ConnectError
+       ⇒ 原候选列表把 5 个死域排在活域前面，DomainSwitcher 逐个试会先耗掉
+         一半超时预算才碰到能用的域名。已按实测结果重排：活域在前。
+    """
     return DomainSwitcher(
         name="madou",
         candidate_urls=[
-            "https://lwabe.com",              # 官方最新国内访问地址
-            "https://madou.com",
-            "https://madou.club",
-            "https://madouqu.sbs",
-            "https://madouqu.club",
-            "https://madouqu.cc",
-            "https://madouqu.net",
-            "https://madouqu.org",
+            "https://www.madouqu.com",     # 实测 200，完整站（首选）
+            "https://madou.club",          # 实测 200
+            "https://madouqu.cc",          # 实测 200（Loading…跳转页，兜底）
+            "https://madouqu.sbs",         # 实测 ConnectError
+            "https://madou.com",           # 实测 522
+            "https://madouqu.club",        # 实测 ConnectError
+            "https://madouqu.net",         # 实测 ConnectError
+            "https://madouqu.org",         # 实测 ConnectError
         ],
     )
 

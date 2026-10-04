@@ -9,6 +9,7 @@ NFO 解析器
 
 import json
 import logging
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -16,6 +17,10 @@ from pathlib import Path
 from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
+
+# 时长换算的唯一真相源在 app/utils/nfo_runtime.py（纯函数、无重依赖，
+# 扫描器与 importer 共用）。此处 re-export 保持向后兼容。
+from app.utils.nfo_runtime import parse_runtime_minutes  # noqa: E402,F401
 
 
 @dataclass
@@ -298,13 +303,10 @@ class NFOParser:
         if year_str:
             movie.year = int(year_str)
         
-        # 时长
+        # 时长（统一走 parse_runtime_minutes，支持 hh:mm:ss / mm:ss / "42分鍾" / 纯分钟）
         runtime_str = self._get_text(root, "runtime")
         if runtime_str:
-            import re
-            match = re.search(r'(\d+)', runtime_str)
-            if match:
-                movie.duration = int(match.group(1))
+            movie.duration = parse_runtime_minutes(runtime_str)
         
         # 制作商
         movie.studio = self._get_text(root, "studio")
@@ -352,9 +354,13 @@ class NFOParser:
             if data.get("year"):
                 movie.year = int(data["year"])
             
-            # 时长
+            # 时长（Kodev JSON 里可能是 "90"、"1:30:00" 或 90，统一走分钟换算）
             if data.get("duration") or data.get("runtime"):
-                movie.duration = int(data.get("duration") or data.get("runtime"))
+                raw_dur = data.get("duration") or data.get("runtime")
+                if isinstance(raw_dur, (int, float)):
+                    movie.duration = int(raw_dur) or None
+                else:
+                    movie.duration = parse_runtime_minutes(str(raw_dur))
             
             # 制作商
             movie.studio = data.get("studio")

@@ -170,80 +170,29 @@ class ChineseScanner(BaseScanner):
             await session.commit()
 
             # 写入 movie_actors 关联表（扫描后补写）
-            try:
-                from app.db.chinese_models import MovieActor as CMovieActor
-                for actor_name in result["actors"]:
-                    ex_a = await session.execute(select(ChineseActor).where(ChineseActor.name == actor_name))
-                    db_actor = ex_a.scalar_one_or_none()
-                    if not db_actor:
-                        continue
-                    # 查找 extracted_actor 包含此演员的所有影片
-                    movies_stmt = select(ChineseMovie.id).where(
-                        ChineseMovie.extracted_actor == actor_name
-                    )
-                    movie_ids = (await session.execute(movies_stmt)).scalars().all()
-                    for mid in movie_ids:
-                        existing = await session.scalar(
-                            select(CMovieActor).where(
-                                CMovieActor.movie_id == mid,
-                                CMovieActor.actor_id == db_actor.id
-                            )
-                        )
-                        if not existing:
-                            session.add(CMovieActor(movie_id=mid, actor_id=db_actor.id))
-                    # 处理多演员（逗号分隔）
-                    movies_multi = (await session.execute(
-                        select(ChineseMovie.id, ChineseMovie.extracted_actor).where(
-                            ChineseMovie.extracted_actor.contains(actor_name)
-                        )
-                    )).all()
-                    for mid, extracted in movies_multi:
-                        if not extracted:
-                            continue
-                        for other_name in extracted.split(","):
-                            other_name = other_name.strip()
-                            if not other_name or other_name == actor_name:
-                                continue
-                            ex_o = await session.execute(select(ChineseActor).where(ChineseActor.name == other_name))
-                            db_other = ex_o.scalar_one_or_none()
-                            if db_other:
-                                existing2 = await session.scalar(
-                                    select(CMovieActor).where(
-                                        CMovieActor.movie_id == mid,
-                                        CMovieActor.actor_id == db_other.id
-                                    )
-                                )
-                                if not existing2:
-                                    session.add(CMovieActor(movie_id=mid, actor_id=db_other.id))
-                await session.commit()
-            except Exception as assoc_err:
-                logger.warning(f"[chinese] 写入 actor 关联表失败: {assoc_err}")
+            # 2026-10-04：原实现是「对 result['actors'] 里的每个名字，
+            # 两次全表查询 + 逐条 exists 检查」的嵌套循环，且
+            #   - `extracted_actor == actor_name` 精确匹配漏掉逗号分隔的多演员影片
+            #     （多演员只在 contains 分支里被顺带处理，且依赖该演员已在 actors 表）；
+            #   - 每次 exists 检查都是一次 SELECT，演员数 × 影片数级放大。
+            # 改为统一走基类的关联表回填（按 (movie_id, actor_id) 唯一约束幂等），
+            # 在 session 关闭之后调用 —— 它自己开 session。
+            # 🔴 只在 `scan()` 里调一次（见 scan 末尾），不在每个目录调 ——
+            #    回填是**全模块**范围，多媒体目录下会重复扫全表。
         finally:
             await session.close()
 
         return result
 
     async def _update_actor_counts(self):
-        """更新演员表的 movie_count"""
-        from app.db.module_db import ModuleDatabase
-        from app.db.chinese_models import ChineseActor, ChineseMovie
-        from sqlalchemy import select, func
+        """更新演员表的 movie_count
 
-        db = ModuleDatabase.get_instance("chinese")
-        session = await db.get_session()
-        try:
-            actors = await session.execute(select(ChineseActor))
-            for actor_row in actors.scalars().all():
-                actor_name = actor_row.name
-                count = await session.scalar(
-                    select(func.count()).select_from(ChineseMovie).where(
-                        ChineseMovie.extracted_actor.like(f"%{actor_name}%")
-                    )
-                ) or 0
-                actor_row.movie_count = count
-            await session.commit()
-        finally:
-            await session.close()
+        2026-10-04：原实现逐演员跑 ``extracted_actor LIKE '%name%'``。
+        SQLite ``LIKE`` 默认大小写不敏感且做子串匹配，既会因大小写变体
+        重复虚增，也会把「梁佳芯」这类短名误匹配到无关影片文本上。
+        改为走基类的关联表回填 + 精确计数。
+        """
+        await self._sync_actor_links()
 
     def _get_folder_actors(self, file_path: Path, media_dir: Path) -> list[str]:
         """获取视频文件对应的文件夹演员名"""

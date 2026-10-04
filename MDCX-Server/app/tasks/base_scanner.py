@@ -392,6 +392,53 @@ class BaseScanner(ABC):
         """扫描媒体目录，返回扫描结果"""
         ...
 
+    # ------------------------------------------------------------------
+    # 演员关联表维护（2026-10-04 新增，供各扫描器统一调用）
+    # ------------------------------------------------------------------
+
+    async def _sync_actor_links(self) -> dict:
+        """把本模块 ``movies`` 演员文本列回填成 ``movie_actors`` 关联行。
+
+        放在基类而不是各扫描器里，是因为 4 个扫描器（jav / uncensored /
+        pornhub / chinese）原本各写一份 ``_update_actor_counts``，全部用
+        文本 ``LIKE '%name%'`` 统计 movie_count，而 SQLite 的 ``LIKE``
+        **默认大小写不敏感** ⇒ ``Ruth lee`` 与 ``Ruth Lee`` 互相虚增，
+        子串匹配还会把 ``Anna Cherry`` 算进 ``Anna Cherry7`` 的影片。
+
+        实测 7 个模块里 6 个的 ``movie_actors`` 为 0 行 ⇒
+        ``actors.movie_count`` 与"按演员查影片"都只能靠文本 LIKE 兜底
+        （``api/routes/actors.py`` 的注释里也写明了这一点）。
+
+        失败绝不中断扫描：演员关联是辅助数据。
+        """
+        try:
+            from app.db.module_db import ModuleDatabase
+            from app.db.movie_actor_sync import (
+                backfill_links_from_text,
+                recount_actor_movie_counts,
+            )
+
+            db = ModuleDatabase.get_instance(self.module_name)
+            async with db.session_scope() as session:
+                r = await backfill_links_from_text(
+                    session, self.module_name, recount=False,
+                )
+                await session.commit()
+                rc = await recount_actor_movie_counts(session, self.module_name)
+            logger.info(
+                f"[{self.module_name}] 演员关联回填: 扫描 {r['scanned']} 部，"
+                f"写入 {r['linked']} 条关联，{r['no_valid_name']} 部无有效演员名；"
+                f"重算 movie_count {rc['changed']}/{rc['actors']}"
+            )
+            return {"backfill": r, "recount": rc}
+        except Exception as e:
+            logger.warning(f"[{self.module_name}] 演员关联回填失败（不影响扫描）: {e}")
+            return {}
+
+    async def _count_actor_movies(self) -> int:
+        """按关联表精确统计 movie_count 已重算的演员数（供子类日志用）。"""
+        return 0
+
     def find_video_files(self, directory: Path) -> list[Path]:
         """递归查找目录下的所有视频文件"""
         videos = []

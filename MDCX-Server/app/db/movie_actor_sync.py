@@ -216,3 +216,221 @@ async def recount_actor_movie_counts(session, module: str) -> dict:
 def existing_actor_names(text: Optional[str]) -> list[str]:
     """兼容入口：从 movies.actor 文本列取名字列表。"""
     return split_actor_names(text)
+
+
+# ==========================================================================
+# 扫描器链路：文本列 → 关联表回填（2026-10-04 新增）
+# ==========================================================================
+
+#: 演员文本列候选，按"可信度从高到低"排列。
+#: - ``actor``：刮削写入的正式列（jav / uncensored / pornhub / western / anime / fc2）
+#: - ``extracted_actor``：chinese 扫描器从**目录名**推断的列
+#: - ``folder_based_actors``：chinese 的另一份目录推断副本
+#:
+#: 🔴 chinese 模块**三列并存**且 ``actor`` 全为 NULL（真实库实测 3/3 部都是
+#: NULL，只有 extracted_actor 有值）。所以不能"取第一个存在的列"——
+#: 必须按优先级把**所有非空的列都读出来合并**，否则 chinese 会静默扫到 0 部。
+_ACTOR_COLUMNS = ("actor", "extracted_actor", "folder_based_actors")
+
+
+def _actor_columns(MovieCls) -> list[str]:
+    """返回该模块实际存在、且按可信度排序的演员文本列。"""
+    have = {c.name for c in MovieCls.__table__.columns}
+    return [c for c in _ACTOR_COLUMNS if c in have]
+
+
+async def backfill_links_from_text(
+    session,
+    module: str,
+    *,
+    limit: Optional[int] = None,
+    recount: bool = False,
+) -> dict:
+    """把 ``movies`` 演员文本列整体回填成 ``movie_actors`` 关联行。
+
+    这是扫描器链路的补齐入口 —— 实测 7 个模块里 6 个的 ``movie_actors``
+    为 0 行：只有 chinese_scanner 写了关联表，jav / uncensored / pornhub
+    只写 ``movies.actor`` 文本 + ``actors`` 表，导致：
+
+    - ``actors.movie_count`` 只能用文本 ``LIKE '%name%'`` 统计；
+    - SQLite 的 ``LIKE`` **默认大小写不敏感** ⇒ ``Ruth lee`` 与 ``Ruth Lee``
+      被当成两个人，各虚增一次（实测 pornhub 库 id=12 / id=201 就是这么来的）；
+    - 子串匹配会把 ``Anna Cherry`` 也算进 ``Anna Cherry7`` 的影片。
+
+    关联表按 (movie_id, actor_id) 唯一约束写入，天然幂等，可重复执行。
+
+    Args:
+        limit: 最多处理多少部影片（调试用；``None`` = 全量）
+        recount: 是否顺带重算 ``movie_count``。全量回填时建议 False，
+            最后调一次 :func:`recount_actor_movie_counts` 即可（避免 N 次查询）。
+    """
+    from sqlalchemy import or_, select
+
+    from app.utils.module_helper import get_module_model
+
+    MovieCls = get_module_model(module, "movie")
+    cols = _actor_columns(MovieCls)
+    out = {
+        "module": module,
+        "columns": cols,
+        "scanned": 0,
+        "linked": 0,
+        "no_valid_name": 0,
+        "skipped_no_column": not cols,
+    }
+    if not cols:
+        return out
+
+    # 一条 WHERE 覆盖所有列（任一列非空即纳入），而不是逐列查再合并 ——
+    # 逐列查会让 chinese 这类多列模块的影片被重复处理。
+    where = or_(*[
+        or_(getattr(MovieCls, c).isnot(None), getattr(MovieCls, c) != "")
+        for c in cols
+    ])
+    stmt = select(
+        MovieCls.id, *[getattr(MovieCls, c) for c in cols]
+    ).where(where)
+    if limit:
+        stmt = stmt.limit(limit)
+    rows = (await session.execute(stmt)).all()
+    out["scanned"] = len(rows)
+
+    for row in rows:
+        movie_id = row[0]
+        # 合并所有列的名字：dedup 交给 split_actor_names（按 lower 去重）
+        names: list[str] = []
+        for raw in row[1:]:
+            if raw:
+                names.extend(split_actor_names(raw))
+        n = await sync_movie_actors(
+            session, module, movie_id, names,
+            source="backfill", recount=recount,
+        )
+        if n:
+            out["linked"] += n
+        else:
+            out["no_valid_name"] += 1
+
+    return out
+
+
+async def merge_actor_name_variants(
+    session,
+    module: str,
+    *,
+    dry_run: bool = True,
+) -> dict:
+    """合并仅大小写不同的演员行（``Ruth lee`` → ``Ruth Lee``）。
+
+    真因：``sync_movie_actors`` 只在**精确匹配失败**后才做一次
+    ``func.lower()`` 兜底查找，而扫描器走的是自己的 ``_sync_actors``，
+    用 ``WHERE name = :n`` 精确匹配 —— SQLite 的 ``=`` 对 TEXT 是
+    **大小写敏感**的，但两条链路的调用时机不同 ⇒ 同一个演员被插入两次
+    （``actors.name`` 上并没有 UNIQUE 约束拦得住）。
+
+    合并策略：保留 ``id`` 最小的行（先入库的通常信息更全），
+    把其余行的 ``movie_actors`` 关联改挂到保留行，再删掉多余行。
+    ``actor_tags`` / ``actor_tiers`` / ``actor_compare_sources`` 等
+    外键表也一并改挂，否则删行会留下悬挂引用。
+
+    ⚠️ 默认 ``dry_run=True``：这是**破坏性**操作（会 DELETE 演员行）。
+    """
+    from sqlalchemy import delete, select, update
+
+    from app.utils.module_helper import get_module_model
+
+    ActorCls = get_module_model(module, "actor")
+    out: dict = {
+        "module": module,
+        "dry_run": dry_run,
+        "groups": [],
+        "merged": 0,
+        "relinked": 0,
+    }
+
+    # 一次取回全部 (id, name)，在 Python 侧按 lower(name) 分组。
+    # 🔴 不写成 SQL 的 `GROUP BY lower(name)`：那样要再回查一次取
+    # 保留行，且 name 为 NULL/空串时语义容易踩坑。这里按万级数据量
+    # 一次全取完全可接受。
+    rows = (await session.execute(select(ActorCls.id, ActorCls.name))).all()
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for aid, name in rows:
+        if not name:
+            continue
+        groups.setdefault(str(name).strip().lower(), []).append((int(aid), str(name)))
+
+    dups = {k: v for k, v in groups.items() if len(v) > 1}
+    if not dups:
+        return out
+
+    MovieActorCls = get_module_model(module, "movie_actor")
+
+    # 需要改挂的外键表（不同模块表集不同，缺表就跳过）
+    fk_models = []
+    for kind in ("tag", "tier", "compare_source"):
+        try:
+            fk_models.append(get_module_model(module, kind))
+        except Exception:
+            continue
+
+    for _key, items in dups.items():
+        items.sort(key=lambda t: t[0])
+        keep_id, keep_name = items[0]
+        drop_ids = [aid for aid, _ in items[1:]]
+        out["groups"].append({
+            "keep": {"id": keep_id, "name": keep_name},
+            "drop": [{"id": i, "name": n} for i, n in items[1:]],
+        })
+        if dry_run:
+            continue
+
+        for did in drop_ids:
+            # 关联表改挂：目标 (movie_id, keep_id) 可能已存在 ⇒ 先查再决定插/删
+            mids = (
+                await session.execute(
+                    select(MovieActorCls.movie_id).where(
+                        MovieActorCls.actor_id == did
+                    )
+                )
+            ).scalars().all()
+            for mid in mids:
+                exists = (
+                    await session.execute(
+                        select(MovieActorCls).where(
+                            MovieActorCls.movie_id == mid,
+                            MovieActorCls.actor_id == keep_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if exists is None:
+                    session.add(MovieActorCls(movie_id=mid, actor_id=keep_id))
+                else:
+                    await session.execute(
+                        delete(MovieActorCls).where(
+                            MovieActorCls.movie_id == mid,
+                            MovieActorCls.actor_id == did,
+                        )
+                    )
+            await session.flush()
+            out["relinked"] += len(mids)
+
+            # 其他外键表同样改挂
+            for model in fk_models:
+                acol = getattr(model, "actor_id", None)
+                if acol is None:
+                    continue
+                try:
+                    await session.execute(
+                        update(model).where(acol == did).values(actor_id=keep_id)
+                    )
+                except Exception:
+                    # 唯一约束冲突（tag/tier 有 uq_actor_tag / uq_actor_tier）⇒ 删重复行
+                    try:
+                        await session.execute(delete(model).where(acol == did))
+                    except Exception:
+                        pass
+
+            await session.execute(delete(ActorCls).where(ActorCls.id == did))
+            out["merged"] += 1
+
+    return out

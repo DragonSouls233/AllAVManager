@@ -21,6 +21,7 @@ import os as _os
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request as _Request
 from fastapi.responses import FileResponse
 
+from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db.module_db import ModuleDatabase
 from app.services.pornhub_comparison import PornhubComparator, TitleNormalizer, LocalMediaScanner
 
@@ -74,13 +75,19 @@ async def _store_pornhub_actor_avatar(actor, profile_avatar_url: "str | None", a
 
 
 async def _recount_actor_movie_count(session, actor_name: str) -> int:
-    """按 movie.actor LIKE '%name%' 重算该演员作品数，与扫描口径一致，避免重复刮削累加。"""
+    """重算该演员作品数，与扫描口径一致，避免重复刮削累加。
+
+    2026-10-04：原实现是 `actor LIKE '%name%'`（注释明说"与扫描口径一致"
+    以对齐 `tasks/pornhub_scanner.py`），但扫描器已改为关联表精确计数，
+    这里还停在旧口径。且 LIKE 有两个实测错误：查 `Anna` 会命中 `Anna
+    Cherry7`；`Chechoman69` 与 `Chechoman6` 互相误命中。
+    """
     from app.db.pornhub_models import PornhubMovie
-    from sqlalchemy import select, func
+    from sqlalchemy import func
 
     return (await session.scalar(
         select(func.count()).select_from(PornhubMovie).where(
-            PornhubMovie.actor.like(f"%{actor_name}%")
+            actor_name_condition(PornhubMovie.actor, actor_name)
         )
     )) or 0
 
@@ -374,7 +381,7 @@ async def list_movies(
         if status:
             filters.append(PornhubMovie.status == status)
         if actor:
-            filters.append(PornhubMovie.actor.like(f"%{actor}%"))
+            filters.append(actor_name_condition(PornhubMovie.actor, actor))
         if series:
             filters.append(PornhubMovie.series == series)
         if maker:

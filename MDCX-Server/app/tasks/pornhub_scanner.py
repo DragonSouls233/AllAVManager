@@ -12,12 +12,21 @@ PORNHub 扫描器
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
 
 from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size
+from app.utils.nfo_fields import EMPTY_NFO_META, parse_nfo_fields
 from app.utils.logger import get_logger
+
+#: 回退 code（文件名无 viewkey 时用相对路径生成）的长度上限。
+#: `code` 同时是磁盘目录名（utils/media_helpers.py::get_movie_local_dir），
+#: Windows 路径上限 260；PH 实际命名含完整西语标题，回退 code 实测可达 139 字符。
+#: 超过此值改用 `phx_<sha1[:16]>`（固定 20 字符、仍唯一可复现）。
+_FALLBACK_CODE_MAXLEN = 64
 
 logger = get_logger(__name__)
 
@@ -197,7 +206,8 @@ class PornhubScanner(BaseScanner):
 
     async def scan(self) -> dict:
         """扫描 PORNHub 媒体目录并落库"""
-        results = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0, "actors_found": {}, "errors": []}
+        results = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0,
+                   "actors_found": {}, "errors": [], "code_hashed": 0}
 
         logger.info(f"[pornhub] 扫描启动: media_dirs={[str(d) for d in self.media_dirs]}")
         for media_dir in self.media_dirs:
@@ -212,6 +222,7 @@ class PornhubScanner(BaseScanner):
                 results["scanned"] += dir_result["scanned"]
                 results["matched"] += dir_result["matched"]
                 results["movies_added"] += dir_result.get("movies_added", 0)
+                results["code_hashed"] += dir_result.get("code_hashed", 0)
                 results["actors_found"].update(dir_result.get("actors", {}))
             except Exception as e:
                 results["errors"].append(f"{media_dir}: {e}")
@@ -230,7 +241,8 @@ class PornhubScanner(BaseScanner):
 
     async def _scan_directory(self, media_dir: Path) -> dict:
         """扫描单个媒体目录并写入数据库"""
-        result = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0, "actors": {}}
+        result = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0,
+                  "actors": {}, "code_hashed": 0}
         media_dir = Path(media_dir)
 
         from app.db.module_db import ModuleDatabase
@@ -262,7 +274,7 @@ class PornhubScanner(BaseScanner):
 
                     code = extract_pornhub_code(file_name)
                     if not code:
-                        # 文件名不含 PornHub viewkey 时，回退用「相对路径」作为 code。
+                        # 文件名不含 PornHub viewkey 时，回退用「相对路径」做 code。
                         # 不能只用文件名 stem：M:/N:/O: 各目录普遍存在同名文件
                         # （video.mp4 / 01.mp4 / clip 01.mp4），若按 stem 做 code，
                         # 跨目录同名文件会被 existing_codes 内存判重成批丢弃，
@@ -275,6 +287,25 @@ class PornhubScanner(BaseScanner):
                         code = re.sub(
                             r"[^\w\-]", "_", rel.with_suffix("").as_posix()
                         )
+                        # 🔴 2026-10-04 长度封顶。
+                        # `code` 同时是**磁盘目录名**（utils/media_helpers.py::
+                        # get_movie_local_dir 拼成 {data_base}/movies/pornhub/{code}/），
+                        # 而 PH 的实际命名是「[频道] + 完整西语标题 + 13位viewkey」，
+                        # 回退产出的 code 实测可达 **139 字符**（库里就有 6 条这样的
+                        # 脏记录）。后果有两层：
+                        #   1. Windows 路径上限 260 —— 再拼上 {data_base} 前缀
+                        #      就可能超限，NFO/封面写盘直接失败；
+                        #   2. 番号投票（merger._vote_avid）会把 2 条以上同样脏的
+                        #      code 当成"多源一致"来改写正常番号。
+                        # 超出上限时改用**路径哈希**做 code：仍然唯一、可复现
+                        # （同一个文件每次扫描得到同一个 code，不会造成重复入库），
+                        # 但长度固定。
+                        if len(code) > _FALLBACK_CODE_MAXLEN:
+                            digest = hashlib.sha1(
+                                rel.with_suffix("").as_posix().encode("utf-8")
+                            ).hexdigest()[:16]
+                            code = f"phx_{digest}"
+                            result["code_hashed"] += 1
                     result["matched"] += 1
 
                     # 检查是否已存在（内存判重，避免 N+1 查询）
@@ -282,11 +313,42 @@ class PornhubScanner(BaseScanner):
                         continue
                     existing_codes.add(code)
 
+                    # 🔴 NFO 富字段入库（此前 title 写死 Path(file_name).stem）。
+                    #    真实样本实测差异（G:\TEST\pornhub）：
+                    #      文件名 stem = "[Anna Cherry7] 和我最好的朋友的电影之夜… (6a488932e1d19)"
+                    #                     （含频道前缀 + 尾部 viewkey，长 52~86 字符）
+                    #      NFO title  = "Making my boyfriend cum twice during Netflix and chill"
+                    #                     （干净的真实作品标题）
+                    #    NFO 还带 runtime（秒→分钟换算由 parse_runtime_minutes 统一处理）。
+                    #    ⚠️ PH 的 NFO 是 MDCX 自己导出的（<source>pornhub</source>、
+                    #    <dateadded>、cover 指向 data/movies/），所以字段可信但**不能**
+                    #    覆盖 code —— code 必须是 viewkey 或路径哈希。
+                    nfo_meta: dict = {
+                        k: ([] if isinstance(v, list) else v)
+                        for k, v in EMPTY_NFO_META.items()
+                    }
+                    for nfo_candidate in (file_path.parent / "movie.nfo",
+                                          file_path.parent / f"{file_path.stem}.nfo"):
+                        if nfo_candidate.exists():
+                            nfo_meta = parse_nfo_fields(nfo_candidate)
+                            break
+
+                    # 演员：目录名解析为主（PH 目录名带 [Channel]，更可靠），
+                    # NFO 里的演员做**补充**，不覆盖目录名结果
+                    actor_names = ([actor_name] if actor_name else []) + [
+                        a for a in (nfo_meta.get("actors") or []) if a != actor_name
+                    ]
+
                     # 写入新影片记录
                     new_movie = PornhubMovie(
                         code=code,
-                        title=Path(file_name).stem,
-                        actor=actor_name,
+                        # 标题：NFO 优先（去掉频道前缀与尾部 viewkey），否则回退文件名
+                        title=nfo_meta.get("title") or Path(file_name).stem,
+                        original_title=nfo_meta.get("original_title"),
+                        duration=nfo_meta.get("duration"),
+                        actor=",".join(actor_names) or None,
+                        studio=nfo_meta.get("studio"),
+                        series=nfo_meta.get("series"),
                         file_path=str(file_path),
                         file_size=_file_size(file_path),
                         status="pending",
@@ -342,26 +404,17 @@ class PornhubScanner(BaseScanner):
         return result
 
     async def _update_actor_counts(self):
-        """更新演员表的 movie_count"""
-        from app.db.module_db import ModuleDatabase
-        from app.db.pornhub_models import PornhubActor, PornhubMovie
-        from sqlalchemy import select, func
+        """更新演员表的 movie_count
 
-        db = ModuleDatabase.get_instance("pornhub")
-        session = await db.get_session()
-        try:
-            actors = await session.execute(select(PornhubActor))
-            for actor_row in actors.scalars().all():
-                actor_name = actor_row.name
-                count = await session.scalar(
-                    select(func.count()).select_from(PornhubMovie).where(
-                        PornhubMovie.actor.like(f"%{actor_name}%")
-                    )
-                ) or 0
-                actor_row.movie_count = count
-            await session.commit()
-        finally:
-            await session.close()
+        2026-10-04：原实现逐演员跑 ``actor LIKE '%name%'``。SQLite 的
+        ``LIKE`` 默认大小写不敏感 ⇒ 实测库里同时存在 ``Ruth Lee``(id=12)
+        与 ``Ruth lee``(id=201)、``Rosie rider``(id=3) 与 ``Rosie Rider``(id=6)，
+        四行 movie_count 全是 1（虚增），而后两行在 ``movie_actors`` 里 0 行。
+        子串匹配同样无法区分 ``Anna Cherry`` 与 ``Anna Cherry7``。
+
+        改为走基类的关联表回填 + 精确计数。
+        """
+        await self._sync_actor_links()
 
     def _get_actor_from_path(self, file_path: Path, media_dir: Path) -> tuple[str | None, str | None]:
         """从文件路径中提取演员名和国籍

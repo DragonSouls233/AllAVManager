@@ -40,10 +40,23 @@ class ActorInfo:
 @dataclass
 class ScrapeResult:
     """刮削结果"""
-    # 必填字段
-    code: str                           # 番号
-    title: str                          # 标题
-    source: str                         # 来源站点名
+    # 🔴 2026-10-04 修复：这三个字段被标为「必填」（无默认值），
+    #    但全仓有 6 处 `ScrapeResult()` 无参构造后逐字段赋值：
+    #      app/crawlers/chinese/91porn.py:74
+    #      app/crawlers/chinese/aggregate.py:412
+    #      app/crawlers/western_aggregate.py:145 / :258
+    #      app/services/pornhub_parser.py:254
+    #      app/services/stash_scraper_bridge.py:185
+    #    dataclass 要求「有默认值的字段必须排在无默认值之后」，于是当时为了
+    #    保住位置把这三个去掉了默认值 ⇒ 无参构造直接抛
+    #      TypeError: ScrapeResult.__init__() missing 3 required positional arguments
+    #    ⇒ 这 6 处全部静默失效（异常被 except 吞掉，表现为「源没数据」）。
+    #    IAFD 链路实测就撞在这里：搜索命中 50 行、打分全是 1.00，
+    #    却在 _parse_iafd_detail() 里抛 TypeError 后返回 None ⇒ 永远刮不到。
+    #    现给三者加空串默认值：既保留位置合法，又让无参构造 + 逐字段赋值可用。
+    code: str = ""                      # 番号
+    title: str = ""                     # 标题
+    source: str = ""                    # 来源站点名
     source_url: Optional[str] = None    # 来源页面 URL（多个爬虫已赋值/构造传参，正式声明避免 AttributeError）
     
     # 可选元数据

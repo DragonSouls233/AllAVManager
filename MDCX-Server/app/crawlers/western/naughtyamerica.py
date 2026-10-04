@@ -24,6 +24,7 @@ API 端点:
 import asyncio
 import re
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from app.crawlers.base import (
     ActorInfo,
@@ -175,10 +176,21 @@ class NaughtyAmericaCrawler(BaseCrawler):
 
     @staticmethod
     def _id_from_url(url: str) -> Optional[str]:
-        """从 URL 提取 scene_id（参考 P0 NA id_from_url）"""
-        m = re.search(r"/.*?(\d+)(?:\?|#|$)", url)
-        if m:
-            return m.group(1)
+        """从 URL 提取 scene_id。
+
+        🔴 2026-10-04 修正：旧式「非贪婪」ID 正则会匹配到 URL 里
+        **第一个**数字段（实测
+        `https://www.naughtyamerica.com/podcasts/season-2/34031` 取到 "2"），
+        于是按错误 ID 请求 API，永远拿不到目标场景。
+        改为：优先取**路径最后一段**的数字，兜底取 URL 中最长的数字串。
+        """
+        path = urlparse(url).path.rstrip("/")
+        last = path.rsplit("/", 1)[-1]
+        if last.isdigit():
+            return last
+        digits = re.findall(r"\d{3,}", url)
+        if digits:
+            return max(digits, key=len)
         return None
 
     async def _api_scene_from_id(self, scene_id: str) -> Optional[dict]:

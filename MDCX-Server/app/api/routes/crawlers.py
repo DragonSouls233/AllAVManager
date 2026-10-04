@@ -354,6 +354,13 @@ async def get_source_health(
     if prune:
         pruned = await recorder.prune()
 
+    # 🔴 2026-10-04：熔断状态必须一并暴露。
+    # 只看"历史成功率"看不出"现在正在跳过哪些源" —— 熔断是即时状态，
+    # 运维需要知道「这个源现在没在干活」而不是「它最近成功率低」。
+    from app.scraper.breaker import get_breaker
+
+    breakers = get_breaker().snapshot()
+
     return {
         "window_hours": hours,
         "module": module,
@@ -363,6 +370,7 @@ async def get_source_health(
         "flushed_now": flushed,
         "pruned": pruned,
         "demote_candidates": [r["source"] for r in rows if r["demote"]],
+        "circuit_open": breakers,
     }
 
 

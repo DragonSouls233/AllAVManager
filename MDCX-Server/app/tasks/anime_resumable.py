@@ -185,6 +185,35 @@ class ResumableAnimeScanner:
             result["errors"].append(str(e))
         finally:
             await session.close()
+
+        # 演员关联表回填：2026-10-04 新增。
+        # ⚠️ 实测 G:\TEST\动漫 15 个 NFO **0 个**含 <actor>，番号是素人形态
+        #    （ACDDL-1006 / BBBH-1749 / DV-109），所以本模块通常是 0 条 ——
+        #    这是**数据源本身没有演员**，不是 bug。仍然接上是为了：
+        #      ① 未来 NFO 若带 <actor> 能自动生效，不必再改代码；
+        #      ② 与其它 5 个模块行为一致（它们都有这一步）。
+        # 本类不继承 BaseScanner，所以直接调共享实现而不是 self._sync_actor_links()。
+        # 失败绝不中断扫描。
+        try:
+            from app.db.movie_actor_sync import (
+                backfill_links_from_text,
+                recount_actor_movie_counts,
+            )
+            from sqlalchemy import select as _select
+            async with db.session_scope() as s2:
+                r = await backfill_links_from_text(s2, "anime", recount=False)
+                await s2.commit()
+                rc = await recount_actor_movie_counts(s2, "anime")
+            logger.info(
+                f"[anime-resume] 演员关联回填: 扫描 {r['scanned']} 部，"
+                f"写入 {r['linked']} 条关联，{r['no_valid_name']} 部无有效演员名；"
+                f"重算 movie_count {rc['changed']}/{rc['actors']}"
+            )
+            result["actor_links"] = r["linked"]
+        except Exception as e:
+            logger.warning(f"[anime-resume] 演员关联回填失败（不影响扫描）: {e}")
+            result["actor_links"] = 0
+
         return result
 
     async def _scan_one_root(self, session, media_dir: Path, existing_codes, existing_series,

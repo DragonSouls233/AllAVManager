@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 import logging
 
+from app.db.actor_query import actor_name_condition
 from app.db.database import get_session
 from app.db.system_models import FavoriteItem, FavoriteGroup
 from app.utils.media_helpers import (
@@ -2337,8 +2338,10 @@ async def get_related_movies(
                 related_ids.add(m.id)
                 actor_movies.append(_build_item(m))
     elif getattr(movie, "actor", "") or "":
-        # MovieActor 关联表为空（JAV 等模块演员只存于 movie.actor 文本）→
-        # 取首个演员名做模糊匹配，仍能给"同演员更多"推荐
+        # 本片在关联表里没有演员行（anime/chinese 等模块演员只存于
+        # movies.actor 文本列）⇒ 取首个演员名做 token 边界匹配。
+        # 2026-10-04：原为 `LIKE '%name%'`，查 `Anna` 会把
+        # `Anna Cherry7` 的影片也推荐进来。
         raw = str(getattr(movie, "actor", ""))
         parts = [p.strip() for p in re.split(r"[,，、/|;；\n]", raw) if p.strip()]
         if parts:
@@ -2346,7 +2349,7 @@ async def get_related_movies(
             result = await session.execute(
                 select(MovieModel)
                 .where(
-                    MovieModel.actor.like(f"%{first_name}%"),
+                    actor_name_condition(MovieModel.actor, first_name),
                     MovieModel.id != movie_id,
                 )
                 .order_by(MovieModel.release_date.desc())

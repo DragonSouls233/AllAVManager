@@ -277,6 +277,11 @@ class VixenNetworkCrawler(BaseCrawler):
         tags = [t.get("name", "") for t in scene_data.get("tags", []) if t.get("name")]
         studio = scene_data.get("studio", {}).get("name") if scene_data.get("studio") else None
         duration = scene_data.get("runLength")
+        # 🔴 2026-10-04：runLength 经 parse_duration_to_seconds() 得到的是**秒**，
+        #    而 ScrapeResult.duration 契约是**分钟**（javbus/javdb 都是整数分钟，
+        #    NFO <runtime> 也是分钟）。直接塞秒会造成 60 倍偏差。
+        if duration:
+            duration = int(duration) // 60 or None
 
         result = ScrapeResult(
             code=str(scene_data.get("code", "")),
