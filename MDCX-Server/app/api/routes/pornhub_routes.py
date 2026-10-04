@@ -83,7 +83,9 @@ async def _recount_actor_movie_count(session, actor_name: str) -> int:
     Cherry7`；`Chechoman69` 与 `Chechoman6` 互相误命中。
     """
     from app.db.pornhub_models import PornhubMovie
-    from sqlalchemy import func
+    # 🔴 2026-10-05：此前只 import 了 func，`select` 未导入 ⇒ 本函数一被
+    # 调用就 NameError（被上层的 except 吞掉，表现为"演员作品数不更新"）。
+    from sqlalchemy import func, select
 
     return (await session.scalar(
         select(func.count()).select_from(PornhubMovie).where(
@@ -667,202 +669,138 @@ async def get_pornhub_cover_file(movie_id: int):
 # ========== 刮削 ==========
 
 
-@router.post("/movies/{movie_id}/scrape")
-async def scrape_pornhub_movie(movie_id: int):
-    """刮削指定 PORNHub 影片的元数据
+def _normalize_ph_db_code(code):
+    """把库里的 pornhub 番号归一化成 ph<viewkey> 形态。
 
-    使用 PornhubCrawler 从 pornhub.com 获取元数据，
-    然后写入 PORNHub 模块 DB（PornhubMovie + PornhubActor）。
+    🔴 落库按 code **精确匹配**（workflow.py 的 select(...).where(code == ...)）。
+    扫描器产 ph6a488932e1d19，而爬虫历史上产过裸 6a488932e1d19
+    ⇒ 两者匹配不上，**每次刮削都插一条新行**（生产库实测同片两份）。
+    唯一判据收口在 app/scraper/number.py::ph_viewkey_to_code。
     """
+    code = (code or "").strip()
+    if not code:
+        return code
+    try:
+        from app.scraper.number import normalize_ph_viewkey, ph_viewkey_to_code
+
+        vk = normalize_ph_viewkey(code)
+        if vk:
+            return ph_viewkey_to_code(vk)
+    except Exception as e:
+        logger.debug("ph code 归一化失败 [%s]: %s", code, e)
+    return code
+
+
+async def _scrape_one_ph_movie(movie_id: int) -> dict:
+    """单曲刮削的唯一实现（/scrape 与 /rescrape 共用）。
+
+    🔴 2026-10-05 重写：此前本函数**绕过引擎**直接 PornhubCrawler().scrape()
+    单源抓取 + 手写落盘，生产库实测留下 6 个问题：
+
+      1. **标题漂移**：标题取自 HTML 详情页，而 og:title / <title> / h1 /
+         JSON-LD name 全部随 Accept-Language 与出口 IP 翻译（实测 en→英译、
+         es→西语、不发→中文）。稳定来源只有 GraphQL webmasters/video_by_id
+         （pornhub_api 源，已升主源），必须由引擎按优先级合并才拿得到。
+      2. **写了不存在的列**：movie.fanart_url = ... —— PornhubMovie
+         **没有 fanart_url 列**，赋值只是挂了个不会持久化的普通属性
+         ⇒ poster 永远等于封面。
+      3. **语义污染**：movie.source_views = scrape_result.votes —— 把
+         **评分人数**写进了**播放量**列（播放量在 raw_data["ph_views"]）。
+      4. **整片字段不写**：release_date / rating / source_id / plot / studio /
+         maker / series 一个都不写 ⇒ 生产库 6 条该列全 NULL。
+      5. **code 归一化缺失**：回退搜索分支 movie.code = best.code 未过
+         ph_viewkey_to_code() ⇒ 可能写回裸 viewkey，下次刮削插重复行。
+      6. **下架判定只认英文**：只匹配 "video disabled"，实测中文页标题是
+         「取消播放视频」。
+
+    现在统一走 engine.scrape_number() + workflow.persist()，与 fc2 /
+    uncensored 模块完全一致：多源合并 → 标题取稳定源 → 模块专属列 →
+    演员关联 → 图片下载 → NFO，全链路同一套，不再有第二份落盘逻辑。
+    """
+    from sqlalchemy import select
+
     db = get_pornhub_db()
     session = await db.get_session()
     try:
-        from app.db.pornhub_models import PornhubMovie, PornhubActor, MovieActor
-        from sqlalchemy import select
+        from app.db.pornhub_models import PornhubMovie
 
-        stmt = select(PornhubMovie).where(PornhubMovie.id == movie_id)
-        result = await session.execute(stmt)
-        movie = result.scalar_one_or_none()
+        movie = (
+            await session.execute(select(PornhubMovie).where(PornhubMovie.id == movie_id))
+        ).scalar_one_or_none()
         if not movie:
             raise HTTPException(status_code=404, detail="影片不存在")
+        raw_code = movie.code
+        file_path = str(movie.file_path) if movie.file_path else None
+    finally:
+        await session.close()
 
-        from app.crawlers.pornhub import PornhubCrawler
-        crawler = PornhubCrawler()
-        scrape_result = await crawler.scrape(movie.code)
+    code = _normalize_ph_db_code(raw_code)
+    if not code:
+        return {"status": "error", "message": "影片无号不无法刮削"}
 
-        # 回退方案：code 为路径格式时，用标题或文件名搜索匹配
-        if not scrape_result or not scrape_result.title:
-            # 提取搜索关键词
-            import os
-            search_keyword = None
-            if movie.title:
-                search_keyword = movie.title.strip()
-            elif movie.file_path:
-                search_keyword = os.path.basename(str(movie.file_path))
+    from app.config.manager import DATA_DIR
+    from app.scraper.engine import get_scraper_engine
+    from app.scraper.workflow import ScraperWorkflow
 
-            if search_keyword:
-                try:
-                    import asyncio as _asyncio
-                    search_results = await _asyncio.wait_for(crawler.search(search_keyword), timeout=20)
-                    if search_results:
-                        # 用第一个结果
-                        best = search_results[0]
-                        if best and best.title:
-                            # 更新 code 为真实 viewkey
-                            if best.code:
-                                movie.code = best.code
-                            scrape_result = best
-                            logger.info(f"Pornhub 路径code回退搜索成功: [{movie.code}] → {scrape_result.title}")
-                except Exception as search_err:
-                    logger.debug(f"Pornhub 路径code回退搜索失败: {search_err}")
+    try:
+        scrape_result = await get_scraper_engine().scrape_number(code, module="pornhub")
+    except Exception as e:
+        logger.error(f"PORNHub 刮削异常 [{code}]: {e}")
+        return {"status": "error", "message": str(e)}
 
-        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
-        from app.output.nfo import NFOGenerator
+    if not scrape_result or not scrape_result.title:
+        return {"status": "error", "message": f"刮削失败: 未找到 {code} 的数据"}
 
-        if not scrape_result or not scrape_result.title:
-            return {"status": "error", "message": f"刮削失败: 未找到 {movie.code} 的数据"}
+    # 强制对齐库中番号：源站可能返回不同写法，不对其会新建重复记录
+    scrape_result.code = code
 
-        # 检测不可用视频（Video Disabled 等）
-        if any(kw in (scrape_result.title or "").lower() for kw in ["video disabled", "video was removed", "removed this video"]):
-            return {"status": "error", "message": f"影片不可用: {scrape_result.title}"}
-
-        old_actors = movie.actor.split(",") if movie.actor else []
-        movie.title = scrape_result.title
-        movie.original_title = scrape_result.title
-        local_media = await ensure_movie_media_local(
-            module_name="pornhub", code=movie.code,
-            cover_url=scrape_result.cover_url,
-            fanart_url=scrape_result.poster_url,
-            thumb_url=scrape_result.thumb_url,
+    try:
+        await ScraperWorkflow(str(DATA_DIR / "movies")).persist(
+            scrape_result, file_path=file_path, module="pornhub", number=code
         )
-        if local_media.get("cover"):
-            movie.cover_url = local_media["cover"]
-        elif scrape_result.cover_url:
-            movie.cover_url = scrape_result.cover_url
-        if local_media.get("fanart"):
-            movie.fanart_url = local_media["fanart"]
-        if local_media.get("thumb"):
-            movie.thumb_url = local_media["thumb"]
-        if scrape_result.duration:
-            movie.duration = scrape_result.duration
-        if scrape_result.rating:
-            movie.source_score = scrape_result.rating
-        if scrape_result.votes:
-            movie.source_views = scrape_result.votes
-        if scrape_result.studio:
-            movie.uploader = scrape_result.studio
-        if scrape_result.genres:
-            movie.categories = ",".join(scrape_result.genres)
-        if scrape_result.tags:
-            movie.tag = ",".join(scrape_result.tags)
-        if scrape_result.plot:
-            movie.plot = scrape_result.plot
+    except Exception as e:
+        logger.error(f"PORNHub 落盘失败 [{code}]: {e}")
+        return {"status": "error", "message": f"落盘失败: {e}"}
 
-        if scrape_result.actors:
-            new_actor_names = set()
-            actor_names = [a.name for a in scrape_result.actors]
-            movie.actor = ",".join(actor_names)
+    try:
+        from app.scraper.batch_scrape import _ensure_actor_avatars
 
-            # 清除旧的 movie_actors 关联
-            old_ma = await session.execute(
-                select(MovieActor).where(MovieActor.movie_id == movie.id)
-            )
-            for ma in old_ma.scalars().all():
-                await session.delete(ma)
-            await session.flush()
+        await _ensure_actor_avatars(getattr(scrape_result, "actors", None))
+    except Exception as e:
+        logger.debug(f"PORNHub 演员头像下载失败 [{code}]: {e}")
 
-            for actor_info in scrape_result.actors:
-                new_actor_names.add(actor_info.name)
-                existing = await session.execute(
-                    select(PornhubActor).where(PornhubActor.name == actor_info.name)
-                )
-                db_actor = existing.scalar_one_or_none()
-                if db_actor:
-                    db_actor.movie_count = await _recount_actor_movie_count(session, actor_info.name)
-                    if not db_actor.avatar_url and getattr(actor_info, "avatar_url", None):
-                        local_avatar = await ensure_actor_avatar_local(actor_info.name, actor_info.avatar_url)
-                        db_actor.avatar_url = local_avatar or actor_info.avatar_url
-                    # 写入 movie_actors 关联
-                    session.add(MovieActor(movie_id=movie.id, actor_id=db_actor.id))
-                else:
-                    new_actor = PornhubActor(
-                        name=actor_info.name,
-                        source="scraper",
-                        movie_count=1,
-                    )
-                    session.add(new_actor)
-                    if getattr(actor_info, "avatar_url", None):
-                        local_avatar = await ensure_actor_avatar_local(actor_info.name, actor_info.avatar_url)
-                        if local_avatar:
-                            new_actor.avatar_url = local_avatar
-                    await session.flush()
-                    # 写入 movie_actors 关联
-                    session.add(MovieActor(movie_id=movie.id, actor_id=new_actor.id))
-            for name in old_actors:
-                n = name.strip()
-                if n and n not in new_actor_names:
-                    actor_stmt = select(PornhubActor).where(PornhubActor.name == n)
-                    actor_result = await session.execute(actor_stmt)
-                    actor_obj = actor_result.scalar_one_or_none()
-                    if actor_obj and actor_obj.movie_count > 0:
-                        actor_obj.movie_count -= 1
+    return {
+        "status": "ok",
+        "message": f"刮削成功: {scrape_result.title}",
+        "code": code,
+        "source": scrape_result.source,
+        "actors": [a.name for a in (scrape_result.actors or [])],
+    }
 
-        movie.status = "scraped"
-        movie.source = "pornhub"
 
-        # 即使 scraper 没有返回演员，也要从 movie.actor（扫描器提取的）关联到已有演员
-        if not scrape_result.actors and movie.actor:
-            scanner_actors = [n.strip() for n in movie.actor.split(",") if n.strip()]
-            # 清除旧关联后重新写入
-            old_ma = await session.execute(
-                select(MovieActor).where(MovieActor.movie_id == movie.id)
-            )
-            for ma in old_ma.scalars().all():
-                await session.delete(ma)
-            await session.flush()
-            for actor_name in scanner_actors:
-                existing = await session.execute(
-                    select(PornhubActor).where(PornhubActor.name == actor_name)
-                )
-                db_actor = existing.scalar_one_or_none()
-                if db_actor:
-                    session.add(MovieActor(movie_id=movie.id, actor_id=db_actor.id))
-                    if db_actor.movie_count is None or db_actor.movie_count == 0:
-                        db_actor.movie_count = 1
-
-        await session.commit()
-        mv_dir = None
-        if hasattr(movie, "output_dir") and movie.output_dir:
-            mv_dir = str(movie.output_dir)
-        elif hasattr(movie, "file_path") and movie.file_path:
-            mv_dir = _os.path.dirname(str(movie.file_path))
-        try:
-            if mv_dir and _os.path.isdir(mv_dir):
-                actor_names = [a.strip() for a in (movie.actor or "").split(",") if a.strip()]
-                NFOGenerator(output_dir=mv_dir).generate_from_movie(
-                    movie, movie_dir=None, kodi_compatible=True, actor_names=actor_names
-                )
-        except Exception as nfo_err:
-            pass
-
-        return {
-            "status": "ok",
-            "message": f"刮削成功: {scrape_result.title}",
-            "actors": actor_names if scrape_result.actors else [],
-        }
-
+@router.post("/movies/{movie_id}/scrape")
+async def scrape_pornhub_movie(movie_id: int):
+    """刮削指定 PORNHub 影片的元数据（走统一引擎 + 落盘流水线）"""
+    try:
+        return await _scrape_one_ph_movie(movie_id)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"PORNHub 刮削失败 [{movie_id}]: {e}")
         return {"status": "error", "message": str(e)}
-    finally:
-        await session.close()
 
 
 @router.post("/movies/scrape-all-pending")
 async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
-    """后台批量刮削所有 status=pending 的 PORNHub 影片"""
+    """后台批量刮削所有 status=pending 的 PORNHub 影片
+
+    🔴 2026-10-05 重写：此前这里手写了一段与单曲刮削**重复且同样有 bug**的
+    落盘循环（source_views=votes、fanart_url 不存在、release_date/rating 不写）。
+    现在复用 app/scraper/batch_scrape.py::scrape_module_pending（与 fc2 /
+    uncensored 同一条流水线）+ refill_module_gaps 二次补齐。
+    ⚠️ PH 详情页 1.5MB/次且限流远严于 JSON 端点，连续请求会整批 SSLError
+    ⇒ 这里**串行**处理（不并发）。
+    """
     db = get_pornhub_db()
     session = await db.get_session()
     try:
@@ -870,8 +808,7 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
         from sqlalchemy import select
 
         stmt = select(PornhubMovie).where(PornhubMovie.status == "pending").order_by(PornhubMovie.id.desc())
-        result = await session.execute(stmt)
-        pending = result.scalars().all()
+        pending = (await session.execute(stmt)).scalars().all()
     finally:
         await session.close()
 
@@ -879,120 +816,21 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
         return {"status": "ok", "message": "没有待刮削的影片", "total": 0}
 
     async def _run():
-        from app.crawlers.pornhub import PornhubCrawler
-        from app.db.pornhub_models import PornhubMovie, PornhubActor
-        from app.utils.media_helpers import ensure_movie_media_local, ensure_actor_avatar_local
-        from app.output.nfo import NFOGenerator
-        from sqlalchemy import select
+        from app.db.pornhub_models import PornhubMovie as _Movie
+        from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps
 
-        crawler = PornhubCrawler()
-        success = 0
-        failed = 0
-        for m in pending:
-            try:
-                result = await crawler.scrape(m.code)
-                if result and result.title:
-                    s = await db.get_session()
-                    try:
-                        st = select(PornhubMovie).where(PornhubMovie.id == m.id)
-                        r = await s.execute(st)
-                        mv = r.scalar_one_or_none()
-                        if mv:
-                            old_actors = mv.actor.split(",") if mv.actor else []
-                            mv.title = result.title
-                            local_media = await ensure_movie_media_local(
-                                module_name="pornhub", code=mv.code,
-                                cover_url=result.cover_url,
-                                fanart_url=result.poster_url,
-                                thumb_url=result.thumb_url,
-                            )
-                            if local_media.get("cover"):
-                                mv.cover_url = local_media["cover"]
-                            elif result.cover_url:
-                                mv.cover_url = result.cover_url
-                            if local_media.get("fanart"):
-                                mv.fanart_url = local_media["fanart"]
-                            if local_media.get("thumb"):
-                                mv.thumb_url = local_media["thumb"]
-                            if result.duration:
-                                mv.duration = result.duration
-                            if result.rating:
-                                mv.source_score = result.rating
-                            if result.votes:
-                                mv.source_views = result.votes
-                            if result.studio:
-                                mv.uploader = result.studio
-                            if result.genres:
-                                mv.categories = ",".join(result.genres)
-                            if result.tags:
-                                mv.tag = ",".join(result.tags)
-                            if result.actors:
-                                new_actor_names = set()
-                                mv.actor = ",".join(a.name for a in result.actors)
-                                for ai in result.actors:
-                                    new_actor_names.add(ai.name)
-                                    ex = await s.execute(select(PornhubActor).where(PornhubActor.name == ai.name))
-                                    a = ex.scalar_one_or_none()
-                                    if a:
-                                        a.movie_count = await _recount_actor_movie_count(s, ai.name)
-                                        if not a.avatar_url and getattr(ai, "avatar_url", None):
-                                            local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
-                                            a.avatar_url = local_avatar or ai.avatar_url
-                                    else:
-                                        new_a = PornhubActor(name=ai.name, source="scraper", movie_count=1)
-                                        s.add(new_a)
-                                        if getattr(ai, "avatar_url", None):
-                                            local_avatar = await ensure_actor_avatar_local(ai.name, ai.avatar_url)
-                                            if local_avatar:
-                                                new_a.avatar_url = local_avatar
-                                for name in old_actors:
-                                    n = name.strip()
-                                    if n and n not in new_actor_names:
-                                        actor_stmt = select(PornhubActor).where(PornhubActor.name == n)
-                                        actor_result = await s.execute(actor_stmt)
-                                        actor_obj = actor_result.scalar_one_or_none()
-                                        if actor_obj and actor_obj.movie_count > 0:
-                                            actor_obj.movie_count -= 1
-                            # 写入 movie_actors 关联表
-                            await s.flush()
-                            try:
-                                from app.db.pornhub_models import MovieActor as PHMovieActor
-                                old_ma_q = select(PHMovieActor).where(PHMovieActor.movie_id == mv.id)
-                                for ma_row in (await s.execute(old_ma_q)).scalars().all():
-                                    await s.delete(ma_row)
-                                if result.actors:
-                                    for ai in result.actors:
-                                        ex2 = await s.execute(select(PornhubActor).where(PornhubActor.name == ai.name))
-                                        db_a = ex2.scalar_one_or_none()
-                                        if db_a:
-                                            s.add(PHMovieActor(movie_id=mv.id, actor_id=db_a.id))
-                            except Exception as ae:
-                                logger.warning(f"Pornhub 批量刮削写入actor关联失败 [{mv.code}]: {ae}")
-                            mv.status = "scraped"
-                            mv.source = "pornhub"
-                            await s.commit()
-                            mv_dir = None
-                            if hasattr(mv, "output_dir") and mv.output_dir:
-                                mv_dir = str(mv.output_dir)
-                            elif hasattr(mv, "file_path") and mv.file_path:
-                                mv_dir = _os.path.dirname(str(mv.file_path))
-                            try:
-                                if mv_dir and _os.path.isdir(mv_dir):
-                                    actor_names = [a.strip() for a in (mv.actor or "").split(",") if a.strip()]
-                                    NFOGenerator(output_dir=mv_dir).generate_from_movie(
-                                        mv, movie_dir=None, kodi_compatible=True, actor_names=actor_names
-                                    )
-                            except Exception as nfo_err:
-                                pass
-                            success += 1
-                    finally:
-                        await s.close()
-                else:
-                    failed += 1
-            except Exception as e:
-                logger.debug(f"刮削失败 {m.code}: {e}")
-                failed += 1
-        logger.info(f"PORNHub 批量刮削完成: 成功 {success}, 失败 {failed}")
+        try:
+            ok, fail = await scrape_module_pending("pornhub", db, _Movie)
+            logger.info("pornhub 批量刮削完成: 成功 %s 失败 %s", ok, fail)
+        except Exception as e:
+            logger.warning("pornhub 批量刮削异常: %s", e)
+
+        try:
+            _all_ok, missing = await refill_module_gaps("pornhub", db, _Movie)
+            if missing:
+                logger.info("pornhub 补齐后仍缺失 %s 部: %s", len(missing), missing[:20])
+        except Exception as e:
+            logger.warning("pornhub 补齐异常: %s", e)
 
     background_tasks.add_task(_run)
 

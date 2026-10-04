@@ -339,9 +339,20 @@ class ScraperWorkflow:
         _local_cover = None
         _local_samples = None
         if _movie_dir_path and _movie_dir_path.exists():
-            _p = _movie_dir_path / "poster.jpg"
-            if _p.exists():
-                _local_cover = str(_p)
+            # 🔴 2026-10-05：只看 poster.jpg 会漏。实测 ph6a38b964c4bb0
+            #    PH CDN 偶发返回 MP4（`head=b'\x00\x00\x00\x1cftyp'`，不是图）
+            #    ⇒ download_cover 判无效跳过，但同目录 **fanart.jpg 下载成功了**
+            #    ⇒ cover_url 退化成远程 URL、poster_url 变 NULL，前端封面靠网络。
+            #    按「海报 → 背景图 → 缩略图 → 剧照首张」兜底取真实存在的那张。
+            for _name in ("poster.jpg", "fanart.jpg", "thumb.jpg", "cover.jpg"):
+                _p = _movie_dir_path / _name
+                if _p.exists() and _p.stat().st_size > 0:
+                    _local_cover = str(_p)
+                    break
+            if _local_cover is None:
+                _first = _movie_dir_path / "extrafanart" / "01.jpg"
+                if _first.exists() and _first.stat().st_size > 0:
+                    _local_cover = str(_first)
             _ex = _movie_dir_path / "extrafanart"
             if _ex.is_dir():
                 _imgs = sorted(str(x) for x in _ex.glob("*") if x.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))
@@ -413,7 +424,10 @@ class ScraperWorkflow:
                 title=result.title,
                 original_title=original_title,
                 cover_url=_local_cover or result.cover_url,
-                poster_url=_local_cover or result.poster_url,
+                # 🔴 2026-10-05：多数源（含 pornhub_api）只给 cover_url 不给
+                # poster_url ⇒ 这一列**恒为 NULL**（实测 ph6a38b964c4bb0）。
+                # thumb_url 早就写了 `or result.cover_url` 兜底，poster_url 漏了。
+                poster_url=_local_cover or result.poster_url or result.cover_url,
                 thumb_url=_local_cover or result.poster_url or result.cover_url,
                 sample_images=json.dumps(_local_samples or result.sample_images, ensure_ascii=False) if (_local_samples or result.sample_images) else None,
                 release_date=str(result.release_date) if result.release_date else None,
@@ -483,9 +497,31 @@ class ScraperWorkflow:
             elif module == "uncensored" and hasattr(MovieCls, "is_uncensored"):
                 common_fields["is_uncensored"] = True
 
+            # 🔴 2026-10-05 修复：模块专属列（pornhub 的 source_id /
+            # source_views / source_score / uploader / categories）此前**只有补刮
+            # 路径（patcher/strategy.py）会写**，主流水线（扫库批刮 / 单曲刮削）
+            # 从不写 ⇒ 生产 pornhub.db 6 条里 5 条这 5 列全 NULL（不是没数据，
+            # 是链路断了）。提取逻辑收口在 app/db/module_columns.py，
+            # 不要在这里再手写一份。
+            # ⚠️ 必须按 MovieCls 过滤：这些列只有 pornhub 表有，别的模块盲写
+            # 会在 flush 时抛 "no such column" 并回滚整条事务。
+            _module_cols: dict = {}
+            try:
+                from app.db.module_columns import collect_module_columns
+
+                _module_cols = {
+                    k: v for k, v in collect_module_columns(result, module).items()
+                    if hasattr(MovieCls, k)
+                }
+            except Exception as _mc_err:
+                logger.debug(f"提取模块专属列失败 [{module}] {result.code}: {_mc_err}")
+
             if movie:
                 # 更新现有记录
                 for key, value in common_fields.items():
+                    setattr(movie, key, value)
+                # 模块专属列：只有非 None 才写（None = 源站没说，不该清掉旧值）
+                for key, value in _module_cols.items():
                     setattr(movie, key, value)
                 # 额外字段只更新非空值
                 if result.maker:
@@ -495,6 +531,7 @@ class ScraperWorkflow:
                 movie = MovieCls(
                     code=result.code,
                     **common_fields,
+                    **_module_cols,
                 )
                 session.add(movie)
 

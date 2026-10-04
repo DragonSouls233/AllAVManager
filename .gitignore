@@ -27,6 +27,7 @@ _patch_audit
 dist
 server_manager
 build
+_test_archive
 qa_*.js
 qa_*.mjs
 qa_*.py

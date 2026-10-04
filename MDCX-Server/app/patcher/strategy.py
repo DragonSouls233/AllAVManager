@@ -836,6 +836,10 @@ class PatchEngine:
                     # 顶层 rating 才是折算后的 0-10 制，故取 raw_data 里的站点原值）。
                     "source_score": _raw_get(result, "ph_rating"),
                     "uploader": _raw_get(result, "ph_uploader"),
+                    # ⚠️ 点赞数（raw_data["ph_likes"]）**故意不落库**：
+                    #    pornhub 表没有点赞列，source_downloads 语义是"下载量"
+                    #    （PH 站点根本不提供下载量），把点赞数塞进去等于造脏数据。
+                    #    该值只保留在 raw_data 里供排查。
                     "categories": _join_names(
                         _raw_get(result, "ph_categories"), "category"
                     ),

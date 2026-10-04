@@ -25,7 +25,7 @@ from app.crawlers.provider import register_crawler
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 from app.utils.release_date import parse_ph_publish_date, parse_release_date
-from app.scraper.number import is_valid_ph_viewkey
+from app.scraper.number import is_valid_ph_viewkey, ph_viewkey_to_code
 
 logger = get_logger(__name__)
 
@@ -182,6 +182,130 @@ def _parse_duration_to_seconds(duration_str: str) -> Optional[int]:
     return None
 
 
+#: PH 下架 / 不可用页的标题文案。**必须多语言收集**。
+#: 页面标题随请求方语言变化（实测：带 Accept-Language:en → "Video Disabled"；
+#: 不带 → 按出口 IP 判为中文区 → "取消播放视频"）。
+#: 只收英文会漏判 ⇒ 把下架页当正常页解析，标题/分类/推荐演员全部入库。
+_UNAVAILABLE_MARKERS = (
+    # 英文
+    "The page you requested cannot be found",
+    "Page not found",
+    "Video Disabled",
+    "video was removed",
+    "access is restricted",
+    "This video is no longer available",
+    # 中文（实测真实返回）
+    "取消播放视频", "视频已禁用", "视频不可用", "页面不存在", "该视频已被移除",
+    # 西语 / 其它常见语种（PH 是多语站，按 IP 判定语言，不可枚举完，
+    # 靠下面的"标题极短且无实质字段"兜底）
+)
+
+
+def _is_unavailable_page(html: str) -> bool:
+    """判断是否为下架 / 不可用页。
+
+    双重判据：
+      ① 页面含任一下架文案（多语言，见 ``_UNAVAILABLE_MARKERS``）；
+      ② 兜底：og:title 命中下架文案 **或** 标题短于 4 字符
+         （下架页没有真实标题，而正常 PH 标题都远长于 4 字符）。
+    """
+    if not html:
+        return True
+    for marker in _UNAVAILABLE_MARKERS:
+        if marker in html:
+            return True
+    # 只在 <title> / og:title 上做短标题判定，避免正文里的短句误伤
+    m = re.search(r'<meta\s+property="og:title"\s+content="([^"]*)"', html, re.I)
+    title = m.group(1) if m else ""
+    if not title:
+        m = re.search(r"<title>(.*?)</title>", html, re.DOTALL | re.I)
+        title = m.group(1) if m else ""
+    title = title.strip()
+    if title and len(title) <= 4:
+        return True
+    return False
+
+
+def _fill_missing(base: Optional[ScrapeResult], extra: Optional[ScrapeResult]) -> Optional[ScrapeResult]:
+    """用 ``extra`` 补 ``base`` 里缺失的字段（就地修改并返回 base）。
+
+    用于「HTML 解析打底 + flashvars/next_data 补缺」的组合策略：
+    ``base`` 已有值时**不覆盖**（HTML 解析的语义更完整，如演员来自 userInfo 块），
+    只有 base 为 None/空时才取 extra 的值。
+
+    ⚠️ 三值语义注意：``release_date`` / ``rating`` / ``is_uncensored`` 这类字段
+    「源站明确说没有」与「源没说」都表现为 None，合并时无法区分，
+    因此这里只在 base 完全没有该字段时才补，不做「用 0/False 覆盖」——
+    否则会重演 merger 里那个「把库里 True 覆盖成 NULL」的旧问题。
+    """
+    if base is None:
+        return extra
+    if extra is None:
+        return base
+
+    for fld in (
+        "plot", "cover_url", "poster_url", "thumb_url", "trailer_url",
+        "studio", "maker", "series", "duration", "plot_short",
+    ):
+        if not getattr(base, fld, None) and getattr(extra, fld, None):
+            setattr(base, fld, getattr(extra, fld))
+
+    # 评分：base 为 None 才补（HTML 未登录态拿不到评分是正常的）
+    if base.rating is None and extra.rating is not None:
+        base.rating = extra.rating
+    # 发行日期：同上
+    if base.release_date is None and extra.release_date is not None:
+        base.release_date = extra.release_date
+    # 票数：base 为 None 才补
+    if not base.votes and extra.votes:
+        base.votes = extra.votes
+    # 标题：base 一定有（_parse_html 无标题会返 None），不覆盖
+    if not base.original_title and extra.original_title:
+        base.original_title = extra.original_title
+
+    # 列表型字段：并集去重
+    for fld in ("tags", "genres", "sample_images", "extrafanart", "directors", "male_actors"):
+        cur = list(getattr(base, fld, None) or [])
+        for v in (getattr(extra, fld, None) or []):
+            if v not in cur:
+                cur.append(v)
+        if cur:
+            setattr(base, fld, cur)
+
+    # 演员：base 没有才用 extra 的（HTML 的 userInfo 块更可靠）
+    if not base.actors and extra.actors:
+        base.actors = list(extra.actors)
+
+    # raw_data：白名单键补缺
+    for k, v in (extra.raw_data or {}).items():
+        if v in (None, "", [], {}):
+            continue
+        if k in ("ph_views", "ph_likes", "ph_uploader", "ph_rating",
+                 "ph_categories", "ph_is_premium", "ph_is_hd",
+                 "ph_segment", "ph_video_id", "viewkey"):
+            base.raw_data.setdefault(k, v)
+
+    return base
+
+
+def _extract_data_rating(html: str, cls: str) -> int:
+    """取 ``<span class="votesUp" data-rating="882">`` 里的票数。
+
+    真实快照结构（属性顺序是 class 在前、data-rating 在后，且中间还有
+    ``gtm-event-video-underplayer`` 等属性），所以必须**先定位 class 再取
+    同一标签内的 data-rating**，不能用 ``data-rating=...[^>]*votesUp``
+    这种依赖属性顺序的写法。
+    """
+    for m in re.finditer(
+        rf'<span[^>]*class="[^"]*\b{cls}\b[^"]*"[^>]*>', html
+    ):
+        tag = m.group(0)
+        d = re.search(r'data-rating="(\d+)"', tag)
+        if d:
+            return int(d.group(1))
+    return 0
+
+
 def _normalize_rating(raw) -> Optional[float]:
     """把 PornHub 的百分制评分归一化到 ``ScrapeResult`` 契约的 **0-10**。
 
@@ -268,13 +392,28 @@ class PornhubCrawler(BaseCrawler):
             cookies = dict(_PH_BASE_COOKIES)
             last_error = None
             for attempt in range(1, _REQ_RETRIES + 1):
+                # 🔴 2026-10-05 请求间隔。PH 对**详情页**（1.5MB/次，比 JSON 端点重得多）
+                # 的频次限制远比 webmasters 严：实测连续请求若干次后开始
+                # `SSLError: (35) Recv failure: Connection was reset`，
+                # 整批刮削静默返回 None（连"本片正常"也拿不到）。
+                # 每次重试之间退避，且首次请求前也让开一点，避免与
+                # 同一 tick 内的 pornhub_api 请求叠在一起。
+                if attempt > 1:
+                    await asyncio.sleep(_REQ_RETRY_BASE ** attempt)
                 html_text = await client.get_text(
                     url,
                     cookies=cookies,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; rv:115.0) Gecko/20100101 Firefox/115.0",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.9",
+                        # ⚠️ 2026-10-05 刻意**不发** Accept-Language。
+                        #   实测 PH 详情页所有标题来源（og:title / <title> / h1 /
+                        #   JSON-LD name）都随请求方语言变：
+                        #     en-US → "Sharing A Bed With Mi Hot Step Sister…"
+                        #     不发   → "和我最好的朋友的电影之夜…"（按出口 IP 判中文区）
+                        #   而 GraphQL 端点对 en/es/无 header **恒返回原标题**。
+                        #   所以 HTML 源的标题只能当兜底，权威标题由 merger 的
+                        #   field_priority 交给 pornhub_api（见 merger.py）。
                         "Referer": "https://www.pornhub.com/",
                         "Origin": "https://www.pornhub.com",
                     },
@@ -301,37 +440,48 @@ class PornhubCrawler(BaseCrawler):
                     break  # 成功获取
 
                 if attempt < _REQ_RETRIES:
-                    wait = _REQ_RETRY_BASE ** attempt
-                    logger.warning(f"PornHub 请求失败 [{viewkey}] 第{attempt}次({last_error}), {wait}s 后重试")
-                    await asyncio.sleep(wait)
+                    # 退避已在上方循环开头统一处理，此处只记日志
+                    logger.warning(
+                        f"PornHub 请求失败 [{viewkey}] 第{attempt}次({last_error})，退避后重试"
+                    )
 
             if last_error:
                 logger.warning(f"PornHub 请求最终失败 [{viewkey}]: {last_error}")
                 self.mark_error()
                 return None
 
-            if ("The page you requested cannot be found" in html_text
-                    or "Page not found" in html_text
-                    or "Video Disabled" in html_text
-                    or "video was removed" in html_text.lower()
-                    or "access is restricted" in html_text.lower()):
+            # 下架/不可用检测。
+            # 🔴 2026-10-05 真实抓取补充：下架页的标题随语言变，实测不发
+            #    Accept-Language（按出口 IP 判为中文区）时返回 **"取消播放视频"**，
+            #    而旧关键词表只有英文 "Video Disabled" ⇒ 完全识别不到，
+            #    于是把"取消播放视频"当成真标题入库（实测 viewkey=6979039897dc1：
+            #    title="Video Disabled"、actor 写进 24 个推荐位演员）。
+            #    同时它的 categoriesWrapper 仍有 29 个分类，会污染 genre 列。
+            if _is_unavailable_page(html_text):
                 logger.info(f"视频不可用: {viewkey}")
                 return None
 
-            # === 策略1: flashvars 提取（参考 PornHubDL inject.js + yt-dlp） ===
-            result = self._try_flashvars(html_text, viewkey)
-            if result:
-                self.mark_success()
-                return result
-
-            # === 策略2: __NEXT_DATA__ 提取（Next.js SSR） ===
-            result = self._try_next_data(html_text, viewkey)
-            if result:
-                self.mark_success()
-                return result
-
-            # === 策略3: HTML 页面解析兜底（参考 Hitomi-Downloader 第135-141行 + VaultX） ===
+            # === 解析顺序：先 HTML 全量（唯一能拿到演员/uploader 的路径），
+            #     再用 flashvars / __NEXT_DATA__ **补缺**。
+            #
+            # 🔴 2026-10-05 修复：旧顺序是「flashvars 命中就 return」，
+            #   而 flashvars（播放器 JS 变量）**不含演员、不含 uploader**。
+            #   实测 4/4 样本：走 flashvars 分支时 actors=[]、uploader=None，
+            #   而 GraphQL 源的 pornstars 恒为空 ⇒ 演员彻底丢失，
+            #   且因为两源都没演员，合并后 actors 恒为空（库里 actor 列靠目录名兜底）。
+            # 现在：HTML 解析打底（演员/uploader/播放量/日期都在这里），
+            # flashvars/next_data 只填 HTML 拿不到的字段。
             result = self._parse_html(html_text, viewkey)
+
+            # flashvars 补缺（参考 PornHubDL inject.js + yt-dlp）
+            fv = self._try_flashvars(html_text, viewkey)
+            if fv:
+                result = _fill_missing(result, fv)
+            # __NEXT_DATA__ 补缺（Next.js SSR）
+            nd = self._try_next_data(html_text, viewkey)
+            if nd:
+                result = _fill_missing(result, nd)
+
             if result:
                 self.mark_success()
                 return result
@@ -423,16 +573,12 @@ class PornhubCrawler(BaseCrawler):
                             profile = star.get("profileAvatar")
                             if isinstance(profile, str):
                                 avatar_url = profile
-                        extra_id = star.get("id")
-                        extra_url = star.get("url") or star.get("permalink")
-                        if extra_id or extra_url:
-                            ps["extra"] = {"id": extra_id, "url": extra_url}
                     if not avatar_url:
                         avatar_url = ps.get("avatar") or ps.get("profileAvatar") or ps.get("thumb")
-                    if avatar_url:
-                        actors.append(ActorInfo(name=name, avatar_url=avatar_url, extra=ps.get("extra", {})))
-                    else:
-                        actors.append(ActorInfo(name=name, extra=ps.get("extra", {})))
+                    # ⚠️ ActorInfo 只有 name / japanese_name / avatar_url 三个字段，
+                    #    旧实现传 extra= 一旦命中本分支就 TypeError 整个 __NEXT_DATA__
+                    #    策略报废（被上层 except 吞掉，只留一行日志）。
+                    actors.append(ActorInfo(name=name, avatar_url=avatar_url or None))
             elif isinstance(ps, str):
                 actors.append(ActorInfo(name=ps))
 
@@ -463,7 +609,12 @@ class PornhubCrawler(BaseCrawler):
             cover = video_data.get("poster_url") or video_data.get("thumb") or video_data.get("image_url", "")
 
         result = ScrapeResult(
-            code=viewkey,
+            # 🔴 2026-10-05 修复：爬虫产**裸 viewkey**，扫描器产 **ph+viewkey**，
+            #    落库按 code 精确匹配（workflow.py:407 `where code == result.code`）
+            #    ⇒ 两侧口径不一致时永远匹配不上，每次刮削都**插一条新行**，
+            #    实测库里同时存在 ph6a488932e1d19 与 6a488932e1d19 两份同一部片。
+            #    统一收口到 ph_viewkey_to_code（番号模块唯一真相源）。
+            code=ph_viewkey_to_code(viewkey),
             title=title,
             source="pornhub",
             source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
@@ -534,7 +685,12 @@ class PornhubCrawler(BaseCrawler):
                 title = re.sub(r'<[^>]+>', '', title_h1.group(1)).strip()
 
         result = ScrapeResult(
-            code=viewkey,
+            # 🔴 2026-10-05 修复：爬虫产**裸 viewkey**，扫描器产 **ph+viewkey**，
+            #    落库按 code 精确匹配（workflow.py:407 `where code == result.code`）
+            #    ⇒ 两侧口径不一致时永远匹配不上，每次刮削都**插一条新行**，
+            #    实测库里同时存在 ph6a488932e1d19 与 6a488932e1d19 两份同一部片。
+            #    统一收口到 ph_viewkey_to_code（番号模块唯一真相源）。
+            code=ph_viewkey_to_code(viewkey),
             title=title,
             source="pornhub",
             source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
@@ -581,12 +737,25 @@ class PornhubCrawler(BaseCrawler):
 
         使用正则提取关键字段，不依赖 BeautifulSoup 减少依赖。
         """
+        # 🔴 2026-10-05：下架页必须在**解析前**拦掉。实测未登录/无 Accept-Language
+        #    时下架页 og:title="取消播放视频"，且 categoriesWrapper 里仍有 29 个
+        #    分类、页面还挂着推荐位 —— 解析出去就是一条标题为"取消播放视频"、
+        #    genre 塞满推荐分类的垃圾记录。
+        if _is_unavailable_page(html_text):
+            logger.info(f"[pornhub] 下架页，跳过解析: {viewkey}")
+            return None
+
         title = self._extract_title_html(html_text)
         if not title:
             return None
 
         result = ScrapeResult(
-            code=viewkey,
+            # 🔴 2026-10-05 修复：爬虫产**裸 viewkey**，扫描器产 **ph+viewkey**，
+            #    落库按 code 精确匹配（workflow.py:407 `where code == result.code`）
+            #    ⇒ 两侧口径不一致时永远匹配不上，每次刮削都**插一条新行**，
+            #    实测库里同时存在 ph6a488932e1d19 与 6a488932e1d19 两份同一部片。
+            #    统一收口到 ph_viewkey_to_code（番号模块唯一真相源）。
+            code=ph_viewkey_to_code(viewkey),
             title=title,
             source="pornhub",
             source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
@@ -613,9 +782,23 @@ class PornhubCrawler(BaseCrawler):
             result.rating = rating
 
         # 播放量（参考 VaultX: span class_='count'）
+        # 🔴 2026-10-05 修复：旧实现把播放量塞进 ``result.votes``。
+        #    ``votes`` 的契约语义是**评分人数**（NFO 写 <votes>，Kodi 显示为
+        #    评分票数），而播放量在 pornhub 表有**独立列** ``source_views``
+        #    （strategy._scrape_missing 读 ``raw_data["ph_views"]``）。
+        #    塞错的后果：库里 votes=214000（播放量）而评分人数其实是 882，
+        #    且合并时 votes 还会与其他源的评分人数互相覆盖。
+        #    现在：播放量进 raw_data["ph_views"]，votes 只放真实的评分人数。
         views = self._extract_views_html(html_text)
         if views is not None:
-            result.votes = views
+            result.raw_data["ph_views"] = views
+        # ⚠️ 不在此处设 votes：`votesUp` 是**点赞数**（实测 882），
+        #    而 `votes` 契约语义是**评分人数**（GraphQL 的 `ratings`，实测 981），
+        #    两者数量级不同。评分人数由 pornhub_api 源提供，本源留空避免口径打架。
+        #    点赞数仍有价值，放 raw_data 供落 pornhub 专属列。
+        likes = _extract_data_rating(html_text, "votesUp")
+        if likes > 0:
+            result.raw_data["ph_likes"] = likes
 
         # 发行日期（PH 详情页多处出现，取第一个能解析成功的）
         release_date = self._extract_release_date_html(html_text)
@@ -635,23 +818,59 @@ class PornhubCrawler(BaseCrawler):
             result.studio = uploader
 
         # 原始数据尝试
+        # ⚠️ 不能整体赋值覆盖：上面已写入 raw_data["ph_views"]（播放量），
+        #    整体替换会把它连同其它已解析字段一起丢掉。
         fv = self._try_flashvars(html_text, viewkey)
         if fv and fv.raw_data:
-            result.raw_data = fv.raw_data
+            result.raw_data.update(fv.raw_data)
+            result.raw_data["ph_views"] = views
         else:
             md = self._try_media_definitions(html_text, viewkey)
-            if md:
-                result.raw_data = md.raw_data if hasattr(md, "raw_data") else {}
+            if md and getattr(md, "raw_data", None):
+                result.raw_data.update(md.raw_data)
+                result.raw_data["ph_views"] = views
+
+        # 上传者/频道名同步进 raw_data，落 pornhub.uploader 专属列
+        if uploader:
+            result.raw_data["ph_uploader"] = uploader
 
         return result
 
     def _extract_title_html(self, html: str) -> str:
-        """从 HTML 提取标题（参考 Hitomi-Downloader 第135行）"""
-        # 首选 og:title
+        """从 HTML 提取标题。
+
+        ⚠️ 2026-10-05 实测结论：**HTML 页面上所有标题来源都随语言漂移**，
+        拿不到稳定值。同一 viewkey=69ec001b86c55：
+
+            | 来源              | Accept-Language:en | Accept-Language:es | 不发 AL |
+            |-------------------|--------------------|--------------------|---------|
+            | og:title          | Sharing A Bed…     | Compartir Cama…    | 中文    |
+            | <title>           | Sharing a Bed…     | Compartir Cama…    | 中文    |
+            | h1.title          | Sharing A Bed…     | Compartir Cama…    | 中文    |
+            | JSON-LD name      | Sharing A Bed…     | Compartir Cama…    | 中文    |
+
+        ⇒ 本源**不声称**能给出与 PH 一致的原标题。真正稳定的原标题只在
+        ``webmasters/video_by_id``（pornhub_api 源，en/es/无 header 三者实测同值）。
+        因此：
+          · `merger` 的 field_priority 已把 title 交给 pornhub_api（5）优先于本源（60）；
+          · 本方法的返回值只作为**兜底**（GraphQL 失败时），
+          · 合并器的 ``field_sources`` 会记录最终标题来自哪个源，便于排查。
+        """
+        # 首选 og:title（兜底值）
         m = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html, re.I)
         if m:
             title = m.group(1)
             title = re.sub(r'\s*-\s*(?:Pornhub\.com|PornHub)\s*$', '', title).strip()
+            if title:
+                return title
+
+        # JSON-LD VideoObject.name（同样随语言变，但比 og:title 少一层站点后缀）
+        m = re.search(
+            r'"@type"\s*:\s*"VideoObject".{0,400}?"name"\s*:\s*"([^"]{3,300})"',
+            html, re.DOTALL,
+        )
+        if m:
+            title = m.group(1).strip()
             if title:
                 return title
 
@@ -688,54 +907,81 @@ class PornhubCrawler(BaseCrawler):
         return None
 
     def _extract_actors_html(self, html: str) -> list[ActorInfo]:
-        """从 HTML 提取演员列表（参考 VaultX/Hitomi-Downloader 第141行）"""
-        actors = []
-        seen = set()
+        """从 HTML 提取**本片真实演员**。
 
-        # 方案1: pornstarsWrapper（参考 VaultX 第113行）
-        # 查找 pornstarsWrapper 区块内的所有 a 标签
-        pw_match = re.search(r'class="[^"]*pornstarsWrapper[^"]*"(.*?)(?=class="|</div>\s*</div>)', html, re.DOTALL)
-        if pw_match:
-            for m_a in re.finditer(r'<a[^>]*href="[^"]*(?:pornstar|model)/([^"/&?]+)[^"]*"[^>]*>\s*([^<]+)', pw_match.group(1), re.DOTALL):
-                name = (m_a.group(2) or m_a.group(1)).strip()
-                if name and name not in seen:
-                    seen.add(name)
-                    actors.append(ActorInfo(name=name))
+        🔴 2026-10-05 重写。旧实现有两条致命错误（真实快照
+        ``G:\\MDCX\\_test_archive\\ph_snap\\69ec001b86c55.es.html`` 实测）：
 
-        # 方案2: userInfo > usernameWrap（参考 Hitomi-Downloader 第141行 + VaultX 第105-109行）
-        if not actors:
-            ui_match = re.search(r'class="[^"]*userInfo[^"]*"(.*?)(?=class="|</div>\s*</div>)', html, re.DOTALL)
-            if ui_match:
-                uw_match = re.search(r'class="[^"]*usernameWrap[^"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)', ui_match.group(1))
-                if uw_match:
-                    name = uw_match.group(1).strip()
-                    if name:
-                        actors.append(ActorInfo(name=name))
+        ① **方案1 抓的是「推荐 star」不是本片演员**。
+           真实页面结构（PH 未登录态）：
+           ``<div class="video-info-row js-suggestionsRow"><div class="pornstarsWrapper">
+             <p>Estrellas porno&nbsp;</p><a .../model/rosi-morgan>Rosi Morgan</a> ...``
+           —— `pornstarsWrapper` 整块带 `js-suggestionsRow`（"js-suggestions" =
+           **推荐位**），是站点猜你喜欢。实测旧实现从这一块抓出 **40 个**演员：
+           `Fantasypov / Luna Star / Ruth Lee / Anna Cherry7 / Rosi Morgan …`，
+           而本片演员只有 1 人。⇒ 演员表被彻底污染，且每部影片都会重复写入
+           这 40 个"演员"，`movie_count` 虚增。
+        ② **方案2 的正则永远匹配不到**：旧右边界是
+           ``(?=class="|</div>\\s*</div>)``，在 ``<div class="userInfo">`` 后的
+           **第一个** ``class="`` 处就截断（``<div class="usernameWrap ...">``），
+           实测 ``userInfo 块定位: False``。
 
-        # 方案3: 从 data-video-pornstars 属性提取
-        if not actors:
-            m_p = re.search(r'data-video-pornstars\s*=\s*"([^"]+)"', html)
-            if m_p:
-                for part in m_p.group(1).split(","):
-                    name = part.strip()
-                    if name and name not in seen:
-                        seen.add(name)
-                        actors.append(ActorInfo(name=name))
+        真实演员在 ``userInfo`` 块内：``<a rel="" href="/model/rosi-lane"
+        class="bolded">Rosi Lane</a>``（外层 `video-detailed-info > userRow`）。
+        这里改为**定位 userInfo 块边界 → 块内只取 /model/ 链接的可见文本**，
+        并显式排除 `js-suggestionsRow` 区块。
+        """
+        actors: list[ActorInfo] = []
+        seen: set[str] = set()
 
-        # 方案4: /pornstar/ 链接中的名字(需排除uploader页面链接)
-        if not actors:
-            uploader_slug = ""
-            um = re.search(r'<a[^>]*href="[^"]*/(?:pornstar|model)/([^"/&?]+)"[^>]*>', html)
-            if um:
-                uploader_slug = um.group(1).strip().lower()
-            for m_a in re.finditer(r'<a[^>]*href="[^"]*(?:pornstar|model)/([^"/&?]+)"[^>]*>', html):
-                slug = m_a.group(1).strip().lower()
-                if slug in ("", uploader_slug):
-                    continue
-                name = slug.replace("-", " ").title().strip()
-                if name and name not in seen and len(name) < 50:
-                    seen.add(name)
-                    actors.append(ActorInfo(name=name))
+        def _add(name: str, avatar: str = "") -> None:
+            name = re.sub(r"\s+", " ", (name or "")).strip()
+            if not name or len(name) > 60:
+                return
+            key = name.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            # ⚠️ ActorInfo 只有 name / japanese_name / avatar_url 三个字段，
+            #    传 extra= 会 TypeError（实测已崩过一次）。
+            actors.append(ActorInfo(name=name, avatar_url=avatar or None))
+
+        # ---- 1) 首选：userInfo 块（真实演员 / 模特）----
+        # 边界用「到下一个同级别 div 标签」而非 `class="`，否则会在 usernameWrap 处截断。
+        for m in re.finditer(
+            r'<div class="userInfo">(.*?)(?=<div class="(?:video-detailed-info|'
+            r'pornstarsWrapper|categoriesWrapper|tagsWrapper|commentsWrapper|'
+            r'video-info-row)|<div class="userInfoBlock">)',
+            html,
+            re.DOTALL,
+        ):
+            block = m.group(1)
+            for a in re.finditer(
+                r'<a[^>]*href="(/model/[^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL
+            ):
+                name = re.sub(r"<[^>]+>", "", a.group(2)).strip()
+                if name:
+                    _add(name)
+            # 部分页面直接用 <a> 文本包一层 span（如 "Rosi Lane <span class=...>"）
+            if not actors:
+                uw = re.search(
+                    r'class="usernameWrap[^"]*"[^>]*>(.*?)</div>', block, re.DOTALL
+                )
+                if uw:
+                    for a in re.finditer(r'<a[^>]*>([^<]{2,60})</a>', uw.group(1)):
+                        _add(a.group(1))
+        if actors:
+            # 头像：userAvatar 里的图（真实结构 userAvatar > a > img[src]）
+            mb = re.search(r'<div class="userAvatar">.*?src="([^"]+)"', html, re.DOTALL)
+            if mb and len(actors) == 1:
+                actors[0].avatar_url = mb.group(1)
+            return actors
+
+        # ---- 2) 兜底：data-video-pornstars（部分镜像页有此属性）----
+        m_p = re.search(r'data-video-pornstars\s*=\s*"([^"]+)"', html)
+        if m_p:
+            for part in m_p.group(1).split(","):
+                _add(part.strip())
 
         return actors
 
@@ -744,25 +990,38 @@ class PornhubCrawler(BaseCrawler):
 
         修复(2026-10-03)：原实现返回**秒**（三处分支：var.duration / meta[video:duration]
         / data-duration），却直接赋给 result.duration。统一在末尾折算成分钟。
+
+        🔴 2026-10-05 再修（真实快照实测）：``<var class="duration">`` 在 PH 详情页
+        有 **77 个**（推荐位 + 相关视频 + 剧集列表各占一堆），实测第一个命中是
+        ``'10:27'`` —— **推荐视频的时长**，被当成本片时长写进库（真实 865 秒 = 14 分钟）。
+        ⇒ 把 ``var.duration`` 从「首选」降为**最后的兜底**，优先用只可能描述本片的
+        ``<meta property="video:duration">``（实测 content="865"，唯一）。
         """
         seconds: Optional[int] = None
 
-        # duration 元素（<var class="duration">10:44</var>）
-        m = re.search(r'<var[^>]*class="[^"]*duration[^"]*"[^>]*>\s*([^<]+)', html)
+        # ① meta video:duration（秒）—— 只可能描述本片，优先
+        m = re.search(
+            r'<meta\s+property="video:duration"\s+content="(\d+)"', html, re.I
+        )
+        if not m:
+            m = re.search(
+                r'<meta[^>]*property="video:duration"[^>]*content="(\d+)"', html, re.I
+            )
         if m:
-            seconds = _parse_duration_to_seconds(m.group(1).strip())
+            seconds = int(m.group(1))
 
-        # meta video:duration（ISO 8601 或纯秒数）
-        if seconds is None:
-            m = re.search(r'<meta\s+property="video:duration"\s+content="(\d+)"', html, re.I)
-            if m:
-                seconds = int(m.group(1))
-
-        # data-duration（PH 惯例为秒）
+        # ② data-duration（PH 惯例为秒）
         if seconds is None:
             m = re.search(r'data-duration\s*=\s*["\'](\d+)["\']', html)
             if m:
                 seconds = int(m.group(1))
+
+        # ③ var class="duration"（mm:ss）—— 页面上有 77 个，多为推荐视频，
+        #    放最后兜底；且必须校验与前两者不冲突（差值过大说明抓到别的视频）。
+        if seconds is None:
+            m = re.search(r'<var[^>]*class="[^"]*duration[^"]*"[^>]*>\s*([^<]+)', html)
+            if m:
+                seconds = _parse_duration_to_seconds(m.group(1).strip())
 
         if not seconds or seconds <= 0:
             return None
@@ -771,109 +1030,181 @@ class PornhubCrawler(BaseCrawler):
     def _extract_release_date_html(self, html: str) -> Optional[date]:
         """从 HTML 提取发行日期 → `datetime.date`。
 
-        🔴 2026-10-04 新增：PH 的 HTML 主源此前**完全没有**发行日期解析
-        （整个文件搜不到任何日期相关代码），与 `pornhub_api.py` 把日期塞进
-        raw_data 无人读叠加 ⇒ **pornhub 两个源都产不出 release_date**，
-        库里该列永远为空，NFO 的 `<premiered>` 也缺失。
+        🔴 2026-10-04 新增：PH 的 HTML 主源此前**完全没有**发行日期解析，
+        与 `pornhub_api.py` 把日期塞进 raw_data 无人读叠加 ⇒ **pornhub 两个源
+        都产不出 release_date**，库里该列永远为空，NFO 的 `<premiered>` 也缺失。
+
+        🔴 2026-10-05 再修：真实快照核实后，旧 pattern 全部落空：
+          - ``<span class="videoUploaded">`` **页面上不存在**（count=0）
+          - ``"uploadDate"`` 旧正则要求 ``\\d{10,14}`` 纯数字，而真实值是
+            **ISO8601 带时区**：``"uploadDate": "2026-04-25T00:13:14+00:00"``
+          ⇒ 实测 6 个 pattern 全落空 → date=None。
 
         PH 详情页的日期出现在多处（按可靠性排序，命中即止）：
-          ① `<meta property="video:release_date" content="2024-01-31T08:00:00">`
-          ② `<span class="videoUploaded">Jan 31, 2024</span>`
-          ③ `__NEXT_DATA__` JSON 里的 `publishDate`（unix 秒）
-          ④ flashvars 的 `uploadDate`（形如 `20240131000000`）
+          ① JSON-LD ``"uploadDate": "2026-04-25T00:13:14+00:00"``（实测存在）
+          ② ``<meta property="video:release_date">`` / ``itemprop="uploadDate"``
+          ③ ``<span class="videoUploaded">Jan 31, 2024</span>``（旧版页面）
+          ④ flashvars ``uploadDate``（形如 ``20240131000000``）
         统一交给 `release_date` 真相源解析，解析不出返 None（不填今天）。
         """
         patterns = (
+            # ① JSON-LD ISO8601（真实页面主形态）
+            r'"uploadDate"\s*:\s*"([^"]{8,40})"',
+            r'"datePublished"\s*:\s*"([^"]{8,40})"',
+            # ② meta
             r'<meta\s+property="video:release_date"\s+content="([^"]+)"',
             r'<meta\s+itemprop="uploadDate"\s+content="([^"]+)"',
+            # ③ 旧版可见文本
             r'class="[^"]*videoUploaded[^"]*"[^>]*>\s*([^<]+?)\s*<',
-            r'"uploadDate"\s*:\s*"(\d{10,14})"',
-            r'"publishDate"\s*:\s*"?(\d{10,13})"?',
             r'class="[^"]*videoUploaded[^"]*"[^>]*>.*?(\d{4}-\d{2}-\d{2})',
+            # ④ flashvars 紧凑日期
+            r'"uploadDate"\s*:\s*"?(\d{10,14})"?',
+            r'"publishDate"\s*:\s*"?(\d{10,13})"?',
         )
         for pat in patterns:
             m = re.search(pat, html, re.I | re.DOTALL)
             if not m:
                 continue
             raw = m.group(1).strip()
-            parsed = parse_ph_publish_date(raw)      # unix / 紧凑日期
+            # ISO8601（2026-04-25T00:13:14+00:00）优先走通用解析
+            parsed = parse_release_date(raw)
             if parsed:
                 return parsed
-            parsed = parse_release_date(raw)          # 带分隔日期 / 英文月份
+            parsed = parse_ph_publish_date(raw)      # unix / 紧凑日期
             if parsed:
                 return parsed
         return None
 
     def _extract_rating_html(self, html: str) -> Optional[float]:
-        """提取评分（参考 VaultX 第126-132行: span class='percent'）"""
-        m = re.search(r'<span[^>]*class="[^"]*percent[^"]*"[^>]*>\s*(\d+(?:\.\d+)?)\s*%', html)
+        """提取评分 → **0-10**。
+
+        🔴 2026-10-05 修复：真实页面**已无** ``<span class="percent">``
+        （实测 4 处 "percent" 全在相册区 ``album-photo-percentage``），
+        旧实现第一分支恒不命中，只能落到 votesUp 分支，而该分支的正则
+        ``data-rating="\\d+"[^>]*votesUp`` 依赖属性顺序，实际是
+        ``<span class="votesUp" data-rating="882">`` ⇒ 实测 rating=None。
+
+        🔴 但**不能**用 ``up / (up + down)`` 折算：未登录页面**只有 votesUp、
+        没有 votesDown**（实测快照 votesDown 出现 0 次）⇒ 该式恒等于 1.0，
+        每部片子都会被打成 10.0 分（真实值 8.99，89.9% 好评率）。
+        真实评分（0-100 百分制）只存在于 `webmasters` JSON 端点，
+        由 `pornhub_api` 源提供（`meta.rating` 0-5 → ×2）。
+
+        所以本方法只在**两个票数都存在**（登录态）时折算，否则返回 None，
+        让评分走 GraphQL 源 —— 宁缺勿错。
+        """
+        # ① 仍存在的百分制写法（保留兼容）
+        m = re.search(r'<span[^>]*class="percent"[^>]*>\s*(\d+(?:\.\d+)?)\s*%', html)
         if m:
-            try:
-                return float(m.group(1))
-            except ValueError:
-                pass
-        # votesUp / votesDown
-        up = 0
-        down = 0
-        m_up = re.search(r'data-rating\s*=\s*["\'](\d+)["\'][^>]*votesUp', html)
-        if m_up:
-            up = int(m_up.group(1))
-        m_down = re.search(r'data-rating\s*=\s*["\'](\d+)["\'][^>]*votesDown', html)
-        if m_down:
-            down = int(m_down.group(1))
-        if up + down > 0:
+            return _normalize_rating(m.group(1))
+
+        # ② 好评率折算：仅当 up 与 down **都**存在（登录态）才可信
+        up = _extract_data_rating(html, "votesUp")
+        down = _extract_data_rating(html, "votesDown")
+        if up > 0 and down > 0:
             return round(up / (up + down) * 10, 1)
         return None
 
     def _extract_views_html(self, html: str) -> Optional[int]:
-        """提取播放量（参考 VaultX 第121-123行: span class='count'）"""
-        m = re.search(r'<span[^>]*class="[^"]*count[^"]*"[^>]*>\s*([^<]+)', html)
+        """提取播放量。
+
+        🔴 2026-10-05 修复：旧实现只读 ``<span class="count">``，而该文本是
+        **缩写**（实测 ``'214K'`` / ``'549K'``）⇒ 解析出 214000，
+        而真实播放量是 214450（JSON-LD ``interactionStatistic`` 里是精确值）。
+        缩写值误差可达 ±999，且会污染 pornhub.source_views 列。
+
+        改为优先读 JSON-LD 的 ``WatchAction`` 计数，``span.count`` 降为兜底。
+        """
+        m = re.search(
+            r'"interactionType"\s*:\s*"https://schema\.org/WatchAction"'
+            r'\s*,\s*"userInteractionCount"\s*:\s*(\d+)',
+            html,
+        )
+        if m:
+            return int(m.group(1))
+        m = re.search(r'<span[^>]*class="[^"]*\bcount\b[^"]*"[^>]*>\s*([^<]+)', html)
         if m:
             return _parse_number(m.group(1))
         return None
 
     def _extract_tags_html(self, html: str) -> tuple[list[str], list[str]]:
-        """提取标签和分类（参考 VaultX 第114-119行: div class='categoriesWrapper')"""
-        tags = []
-        categories = []
+        """提取标签和分类。
 
-        # 分类（categoriesWrapper 区块，参考 VaultX 第114行）
-        cat_match = re.search(r'class="[^"]*categoriesWrapper[^"]*"(.*?)(?=class="|</div>\s*</div>)', html, re.DOTALL)
-        if cat_match:
-            for m_a in re.finditer(r'<a[^>]*>\s*([^<]+)\s*</a>', cat_match.group(1)):
-                text = m_a.group(1).strip()
-                if text and text not in ("All", "Categories"):
+        🔴 2026-10-05 修复：旧正则用 ``(?=class="|</div>\\s*</div>)`` 做右边界，
+        而真实块内每个 ``<a>`` 自身就带 class（实测
+        ``<a class="gtm-event-video-underplayer item" data-label="category" ...>``）
+        ⇒ 边界在**第一个 a 标签处**立刻闭合，分类只抓到 1 个、标签恒为 0 条。
+        真实快照实测：旧实现 tags=0 / cats=7（且漏 "Babe"），改边界后 tags=21 / cats=8。
+
+        块的真实边界是 ``</div></div>``（内层 wrapper + 外层 video-info-row）。
+        """
+        tags: list[str] = []
+        categories: list[str] = []
+
+        def _collect(cls: str, out: list[str]) -> None:
+            m = re.search(
+                rf'<div class="{cls}">(.*?)</div>\s*</div>', html, re.DOTALL
+            )
+            if not m:
+                return
+            for a in re.finditer(r"<a[^>]*>(.*?)</a>", m.group(1), re.DOTALL):
+                text = re.sub(r"<[^>]+>", "", a.group(1))
+                text = re.sub(r"\s+", " ", text).replace("\xa0", " ").strip()
+                if text and text not in out:
+                    out.append(text)
+
+        _collect("categoriesWrapper", categories)
+        _collect("tagsWrapper", tags)
+
+        # 兜底：分类/标签链接（无 wrapper 结构的镜像页）
+        if not categories:
+            for a in re.finditer(
+                r'<a[^>]*href="/(?:video\?c=\d+|categories/)[^"]*"[^>]*>(.*?)</a>',
+                html, re.DOTALL,
+            ):
+                text = re.sub(r"<[^>]+>", "", a.group(1)).strip()
+                if text and text not in categories:
                     categories.append(text)
-
-        # 标签（tagsWrapper 区块）
-        tag_match = re.search(r'class="[^"]*tagsWrapper[^"]*"(.*?)(?=class="|</div>\s*</div>)', html, re.DOTALL)
-        if tag_match:
-            for m_a in re.finditer(r'<a[^>]*>\s*([^<]+)\s*</a>', tag_match.group(1)):
-                text = m_a.group(1).strip()
-                if text:
-                    tags.append(text)
-
-        # 通用标签提取
-        if not tags and not categories:
-            for m_a in re.finditer(r'<a[^>]*href="/video\?c=\d+[^"]*"[^>]*>\s*([^<]+)\s*</a>', html):
-                text = m_a.group(1).strip()
-                if text:
-                    categories.append(text)
-            for m_a in re.finditer(r'<a[^>]*href="/tags/[^"]*"[^>]*>\s*([^<]+)\s*</a>', html):
-                text = m_a.group(1).strip()
-                if text:
+        if not tags:
+            for a in re.finditer(
+                r'<a[^>]*href="/tags/[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL
+            ):
+                text = re.sub(r"<[^>]+>", "", a.group(1)).strip()
+                if text and text not in tags:
                     tags.append(text)
 
         return tags, categories
 
     def _extract_uploader_html(self, html: str) -> Optional[str]:
-        """提取上传者"""
-        m = re.search(r'class="[^"]*usernameWrap[^"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)', html)
+        """提取上传者 / 模特名。
+
+        🔴 2026-10-05 修复：旧正则在**全页**搜第一个 ``usernameWrap``，
+        而真实页面的第一个 ``usernameWrap`` 落在
+        ``video-info-row js-suggestionsRow``（**推荐位**）里 ⇒ 实测返回
+        ``'NoLube'``（一个跟本片毫无关系的推荐频道），而本片上传者
+        真实值是 ``Rosi Lane``。
+        改为只在 ``userInfo`` 块内取，与 `_extract_actors_html` 同一口径。
+        """
+        m = re.search(
+            r'<div class="userInfo">(.*?)(?=<div class="(?:video-detailed-info|'
+            r'pornstarsWrapper|categoriesWrapper|tagsWrapper|commentsWrapper|'
+            r'video-info-row)|<div class="userInfoBlock">)',
+            html,
+            re.DOTALL,
+        )
         if m:
-            return m.group(1).strip()
-        m = re.search(r'"uploader"\s*:\s*"([^"]+)"', html)
-        if m:
-            return m.group(1)
+            a = re.search(
+                r'<a[^>]*href="/model/[^"]+"[^>]*>(.*?)</a>', m.group(1), re.DOTALL
+            )
+            if a:
+                name = re.sub(r"<[^>]+>", "", a.group(1))
+                name = re.sub(r"\s+", " ", name).strip()
+                if name:
+                    return name
+        # 兜底：JSON-LD 的 author 字段（真实快照："author": "Rosi Lane"）
+        m_jsonld = re.search(r'"author"\s*:\s*"([^"]{2,60})"', html)
+        if m_jsonld:
+            return m_jsonld.group(1).strip()
         return None
 
     # ===== 工具方法 =====
@@ -888,7 +1219,12 @@ class PornhubCrawler(BaseCrawler):
         title = re.sub(r'[\\/:*?"<>|]', '', title).strip()
 
         result = ScrapeResult(
-            code=viewkey,
+            # 🔴 2026-10-05 修复：爬虫产**裸 viewkey**，扫描器产 **ph+viewkey**，
+            #    落库按 code 精确匹配（workflow.py:407 `where code == result.code`）
+            #    ⇒ 两侧口径不一致时永远匹配不上，每次刮削都**插一条新行**，
+            #    实测库里同时存在 ph6a488932e1d19 与 6a488932e1d19 两份同一部片。
+            #    统一收口到 ph_viewkey_to_code（番号模块唯一真相源）。
+            code=ph_viewkey_to_code(viewkey),
             title=title,
             source="pornhub",
             source_url=VIEW_PAGE_URL.format(viewkey=viewkey),
@@ -1113,7 +1449,8 @@ class PornhubCrawler(BaseCrawler):
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; rv:115.0) Gecko/20100101 Firefox/115.0",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.9",
+                        # 与 scrape() 同口径：不发 Accept-Language，避免卡片标题
+                        # 随请求方语言变成翻译标题（对比查重时会与库标题对不上）。
                         "Referer": "https://www.pornhub.com/",
                     },
                     timeout=_REQ_TIMEOUT,

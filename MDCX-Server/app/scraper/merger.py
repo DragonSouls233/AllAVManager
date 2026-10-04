@@ -324,8 +324,20 @@ class MergeConfig:
                 # ---- 标题：中文源优先 ----
                 # 全局表里 pornhub 与 javbus 同为 10，但 PH 的 HTML 源只有英文标题，
                 # 让位给有中文标题的聚合源。
+                #
+                # 🔴 2026-10-05 PH 标题口径统一（真实抓取实测）：
+                #   PH 的**详情页 HTML** 会按 Accept-Language 返回**翻译标题**，
+                #   而 `webmasters/video_by_id`（pornhub_api 源）**恒返回原标题**。
+                #   实测 viewkey=69ec001b86c55：
+                #     HTML + Accept-Language:en  → "Sharing A Bed With Mi Hot Step Sister…"
+                #     HTML 不发 Accept-Language   → "和我最好的朋友的电影之夜…"（按 IP 地区）
+                #     GraphQL（三种语言都试过）   → "Compartir Cama Con Mi Hermanastra…"
+                #   ⇒ 同一影片两源给出**两种语言的标题**，且 HTML 源的值**随请求方
+                #      语言/地区漂移**（今天刮出英文、明天刮出中文），补刮必然打架。
+                #   口径统一为「原标题」：pornhub_api 是 PH 内标题权威，
+                #   HTML 源仅在 GraphQL 失败时兜底。
                 "title": {
-                    "pornhub": 30, "pornhub_api": 30,
+                    "pornhub": 60, "pornhub_api": 5,
                     "javdb": 5, "javbus": 10, "avmoo": 8, "airav": 20,
                 },
                 # ---- 厂商 / 厂牌：官方厂商源最权威 ----
@@ -379,6 +391,40 @@ class MergeConfig:
                     "pornhub": 30, "pornhub_api": 30,
                 },
             }
+
+
+#: merger 自己写入 ``merged.raw_data`` 的键。合并各源 raw_data 时必须跳过它们，
+#: 否则源里同名/旧值的键会污染溯源信息（field_sources 必须在合并**之后**写入，
+#: 且 merged_from 要反映真实参与的源）。
+_MERGER_OWN_RAW_KEYS = frozenset({
+    "merged_from",     # 参与合并的源列表
+    "field_sources",   # 字段级溯源
+    "avid_vote",       # 番号投票明细
+    "covers",          # 多封面（由 _merge_covers 统一重算）
+    "big_covers",
+})
+
+#: 允许从各源 raw_data 搬运到 merged.raw_data 的键（**白名单**）。
+#:
+#: 🔴 2026-10-05 为什么必须白名单而不是"全搬"：
+#:   PH 的 flashvars 解析会把**整个播放器配置**塞进 raw_data ——
+#:   实测一把就是 60+ 键（cdnProvider / chromecast / mp4_seek /
+#:   tubesCmsPrerollConfigType / mostviewed_url / geo / isp …），
+#:   全搬的话 merged.raw_data 会膨胀到几百 KB，并被原样塞进
+#:   patch_records / NFO / 调试日志；而这些键对落库毫无用处。
+#:   白名单只保留「落库链路真实会读」的键：
+#:     · ph_*        → pornhub 表专属列（strategy.py::_scrape_missing 读）
+#:     · viewkey     → source_id 回退值
+#:     · 其余少量     → 已被 strategy / workflow 显式读取的键
+_RAW_DATA_PASSTHROUGH_KEYS = frozenset({
+    "viewkey",
+    "ph_views", "ph_likes", "ph_uploader", "ph_rating", "ph_categories",
+    "ph_is_premium", "ph_is_hd", "ph_segment", "ph_video_id",
+    "ph_publish_date",
+    "video_unavailable", "video_unavailable_country",
+    # 通用：部分落库/展示链路会读
+    "director", "directors", "series_id", "label",
+})
 
 
 class ResultMerger:
@@ -439,6 +485,17 @@ class ResultMerger:
         """
         if not results:
             return None
+        # ⚠️ 2026-10-05：合并时会**按优先级把各源 raw_data 的键搬进 merged.raw_data**
+        #   （模块专属列靠它落库）。若某源把 merged.raw_data 整个替换成自己的 dict，
+        #   merger 的溯源键会丢；反之 merger 也不能覆盖源提供的值。
+        #   这里只做一次浅拷贝，避免就地改到调用方持有的 result 对象。
+        for r in results:
+            if r.raw_data is not None and getattr(r, "_raw_data_isolated", False) is False:
+                r.raw_data = dict(r.raw_data)
+                try:
+                    object.__setattr__(r, "_raw_data_isolated", True)
+                except Exception:
+                    pass
 
         # 单源也要应用自动 genre 标签和女优别名统一(借鉴 JavSP info_summary 行为)
         # 否则单源时 is_chinese/is_mosaic 标记无法转化为 genre,女优别名也无法归一
@@ -585,6 +642,26 @@ class ResultMerger:
             merged.poster_url = self._merge_field_from("poster_url", sorted_results)
 
         merged.trailer_url = self._merge_field_from("trailer_url", sorted_results)
+
+        # === 合并各源的 raw_data ===
+        # 🔴 2026-10-05 修复：旧实现**只**写 merged_from / avid_vote / field_sources，
+        #    各源 raw_data 里的键被整体丢弃。而模块专属列（pornhub 的
+        #    ph_views / ph_uploader / ph_rating / ph_categories …）正是靠
+        #    raw_data 传递的（patcher/strategy.py::_scrape_missing 读
+        #    `_raw_get(result, "ph_views")` 等）。
+        #    后果：走多源合并路径时，pornhub 的 source_views / uploader /
+        #    source_score / categories **永远为 NULL** —— 单源正常、多源静默丢。
+        #    现在按 source_priority 升序合并：**高优先级源先写，低优先级源不覆盖**，
+        #    这样字段值仍遵循「择优」语义（与逐字段优先级一致）。
+        for r in sorted_results:                      # 已按优先级升序
+            for k, v in (r.raw_data or {}).items():
+                if k in _MERGER_OWN_RAW_KEYS:          # merger 自己的键不参与
+                    continue
+                if k not in _RAW_DATA_PASSTHROUGH_KEYS:  # 白名单外一律不搬
+                    continue
+                if v in (None, "", [], {}):
+                    continue
+                merged.raw_data.setdefault(k, v)
 
         # 合并原始数据
         merged.raw_data["merged_from"] = [r.source for r in sorted_results]

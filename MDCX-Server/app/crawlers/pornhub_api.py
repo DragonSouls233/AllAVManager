@@ -60,13 +60,23 @@ class PornhubApiCrawler(BaseCrawler):
     name = "pornhub_api"
     display_name = "PORNHub API"
     base_url = "https://www.pornhub.com"
-    priority = CrawlerPriority.LOW  # 兜底源，HTML 主源优先
+    # 🔴 2026-10-05 由 LOW(100) 升为 HIGH(10)，**成为 PH 模块主源**。
+    #   依据是同一天的真实抓取对比（6 个 viewkey）：
+    #     · 本源（webmasters JSON）6/6 拿到 title + 精确 duration(秒) + rating
+    #       + publish_date + 15/16 条 tags + 8 条 categories + 16 张样图，
+    #       且**标题恒为原标题**（en-US / es-ES / 无 header 三种都试过，值相同）；
+    #     · HTML 源虽然也能连通，但 title **随 Accept-Language 漂移**
+    #       （实测同一 viewkey：en-US → 英文翻译、不发 → 按出口 IP 给中文），
+    #       且 pornstars 要靠登录态才有。
+    #   保持 LOW 的后果：排序上 HTML 源先跑，其翻译标题先进 merged.title，
+    #   补刮时标题会随出口 IP 变来变去。
+    priority = CrawlerPriority.HIGH
     supported_types = ["pornhub"]
     supported_prefixes = ["ph"]
     requires_proxy = False
 
     async def scrape(self, code: str, ctx=None) -> Optional[ScrapeResult]:
-        from app.scraper.number import normalize_ph_viewkey
+        from app.scraper.number import normalize_ph_viewkey, ph_viewkey_to_code
         from app.services.pornhub_graphql import fetch_video_metadata
 
         viewkey = normalize_ph_viewkey(code)
@@ -84,7 +94,10 @@ class PornhubApiCrawler(BaseCrawler):
         actors = [ActorInfo(name=n) for n in meta.performer_names if n]
 
         result = ScrapeResult(
-            code=viewkey,
+            # 🔴 2026-10-05 与 pornhub.py 同修：原来写裸 viewkey，
+            #    与扫描器的 ph+viewkey 口径不一致 ⇒ 落库永远匹配不上、
+            #    每次刮削都插重复行（实测同一部片在库里出现两份）。
+            code=ph_viewkey_to_code(viewkey),
             title=meta.title,
             source=self.name,
             source_url=f"{self.base_url}/view_video.php?viewkey={viewkey}",
@@ -103,6 +116,11 @@ class PornhubApiCrawler(BaseCrawler):
             actors=actors,
             rating=(meta.rating * 2) if meta.rating else None,  # 0-5 → ScrapeResult 期望 0-10
             votes=_as_int(meta.raw_response.get("ratings")),  # 实测 ratings=评分人数
+            # 🔴 2026-10-05：webmasters 端点不返回 uploader，但页面的 JSON-LD
+            #    VideoObject 里有 `"author": "Rosi Lane"`（真实快照核实）。
+            #    由 HTML 源负责填 ph_uploader；这里显式留空，避免下游把
+            #    `meta.raw_response.get("uploader")` 之类臆造字段写进库里。
+            studio=None,
             raw_data={
                 "viewkey": viewkey,
                 "ph_views": meta.views,
