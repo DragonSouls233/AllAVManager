@@ -104,6 +104,51 @@ def needs_jp_proxy(url: str) -> bool:
     return any(d in u for d in JP_DOMAINS)
 
 
+def _socks_alive(host: str, port: int, timeout: float = 1.5) -> bool:
+    """端口是否真的在监听（不能只信配置：本地 Xray 可能没开）。"""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def resolve_front_socks() -> str:
+    """挑一个**真的活着**的前置 socks。
+
+    🔴 2026-10-05 实测踩坑：日本节点服务器在境外，本机直连必然超时，
+    所以链式的「前置」是刚需。但前置本身是外部进程（用户本地 Xray 10808
+    或项目内置 xray 18920），**它挂了整条日本链路就全废**，而原来这里
+    只是盲信 `get_effective_proxy_url()`，10808 不可达时照样生成配置，
+    最终表现为「服务 running 但请求全 ConnectError」。
+
+    优先级：项目当前代理 → 内置 xray(18920) → 本地 Xray(10808)。
+    """
+    candidates: list[str] = []
+    try:
+        from app.services.proxy_manager import get_effective_proxy_url
+        cur = (get_effective_proxy_url() or "").replace("socks5://", "").strip()
+        if cur:
+            candidates.append(cur)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("读取当前代理失败: %s", e)
+    candidates.append("127.0.0.1:18920")   # 项目内置 xray socks
+    candidates.append("127.0.0.1:10808")   # 常见本地 Xray
+
+    for cand in candidates:
+        host, _, p = cand.rpartition(":")
+        if not p.isdigit():
+            continue
+        if _socks_alive(host or "127.0.0.1", int(p)):
+            logger.info("日本链路前置代理: %s", cand)
+            return cand
+    # 都不可达也要返回最优猜测，让 xray 报真实错误而不是静默失败
+    fallback = candidates[0] if candidates else "127.0.0.1:10808"
+    logger.warning("未找到可用的前置 socks，回退 %s（链路可能不通）", fallback)
+    return fallback
+
+
 class JPProxyService:
     """常驻链式 xray，对外提供日本出口 socks5/http。
 
@@ -120,6 +165,8 @@ class JPProxyService:
         self._last_err: str = ""
         self._node_count: int = 0
         self._log_file = None
+        #: True 表示端口由「上一个进程的 detached xray」在服务，本进程未持有 proc
+        self._adopted = False
         self._rr: int = 0
         self._rr_lock = threading.Lock()
 
@@ -133,14 +180,22 @@ class JPProxyService:
 
     # ---------- 状态 ----------
     def is_running(self) -> bool:
-        """进程在 **且端口真的在监听**。
+        """日本出口是否**真的可用**。
 
-        只看 `poll()` 会被"进程活着但没绑上端口"骗过去；实测踩到过
-        自报 running 而 curl ConnectError 的情况。
+        🔴 判定必须**以端口为权威**，不能只看 `self._proc`：
+        xray 是 detached 独立进程，服务重启后端口仍由上一个 xray 监听，
+        此时 `self._proc is None` 但链路完全正常。若此时判 False 并再起一个
+        实例，就会撞 `bind: Only one usage of each socket address`，
+        新实例起不来 → `get_jp_proxy_url()` 返回 None → 分流静默退回美国出口
+        （2026-10-05 实测踩到：DMM 明明有日本节点却拿到「海外限制」页）。
+
+        所以：`端口活着 = 可用`（哪怕不是本进程起的）。
         """
-        if self._proc is None or self._proc.poll() is not None:
-            return False
-        return self._port_alive(JP_SOCKS_PORT)
+        if self._port_alive(JP_SOCKS_PORT):
+            if self._proc is None or self._proc.poll() is not None:
+                self._adopted = True
+            return True
+        return False
 
     @staticmethod
     def _port_alive(port: int, timeout: float = 1.0) -> bool:
@@ -153,16 +208,30 @@ class JPProxyService:
 
     def proxy_for(self) -> str:
         """轮转取一个日本节点对应的 socks URL（实现简易故障转移）。"""
-        n = max(1, self._node_count)
+        n = self._live_node_count()
         with self._rr_lock:
             self._rr = (self._rr + 1) % n
             idx = self._rr
         return "socks5://127.0.0.1:%d" % (JP_SOCKS_PORT + idx)
 
+    def _live_node_count(self) -> int:
+        """实际在监听的节点端口数。
+
+        接管已运行实例时 `self._node_count` 不可信（=0），直接用会退化成
+        永远只用第 0 个端口。这里实探一遍端口，只统计活着的前 N 个。
+        """
+        best = 0
+        for i in range(MAX_JP_NODES):
+            if not self._port_alive(JP_SOCKS_PORT + i, timeout=0.4):
+                break
+            best = i + 1
+        return best or max(1, self._node_count)
+
     def socks_url(self) -> str:
         return self.proxy_for()
 
     def status(self) -> dict:
+        live = self._live_node_count()
         return {
             "running": self.is_running(),
             "socks_port": JP_SOCKS_PORT,
@@ -171,7 +240,8 @@ class JPProxyService:
             "uptime": round(time.time() - self._started_at, 1) if self._started_at else 0,
             "last_error": self._last_err,
             "nodes": len(load_jp_nodes()),
-            "active_nodes": self._node_count,
+            "active_nodes": live,
+            "adopted": self._adopted,
         }
 
     # ---------- 生命周期 ----------
@@ -237,8 +307,7 @@ class JPProxyService:
             logger.warning(self._last_err)
             return False
         if not front_socks:
-            from app.services.proxy_manager import get_effective_proxy_url
-            front_socks = get_effective_proxy_url() or "127.0.0.1:10808"
+            front_socks = resolve_front_socks()
         try:
             cfg = self.build_config(nodes, front_socks)
         except Exception as e:  # noqa: BLE001

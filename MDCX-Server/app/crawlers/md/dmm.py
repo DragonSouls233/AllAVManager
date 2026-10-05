@@ -238,7 +238,7 @@ class DmmCrawler(BaseCrawler):
         """刮削指定番号"""
         cid = _extract_cid(code)
 
-        async with AsyncHttpClient() as client:
+        async with AsyncHttpClient(base_url=self.base_url) as client:
             try:
                 # 1. 尝试 FANZA TV API
                 result = await self._try_fanza_api(client, cid)

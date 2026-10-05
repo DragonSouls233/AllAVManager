@@ -59,9 +59,18 @@ def _convert_to_cid(number: str) -> str:
     return prefix + digits
 
 
+# 年龄验证页面前缀
+# 🔴 2026-10-05 实测修正：FANZA/DMM 的年龄认证跳转是**路径形态**
+#   `/age_check/=/declared=yes/rurl/<原路径>`，**不是** `?rurl=` 查询参数形态。
+#   旧写法 `...declared=yes/?rurl=<urlencoded>` 会 200 但落到一个
+#   既无 cookie 也无正文的中间页（实测 len=28361，title 为空），
+#   后续解析必然失败。正确形态实测 len=507749 / title=FANZA 日本最大級のアダルトポータル。
+AGE_CHECK_PREFIX = "https://www.dmm.co.jp/age_check/=/declared=yes/rurl/"
+
+
 def _build_age_check_url(url: str) -> str:
-    """构建年龄验证 URL"""
-    return AGE_CHECK_PREFIX + quote(url, safe="")
+    """构建年龄验证 URL（目标路径以斜杠原样拼接，不做整段 URL 编码）。"""
+    return AGE_CHECK_PREFIX + (url or "").lstrip("/")
 
 
 @register_crawler
@@ -96,7 +105,9 @@ class DmmWebCrawler(BaseCrawler):
         """
         cid = _convert_to_cid(code)
 
-        async with AsyncHttpClient() as client:
+        # 🔴 必须传 base_url：http_client 靠它判断是否需要日本出口分流
+        # （dmm.co.jp / fanza.co.jp 对海外 IP 地区封锁）。不传则永远走原代理。
+        async with AsyncHttpClient(base_url=self.base_url) as client:
             for url_template in DMM_URL_TEMPLATES:
                 detail_url = url_template.format(cid=cid)
                 age_check_url = _build_age_check_url(detail_url)
