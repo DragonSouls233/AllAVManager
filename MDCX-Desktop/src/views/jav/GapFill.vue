@@ -6,7 +6,7 @@
           <el-icon><DataAnalysis /></el-icon>
           JAV 缺口体检与补全
         </h2>
-        <span class="page-subtitle>
+        <span class="page-subtitle">
           查「缺封面 / 封面损坏 / 缺预览图 / 缺字段」的影片并一键补齐。
           缺口从磁盘实算，不信数据库标志位；封面不只看有没有，还验能不能解码。
         </span>
@@ -110,6 +110,13 @@
 
         <el-form-item label="刮削并发">
           <el-input-number v-model="concurrency" :min="1" :max="10" />
+        </el-form-item>
+
+        <el-form-item label="先拷本地图">
+          <el-switch v-model="localFirst" />
+          <span class="form-tip">
+            先从真实片库离线拷贝已存在的 番号-*.jpg（不联网、秒级），拷齐了就不再请求站点
+          </span>
         </el-form-item>
 
         <el-form-item label="每部间隔（秒）">
@@ -277,6 +284,8 @@ const reasons = ref(['cover', 'preview'])
 const limit = ref(200)
 const concurrency = ref(4)
 const gapSeconds = ref(0)
+// 先离线拷本地图（不联网、秒级），仍缺才联网刮削。原「补全 NFO 缓存」页的能力。
+const localFirst = ref(true)
 const reasonFilter = ref('')
 const keyword = ref('')
 const page = ref(1)
@@ -383,7 +392,8 @@ async function startFill(dry = false) {
       reasons: reasons.value,
       limit: limit.value,
       concurrency: concurrency.value,
-      gap_seconds: gapSeconds.value
+      gap_seconds: gapSeconds.value,
+      local_first: localFirst.value
     })
     if (res.status === 'busy') {
       ElMessage.warning('已有补全任务在跑')

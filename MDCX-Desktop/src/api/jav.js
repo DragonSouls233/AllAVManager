@@ -130,46 +130,12 @@ export async function fillJavFolderCheck(data = {}) {
   return api.post('/jav/folder-check/fill', data)
 }
 
-// ===== 封面问题检测与批量修复 =====
-
-// 全量扫描 JAV 封面，返回本地存在但损坏/乱码的图片列表（force=true 强制重扫）
-export async function getCoverProblems(params = {}) {
-  return api.get('/jav/covers/problems', { params, timeout: 300000 })
-}
-
-// 批量修复问题封面（后台执行）：就地 XOR 解密 + 解密后仍损坏的自动重下
-export async function fixCoverProblems(data = {}) {
-  return api.post('/jav/covers/fix', data, { timeout: 60000 })
-}
-
-// 批量封面修复的后台任务进度
-export async function getCoverFixStatus() {
-  return api.get('/jav/covers/fix/status')
-}
-
-// ===== 补全 nfo_cache（全量远程刮削 + 复制本地图 + 写番号预览图）=====
-
-// 批量补全 nfo_cache（后台执行）：每部先复制视频目录本地图，再远程刮削补全 metadata + 封面 + 番号预览图
-export async function refillNfoCache(data = {}) {
-  return api.post('/jav/scrape/refill-nfo-cache', data, { timeout: 60000 })
-}
-
-// 批量补全 nfo_cache 的进度
-export async function getNfoRefillStatus() {
-  return api.get('/jav/scrape/refill-nfo-cache/status')
-}
-
-// 本地预览图兜底（仅复制视频目录已有本地图到数据目录，不联网）
-export async function syncLocalPreviews(data = {}) {
-  return api.post('/jav/covers/sync-local', data, { timeout: 60000 })
-}
-
-export async function getLocalSyncStatus() {
-  return api.get('/jav/covers/sync-local/status')
-}
-
 // ===== 缺口体检 + 一键补全 =====
-// 与 /covers/* 的区别：那个查「文件存在但损坏」，这个查「压根缺文件/缺字段」。
+// 2026-10-06：原「封面问题修复」「补全 NFO 缓存」两个页面已删除，能力并入此处。
+//   · 封面损坏检测 → gaps 体检现在会验图片能否解码，不再只看文件在不在
+//   · 离线拷本地图   → fillJavGaps 的 local_first（默认开）
+// 因此 /jav/covers/* 与 /jav/scrape/refill-nfo-cache 的前端封装已移除，
+// 后端端点保留（供脚本/历史链接使用）。
 
 // 缺口体检（只读）：返回各类缺口数量 + 明细
 export async function getJavGaps(params = {}) {

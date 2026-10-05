@@ -57,14 +57,6 @@
             <el-icon><FolderOpened /></el-icon>
             <template #title>文件夹归属</template>
           </el-menu-item>
-          <el-menu-item index="/jav/covers/problems">
-            <el-icon><WarningFilled /></el-icon>
-            <template #title>封面问题修复</template>
-          </el-menu-item>
-          <el-menu-item index="/jav/refill-nfo-cache">
-            <el-icon><Download /></el-icon>
-            <template #title>补全 NFO 缓存</template>
-          </el-menu-item>
           <el-menu-item index="/jav/gap-fill">
             <el-icon><DataAnalysis /></el-icon>
             <template #title>缺口体检与补全</template>
@@ -1370,8 +1362,6 @@ const pageTitle = computed(() => {
     '/jav/studio-merge': 'JAV 有码 - 片商合并',
     '/jav/code-test': 'JAV 有码 - 番号提取测试',
     '/jav/categories': 'JAV 有码 - 类别',
-    '/jav/covers/problems': 'JAV 有码 - 封面问题修复',
-    '/jav/refill-nfo-cache': 'JAV 有码 - 补全 NFO 缓存',
     '/jav/gap-fill': 'JAV 有码 - 缺口体检与补全',
     // JAV 无码
     '/uncensored/movies': 'JAV 无码 - 影片库',

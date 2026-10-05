@@ -551,18 +551,6 @@ export const routes = [
         component: () => import('@/views/jav/CodeTest.vue')
       },
       {
-        path: 'jav/covers/problems',
-        name: 'JavCoverProblems',
-        component: () => import('@/views/jav/CoverProblems.vue'),
-        meta: { title: 'JAV 有码 · 封面问题修复' }
-      },
-      {
-        path: 'jav/refill-nfo-cache',
-        name: 'JavNfoCacheRefill',
-        component: () => import('@/views/jav/NfoCacheRefill.vue'),
-        meta: { title: 'JAV 有码 · 补全 NFO 缓存' }
-      },
-      {
         path: 'jav/gap-fill',
         name: 'JavGapFill',
         component: () => import('@/views/jav/GapFill.vue'),

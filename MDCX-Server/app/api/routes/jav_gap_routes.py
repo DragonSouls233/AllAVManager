@@ -434,18 +434,32 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
             if data.local_first and (reasons & {"cover", "preview"}):
                 try:
                     from app.api.routes.jav_routes import _copy_local_previews
-                    n = await asyncio.wait_for(
-                        asyncio.to_thread(_copy_local_previews, item["video_dir"], code),
-                        timeout=20.0,
-                    )
+                    # 🔴 video_dir 在 _scan 里存成了 str（要进 JSON 返回给前端），
+                    # 而 _copy_local_previews 内部要 .exists() ⇒ 必须转回 Path，
+                    # 否则直接抛 'str' object has no attribute 'exists'。
+                    vdir = item.get("video_dir")
+                    if not vdir:
+                        _log("  – %s 无片库目录可拷，跳过本地步骤" % code)
+                        vdir = None
+                    if vdir:
+                        n = await asyncio.wait_for(
+                            asyncio.to_thread(_copy_local_previews, Path(vdir), code),
+                            timeout=20.0,
+                        )
+                    else:
+                        n = 0
                     if n:
                         _log("  ⇩ %s 本地拷贝 %d 张图" % (code, n))
                 except asyncio.TimeoutError:
                     _log("  ⏱ %s 本地拷贝超时 20s，跳过" % code)
                 except Exception as e:  # noqa: BLE001
                     _log("  ! %s 本地拷贝失败：%s" % (code, str(e)[:80]))
-                # 拷完重新体检：本地图可能已经把该片的缺口填平了
-                if not _reasons_for(Path(item["output_dir"]), _row_of(item)).intersection(reasons):
+                # 拷完重新体检：本地图可能已经把该片的缺口填平了。
+                # 🔴 只复查「拷贝能解决的那几类」（cover/preview）——拷贝不可能
+                # 补上 plot/studio/series/actor，拿全量 reasons 去比会永远判未补齐，
+                # 于是白花一次站点请求。
+                still = set(_reasons_for(Path(item["output_dir"]), _row_of(item)))
+                if not (still & {"cover", "preview"}):
                     _state["fixed"] += 1
                     _log("  ✔ %s 本地图已补齐，无需联网" % code)
                     return
