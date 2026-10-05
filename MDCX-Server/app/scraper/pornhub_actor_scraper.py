@@ -13,6 +13,7 @@ PORNHub 演员资料刮削器（增强版 v2）
 
 import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -106,11 +107,64 @@ async def scrape_actor_profile(actor_name: str, nationality: Optional[str] = Non
             profile.country = nationality
         return profile
 
+    # 2026-10-05 新增：cn.pornhub.com/model 页面含 #getAvatar（ei.phncdn 头像可下）
+    profile = await _scrape_from_cn_model(actor_name)
+    if profile:
+        if nationality and not profile.country:
+            profile.country = nationality
+        return profile
+
     avatar_url = await _scrape_avatar_from_javdb(actor_name)
     if avatar_url:
         return EnhancedActorProfile(name=actor_name, avatar_url=avatar_url, country=nationality)
 
     return None
+
+
+# ── 头像内容校验（防把 1x1 占位 GIF / 截断文件当头像写盘）──
+# 2026-10-05 修：原 download_actor_avatar 直接 write_bytes(resp.content)，不校验内容，
+# PH 返回的 1x1 透明 GIF（43 字节）被当成有效头像落盘；且 `if local_path.exists(): return`
+# 导致损坏文件永不再下。现加魔数 + 尺寸双重校验，并删损坏文件后重下。
+_IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"BM")
+_AVATAR_MIN_SIZE = 24  # 像素：小于此视为占位/追踪像素
+
+
+def _avatar_looks_like_image(content: bytes) -> bool:
+    if not content or len(content) < 128:
+        return False
+    if content.startswith(_IMAGE_MAGIC):
+        return True
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return True
+    return False
+
+
+def _avatar_size_ok(content: bytes) -> bool:
+    """用 PIL 校验尺寸，挡住 1x1 占位图。"""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        with Image.open(BytesIO(content)) as im:
+            w, h = im.size
+        return w >= _AVATAR_MIN_SIZE and h >= _AVATAR_MIN_SIZE
+    except Exception:
+        return False
+
+
+def _valid_avatar_file(path) -> bool:
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return False
+    return _avatar_looks_like_image(data) and _avatar_size_ok(data)
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(content)
+        f.flush()
+    os.replace(tmp, path)
 
 
 async def download_actor_avatar(actor_name: str, avatar_url: str) -> Optional[str]:
@@ -121,16 +175,29 @@ async def download_actor_avatar(actor_name: str, avatar_url: str) -> Optional[st
     safe_name = re.sub(r'[\\/:*?"<>|]', '_', actor_name).strip()
     local_path = AVATAR_DIR / f"{safe_name}.jpg"
 
+    # 已有文件：仅当内容有效才复用；损坏（1x1/截断）则删掉重下
     if local_path.exists():
-        return str(local_path)
+        if _valid_avatar_file(local_path):
+            return str(local_path)
+        try:
+            local_path.unlink()
+        except OSError:
+            pass
 
     try:
         from app.services.proxy_manager import get_effective_proxy_url
         proxy_url = get_effective_proxy_url()
         client = AsyncHttpClient(proxy=proxy_url)
-        resp = await client.get(avatar_url, timeout=30)
+        resp = await client.get(avatar_url, timeout=30, purpose="download")
         if resp and resp.status_code == 200:
-            local_path.write_bytes(resp.content)
+            content = resp.content
+            if not _avatar_looks_like_image(content) or not _avatar_size_ok(content):
+                logger.warning(
+                    "头像内容无效（占位图/截断）：%s -> %d bytes，跳过落盘",
+                    avatar_url, len(content),
+                )
+                return None
+            _atomic_write_bytes(local_path, content)
             logger.info("头像已下载: %s -> %s", actor_name, local_path)
             return str(local_path)
     except Exception as e:
@@ -393,6 +460,52 @@ async def _scrape_from_pornhub_regex(actor_name: str) -> Optional[EnhancedActorP
         return profile
     except Exception as e:
         logger.debug("PH regex 解析失败 [%s]: %s", actor_name, e)
+        return None
+
+
+async def _scrape_from_cn_model(actor_name: str) -> Optional[EnhancedActorProfile]:
+    """从 cn.pornhub.com/model/{name}/videos 提取头像。
+
+    2026-10-05 新增：本机 venv 未安装 selectolax，导致 _scrape_from_pornhub_selectolax
+    直接 ImportError 返回 None；而 www.pornhub.com/pornstar/{name} 页面（regex 路径）
+    不含 #getAvatar 元素，头像 URL 取不到。实测 cn.pornhub.com/model/{name}/videos
+    页面含 #getAvatar 且 ei.phncdn.com 头像可正常下载（200/有效 JPEG）。
+    故在此补充一条 regex 提取路径，覆盖 uploader/amateurs 类演员。
+    """
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    url = f"https://cn.pornhub.com/model/{actor_name}/videos"
+    proxy_url = get_effective_proxy_url()
+    try:
+        client = AsyncHttpClient(proxy=proxy_url, timeout=30)
+        resp = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=30,
+        )
+        if not resp or resp.status_code != 200:
+            return None
+        html = resp.text
+        avatar_url = None
+        m = re.search(r'<img[^>]*id="getAvatar"[^>]*src="([^"]+)"', html, re.DOTALL)
+        if m:
+            avatar_url = m.group(1).strip()
+        else:
+            m2 = re.search(
+                r'<img[^>]*id="getAvatar"[^>]*data-src="([^"]+)"', html, re.DOTALL
+            )
+            if m2:
+                avatar_url = m2.group(1).strip()
+        if not avatar_url:
+            return None
+        return EnhancedActorProfile(
+            name=actor_name, avatar_url=avatar_url, profile_url=url
+        )
+    except Exception as e:
+        logger.debug("cn.model 抓取失败 [%s]: %s", actor_name, e)
         return None
 
 
