@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from curl_cffi import AsyncSession
 from curl_cffi.requests import Response
 
+from app.services.jp_proxy import get_jp_proxy_url, needs_jp_proxy
 from app.config.manager import get_config
 from app.utils.browser_fingerprint import (
     BrowserFingerprint,
@@ -196,12 +197,27 @@ class AsyncHttpClient:
         timeout: int = 30,
         max_retries: int = 3,
         rate_limit: float = 20.0,  # 请求/秒
+        base_url: str = "",
     ):
         # 如果没有传入代理，则从配置中读取
         if proxy is None:
             # 统一走项目唯一定义源：优先内置 xray 实际端口，回退旧版 config.proxy
             from app.services.proxy_manager import get_effective_proxy_url
             proxy = get_effective_proxy_url()
+
+        # 日本出口分流：FANZA/DMM 等按地区封锁的站点，境外 IP 只能拿到海外版页面
+        # （实测 10808 出口 = 23.94.112.121 / US）。这里把 base_url 传进来判断，
+        # 命中日本域名时改走 jp_proxy 的链式 xray（前置代理 → 日本节点）。
+        self._default_proxy = proxy
+        if base_url and needs_jp_proxy(base_url):
+            jp = get_jp_proxy_url()
+            if jp:
+                proxy = jp
+                self._is_jp = True
+            else:
+                self._is_jp = False
+        else:
+            self._is_jp = False
 
         self.proxy = proxy
         self.timeout = timeout

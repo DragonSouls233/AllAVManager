@@ -435,17 +435,21 @@ class JavDBAppClient:
         zone: str = "censored",
         max_pages: int = 100,
         limit: int = 50,
+        with_gender: bool = False,
     ) -> dict[str, list[str]]:
         """翻页抓取演员目录，返回 {actor_id: [全部名字]}（匿名 App API，免登录不绑 IP）。
 
         端点 /api/v1/actors?type={zone}&page=N&limit=M：
         - type 分区：censored=0 / uncensored=1 / western=2 / fc2=3
         - 每条含 name（主名）、name_zht（繁体名）、other_name（曾用名，逗号分隔）
+        - 2026-10-05 实测：目录项**带 `gender` 字段**（0=女 / 1=男），
+          with_gender=True 时返回 {actor_id: {names:[...], gender:int, avatar_url:str}}，
+          供一次性构建男演员排除名单（见 scripts/_fetch_male_actor_index.py）。
         翻页直到 actors 为空或达到 max_pages。
         """
         if zone not in ZONES:
             raise ValueError(f"未知分区: {zone}")
-        index: dict[str, list[str]] = {}
+        index: dict = {}
         for page in range(1, max_pages + 1):
             data = await self._request(
                 "GET",
@@ -471,7 +475,19 @@ class JavDBAppClient:
                         n = n.strip()
                         if n and n not in names:
                             names.append(n)
-                if names:
+                if not names:
+                    continue
+                if with_gender:
+                    try:
+                        g = int(a.get("gender") or 0)
+                    except (TypeError, ValueError):
+                        g = 0
+                    index[aid] = {
+                        "names": names,
+                        "gender": g,
+                        "avatar_url": str(a.get("avatar_url") or ""),
+                    }
+                else:
                     index[aid] = names
             if page % 20 == 0:
                 log.info(f"JavDB App API 演员目录已抓取 {page} 页，累计 {len(index)} 人")
@@ -559,27 +575,33 @@ class JavDBAppClient:
             "current_page": int(data.get("current_page") or 0),
         }
 
-    async def fetch_actor_aliases(
+    async def fetch_actor_card(
         self,
         actor_name: str,
         max_movies: int = 5,
-    ) -> list[str]:
-        """按演员名查询别名（JavDB App API 演员详情 other_name 字段）。
+    ) -> Optional[dict]:
+        """按演员名反查完整名片（搜索 → 影片详情定位演员 → 演员详情）。
 
-        移植自 mdcx-diy（cdlongbow/mdcx-diy）`mdcx/crawlers/javdb_app.py`
-        fetch_javdb_aliases（ref22-mdcx-diy）：
-        流程: /api/v2/search 搜索演员名 → 前 max_movies 部影片详情 → 匹配演员
-        → /api/v1/actors/{id} 详情 other_name 字段拆分别名；并并入 name_zht。
-        搜索无结果、未匹配到演员、无别名均返回空列表，由调用方决定如何降级。
+        实测（2026-10-05）：
+          - `/api/v1/actors/{id}` **不含 gender**（keys 里只有 name/name_zht/other_name/
+            avatar_url/age/birthday/birthplace/blood_type/bust/...），gender 只出现在
+            v4 影片详情的 actors[] 里 ⇒ 性别必须从影片详情那一跳取。
+          - `other_name` 用**半角逗号 + 空格**分隔（如 `'橋本ありな, 上乃木まな, 岩谷志季'`）。
+          - JavDB 主名**可能是罗马字**：`三上悠亜` 搜到的 actor.name 是 `Mikami Yua`
+            而 name_zht 才是 `三上悠亜` ⇒ 归一时**以库里的名字为准**，JavDB 的 name
+            只能当别名加进去，绝不能反过来改写库里的主名。
+
+        返回 {"id","name","name_zht","other_name","aliases","gender","avatar_url"}，
+        任一跳失败返回 None。
         """
         from app.utils.actor_name_utils import actor_name_matches, split_aliases
 
         target = (actor_name or "").strip()
         if not target:
-            return []
+            return None
         data = await self._request("GET", "/api/v2/search", {"q": target, "page": 1})
         if not data:
-            return []
+            return None
         movies = data.get("movies") or []
         for movie in movies[:max_movies]:
             mid = (movie.get("id") or "").strip()
@@ -598,17 +620,51 @@ class JavDBAppClient:
                 aid = (actor.get("id") or "").strip()
                 if not aid:
                     continue
+                # gender 只在这一跳有（v4 详情），单独解析并容错
+                try:
+                    gender = int(actor.get("gender") or 0)
+                except (TypeError, ValueError):
+                    gender = 0
                 actor_data = await self._request("GET", f"/api/v1/actors/{aid}")
                 if not actor_data:
                     continue
                 a = (actor_data.get("actor") or {}) if isinstance(actor_data, dict) else {}
-                return split_aliases(
-                    a.get("other_name") or "",
-                    a.get("name_zht") or "",
-                    target,
-                    a.get("name") or cand_name,
-                )
-        return []
+                jav_name = (a.get("name") or cand_name).strip()
+                return {
+                    "id": aid,
+                    # JavDB 侧主名/繁体名/曾用名原样保留，归一由调用方按「库名优先」处理
+                    "name": jav_name,
+                    "name_zht": (a.get("name_zht") or "").strip(),
+                    "other_name": a.get("other_name") or "",
+                    "aliases": split_aliases(
+                        a.get("other_name") or "",
+                        a.get("name_zht") or "",
+                        target,
+                        jav_name,
+                    ),
+                    "gender": gender,
+                    "avatar_url": (a.get("avatar_url") or "").strip(),
+                }
+        return None
+
+    async def fetch_actor_aliases(
+        self,
+        actor_name: str,
+        max_movies: int = 5,
+    ) -> list[str]:
+        """按演员名查询别名（JavDB App API 演员详情 other_name 字段）。
+
+        移植自 mdcx-diy（cdlongbow/mdcx-diy）`mdcx/crawlers/javdb_app.py`
+        fetch_javdb_aliases（ref22-mdcx-diy）：
+        流程: /api/v2/search 搜索演员名 → 前 max_movies 部影片详情 → 匹配演员
+        → /api/v1/actors/{id} 详情 other_name 字段拆分别名；并并入 name_zht。
+        搜索无结果、未匹配到演员、无别名均返回空列表，由调用方决定如何降级。
+
+        实现已委托给 :meth:`fetch_actor_card`（同一跳取回 gender），避免两处
+        匹配逻辑各自漂移。
+        """
+        card = await self.fetch_actor_card(actor_name, max_movies=max_movies)
+        return list(card.get("aliases") or []) if card else []
 
     async def build_scrape_fields(
         self,
@@ -629,8 +685,20 @@ class JavDBAppClient:
         from app.crawlers.base import ActorInfo  # 局部导入避免循环依赖
 
         actors: list[ActorInfo] = []
+        # 2026-10-05：JavDB v4 详情 actors[] 明确带 `gender`（0=女 / 1=男，实测
+        # MIDE-980 → 森林原人=1、貞松大輔=1、花芽ありす=0）。此前只取 name、丢弃
+        # gender ⇒ 男演员被当女演员入库并写进 NFO。这里按性别分流。
+        male_actors: list[str] = []
         for a in (dm.get("actors") or []) if isinstance(dm.get("actors"), list) else []:
             if isinstance(a, dict) and a.get("name"):
+                # gender 缺失/异常一律当女演员（高精度不追召回，见 actor_gender 设计原则）
+                try:
+                    is_male = int(a.get("gender") or 0) == 1
+                except (TypeError, ValueError):
+                    is_male = False
+                if is_male:
+                    male_actors.append(str(a.get("name")))
+                    continue
                 actors.append(ActorInfo(
                     name=str(a.get("name")),
                     avatar_url=str(a.get("avatar_url") or "") or None,
@@ -682,6 +750,7 @@ class JavDBAppClient:
             "tags": tags,
             "actors": actors,
             "all_actors": [a.name for a in actors],
+            "male_actors": male_actors,
             "directors": [str(dm["director_name"])] if dm.get("director_name") else [],
             "studio": str(dm.get("maker_name") or "") or None,
             "maker": str(dm.get("maker_name") or "") or None,

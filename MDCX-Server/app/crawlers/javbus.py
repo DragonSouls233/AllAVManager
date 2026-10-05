@@ -31,7 +31,9 @@ class JavBusCrawler(BaseCrawler):
     display_name = "JavBus"
     base_url = "https://www.javbus.com"
     
-    priority = CrawlerPriority.HIGHEST
+    # 🔴 2026-10-05：用户指定主力源为 JavDB API（thejavdb）。JavBus 覆盖最全但
+    # 封面 CDN 常 403（实测补封面时大量 403），降为 HIGH 作辅助兜底，不再排最前。
+    priority = CrawlerPriority.HIGH
     supported_types = ["jav", "jav_uncensored"]
     supported_prefixes = []  # 支持所有标准JAV番号
     description = "JAV数据库站点，覆盖最全"

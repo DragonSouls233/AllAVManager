@@ -77,7 +77,11 @@ def parse_vmess(url: str) -> NodeConfig:
 
     stream: dict[str, Any] = {"network": net, "security": tls or "none"}
     if tls == "tls":
-        stream["tlsSettings"] = {"serverName": sni, "allowInsecure": False}
+        # 🔴 不要写 allowInsecure：xray 26.3.27 起该特性被移除并迁移到
+        # pinnedPeerCertSha256，配置里只要带这个 key 就会
+        # `Failed to build TLS config ... has been removed` 直接 rc=23 起不来
+        # （2026-10-05 实测）。不写即等同 allowInsecure=false，语义一致。
+        stream["tlsSettings"] = {"serverName": sni}
     elif tls == "reality":
         stream["realitySettings"] = {
             "serverName": sni,
@@ -140,9 +144,9 @@ def parse_vless(url: str) -> NodeConfig:
 
     stream: dict[str, Any] = {"network": net, "security": security}
     if security == "tls":
+        # 同上：xray 26+ 已移除 allowInsecure，写了会导致 rc=23 起不来
         stream["tlsSettings"] = {
             "serverName": sni,
-            "allowInsecure": False,
             "fingerprint": q.get("fp", "chrome"),
         }
     elif security == "reality":
@@ -209,9 +213,14 @@ def parse_trojan(url: str) -> NodeConfig:
     stream: dict[str, Any] = {
         "network": net,
         "security": "tls",
+        # 🔴 同上，不再写 allowInsecure（xray 26+ 已移除，带了直接 rc=23）。
+        # 代价：节点 URL 里的 allowInsecure=1 会被忽略 —— 即**一律按严格校验**处理。
+        # 这是有意的：免费自签节点会因此连不上，但绝不能为了"能连上"而全局关掉
+        # 证书校验（那等于把所有流量的 TLS 安全性降级）。
+        # 真需要连自签节点时，应改为在 tlsSettings 里固定
+        # pinnedPeerCertificateChainSha256（需先拿到该节点证书指纹）。
         "tlsSettings": {
             "serverName": sni,
-            "allowInsecure": q.get("allowInsecure", "0") == "1",
         },
     }
     if net == "ws":

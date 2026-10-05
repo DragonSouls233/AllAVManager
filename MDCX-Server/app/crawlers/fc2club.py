@@ -2,6 +2,7 @@
 FC2Club 爬虫 - 从 fc2club.top 刮削 FC2 内容
 """
 
+import logging
 import re
 from typing import Optional
 
@@ -15,6 +16,8 @@ from app.crawlers.base import (
 )
 from app.crawlers.provider import register_crawler
 from app.utils.http_client import AsyncHttpClient
+
+logger = logging.getLogger(__name__)
 
 
 @register_crawler
@@ -176,13 +179,26 @@ class FC2ClubCrawler(BaseCrawler):
         return None
 
     def _get_actors(self, html: etree._Element) -> list[ActorInfo]:
-        """获取演员列表"""
+        """获取演员列表
+
+        2026-10-05：接入演员名闸门（module_actor_sync.is_plausible_actor_name）。
+        FC2 的「女优名字」栏目本已较干净，但页面改版/占位链接会漏进
+        番号前缀、DOM 残留词；入库前统一过闸，避免污染 actors 表。
+        """
+        from app.scraper.module_actor_sync import is_plausible_actor_name
+
         results = html.xpath('//strong[contains(text(), "女优名字")]/../a/text()')
         actors = []
+        seen: set[str] = set()
         for name in results:
-            name = name.strip()
-            if name:
-                actors.append(ActorInfo(name=name))
+            name = (name or "").strip()
+            if not name or name in seen:
+                continue
+            if not is_plausible_actor_name(name):
+                logger.debug("FC2 演员名闸门拦下: %r", name)
+                continue
+            seen.add(name)
+            actors.append(ActorInfo(name=name))
         return actors
 
     def _get_genres(self, html: etree._Element) -> list[str]:

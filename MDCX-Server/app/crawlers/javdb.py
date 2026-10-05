@@ -31,6 +31,13 @@ class JavDBCrawler(BaseCrawler):
     display_name = "JavDB"
     base_url = "https://javdb.com"
     
+    # 🔴 2026-10-05 用户指定：**主力源 = JavDB API**。
+    # ⚠️ 命名陷阱（本轮踩过并纠正）：真正的 JavDB API 是**本类**——
+    #   `javdb.scrape()` 内部只走 `_scrape_via_app_api`（JavDB 官方 App 匿名通道，
+    #   jdforrepam.com + 匿名 jdsignature，绕 CF），不降级 HTML+cookie。
+    #   而 name="thejavdb"/`javdbapi.py` 是**第三方** api.thejavdb.net JSON API，
+    #   与 JavDB 官方无关（merger 注释里已警告过），不是用户说的那个 API。
+    # 故本类恢复 HIGHEST 并置于主力池首位。
     priority = CrawlerPriority.HIGHEST
     supported_types = ["jav", "jav_uncensored", "fc2"]
     supported_prefixes = []

@@ -453,9 +453,12 @@ class ResultMerger:
     }
 
     # 标签黑名单（合并时过滤掉的低质量标签）
+    # 🔴 2026-10-05 移除 "series"：服务器实测 JavBus 会把**真实系列名**放在标签里
+    #   （如 series=「マジ軟派、初撮。」），旧代码把它当低质量标签丢掉，导致系列信息全丢。
+    #   现在 series 走独立字段归一（见 merge 里 normalize_studio/looks_like_plot_not_series）。
     TAG_BLACKLIST = {
         "單體作品", "單體作", "單體", "作品", "配信開始",
-        "サンプル動画", "others", "other", "series",
+        "サンプル動画", "others", "other",
     }
 
     def __init__(self, config: Optional[MergeConfig] = None):
@@ -558,7 +561,16 @@ class ResultMerger:
         merged.studio = self._merge_field_from("studio", sorted_results)
         merged.maker = self._merge_field_from("maker", sorted_results)
         merged.label = self._merge_field_from("label", sorted_results)
-        merged.series = self._merge_field_from("series", sorted_results)
+        # 🔴 2026-10-05：series/studio 归一 + 剔除「剧情简介冒充系列」。
+        # 服务器实证：3785 部有 series，但内容是剧情简介（来源把简介塞进 series 字段），
+        #   例：series=「時短営業で暇になったバイト先の後輩が「逆痴●」—— 直接落库会让
+        #   「按系列归类」彻底失效。同时同一家厂牌有 6 种写法（マドンナ/マドンナ(Madonna)/
+        #   Madonna），必须归一，否则永远分不组。
+        from app.scraper.canon import looks_like_plot_not_series, normalize_studio
+        _series = self._merge_field_from("series", sorted_results)
+        merged.series = None if looks_like_plot_not_series(_series) else normalize_studio(_series)
+        if merged.studio:
+            merged.studio = normalize_studio(merged.studio)
         merged.release_date = self._merge_date([r.release_date for r in sorted_results])
         merged.duration = self._merge_field_from("duration", sorted_results)
         merged.plot = self._merge_field_from("plot", sorted_results)

@@ -167,3 +167,21 @@ export async function syncLocalPreviews(data = {}) {
 export async function getLocalSyncStatus() {
   return api.get('/jav/covers/sync-local/status')
 }
+
+// ===== 缺口体检 + 一键补全 =====
+// 与 /covers/* 的区别：那个查「文件存在但损坏」，这个查「压根缺文件/缺字段」。
+
+// 缺口体检（只读）：返回各类缺口数量 + 明细
+export async function getJavGaps(params = {}) {
+  return api.get('/jav/gaps/audit', { params, timeout: 300000 })
+}
+
+// 一键补全（后台执行）
+export async function fillJavGaps(data = {}) {
+  return api.post('/jav/gaps/fill', data, { timeout: 60000 })
+}
+
+// 补全进度
+export async function getJavGapFillStatus() {
+  return api.get('/jav/gaps/fill/status')
+}

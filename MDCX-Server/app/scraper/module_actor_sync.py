@@ -36,6 +36,44 @@ _JSON_STYLE_RE = re.compile(r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]")
 _MIN_ACTOR_NAME_LEN = 3
 
 
+def is_plausible_actor_name(name: str) -> bool:
+    """演员名闸门（写 Actor 表前的最后一道）。
+
+    2026-10-05 实测：线上 jav 库 358 个演员里有 22 个根本不是人名 ——
+      · 番号前缀冒充：NTK(12部) NTR(10) MAAN(10) URE(10) PAKO(9) DCV(2)
+        INSTV MIRD NAMH LULU CEMD BLK（这些是 maker code）
+      · 素人厂牌：AIKA(186部) AYA(126) RARA(44) KANBi(13) DOC(12)
+      · JavDB 头像 URL 碎片：gm / my / xv（`<thumb>...avatars/xv/xvDYV.jpg</thumb>`
+        被按 `/` 切分后混进 actor 串）
+    纯长度判断挡不住这些（都 ≥3 字符），必须过语义闸门。
+    复用 app.utils.actor_name_guard（目录词/画质词/片商名/描述语/场所后缀…）+
+    男演员名单（actor_gender）+ 番号前缀（app.scraper.canon）。
+    """
+    n = (name or "").strip()
+    if not n:
+        return False
+    try:
+        from app.utils.actor_name_guard import is_plausible_actor_name as _guard
+        if not _guard(n):
+            return False
+    except Exception as e:  # noqa: BLE001
+        logger.debug("actor_name_guard 不可用，跳过语义闸门: %s", e)
+        return True
+    try:
+        from app.utils.actor_gender import known_male_actors
+        if n in known_male_actors():
+            return False
+    except Exception as e:  # noqa: BLE001
+        logger.debug("actor_gender 不可用: %s", e)
+    try:
+        from app.scraper.canon import is_code_like_token
+        if is_code_like_token(n):
+            return False
+    except Exception as e:  # noqa: BLE001
+        logger.debug("canon 不可用: %s", e)
+    return True
+
+
 def parse_actor_names(text: str) -> list[str]:
     """从文本字段解析演员名列表
 
@@ -43,22 +81,51 @@ def parse_actor_names(text: str) -> list[str]:
     1. 逗号/顿号分隔的纯文本（扫描、批量刮削写入）："三浦歩美,安堂はるの"
     2. JSON 风格（importer/sync 写入）：{'name': '愛弓りょう'}, {'name': '安堂はるの'}
 
-    防污染（2026-08-26）：拒绝长度 ≤2 的短名，防止 "AI"/"あさみ"/"しずく" 等
-    短名被当作演员写入 Actor 表后在 LIKE 查询中产生大量误匹配。
+    防污染：
+    - 2026-08-26：拒绝长度 ≤2 的短名，防止 "AI"/"あさみ"/"しずく" 等短名
+      被当作演员后，在 LIKE '%AI%' 查询中误匹配大量无关影片。
+    - 2026-10-05：先剥掉 URL 片段。曾出现把 NFO 整段 `<actor>` 块当 actor 字段
+      传进来的情况，按 `/` 切分后 `<thumb>.../avatars/xv/xvDYV.jpg</thumb>` 的
+      路径碎片（gm / my / xv）被当成演员名入库。
+    - 2026-10-05：每个名字过 is_plausible_actor_name() 语义闸门
+      （番号前缀 / 厂牌 / 男演员 / 目录词 / 画质词 / 片商名）。
     """
     if not text or not text.strip():
         return []
+    # 0. 先把 XML/NFO 块整体摊平成「只保留 <name> 的值」；再剥 URL。
+    #    顺序很重要：先剥 URL 会把 <thumb>https://…/avatars/xv/xvDYV.jpg</thumb>
+    #    变成残留标签文本 `type>` 之类的碎片。
+    clean = str(text)
+    if "<" in clean and ">" in clean:
+        names_in_block = [
+            m.strip() for m in re.findall(r"<name>(.*?)</name>", clean, re.S | re.I)
+        ]
+        if names_in_block:
+            clean = ", ".join(names_in_block)
+        else:
+            # 没有 <name> 就整体去标签（避免 <type>/<thumb> 变成 token）
+            clean = re.sub(r"<[^>]{0,120}>", " ", clean)
+    clean = re.sub(r"https?://\S+", " ", clean)
+
     # 1. 优先按 JSON 风格提取 name
-    json_names = [m.group(1).strip() for m in _JSON_STYLE_RE.finditer(text)]
+    json_names = [m.group(1).strip() for m in _JSON_STYLE_RE.finditer(clean)]
     if json_names:
-        json_names = [n for n in json_names if len(n) >= _MIN_ACTOR_NAME_LEN]
-        return json_names
-    # 2. 回退按分隔符拆分
-    parts = re.split(r"[,，、/&|\\n]+", text)
-    names = []
+        return [n for n in dict.fromkeys(json_names) if is_plausible_actor_name(n)]
+    # 2. 回退按分隔符拆分。
+    #    🔴 空格**不是**分隔符：西艺名含空格（"Mia Nanasawa" / "Jackson Smith"），
+    #    2026-10-05 实测按空格切会把 "Mia Nanasawa" 变成 ["Mia Na","asawa"]。
+    parts = re.split(r"[,，、/&|\\\n]+", clean)
+    names: list[str] = []
     for p in parts:
         name = p.strip()
-        if name and _MIN_ACTOR_NAME_LEN <= len(name) <= 100:
+        if not name:
+            continue
+        if not (_MIN_ACTOR_NAME_LEN <= len(name) <= 100):
+            continue
+        if not is_plausible_actor_name(name):
+            logger.debug("演员名闸门拦下疑似非人名: %r", name)
+            continue
+        if name not in names:
             names.append(name)
     return names
 

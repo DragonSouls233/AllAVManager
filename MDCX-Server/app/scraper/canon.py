@@ -1,0 +1,307 @@
+"""Canonicalisation helpers: code aliases + studio/series name normalisation.
+
+Two related problems, both observed on the real server data:
+
+1. Code aliases — the same movie is written differently across sites:
+      300MIUM-1437 (real)  vs  MIUM-1437 (dropped leading digits)
+      200GANA-3426 (real)  vs  GANA-3426
+   A query with the short form can hit a DIFFERENT movie, so every code we store
+   or search must expand to its known variants.
+
+2. Studio/series name variants — the same maker appears as many spellings, which
+   makes grouping useless:
+      マドンナ(258) / マドンナ(Madonna)(188) / Madonna(147)   -> Madonna
+      ムーディーズ(271) / MOODYZ(453)                          -> MOODYZ
+      プレステージ(153) / プレステージプレミアム(229)           -> PRESTIGE
+"""
+from __future__ import annotations
+
+import re
+from typing import Iterable
+
+# --------------------------------------------------------------------------
+# 1) code aliases
+# --------------------------------------------------------------------------
+
+# Heads that are known 素人 (amateur) labels. Only these get prefix expansion —
+# expanding `ABP-123` into 33 fake codes would just be 33 wasted requests.
+AMATEUR_HEADS = frozenset({
+    "MIUM", "MAAN", "GANA", "LUXU", "JAC", "NTR", "KNB", "TEN", "PPZ", "OMG",
+    "INON", "STH", "MFCS", "ARA", "STCV", "PAK", "DCV", "HMDNV", "ENDX",
+    "SRTD", "SIMM", "SDHS", "ORECO", "FTHT", "MMKA", "SSCJ", "OERO",
+    "REFUCK", "GESY", "DDHP", "EROFV", "PIZ", "LADY", "SIKA", "MGFX", "ID",
+})
+
+# Leading numeric prefixes actually observed on the server's 469 repaired rows.
+AMATEUR_PREFIXES = (
+    "200", "259", "261", "277", "285", "300", "318", "324", "326", "328",
+    "336", "345", "348", "390", "406", "413", "420", "435", "459", "483",
+    "494", "498", "521", "529", "546", "563", "739", "752", "758", "761",
+    "857", "892",
+)
+
+_TAIL_RE = re.compile(r"^(\d*[A-Z]{2,})-(\d{2,})$")
+_PREFIX3_RE = re.compile(r"^(\d{3})([A-Z]{2,})$")
+
+
+def split_code(code: str) -> tuple[str | None, str, str]:
+    """Split a code into (leading-digit-prefix, head, tail).
+
+    `300MIUM-1437` -> ('300', 'MIUM', '1437')
+    `MIUM-1437`    -> (None,   'MIUM', '1437')
+    `ABP-123`      -> (None,   'ABP',  '123')
+    """
+    m = _TAIL_RE.match((code or "").strip().upper())
+    if not m:
+        return None, "", ""
+    head, tail = m.group(1), m.group(2)
+    p = _PREFIX3_RE.match(head)
+    if p:
+        return p.group(1), p.group(2), tail
+    return None, head, tail
+
+
+def code_aliases(code: str) -> list[str]:
+    """Return every known spelling of `code`, canonical form first.
+
+    `300MIUM-1437` -> ['300MIUM-1437', 'MIUM-1437']
+    `MIUM-1437`    -> ['MIUM-1437', '200MIUM-1437', '300MIUM-1437', ...]
+
+    The canonical form is the one WITH the leading digits (what the sites use);
+    the short form is kept so we can still match rows imported before the fix.
+    """
+    if not code:
+        return []
+    c = code.strip().upper()
+    out = [c]
+
+    prefix, head, tail = split_code(c)
+    if not head:
+        return out
+    if prefix:
+        bare = "%s-%s" % (head, tail)
+        if bare not in out:
+            out.append(bare)
+        return out
+
+    # bare form -> propose the known prefixes, but ONLY for known 素人 labels
+    if head not in AMATEUR_HEADS:
+        return out
+    for p in AMATEUR_PREFIXES:
+        cand = "%s%s-%s" % (p, head, tail)
+        if cand not in out:
+            out.append(cand)
+    return out
+
+
+def is_amateur_code(code: str) -> bool:
+    """True when the code carries a 素人 numeric prefix (e.g. 200GANA-3426)."""
+    prefix, _head, _tail = split_code(code)
+    return prefix is not None
+
+
+# --------------------------------------------------------------------------
+# 1b) code-shaped tokens that must never be treated as person names
+# --------------------------------------------------------------------------
+
+#: Bare maker heads observed as `actors.name` on the live server (2026-10-05).
+#: These are label codes, not people: NTK 12 movies, NTR 10, MAAN 10, URE 10,
+#: PAKO 9, DCV 2, INSTV/MIRD/NAMH/LULU/CEMD/BLK 0-1, plus the 素人 labels
+#: AIKA 186, AYA 126, RARA 44, KANBi 13, DOC 12, 259LUXU 3.
+#: Data-driven alternative: any token that is also a code head in `movies.code`.
+#: This set is the fallback for callers without DB access.
+CODE_LIKE_HEADS: frozenset[str] = frozenset({
+    "NTK", "NTR", "MAAN", "URE", "PAKO", "DCV", "INSTV", "MIRD", "NAMH",
+    "LULU", "CEMD", "BLK", "AIKA", "AYA", "RARA", "KANBI", "DOC", "VERONICA",
+    "LUXU", "GANA", "MIUM", "JAC", "SIRO", "S-CUTE", "MIDE", "ABP", "SSIS",
+    "MIMK", "JUFE", "SONE", "PRED", "MIDV", "EKDV", "MIAB", "NPJS", "MFCW",
+    "FSDSS", "ARBK", "MKMP", "JUQD", "MSFD", "SORA", "ROE", "MEYD", "DLDSS",
+    "NSFS", "GDHH", "HMN", "DSW", "BAB", "CHD", "JUQ", "MSZ",
+})
+
+#: JavDB avatar-path fragments. `<thumb>https://…/avatars/xv/xvDYV.jpg</thumb>`
+#: got split on `/` and the 2-char path segments became "actors".
+_URL_FRAGMENT_RE = re.compile(r"^(?:https?|avatars?|[a-z]{2}\d[a-z0-9]*|"
+                              r"index|thumb|actor|art|image|img)s?$", re.I)
+
+
+def is_code_like_token(name: str | None) -> bool:
+    """True when `name` is a code / label token rather than a person's name.
+
+    Catches the three shapes seen polluting `actors`:
+      * bare maker head            `NTK` `AIKA` `259LUXU`
+      * head + tail glued together `390JAC` `200GANA`
+      * URL path fragment          `xv` `gm` `my` (JavDB avatar paths)
+    """
+    n = (name or "").strip()
+    if not n:
+        return True
+    if _URL_FRAGMENT_RE.match(n):
+        return True
+    up = n.upper()
+    if up in CODE_LIKE_HEADS:
+        return True
+    if up in AMATEUR_HEADS:
+        return True
+    # 2 字符拉丁 token：JavDB 头像 URL 路径碎片（avatars/xv/xvDYV.jpg）实测就是
+    # 这种形态。纯汉字 2 字可能是艺名（如「葵」），故只拦拉丁。
+    if len(n) <= 2 and re.match(r"^[A-Za-z0-9]+$", n):
+        return True
+    # 200GANA / 390JAC / 259LUXU — numeric prefix + head, no tail
+    if re.match(r"^\d{2,3}[A-Z]{2,}$", up):
+        return True
+    # head-tail or head_tail with no personal-name characters
+    if re.match(r"^[A-Z]{2,6}[-_]\d{2,4}$", up):
+        return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# 3) per-kind source strategy
+# --------------------------------------------------------------------------
+
+# 素人 (amateur) and mainstream (有码大厂) need DIFFERENT source orders.
+#
+# Measured on the real library (see engine.py's tiering comment, 40-code sample):
+#   javbus  25/40 overall but **0/5 on 素人** (GANA/LUXU/MIUM) -> useless for 素人
+#   javmenu 40/40, **素人 5/5**  -> the best 素人 source
+#   javdb (official App API) hits both, and is the richest field-wise
+# So for 素人 we try javmenu/javmost first (they actually carry 素人 entries)
+# and only then fall back to the mainstream order.
+AMATEUR_SOURCE_ORDER = ("javmenu", "javmost", "javdb", "javbus", "thejavdb")
+MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus", "thejavdb")
+
+
+def source_order_for(code: str) -> tuple[str, ...]:
+    """Return the crawler names to try, in order, for this code.
+
+    素人 and mainstream titles live in different places, so a single global
+    order wastes requests (or misses entirely) on one of the two kinds.
+    """
+    order = AMATEUR_SOURCE_ORDER if is_amateur_code(code) else MAINSTREAM_SOURCE_ORDER
+    return order
+
+
+# --------------------------------------------------------------------------
+# 2) studio / series name normalisation
+# --------------------------------------------------------------------------
+
+# Explicit alias table: variant -> canonical. Order matters (longest first at
+# lookup time). Keys are compared after normalisation (lower, no spaces).
+STUDIO_ALIASES: dict[str, str] = {
+    # Madonna
+    "マドンナ(madonna)": "Madonna",
+    "マドンナ": "Madonna",
+    "madonna": "Madonna",
+    # MOODYZ
+    "ムーディーズ": "MOODYZ",
+    "moodyz": "MOODYZ",
+    "moodyz diva": "MOODYZ DIVA",
+    "ムーディーズ diva": "MOODYZ DIVA",
+    "moodyzdiva": "MOODYZ DIVA",
+    # Moodyz kana/kanji variants seen in the wild
+    "ムーディーズdiva": "MOODYZ DIVA",
+    # PRESTIGE
+    "プレステージプレミアム(prestige premium)": "PRESTIGE",
+    "プレステージプレミアム": "PRESTIGE",
+    "プレステージ": "PRESTIGE",
+    "prestige premium": "PRESTIGE",
+    "prestigepremium": "PRESTIGE",
+    "prestige": "PRESTIGE",
+    # S1
+    "s1 no.1 style": "S1 NO.1 STYLE",
+    "s1no.1style": "S1 NO.1 STYLE",
+    "エスワン ナンバーワンスタイル": "S1 NO.1 STYLE",
+    "エスワンナンバーワンスタイル": "S1 NO.1 STYLE",
+    # Idea Pocket
+    "idea pocket": "IDEA POCKET",
+    "ideapocket": "IDEA POCKET",
+    "アイデアポケット": "IDEA POCKET",
+    # SOD
+    "sod create": "SOD",
+    "sodクリエイト": "SOD",
+    "sodcreate": "SOD",
+    # Attackers
+    "アタック捐赠": "Attackers",
+    "attackers": "Attackers",
+    # others seen in the top-20 list
+    "faleno": "FALENO",
+    "dls": "DLS",
+    "ダスッ！": "DLS",
+    "ダスッ": "DLS",
+    "dasu": "DLS",
+    "sod": "SOD",
+}
+
+def _norm_key(name: str) -> str:
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
+def normalize_studio(name: str | None) -> str | None:
+    """Map a studio/series variant to its canonical spelling."""
+    if not name:
+        return None
+    raw = name.strip()
+    if not raw:
+        return None
+    key = _norm_key(raw)
+    if not key:
+        return None
+    if key in STUDIO_ALIASES:
+        return STUDIO_ALIASES[key]
+    # try removing a trailing parenthesised gloss: "X (Y)" -> "X"
+    stripped = re.sub(r"\s*[（(].*?[)）]\s*$", "", raw).strip()
+    if stripped and _norm_key(stripped) in STUDIO_ALIASES:
+        return STUDIO_ALIASES[_norm_key(stripped)]
+    return raw
+
+
+def looks_like_plot_not_series(name: str | None) -> bool:
+    """True when a `series` value is really a plot sentence.
+
+    Measured on the server's 3785 non-empty series values:
+      len  0-10: 1430   len 11-15:  844
+      len 16-20:  556   len 21-25:  346
+      len 26-30:  234   len 31-40:  212   len 41+: 163
+    Real series names sit in the short buckets (`S1 NO.1STYLE`, `DAHLIAデビュー`,
+    `マジ軟派、初撮。`, `満足度満点ソープ`), while synopses dominate >25.
+    So: >25 chars => plot. Punctuation alone is NOT a signal, because genuine
+    series names also contain 「、」 and 「。」.
+    """
+    if not name:
+        return True
+    s = name.strip()
+    if not s:
+        return True
+    if len(s) > 25:
+        return True
+    # Long English sentences are always synopses even when under the limit.
+    if re.search(r"[A-Za-z]{4,}\s+[A-Za-z]{4,}\s+[A-Za-z]{4,}", s):
+        return True
+    # Japanese synopses in the 15-25 char band: they are dominated by particles
+    # (が/の/に/を/て/で/と) and read as a clause. Real series names are noun
+    # phrases and have far fewer particles relative to their length.
+    # e.g. 「時短営業で暇になったバイト先の後輩が「逆痴●」 (21 chars, 6 particles)
+    if re.search(r"[がのにてをでとがの]", s):
+        particles = len(re.findall(r"[がのにてをでと]", s))
+        if particles >= 3 and len(s) >= 14:
+            return True
+    return False
+
+
+def build_series_index(movies: Iterable[tuple[str, str | None, str | None]]
+                       ) -> dict[str, list[str]]:
+    """Group codes by canonical series/studio.
+
+    `movies` yields (code, series, studio). Only usable series values are kept
+    (plot blurbs are dropped), and a code is indexed under the series first,
+    then the studio, so lookups succeed even when one of the two is missing.
+    """
+    idx: dict[str, list[str]] = {}
+    for code, series, studio in movies:
+        s_ok = None if looks_like_plot_not_series(series) else normalize_studio(series)
+        st = normalize_studio(studio)
+        for key in (s_ok, st):
+            if key:
+                idx.setdefault(key, []).append(code)
+    return idx

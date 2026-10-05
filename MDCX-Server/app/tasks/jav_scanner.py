@@ -18,6 +18,129 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# ══════════════════════════════════════════════════════════════════════
+# 🔴 2026-10-05 修复（实测 jav.db 有 256 条 pending 的 output_dir 全空，
+#    但磁盘上 movie.nfo 266/266、poster.jpg 257/266 全部存在）：
+#    扫描器原先只在「新番号」时插 pending 行，且**无条件** status="pending"，
+#    对已存在的 pending 行也从不回填 ⇒
+#    ① 明明磁盘上已有刮削好的 NFO/海报，却被标成待刮削；
+#    ② 批量刮削每次都把它们重新选中、反复重刮，却永不退出 pending 池
+#       （"缺口 289 刮了三次还是 289"）。
+#    现在改为：**同目录已有 NFO ⇒ 第一时间导入 NFO 富字段并直接标 scraped**；
+#    对已存在的 pending 行同样就地回填（不新增行、不动已刮好的真实值）。
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _find_local_nfo(code: str, dir_path: Path) -> Path | None:
+    """找该番号在源目录（或已复制到数据中心）的 movie.nfo。"""
+    from app.config.manager import DATA_DIR
+
+    candidates = [
+        dir_path / "movie.nfo",
+        Path(DATA_DIR) / "movies" / "jav" / code / "movie.nfo",
+    ]
+    for p in candidates:
+        try:
+            if p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def _nfo_updates(meta: dict, code: str, data_dir_movie: Path | None) -> dict:
+    """由 NFO 解析结果构造可直接 setattr 到 JavMovie 的字段字典。
+
+    口径与 anime_scanner 一致；只产出「NFO 里确实有值」的键，
+    调用方负责只填空位（不覆盖已有真实值）。
+    """
+    import json as _json
+
+    genres = meta.get("genre") or []
+    tags = meta.get("tag") or []
+    upd: dict = {}
+    if meta.get("title"):
+        upd["title"] = meta["title"]
+    if meta.get("original_title"):
+        upd["original_title"] = meta["original_title"]
+    if meta.get("plot"):
+        upd["plot"] = meta["plot"]
+    if meta.get("plot_short"):
+        upd["plot_short"] = meta["plot_short"]
+    if meta.get("release_date"):
+        upd["release_date"] = meta["release_date"]
+    if meta.get("duration"):
+        upd["duration"] = meta["duration"]
+    if meta.get("rating") is not None:
+        upd["rating"] = meta["rating"]
+    if genres:
+        upd["genre"] = ",".join(genres)
+    if tags:
+        upd["tag"] = _json.dumps(tags, ensure_ascii=False)
+    actors = meta.get("actors") or []
+    if actors:
+        upd["actor"] = ",".join(actors)
+    if meta.get("studio"):
+        upd["studio"] = meta["studio"]
+    if meta.get("series"):
+        upd["series"] = meta["series"]
+    if data_dir_movie is not None:
+        upd["output_dir"] = str(data_dir_movie)
+        poster = data_dir_movie / "poster.jpg"
+        if poster.is_file():
+            upd["cover_url"] = str(poster)
+    upd["source"] = "nfo"
+    return upd
+
+
+def _apply_nfo_to_movie(movie, meta: dict, code: str, data_dir_movie: Path | None) -> bool:
+    """把 NFO 字段写进 movie：只填「当前为空 / 仍是占位」的列，绝不覆盖真实值。
+
+    返回 True 表示该影片已被认定为「刮削完成」（存在有效 NFO）。
+    """
+    if not meta or not meta.get("title"):
+        return False
+    upd = _nfo_updates(meta, code, data_dir_movie)
+    cur_actor = (getattr(movie, "actor", None) or "").strip()
+    changed = False
+    for key, value in upd.items():
+        if not hasattr(movie, key):
+            continue
+        old = getattr(movie, key)
+        # 占位标题（= 文件名/番号）视为空，可被 NFO 覆盖
+        if key == "title" and old:
+            if not _is_placeholder_title(old, code):
+                continue
+        elif key == "actor":
+            if cur_actor and cur_actor.upper() != code.upper():
+                continue
+        elif old not in (None, "", 0):
+            continue
+        setattr(movie, key, value)
+        changed = True
+    return True
+
+
+def _is_placeholder_title(title: str | None, code: str) -> bool:
+    """占位标题判定：空 / 与番号相同 / 本质只是番号 token（扫描器塞的文件名）。"""
+    if not title:
+        return True
+    t = str(title).strip()
+    if not t or t.upper() == code.upper():
+        return True
+    residue = _CODE_TOKEN_RE.sub(" ", t)
+    residue = re.sub(r"[\s\[\]\(\){}<>_\-.,!~+#@$%^&*|\\:;'\"/]+", " ", residue)
+    words = [w for w in residue.split() if any(ch.isalpha() for ch in w)]
+    if not words:
+        return True
+    return sum(len(w) for w in words) <= 2
+
+
+_CODE_TOKEN_RE = re.compile(
+    r"[A-Za-z]{2,10}[-_]?\d{2,6}(?:[-_]?[A-Za-z]{1,4})?|FC2[-_]?(?:PPV[-_]?)?\d{5,7}",
+    re.IGNORECASE,
+)
+
 # JAV 工作室黑名单（不识别为演员的文件夹名）
 STUDIO_BLACKLIST = {
     "R18", "premium", "SOD", "IDEAPOCKET", "MOODYZ", "S1", "S1NO1",
@@ -122,6 +245,14 @@ class JavScanner(BaseScanner):
             existing_codes: set[str] = set(
                 (await session.execute(select(JavMovie.code))).scalars().all()
             )
+            # 🔴 2026-10-05：同时载入 status='pending' 的行，用于「已刮好但没登记」
+            # 的就地回填（避免这些行永远停在 pending 被反复重刮）。
+            pending_rows = (
+                await session.execute(
+                    select(JavMovie).where(JavMovie.status == "pending")
+                )
+            ).scalars().all()
+            pending_by_code: dict[str, object] = {m.code: m for m in pending_rows if m.code}
             walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             pending_movies: list[JavMovie] = []
             for root, dirs, files in walk_entries:
@@ -142,8 +273,35 @@ class JavScanner(BaseScanner):
                         continue
                     result["matched"] += 1
 
-                    # 检查是否已存在（内存判重，含本批次已新增的番号）
+                    # 🔴 2026-10-05：已存在且仍是 pending ⇒ 若磁盘上已有 NFO，
+                    # 说明它早就刮好了，只是没写回库。**就地回填并转 scraped**，
+                    # 绝不能 continue 跳过 —— 那正是"缺口永不消失"的根因。
                     if code in existing_codes:
+                        known = pending_by_code.get(code)
+                        if known is not None:
+                            nfo_path = _find_local_nfo(code, dir_path)
+                            if nfo_path is None:
+                                continue
+                            try:
+                                from app.utils.nfo_fields import parse_nfo_fields
+
+                                meta = parse_nfo_fields(nfo_path)
+                            except Exception as e:
+                                logger.debug(
+                                    "[jav] 回填 NFO 失败 %s: %s", code, e
+                                )
+                                continue
+                            from app.config.manager import DATA_DIR
+
+                            data_movie = Path(DATA_DIR) / "movies" / "jav" / code
+                            if _apply_nfo_to_movie(known, meta, code, data_movie):
+                                known.status = "scraped"
+                                result["movies_backfilled"] = (
+                                    result.get("movies_backfilled", 0) + 1
+                                )
+                                logger.info(
+                                    "[jav] 回填已刮削影片（磁盘已有 NFO）: %s", code
+                                )
                         continue
                     existing_codes.add(code)
 
@@ -190,6 +348,21 @@ class JavScanner(BaseScanner):
                                 cover_url = str(img_path)
                                 break
 
+                    # 🔴 2026-10-05：同目录已有 NFO ⇒ 该片其实早已刮好，
+                    # 必须第一时间导入 NFO 富字段并直接标 scraped，
+                    # 不能无条件塞进 pending 池（否则批量刮削会无限重刮它）。
+                    nfo_meta = None
+                    nfo_path = _find_local_nfo(code, file_path.parent)
+                    if nfo_path is not None:
+                        try:
+                            from app.utils.nfo_fields import parse_nfo_fields
+
+                            nfo_meta = parse_nfo_fields(nfo_path)
+                        except Exception as e:
+                            logger.debug("[jav] 解析 NFO 失败 %s: %s", code, e)
+
+                    has_nfo = bool(nfo_meta and nfo_meta.get("title"))
+
                     # 写入新影片记录
                     new_movie = JavMovie(
                         code=code,
@@ -204,9 +377,18 @@ class JavScanner(BaseScanner):
                         is_mosaic=not is_uncensored,
                         is_leak=flags["is_leak"],
                         is_4k=flags["is_4k"],
-                        source="folder",
-                        status="pending",
+                        source="nfo" if has_nfo else "folder",
+                        status="scraped" if has_nfo else "pending",
                     )
+                    if has_nfo:
+                        from app.config.manager import DATA_DIR
+
+                        _apply_nfo_to_movie(
+                            new_movie,
+                            nfo_meta,
+                            code,
+                            Path(DATA_DIR) / "movies" / "jav" / code,
+                        )
                     session.add(new_movie)
                     pending_movies.append(new_movie)
                     result["movies_added"] += 1
@@ -251,14 +433,34 @@ class JavScanner(BaseScanner):
         return result
 
     def _extract_code(self, file_name: str, file_dir: Path) -> str | None:
-        """从文件名提取标准 JAV 番号"""
+        r"""从文件名提取标准 JAV 番号
+
+        🔴 2026-10-05：旧实现只用**自带的简易正则** ``[A-Za-z]{2,6}-\d{2,5}``，
+        该正则要求番号**以字母开头**，于是素人厂牌番号的前导数字被整段丢掉：
+          300MIUM-1437.mp4 -> MIUM-1437   （真实番号 300MIUM-1437）
+          200GANA-3426.mp4 -> GANA-3426
+          259LUXU-1602.mp4 -> LUXU-1602
+        结果这些片以错误番号入库、按错误番号搜源站，实测会刮到**完全无关的另一部片**
+        （服务器实证：`LUXU-1602` 刮出「かれん&さや」，而 `259LUXU-1602` 才是真片）。
+
+        现在改为**优先走全仓统一的 `app.scraper.number.extract_number`**
+        （它已支持素人番号、FC2 紧凑写法、方括号 token 等，且 2026-10-05 修好了
+        素人番号丢前导数字的问题），失败才回退旧的简易正则。
+        """
         stem = Path(file_name).stem
 
-        # 标准 JAV 番号模式：字母-数字，支持 -C/-UC/-U 后缀
+        # ① 统一番号提取（唯一真相源），文件名优先
+        try:
+            from app.scraper.number import extract_number
+            result = extract_number(file_name)
+            if result.number and result.number.strip():
+                return result.number.strip()
+        except Exception as exc:  # noqa: BLE001 - 提取失败则回退旧逻辑
+            logger.debug("统一番号提取失败，回退旧正则 [%s]: %s", file_name, exc)
+
+        # ② 回退：旧简易正则（字母开头）
         patterns = [
-            # 主模式：字母2-6位-数字2-5位，可选后缀
             r'([A-Za-z]{2,6}-\d{2,5})(?:[-_.\s]?[CUc]?[UCuc]?)?$',
-            # 方括号内模式：[ABC-123]
             r'\[([A-Za-z]{2,6}-\d{2,5})\]',
         ]
 

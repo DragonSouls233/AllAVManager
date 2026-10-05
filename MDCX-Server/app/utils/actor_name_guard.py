@@ -44,6 +44,11 @@ FOLDER_WORDS = {
     "探花", "街拍", "自拍", "偷拍", "约拍", "福利", "试看", "预览",
     # 视频来源标记（常以"演员"目录名出现，线上实测 Vid 挂 194 部、Vids 125 部）
     "vid", "vids", "video", "movie", "clip", "clips",
+    # 2026-10-05 实测：JavDB 演员面板的 HTML 残留标签名被当演员写进
+    # movies.actor（`七沢みあ, Mia Nanasawa, Nanasawa Mia, Detail`）。
+    # 这些是 DOM 结构词，绝不可能是人名。
+    "detail", "details", "profile", "avatar", "thumb", "gallery",
+    "more", "info", "name", "type", "actor", "actress", "id",
 }
 
 # 国籍 / 地区目录名（pornhub 等模块常以国籍做一级目录，如 M:\爱沙尼亚\[Channel] xxx）

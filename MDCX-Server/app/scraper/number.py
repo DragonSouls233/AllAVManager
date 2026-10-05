@@ -57,7 +57,40 @@ class NumberResult:
 JAV_PATTERN = re.compile(r"[A-Z]{2,}-\d{2,}[Z]?", re.IGNORECASE)
 
 # 素人番号: 259luxu-1456, SIRO-1234
-AMATEUR_PATTERN = re.compile(r"\d{2,}[A-Z]{2,}-\d{2,}[A-Z]?", re.IGNORECASE)
+# 🔴 2026-10-05 修正：原式 `\d{2,}[A-Z]{2,}-\d{2,}[A-Z]?` 强制要求
+# 「数字段-字母段-数字段」三段齐全且必须有横杠，于是两种极常见写法会丢掉
+# 前导数字、退化��普通 JAV 番号（实测服务器）：
+#   200GANA3414.mp4     -> GANA-3414  (JAV)   丢了 200
+#   200GANA-3414-C.mp4  -> GANA-3414  (JAV)   丢了 200，且被 -C 后缀带偏
+# 而送源站搜 "GANA-3414" 搜不到/搜错（实测刮到另一部片，演员都对不上），
+# 这正是「素人番号不带数字就刮不出来」的根因。
+# 现在：数字段与字母段之间的分隔符改为**可选**。
+# ⚠️ 尾号只允许**已知的版本/中字标记**（C/U/CU/UC/CHS/CHT/CH）：
+#   早先写成 `(?:-[A-Z])?` 会把画质/版本标记当成尾号吞掉 ——
+#   实测 `200GANA-3414-HD` 被截成 `200GANA-3414-H`（HD 只剩 H）。
+#   这些后缀随后由 `_apply_suffix`→`parse_suffix` 解析出中字/无码标记。
+AMATEUR_PATTERN = re.compile(
+    r"\d{2,}[A-Z]{2,}-?\d{2,}(?:-(?:CU|UC|CHS|CHT|CH|C|U))?",  # 200GANA-3414 / 200GANA3414 / 200GANA-3414-C
+    re.IGNORECASE,
+)
+
+
+def _normalize_amateur(token: str) -> str:
+    """把素人番号归一化成 `数字段-字母段-数字段`，并剥离尾号后缀。
+
+    站点/库里的标准写法都带横杠（`200GANA-3414`），而文件名常见
+    `200GANA3414`（无横杠）。不补横杠就会以错误番号去搜源站。
+    尾号后缀（`-C` 中字 / `-U` 无码）由 `_apply_suffix`→`parse_suffix` 负责剥离，
+    这里必须先摘掉它，否则会把后缀误当成尾号数字段。
+    """
+    t = token.strip().upper()
+    # 先摘掉尾部的 -C / -U / -CU / -CHS 等版本后缀（与 AMATEUR_PATTERN 保持一致）
+    t = re.sub(r"-(?:CU|UC|CHS|CHT|CH|C|U)$", "", t)
+    # 数字段与字母段之间补横杠；字母段与数字段之间若缺也补上
+    m = re.fullmatch(r"(\d{2,})([A-Z]{2,})-?(\d{2,})", t)
+    if m:
+        return f"{m.group(1)}{m.group(2)}-{m.group(3)}"
+    return t
 
 # FC2 番号: FC2-123456, FC2PPV-123456
 # 🔴 2026-10-04 修正：原式 `(?:PPV[-_])?` 的分隔符挂在 PPV **之后**，
@@ -740,6 +773,23 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
     """
     name = os.path.splitext(filename)[0]
 
+    # 🔴 2026-10-05：素人番号带版本后缀必须**先于**下面的 JAV 后缀规则判定。
+    # 下面两条规则都要求 `[A-Za-z]{2,}-\d{2,}` 以**字母**开头，于是
+    # `200GANA-3414-C` 只会被匹配到 `GANA-3414-C`（丢掉前导 200），
+    # 抢先返回 JAV ⇒ 素人番号「不带数字」去搜源站，必然搜不到/搜错。
+    # 这里复用 AMATEUR_PATTERN（数字段开头），保证 200GANA/259LUXU 形态原样保留。
+    if match := AMATEUR_PATTERN.search(name):
+        base = _normalize_amateur(match.group())
+        _, is_chinese, is_mosaic = parse_suffix(base)
+        result = NumberResult(
+            number=base, original=filename, number_type=NumberType.AMATEUR,
+            confidence=0.85, is_chinese=is_chinese, is_mosaic=is_mosaic,
+        )
+        if bracket_chinese and result.is_chinese is None:
+            result.is_chinese = True
+        result.formatted = compute_formatted(result)
+        return result
+
     # v3.0: 优先匹配三字符后缀 CHS/CHT/CH
     for suffix_pat in [r"(CHS|CHT|CH)", r"(UC|CU)", r"(U|C)"]:
         # 带横线: ABC-123-UC, ABC-123-C, ABC-123-CHS
@@ -1018,9 +1068,9 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
         number = f"{site}.{y}.{m}.{d}"
         return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.WESTERN, confidence=0.90), bracket_chinese)
 
-    # 6. 素人番号: 259luxu-1456
+    # 6. 素人番号: 259luxu-1456 / 200GANA3414（无横杠）/ 200GANA-3414-C
     if match := AMATEUR_PATTERN.search(cleaned):
-        number = match.group().upper()
+        number = _normalize_amateur(match.group())
         return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.AMATEUR, confidence=0.85), bracket_chinese)
 
     # 7. 标准 JAV: ABC-123（先尝试带横线）
@@ -1309,8 +1359,9 @@ def get_number_type(number: str) -> NumberType:
     if re.match(r"[A-Z]{2,}-\d{2,}", upper):
         return NumberType.JAV
 
-    # 素人
-    if re.match(r"\d{2,}[A-Z]{2,}-\d{2,}", upper):
+    # 素人（复用 AMATEUR_PATTERN，避免与 extract_number 判定漂移；
+    # 且它以数字开头，不会被下面的「标准 JAV」吃掉）
+    if AMATEUR_PATTERN.match(upper):
         return NumberType.AMATEUR
 
     # 欧美

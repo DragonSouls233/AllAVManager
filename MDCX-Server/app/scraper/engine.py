@@ -257,6 +257,14 @@ class ScraperEngine:
     #
     # ⚠️ 曾把 10 个源全塞进 TIER1 → 每片至少并发 10 源，与补刮并发(12)相乘
     #    远超全局爬虫名额 → 信号量饥饿丢源。
+    #
+    # 🔴 2026-10-05 用户指定：**主力源 = JavDB API**。
+    #   ⚠️ 命名陷阱：`javdb` 才是 JavDB **官方 App API**（内部 `_scrape_via_app_api`，
+    #   匿名 jdsignature 绕 CF）；`thejavdb` 是第三方 api.thejavdb.net，与官方无关。
+    #   所以主力池首位是 `javdb`（官方 API），`thejavdb` 回备用池首位。
+    #   实测依据：带数字的素人番号（200GANA-3426 / 259LUXU-1602 / 300MIUM-1437 /
+    #   348NTR-059）经官方 API 命中，series/studio/label 齐全。
+    #   `_rotate_primary` 会按番号轮换首选源，放首位≠每片都只打它，仍能摊薄限流。
     PRIMARY_CRAWLERS = ("javdb", "javmenu", "javmost", "javbus")
 
     FALLBACK_CRAWLERS = (
@@ -292,16 +300,28 @@ class ScraperEngine:
 
         同一起点 → 同一番号总是先试同一个源（可复现、便于排查）；
         不同番号分散到不同主站，使每站请求量约为总量的 1/3，避免被限流。
+
+        🔴 2026-10-05：**素人走素人源序**（canon.source_order_for）。
+        实测 javbus 对素人 0/5 命中（它只做有码大厂），而 javmenu 素人 5/5 ——
+        统一源序会让素人片白跑一轮再落到低覆盖的源。素人/有码各用各的顺序。
         """
-        names = list(self.PRIMARY_CRAWLERS)
+        from app.scraper.canon import source_order_for
+
         by_name = {c.name: c for c in primary}
-        n = max(1, len(names))
+        # 素人专用序优先，其余主力源按番号轮换追加在后
+        preferred = [n for n in source_order_for(number) if n in by_name]
+        rest_names = list(self.PRIMARY_CRAWLERS)
+        n = max(1, len(rest_names))
         start = sum(ord(ch) for ch in str(number or "")) % n
-        ordered = [
-            by_name[names[(start + i) % n]]
+        rotated = [
+            rest_names[(start + i) % n]
             for i in range(n)
-            if names[(start + i) % n] in by_name
+            if rest_names[(start + i) % n] in by_name
         ]
+        ordered: list = []
+        for name in preferred + rotated:
+            if name in by_name and name not in [c.name for c in ordered]:
+                ordered.append(by_name[name])
         return ordered or list(primary)
 
     def _split_tiers(self, crawlers: list) -> tuple[list, list]:

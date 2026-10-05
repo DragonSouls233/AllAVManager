@@ -557,6 +557,12 @@ export const routes = [
         meta: { title: 'JAV 有码 · 补全 NFO 缓存' }
       },
       {
+        path: 'jav/gap-fill',
+        name: 'JavGapFill',
+        component: () => import('@/views/jav/GapFill.vue'),
+        meta: { title: 'JAV 有码 · 缺口体检与补全' }
+      },
+      {
         path: 'jav/leaderboard',
         name: 'JavLeaderboard',
         component: () => import('@/views/jav/Leaderboard.vue'),

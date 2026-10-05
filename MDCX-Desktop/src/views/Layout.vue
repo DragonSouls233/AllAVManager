@@ -65,6 +65,10 @@
             <el-icon><Download /></el-icon>
             <template #title>补全 NFO 缓存</template>
           </el-menu-item>
+          <el-menu-item index="/jav/gap-fill">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>缺口体检与补全</template>
+          </el-menu-item>
           <el-menu-item index="/jav/studios">
             <el-icon><OfficeBuilding /></el-icon>
             <template #title>制片厂</template>
@@ -1368,6 +1372,7 @@ const pageTitle = computed(() => {
     '/jav/categories': 'JAV 有码 - 类别',
     '/jav/covers/problems': 'JAV 有码 - 封面问题修复',
     '/jav/refill-nfo-cache': 'JAV 有码 - 补全 NFO 缓存',
+    '/jav/gap-fill': 'JAV 有码 - 缺口体检与补全',
     // JAV 无码
     '/uncensored/movies': 'JAV 无码 - 影片库',
     '/uncensored/categories': 'JAV 无码 - 类别',

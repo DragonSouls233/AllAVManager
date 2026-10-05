@@ -94,7 +94,11 @@ class JavdbApiCrawler(BaseCrawler):
     display_name = "TheJavDB (API)"
     base_url = API_BASE
 
-    priority = CrawlerPriority.HIGH
+    # 🔴 2026-10-05：用户指定主力源 = **JavDB 官方 App API**，那实现是
+    #   `app/crawlers/javdb.py`（name="javdb"，内部 `_scrape_via_app_api`）。
+    #   本类是**第三方** api.thejavdb.net JSON API（与 JavDB 官方无关），
+    #   命中率高但覆盖有限 ⇒ 降为 VERY_HIGH 作主力池里的补位，不再是唯一首选。
+    priority = CrawlerPriority.VERY_HIGH
     supported_types = ["jav"]
     supported_prefixes = []
     description = "TheJavDB 第三方开放 JSON API（免 Cookie 绕 CF）"
