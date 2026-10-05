@@ -119,6 +119,7 @@ class JPProxyService:
         self._started_at: float = 0.0
         self._last_err: str = ""
         self._node_count: int = 0
+        self._log_file = None
         self._rr: int = 0
         self._rr_lock = threading.Lock()
 
@@ -132,7 +133,23 @@ class JPProxyService:
 
     # ---------- 状态 ----------
     def is_running(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
+        """进程在 **且端口真的在监听**。
+
+        只看 `poll()` 会被"进程活着但没绑上端口"骗过去；实测踩到过
+        自报 running 而 curl ConnectError 的情况。
+        """
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        return self._port_alive(JP_SOCKS_PORT)
+
+    @staticmethod
+    def _port_alive(port: int, timeout: float = 1.0) -> bool:
+        import socket
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
     def proxy_for(self) -> str:
         """轮转取一个日本节点对应的 socks URL（实现简易故障转移）。"""
@@ -235,24 +252,43 @@ class JPProxyService:
         tmp = Path(tempfile.gettempdir()) / "mdcx_jp_proxy.json"
         tmp.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         try:
+            # 🔴 必须让 xray **脱离本进程组**（Windows CREATE_NEW_PROCESS_GROUP +
+            # DETACHED_PROCESS + CREATE_NO_WINDOW）：否则调用方脚本/服务一退出，
+            # xray 就被连带杀掉，表现为「服务自报 running 但端口 ConnectError」
+            # （2026-10-05 实测踩到）。
+            # 日志必须落**文件**而不是 stderr=PIPE：脱离后没人读管道，
+            # xray 写日志会把管道写满而卡死。
+            flags = 0
+            for name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS",
+                         "CREATE_NO_WINDOW"):
+                flags |= getattr(subprocess, name, 0)
+            log_path = _data_dir() / "proxy" / "jp_proxy_xray.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = open(str(log_path), "ab", buffering=0)
             self._proc = subprocess.Popen(
                 [str(XRAY_BIN), "run", "-c", str(tmp)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                stdout=self._log_file, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=flags,
             )
         except Exception as e:  # noqa: BLE001
             self._last_err = "xray 启动失败: %s" % e
             logger.warning(self._last_err)
             return False
 
-        time.sleep(2.0)
+        time.sleep(2.5)
         if not self.is_running():
-            err = ""
+            tail = ""
             try:
-                err = (self._proc.stderr.read() or b"").decode("utf-8", "replace")[:300]
+                lp = _data_dir() / "proxy" / "jp_proxy_xray.log"
+                if lp.exists():
+                    tail = lp.read_text(encoding="utf-8", errors="replace")[-300:]
             except Exception:
                 pass
-            self._last_err = "xray 退出: %s" % (err.strip() or "rc=%s" % self._proc.returncode)
+            self._last_err = "xray 未就绪: %s" % (
+                tail.strip() or ("rc=%s" % self._proc.returncode))
             logger.warning(self._last_err)
+            self.stop()
             return False
         self._front = front_socks
         self._node_count = sum(
@@ -272,6 +308,12 @@ class JPProxyService:
             except Exception:
                 pass
             self._proc = None
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+            self._log_file = None
         self._started_at = 0.0
         self._node_count = 0
 
