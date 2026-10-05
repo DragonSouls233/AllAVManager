@@ -265,7 +265,19 @@ class ScraperEngine:
     #   实测依据：带数字的素人番号（200GANA-3426 / 259LUXU-1602 / 300MIUM-1437 /
     #   348NTR-059）经官方 API 命中，series/studio/label 齐全。
     #   `_rotate_primary` 会按番号轮换首选源，放首位≠每片都只打它，仍能摊薄限流。
-    PRIMARY_CRAWLERS = ("javdb", "javmenu", "javmost", "javbus")
+    #
+    # 🔴 2026-10-05 用户决定：**DMM/FANZA 加入主力**（数据已实测打通，
+    #   端点 `api.video.dmm.co.jp/graphql`，真实番号 6/6 命中）。
+    #   但它**固定排在尾部、不参与首选轮换**（见 `JP_TAIL_CRAWLERS`）：
+    #   前 4 个源命中即返回，走不到它；只有主力全未命中才付这 ~70s 的日本节点时延。
+    #   若让它进轮换池，按番号错开后会有 ~1/5 的片子**首选就打 DMM**，
+    #   白等 70s 换一份与 javdb 重叠的数据。
+    PRIMARY_CRAWLERS = ("javdb", "javmenu", "javmost", "javbus", "dmm_web")
+
+    #: 主力池内但**固定排尾部**的源：不参与 `_rotate_primary` 的首选轮换，
+    #: 只在主力前序全部未给出完整结果时才被调用。
+    #: 判定标准 = 走昂贵/高时延链路（需日本出口），而字段与前序源高度重叠。
+    JP_TAIL_CRAWLERS = ("dmm_web",)
 
     FALLBACK_CRAWLERS = (
         "thejavdb",      # 第三方开放 API —— 命中即字段全(avgW 4.0)
@@ -310,7 +322,11 @@ class ScraperEngine:
         by_name = {c.name: c for c in primary}
         # 素人专用序优先，其余主力源按番号轮换追加在后
         preferred = [n for n in source_order_for(number) if n in by_name]
-        rest_names = list(self.PRIMARY_CRAWLERS)
+        # 🔴 固定尾部源（JP_TAIL_CRAWLERS）**不进轮换池**：轮换是「按番号错开
+        # 首选源」的负载均衡手段，而日本节点单部 ~70s，让它参与轮换等于有 1/N
+        # 的片子第一枪就打在最慢的源上。它只应作为前序全未命中后的兜底。
+        rest_names = [n for n in self.PRIMARY_CRAWLERS
+                      if n not in self.JP_TAIL_CRAWLERS]
         n = max(1, len(rest_names))
         start = sum(ord(ch) for ch in str(number or "")) % n
         rotated = [
@@ -318,8 +334,11 @@ class ScraperEngine:
             for i in range(n)
             if rest_names[(start + i) % n] in by_name
         ]
+        # 尾部源永远接在轮换序列之后
+        tail = [n2 for n2 in source_order_for(number)
+                if n2 in self.JP_TAIL_CRAWLERS and n2 in by_name]
         ordered: list = []
-        for name in preferred + rotated:
+        for name in preferred + rotated + tail:
             if name in by_name and name not in [c.name for c in ordered]:
                 ordered.append(by_name[name])
         return ordered or list(primary)

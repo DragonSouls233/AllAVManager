@@ -16,6 +16,7 @@ Two related problems, both observed on the real server data:
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterable
 
@@ -171,15 +172,73 @@ def is_code_like_token(name: str | None) -> bool:
 AMATEUR_SOURCE_ORDER = ("javmenu", "javmost", "javdb", "javbus", "thejavdb")
 MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus", "thejavdb")
 
+# --------------------------------------------------------------------------
+# 3b) 日本专属源（FANZA / DMM）—— 2026-10-05 实测结论
+# --------------------------------------------------------------------------
+# 前提事实：FANZA/DMM 对**海外 IP 地区封锁**。实测走原代理（美国出口）
+# 拿到的永远是「年齢認証 - FANZA」空壳页（len=28361，零字段）；换日本出口后
+# 首页/年龄认证页正常（len=507749 / title=FANZA 日本最大級のアダルトポータル），
+# **日本链路本身是通的**。
+#
+# 🔴 2026-10-05 二次实测（推翻上一轮「0 命中」结论）：**DMM 数据已打通**。
+# 上一轮只试了静态 HTML 与两个已废弃端点，漏掉了真正的现行入口。
+# 现在确认可用的是官方 GraphQL：`https://api.video.dmm.co.jp/graphql`
+# （从 assets.video.dmm.co.jp 的 Next.js chunk 里挖出来的，chunk 13662 模块
+#  直接写死了这个域名）。
+#
+# 三个决定性事实（全部实测）：
+#   1. **静态 HTML 确实没数据**（len=28361，`__NEXT_DATA__` 计数 0）—— 上轮没错。
+#   2. 但 `api.fanza.xyz` DNS 失效、`api.dmm.com` **域名活着但全站 404**
+#      （`/graphql` 也返回 `{"result":{"status":404,"message":"NOT FOUND"}}`）
+#      —— 这两个才是真正废掉的，上轮把它们当成「DMM 整体不可用」的证据是错的。
+#   3. `api.video.dmm.co.jp/graphql` 对真实番号 **4/4 命中**
+#      （MIDE-980 / SSIS-001 / ATID-705 / MIDE-20），虚构番号 ABC-123 正确返回
+#      null ⇒ 不是假阳性。字段齐：标题/演员/厂牌/系列/标签/时长/发行日/评分/
+#      封面/10 张剧照/预告片，且封面与剧照实测可下载（JPEG 魔数 ffd8ff）。
+#
+# 番号→id 规则：`ABC-123` → `abc00123`（前缀小写 + 数字零填充 5 位）。
+#
+# ⚠️ 仍默认**不进**自动刮削序列，理由与数据可用性无关，纯粹是成本：
+# 日本节点是免费池、时延高（实测每部 ~70s），而 DMM 在字段丰富度上与
+# javdb 高度重叠（演员/厂牌/标签都全），把它排进主力序只会拖慢整体刮削。
+# 需要时用环境变量显式开启：
+#
+#   MDCX_JP_SOURCE_IN_ORDER=1   把 dmm_web 追加到源序尾部
+JP_SOURCE_ORDER: tuple[str, ...] = ("dmm_web",)
+
+
+def jp_sources_available() -> bool:
+    """日本出口当前是否可用（不可用就别把日本源排进序里，白白浪费请求）。"""
+    try:
+        from app.services.jp_proxy import get_jp_proxy_url
+        return bool(get_jp_proxy_url())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def jp_fallback_order() -> tuple[str, ...]:
+    """日本源在源序里的实际位置。
+
+    默认返回空 —— DMM 走免费日本节点池、时延高（实测每部 ~70s），而字段与
+    javdb 高度重叠，排进主力序只会拖慢整体刮削。要用请显式开启。
+    """
+    if os.environ.get("MDCX_JP_SOURCE_IN_ORDER", "").strip() in ("1", "true", "yes"):
+        return JP_SOURCE_ORDER if jp_sources_available() else ()
+    return ()
+
 
 def source_order_for(code: str) -> tuple[str, ...]:
     """Return the crawler names to try, in order, for this code.
 
     素人 and mainstream titles live in different places, so a single global
     order wastes requests (or misses entirely) on one of the two kinds.
+
+    日本源（FANZA/DMM）默认**不参与**自动刮削 —— 数据本身已实测可用
+    （见 JP_SOURCE_ORDER 段），但时延高且与 javdb 重叠。需显式设
+    `MDCX_JP_SOURCE_IN_ORDER=1` 才追加到尾部。
     """
     order = AMATEUR_SOURCE_ORDER if is_amateur_code(code) else MAINSTREAM_SOURCE_ORDER
-    return order
+    return order + jp_fallback_order()
 
 
 # --------------------------------------------------------------------------

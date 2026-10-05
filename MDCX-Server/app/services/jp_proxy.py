@@ -391,6 +391,178 @@ def get_jp_proxy_service() -> JPProxyService:
     return JPProxyService.instance()
 
 
+# --------------------------------------------------------------------------
+# 节点探测（供 scripts/_refresh_jp_nodes.py 调用）
+# --------------------------------------------------------------------------
+#: 判定节点是否合格时用的 FANZA 目标（取首页即可，不必打详情页——详情页是
+#: JS 动态渲染，静态请求恒定返回空壳，用它判会误杀所有节点）
+FANZA_PROBE_URLS: tuple[str, ...] = ("https://www.dmm.co.jp/",)
+
+
+def build_chained_config(node, socks_port: int, front_socks: str) -> dict:
+    """构造「前置代理 → 日本节点」的链式 xray 配置（**单节点单端口**）。
+
+    🔴 为什么必须链式（2026-10-05 实测）：这批免费节点服务器在**境外**
+    （8x/3x/5x AWS 段），本机直连它们的 TCP 443 全部 TimeoutError
+    ⇒ xray 直连模式下 100% 不通，极易被误判成「节点全挂了」。让节点
+    outbound 经 `proxySettings` 走前置 socks 出去才有机会连上。
+    实测同一批节点：直连 0 存活 → 链式 21/24 存活。
+    """
+    ob = dict(node.outbound)
+    ob["tag"] = "jp"
+    ob["proxySettings"] = {"tag": "front"}
+    host, _, p = front_socks.rpartition(":")
+    port = int(p) if p.isdigit() else 10808
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{
+            "tag": "socks-in", "port": socks_port, "listen": "127.0.0.1",
+            "protocol": "socks", "settings": {"auth": "noauth", "udp": True},
+        }],
+        "outbounds": [
+            ob,
+            {"tag": "front", "protocol": "socks",
+             "settings": {"servers": [{"address": host or "127.0.0.1",
+                                       "port": port}]}},
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "block", "protocol": "blackhole"},
+        ],
+        "routing": {"rules": [
+            {"type": "field", "inboundTag": ["socks-in"], "outboundTag": "jp"},
+        ]},
+    }
+
+
+def _free_port() -> int:
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+async def probe_node(node_url: str, xray_bin: Optional[str] = None,
+                     timeout: float = 12.0,
+                     front_socks: str = "") -> dict:
+    """起一个**临时独立 xray** 探测单个节点。
+
+    返回 {url,name,ok,ip,country,fanza,err}。`ok=True` 表示出口为日本且
+    FANZA 未被地区封锁 —— 只有这种节点才值得进正式池。
+
+    为什么用临时实例而不是复用常驻服务：常驻服务已占用固定端口 18930+，
+    探测要并发筛几十个节点，只能各自起临时实例。
+    """
+    import asyncio
+    import shutil
+    import socket
+    import tempfile
+
+    from app.services.proxy_parser import parse_node_url
+    from app.services.proxy_manager import XRAY_BIN
+    from app.services.xray_config import build_xray_config
+
+    xray_bin = str(xray_bin or XRAY_BIN)
+    res = {"url": node_url[:80], "ok": False, "ip": "", "country": "",
+           "fanza": "", "err": ""}
+    try:
+        node = parse_node_url(node_url)
+    except Exception as e:  # noqa: BLE001
+        res["err"] = "parse: %s" % e
+        return res
+    res["name"] = str(getattr(node, "name", ""))[:40]
+
+    port = _free_port()
+    tmp = Path(tempfile.mkdtemp(prefix="jpvpn_"))
+    proc = None
+    try:
+        if front_socks:
+            cfg = build_chained_config(node, port, front_socks)
+        else:
+            cfg = build_xray_config(nodes=[node], socks_port=port,
+                                    http_port=_free_port())
+        cfg_path = tmp / "config.json"
+        cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        proc = subprocess.Popen(
+            [xray_bin, "run", "-c", str(cfg_path)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        socks = "socks5://127.0.0.1:%d" % port
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                if proc.poll() is not None:
+                    res["err"] = "xray 启动失败 rc=%s" % proc.returncode
+                    return res
+                time.sleep(0.3)
+
+        import httpx
+        async with httpx.AsyncClient(proxy=socks, timeout=timeout,
+                                     follow_redirects=True,
+                                     headers={"User-Agent": "Mozilla/5.0"}) as c:
+            alive = False
+            for probe in ("https://1.1.1.1/cdn-cgi/trace",
+                          "https://api.ip.sb/geoip"):
+                try:
+                    rr = await c.get(probe, timeout=6.0)
+                    if rr.status_code < 500:
+                        alive = True
+                        if "ip.sb" in probe:
+                            try:
+                                j = rr.json()
+                                res["ip"] = j.get("ip") or j.get("query") or ""
+                                res["country"] = (j.get("country_code")
+                                                  or j.get("country") or "").upper()[:2]
+                            except Exception:  # noqa: BLE001
+                                pass
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if not alive:
+                res["err"] = "节点不通（超时/拒绝）"
+                return res
+            if not res["ip"]:
+                for url in ("https://ipinfo.io/json", "https://ipapi.co/json/"):
+                    try:
+                        rr = await c.get(url, timeout=8.0)
+                        j = rr.json()
+                        res["ip"] = j.get("ip") or j.get("query") or ""
+                        res["country"] = (j.get("country_code")
+                                          or j.get("country") or "").upper()[:2]
+                        break
+                    except Exception:  # noqa: BLE001
+                        continue
+            if not res["ip"]:
+                res["err"] = "出口 IP 探测失败"
+                return res
+            for u in FANZA_PROBE_URLS:
+                try:
+                    rr = await c.get(u, timeout=20.0)
+                    body = rr.text[:4000]
+                    blocked = any(k in body for k in ("海外からは", "ブロックされ",
+                                                      "not available in your"))
+                    res["fanza"] = "%s %d" % ("BLOCKED" if blocked else "OK",
+                                              rr.status_code)
+                    if not blocked:
+                        res["ok"] = True
+                    break
+                except Exception as e:  # noqa: BLE001
+                    res["fanza"] = "ERR %s" % type(e).__name__
+    except Exception as e:  # noqa: BLE001
+        res["err"] = res["err"] or "%s: %s" % (type(e).__name__, str(e)[:60])
+    finally:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+    return res
+
+
 def get_jp_proxy_url(auto_start: bool = True) -> Optional[str]:
     """取日本出口代理 URL；不可用时返回 None（调用方回退原代理）。"""
     svc = get_jp_proxy_service()

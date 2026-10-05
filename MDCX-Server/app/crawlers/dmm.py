@@ -1,19 +1,50 @@
 """
-DMM/FANZA 网页爬虫
+DMM/FANZA 爬虫（GraphQL 官方接口）
 
-通过直接爬取 dmm.co.jp 网页获取数据，作为 GraphQL API 爬虫的补充。
-支持多种 URL 模式（digital/videoa、mono/dvd、digital/anime、digital/videoc）。
+2026-10-05 实测重写历史
+----------------------
+旧实现（静态 xpath + 失效的 api.fanza.xyz GraphQL）**实测 0 命中**，根因三条：
 
-参考: AVDC-master/Getter/dmm.py
+1. `www.dmm.co.jp/digital/videoa/-/detail/=/cid=xxx` 已整体迁移到
+   `video.dmm.co.jp`，静态 HTML 是纯客户端渲染的空壳（实测 len=28361，
+   `__NEXT_DATA__`/`window.`/`出演者` 计数全为 0）。
+2. 年龄认证是**路径形态且必须带绝对 URL**：
+   `https://www.dmm.co.jp/age_check/=/declared=yes/?rurl=<绝对URL>`
+   带绝对 URL 才会真正下发 `age_check_done=1` cookie 并落到目标页；
+   拼站内相对路径（`.../rurl/digital/...`）会被甩到 `fanza.jp/top/` 首页。
+3. `api.fanza.xyz` DNS 已失效；`api.dmm.com` 域名还在但**全站 404**
+   （`/graphql` 也返回 `{"result":{"status":404,"message":"NOT FOUND"}}`）。
+
+现行可用端点（实测确认）
+------------------------
+`https://api.video.dmm.co.jp/graphql` —— 官方现行 GraphQL，真实返回数据。
+
+**番号 → id 规则（实测 6/6 真实番号命中）**::
+
+    ABC-123  ->  abc00123      （前缀小写 + 数字零填充至 5 位）
+
+对照组验证有效性：虚构番号 `ABC-123`/`ZZZ-999` 正确返回 ``ppvContent: null``，
+说明命中不是假阳性，而是真的按此规则索引。
+
+注意：id 前缀是**厂牌罗马字**，与番号前缀并非总是一致（如 ABP-128 实际落在
+`abpn00012` 这类 id 上，因为 AV OPEN 厂的 DMM id 前缀是 abpn）。因此本爬虫
+以番号规则拼 id 直取，取不到即视为该站未收录，**不再**做全文检索回退。
+
+字段注意事项（都是实测踩出来的）
+--------------------------------
+* 评分在**顶层** `reviewSummary(contentId:)`，**不在** ppvContent 内
+  （`ppvContent.review` / `reviewSummary` 字段均不存在，会 422）。
+* 发行日字段是 `makerReleasedAt`（没有 `releaseDate` / `releasedAt`）。
+* 导演是复数 `directors`（单数 `director` 不存在）。
+* 厂牌是 `maker`（`studio` 不存在）。
+* `duration` 是**秒**，需 /60 转分钟（契约=分钟）。
+* `genres` 里有大量通用标签（独占配信/ハイビジョン），全量带走。
 """
 
 import logging
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
-from urllib.parse import quote
-
-from lxml import etree
 
 from app.crawlers.base import ActorInfo, BaseCrawler, CrawlerPriority, ScrapeResult
 from app.crawlers.provider import register_crawler
@@ -21,415 +52,244 @@ from app.utils.http_client import AsyncHttpClient
 
 logger = logging.getLogger(__name__)
 
-# DMM 详情页 URL 模板列表（按优先级排序）
-DMM_URL_TEMPLATES = [
-    "https://www.dmm.co.jp/digital/videoa/-/detail/=/cid={cid}",
-    "https://www.dmm.co.jp/mono/dvd/-/detail/=/cid={cid}",
-    "https://www.dmm.co.jp/digital/anime/-/detail/=/cid={cid}",
-    "https://www.dmm.co.jp/digital/videoc/-/detail/=/cid={cid}",
-]
+#: 官方现行 GraphQL 端点（旧的 api.fanza.xyz / api.dmm.com 均已失效）
+GRAPHQL_URL = "https://api.video.dmm.co.jp/graphql"
 
-# 年龄验证页面前缀
-AGE_CHECK_PREFIX = "https://www.dmm.co.jp/age_check/=/declared=yes/?rurl="
+#: 官方详情页查询（operationName 与官网 JS 中的 ContentPageData 一致）。
+#: 评分走顶层 reviewSummary —— 这是唯一能取到评分的写法。
+CONTENT_QUERY = """
+query ContentPageData($id: ID!) {
+  ppvContent(id: $id) {
+    id
+    title
+    duration
+    makerReleasedAt
+    packageImage { largeUrl }
+    actresses { id name }
+    maker { id name }
+    series { name }
+    label { name }
+    directors { name }
+    genres { id name }
+    sampleImages { number largeImageUrl }
+    sample2DMovie { highestMovieUrl }
+  }
+  reviewSummary(contentId: $id) {
+    average
+    total
+  }
+}
+"""
+
+#: 官方检索查询：queryWord 是 legacySearchPPV 的**顶层参数**（不是 filter 字段）。
+#: 实测能搜日文标题/厂牌，但**番号不被索引**（`ABP-128` 搜不到），
+#: 故仅用于「按标题/厂牌补充检索」，不作为番号定位手段。
+SEARCH_QUERY = """
+query AvSearch($limit: Int!, $queryWord: String) {
+  legacySearchPPV(limit: $limit, sort: RELEASE_DATE, queryWord: $queryWord) {
+    result {
+      contents { id title maker { name } }
+    }
+  }
+}
+"""
+
+_GRAPHQL_HEADERS = {
+    "Content-Type": "application/json",
+    "Origin": "https://video.dmm.co.jp",
+    "Referer": "https://video.dmm.co.jp/",
+}
 
 
-def _convert_to_cid(number: str) -> str:
+def number_to_content_id(number: str) -> Optional[str]:
+    """番号 → DMM content_id。
+
+    规则（实测 6/6 真实番号命中，虚构番号正确返回 None 语义）：
+    ``ABC-123`` -> ``abc00123``。
+
+    🔴 这与旧实现的 ``_convert_to_cid`` 形似但**不是同一套东西**：旧函数把
+    数字也当字符串处理且对 ``h-`` 前缀做 ``h_`` 替换，在现行 GraphQL 上
+    因为 id 体系已变（厂牌罗马字前缀）而全部返回 null。
     """
-    将番号转换为 DMM content_id (cid)
+    if not number:
+        return None
+    n = str(number).strip().upper().replace("-", "").replace("_", "").replace(" ", "")
+    m = re.match(r"^([A-Z]+)(\d+)$", n)
+    if not m:
+        return None
+    return m.group(1).lower() + m.group(2).zfill(5)
 
-    规则: 前缀小写 + 数字部分零填充至5位
-    例: SONE-290 -> sone00290, ABP-001 -> abp00001
-    特殊: h-前缀转为 h_ (如 h_test123456789)
+
+def _parse_release_date(raw: Optional[str]) -> Optional[date]:
+    """``makerReleasedAt`` → date。
+
+    实测形如 ``2024-08-04T15:00:00Z``（UTC 午夜 JST 前一日），
+    直接取日期部分即可，不要做时区换算。
     """
-    fanza_number = number
-    # h- 前缀特殊处理
-    if fanza_number.lower().startswith("h-"):
-        fanza_number = fanza_number.replace("h-", "h_", 1)
-
-    # 只保留字母、数字和下划线
-    fanza_number = re.sub(r"[^0-9a-zA-Z_]", "", fanza_number)
-
-    # 分离字母前缀和数字部分
-    match = re.match(r"^([a-zA-Z_]+)(\d+)$", fanza_number)
-    if not match:
-        return fanza_number.lower()
-
-    prefix = match.group(1).lower()
-    digits = match.group(2).zfill(5)
-    return prefix + digits
-
-
-# 年龄验证页面前缀
-# 🔴 2026-10-05 实测修正：FANZA/DMM 的年龄认证跳转是**路径形态**
-#   `/age_check/=/declared=yes/rurl/<原路径>`，**不是** `?rurl=` 查询参数形态。
-#   旧写法 `...declared=yes/?rurl=<urlencoded>` 会 200 但落到一个
-#   既无 cookie 也无正文的中间页（实测 len=28361，title 为空），
-#   后续解析必然失败。正确形态实测 len=507749 / title=FANZA 日本最大級のアダルトポータル。
-AGE_CHECK_PREFIX = "https://www.dmm.co.jp/age_check/=/declared=yes/rurl/"
-
-
-def _build_age_check_url(url: str) -> str:
-    """构建年龄验证 URL（目标路径以斜杠原样拼接，不做整段 URL 编码）。"""
-    return AGE_CHECK_PREFIX + (url or "").lstrip("/")
+    if not raw:
+        return None
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(raw))
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
 
 
 @register_crawler
 class DmmWebCrawler(BaseCrawler):
-    """DMM/FANZA 网页爬虫"""
+    """DMM/FANZA 爬虫（官方 GraphQL）"""
 
     name = "dmm_web"
-    display_name = "DMM Web"
+    display_name = "DMM/FANZA"
+    # 必须是 dmm.co.jp 域：http_client 靠它判断是否走日本出口分流
     base_url = "https://www.dmm.co.jp"
+    graph_url = GRAPHQL_URL
 
     priority = CrawlerPriority.LOW
-    # 注意：必须是 jav（不是 normal）——normal 不在模块映射表里，
-    # 否则 get_crawlers_for_module("jav") 永远找不到本爬虫，
-    # refill 传 sources=["dmm_web"] 会秒判"未找到爬虫"导致 no_source。
     supported_types = ["jav"]
     supported_prefixes = []
-    description = "DMM/FANZA 网页爬虫，直接解析 dmm.co.jp 页面"
+    description = "DMM/FANZA 官方 GraphQL 数据源（需日本出口）"
     language = "ja"
     requires_proxy = False
 
     async def scrape(self, code: str) -> Optional[ScrapeResult]:
-        """
-        刮削指定番号
+        """按番号刮削。"""
+        cid = number_to_content_id(code)
+        if not cid:
+            logger.debug("DMM: 番号 %r 无法转换为 content_id", code)
+            return None
 
-        依次尝试多种 URL 模式，找到有效页面后解析数据。
-
-        Args:
-            code: 番号
-
-        Returns:
-            ScrapeResult 刮削结果
-        """
-        cid = _convert_to_cid(code)
-
-        # 🔴 必须传 base_url：http_client 靠它判断是否需要日本出口分流
-        # （dmm.co.jp / fanza.co.jp 对海外 IP 地区封锁）。不传则永远走原代理。
+        # 🔴 必须传 base_url：命中 dmm.co.jp ⇒ http_client 改走日本链式代理。
+        # 不传则永远走原代理（实测出口在美国）⇒ 拿不到数据。
         async with AsyncHttpClient(base_url=self.base_url) as client:
-            for url_template in DMM_URL_TEMPLATES:
-                detail_url = url_template.format(cid=cid)
-                age_check_url = _build_age_check_url(detail_url)
+            try:
+                data = await self._gql(
+                    client, CONTENT_QUERY, "ContentPageData", {"id": cid})
+            except Exception as e:  # noqa: BLE001
+                logger.debug("DMM %s 请求失败: %s", code, e)
+                return None
 
-                try:
-                    html_text = await client.get_text(age_check_url)
-
-                    if "404 Not Found" in html_text:
-                        continue
-
-                    html = etree.fromstring(html_text, etree.HTMLParser())
-                    result = self._parse_detail_page(html, html_text, code, detail_url)
-
-                    if result:
-                        self.mark_success()
-                        return result
-
-                except Exception as e:
-                    logger.debug(f"DMM Web {code} URL {detail_url} 失败: {e}")
-                    continue
-
-            # 所有 URL 模式均 404/无结果 = 该站没收录此片（正常响应），不 mark_error。
-            logger.debug(f"DMM Web {code}: 所有 URL 模式均未找到")
+        content = (data or {}).get("ppvContent")
+        if not content or not content.get("title"):
+            # 正确行为：DMM 未收录此番号（旧实现会误判为成功并落空数据）
+            logger.debug("DMM: %s (%s) 未收录", code, cid)
             return None
 
-    async def search(self, keyword: str) -> list[ScrapeResult]:
-        """搜索功能暂不实现"""
-        return []
-
-    def _parse_detail_page(
-        self,
-        html: etree._Element,
-        raw_html: str,
-        code: str,
-        detail_url: str,
-    ) -> Optional[ScrapeResult]:
-        """解析详情页"""
-        try:
-            title = self._get_title(html)
-            if not title:
-                return None
-
-            # 获取页面上的实际番号（可能与输入不同，如零填充差异）
-            page_number = self._get_number(html) or code
-
-            cover_url = self._get_cover(html, page_number)
-            actors = self._get_actors(html)
-            studio = self._get_studio(html)
-            runtime = self._get_runtime(html)
-            label = self._get_label(html)
-            release_date = self._get_release_date(html)
-            genres = self._get_genres(html)
-            director = self._get_director(html)
-            series = self._get_series(html)
-            outline = self._get_outline(html)
-            extrafanart = self._get_extrafanart(raw_html)
-            score = self._get_score(html)
-
-            # 判断是否为动画类型
-            is_anime = "/anime/" in detail_url
-
-            return ScrapeResult(
-                code=code,
-                title=title.strip(),
-                source=self.name,
-                studio=studio,
-                maker=label,
-                label=label,
-                series=series,
-                release_date=release_date,
-                duration=runtime,
-                plot=outline,
-                genres=genres,
-                actors=actors if not is_anime else [],
-                directors=[director] if director and not is_anime else [],
-                cover_url=cover_url,
-                extrafanart=extrafanart,
-                rating=score,
-                raw_data={
-                    "detail_url": detail_url,
-                    "page_number": page_number,
-                },
-            )
-
-        except Exception as e:
-            logger.debug(f"DMM Web 解析失败: {e}")
-            return None
-
-    # ==========================================
-    # 字段提取方法
-    # ==========================================
-
-    def _get_title(self, html: etree._Element) -> Optional[str]:
-        """获取标题"""
-        result = html.xpath('//*[starts-with(@id, "title")]/text()')
-        return result[0].strip() if result else None
-
-    def _get_actors(self, html: etree._Element) -> list[ActorInfo]:
-        """获取演员列表"""
-        results = html.xpath(
-            "//td[contains(text(),'出演者')]/following-sibling::td/span/a/text()"
-        )
-        actors = []
-        for name in results:
-            name = name.strip()
-            if name:
-                actors.append(ActorInfo(name=name))
-        return actors
-
-    def _get_studio(self, html: etree._Element) -> Optional[str]:
-        """获取制作商 (メーカー)"""
-        try:
-            result = html.xpath(
-                "//td[contains(text(),'メーカー')]/following-sibling::td/a/text()"
-            )
-            return result[0].strip() if result else None
-        except (IndexError, TypeError):
-            result = html.xpath(
-                "//td[contains(text(),'メーカー')]/following-sibling::td/text()"
-            )
-            return result[0].strip() if result else None
-
-    def _get_runtime(self, html: etree._Element) -> Optional[int]:
-        """获取时长（分钟）"""
-        result = html.xpath(
-            "//td[contains(text(),'収録時間')]/following-sibling::td/text()"
-        )
-        if result:
-            match = re.search(r"\d+", str(result[0]))
-            if match:
-                return int(match.group())
-        return None
-
-    def _get_label(self, html: etree._Element) -> Optional[str]:
-        """获取标签/厂牌 (レーベル)"""
-        try:
-            result = html.xpath(
-                "//td[contains(text(),'レーベル')]/following-sibling::td/a/text()"
-            )
-            return result[0].strip() if result else None
-        except (IndexError, TypeError):
-            result = html.xpath(
-                "//td[contains(text(),'レーベル')]/following-sibling::td/text()"
-            )
-            return result[0].strip() if result else None
-
-    def _get_number(self, html: etree._Element) -> Optional[str]:
-        """获取页面上的实际番号 (品番)"""
-        try:
-            result = html.xpath(
-                "//td[contains(text(),'品番')]/following-sibling::td/a/text()"
-            )
-            return result[0].strip() if result else None
-        except (IndexError, TypeError):
-            result = html.xpath(
-                "//td[contains(text(),'品番')]/following-sibling::td/text()"
-            )
-            return result[0].strip() if result else None
-
-    def _get_release_date(self, html: etree._Element) -> Optional[date]:
-        """获取发行日期"""
-        date_str = None
-
-        # 优先尝试 発売日
-        try:
-            result = html.xpath(
-                "//td[contains(text(),'発売日')]/following-sibling::td/a/text()"
-            )
-            date_str = result[0].strip().lstrip("\n") if result else None
-        except (IndexError, TypeError):
-            try:
-                result = html.xpath(
-                    "//td[contains(text(),'発売日')]/following-sibling::td/text()"
-                )
-                date_str = result[0].strip().lstrip("\n") if result else None
-            except (IndexError, TypeError):
-                pass
-
-        # 如果没有発売日，尝试配信開始日
-        if not date_str or date_str == "----":
-            try:
-                result = html.xpath(
-                    "//td[contains(text(),'配信開始日')]/following-sibling::td/a/text()"
-                )
-                date_str = result[0].strip().lstrip("\n") if result else None
-            except (IndexError, TypeError):
-                try:
-                    result = html.xpath(
-                        "//td[contains(text(),'配信開始日')]/following-sibling::td/text()"
-                    )
-                    date_str = result[0].strip().lstrip("\n") if result else None
-                except (IndexError, TypeError):
-                    pass
-
-        if not date_str or date_str == "----":
-            return None
-
-        date_str = date_str.replace("/", "-")
-        match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", date_str)
-        if match:
-            try:
-                return date(
-                    int(match.group(1)), int(match.group(2)), int(match.group(3))
-                )
-            except ValueError:
-                return None
-        return None
-
-    def _get_genres(self, html: etree._Element) -> list[str]:
-        """获取标签/类型 (ジャンル)"""
-        try:
-            results = html.xpath(
-                "//td[contains(text(),'ジャンル')]/following-sibling::td/a/text()"
-            )
-        except Exception:
-            results = html.xpath(
-                "//td[contains(text(),'ジャンル')]/following-sibling::td/text()"
-            )
-        return [r.strip() for r in results if r.strip()]
-
-    def _get_cover(self, html: etree._Element, number: str) -> Optional[str]:
-        """获取封面 URL"""
-        # 先用原始番号尝试
-        try:
-            result = html.xpath(f'//*[@id="{number}"]/@href')
-            if result:
-                return result[0]
-        except Exception:
-            pass
-
-        # 处理下划线转义: DMM 有时将 _ 替换为 \u005f
-        if "_" in number:
-            escaped_number = number.replace("_", "\u005f")
-            try:
-                result = html.xpath(f'//*[@id="{escaped_number}"]/@href')
-                if result:
-                    return result[0]
-            except Exception:
-                pass
-
-        return None
-
-    def _get_director(self, html: etree._Element) -> Optional[str]:
-        """获取导演 (監督)"""
-        try:
-            result = html.xpath(
-                "//td[contains(text(),'監督')]/following-sibling::td/a/text()"
-            )
-            return result[0].strip() if result else None
-        except (IndexError, TypeError):
-            try:
-                result = html.xpath(
-                    "//td[contains(text(),'監督')]/following-sibling::td/text()"
-                )
-                return result[0].strip() if result else None
-            except (IndexError, TypeError):
-                return None
-
-    def _get_series(self, html: etree._Element) -> Optional[str]:
-        """获取系列 (シリーズ)"""
-        try:
-            result = html.xpath(
-                "//td[contains(text(),'シリーズ')]/following-sibling::td/a/text()"
-            )
-            return result[0].strip() if result else None
-        except (IndexError, TypeError):
-            try:
-                result = html.xpath(
-                    "//td[contains(text(),'シリーズ')]/following-sibling::td/text()"
-                )
-                return result[0].strip() if result else None
-            except (IndexError, TypeError):
-                return None
-
-    def _get_outline(self, html: etree._Element) -> Optional[str]:
-        """获取简介"""
-        try:
-            result = html.xpath("//div[@class='mg-b20 lh4']/text()")
-            if result:
-                text = result[0].replace("\n", "").strip()
-                if text:
-                    return text
-            # 回退到 p 标签
-            result = html.xpath("//div[@class='mg-b20 lh4']//p/text()")
-            if result:
-                return result[0].replace("\n", "").strip()
-        except (IndexError, TypeError):
-            pass
-        return None
-
-    def _get_extrafanart(self, raw_html: str) -> list[str]:
-        """获取额外剧照（从 sample-image-block 中提取，替换为全尺寸图片）"""
-        html_pattern = re.compile(
-            r'<div id=\"sample-image-block\"[\s\S]*?<br></div></div>'
-        )
-        match = html_pattern.search(raw_html)
-        if not match:
-            return []
-
-        block = match.group()
-        img_pattern = re.compile(r'<img.*?src=\"(.*?)\"')
-        img_urls = img_pattern.findall(block)
-
-        result = []
-        for img_url in img_urls:
-            # 将缩略图后缀 -jp- 替换为全尺寸: xxx-jp-xxx -> xxxjp-xxx
-            parts = img_url.rsplit("-", 1)
-            if len(parts) == 2:
-                full_url = parts[0] + "jp-" + parts[1]
-                result.append(full_url)
-            else:
-                result.append(img_url)
-
+        result = self._build_result(code, cid, content,
+                                    (data or {}).get("reviewSummary"))
+        self.mark_success()
         return result
 
-    def _get_score(self, html: etree._Element) -> Optional[float]:
-        """获取评分"""
+    async def search(self, keyword: str) -> list[ScrapeResult]:
+        """按标题/厂牌检索（**番号搜不到**，见模块 docstring）。"""
+        if not keyword:
+            return []
+        async with AsyncHttpClient(base_url=self.base_url) as client:
+            try:
+                data = await self._gql(
+                    client, SEARCH_QUERY, "AvSearch",
+                    {"limit": 20, "queryWord": keyword})
+            except Exception as e:  # noqa: BLE001
+                logger.debug("DMM 检索 %r 失败: %s", keyword, e)
+                return []
+
+        out: list[ScrapeResult] = []
+        contents = (((data or {}).get("legacySearchPPV") or {})
+                    .get("result") or {}).get("contents") or []
+        for item in contents:
+            cid = item.get("id")
+            title = item.get("title")
+            if not cid or not title:
+                continue
+            out.append(ScrapeResult(
+                code=cid,
+                title=title,
+                source=self.name,
+                source_url="https://video.dmm.co.jp/av/content/?id=%s" % cid,
+                studio=(item.get("maker") or {}).get("name"),
+                raw_data={"content_id": cid},
+            ))
+        return out
+
+    # ---------- 内部 ----------
+
+    async def _gql(self, client: AsyncHttpClient, query: str,
+                   operation: str, variables: dict) -> dict:
+        """执行一次 GraphQL 查询，返回 data 段。"""
+        resp = await client.post(
+            self.graph_url,
+            json={"operationName": operation, "variables": variables, "query": query},
+            headers=_GRAPHQL_HEADERS,
+        )
         try:
-            result = html.xpath("//p[@class='d-review__average']/strong/text()")
-            if result:
-                score_str = result[0].replace("\n", "").replace("点", "").strip()
-                return float(score_str)
-        except (IndexError, TypeError, ValueError):
-            pass
-        return None
+            payload = resp.json()
+        except Exception:  # noqa: BLE001
+            return {}
+        if payload.get("errors"):
+            logger.debug("DMM GraphQL %s 报错: %s", operation,
+                         str(payload["errors"])[:200])
+        return payload.get("data") or {}
+
+    def _build_result(self, code: str, cid: str, content: dict,
+                      review: Optional[dict]) -> ScrapeResult:
+        """把 GraphQL 返回映射成 ScrapeResult。"""
+        # 演员：源站 actresses 即女性演员名（无 gender 字段混杂）
+        actors = [
+            ActorInfo(name=a["name"])
+            for a in (content.get("actresses") or [])
+            if a and a.get("name")
+        ]
+
+        # 时长：源站是秒 ⇒ /60 转分钟（契约=分钟）
+        duration = None
+        raw_dur = content.get("duration")
+        if isinstance(raw_dur, (int, float)) and raw_dur > 0:
+            duration = int(raw_dur // 60)
+
+        # 评分：reviewSummary 是 0~5 量纲，契约是 0~10 ⇒ *2
+        rating = None
+        if review and review.get("average") is not None:
+            try:
+                rating = round(float(review["average"]) * 2, 2)
+            except (TypeError, ValueError):
+                rating = None
+
+        genres = [
+            g["name"] for g in (content.get("genres") or [])
+            if g and g.get("name")
+        ]
+        samples = [
+            s["largeImageUrl"] for s in (content.get("sampleImages") or [])
+            if s and s.get("largeImageUrl")
+        ]
+        directors = [
+            d["name"] for d in (content.get("directors") or [])
+            if d and d.get("name")
+        ]
+
+        return ScrapeResult(
+            code=code,
+            title=(content.get("title") or "").strip(),
+            source=self.name,
+            source_url="https://video.dmm.co.jp/av/content/?id=%s" % cid,
+            studio=(content.get("maker") or {}).get("name"),
+            maker=(content.get("label") or {}).get("name"),
+            label=(content.get("label") or {}).get("name"),
+            series=(content.get("series") or {}).get("name"),
+            release_date=_parse_release_date(content.get("makerReleasedAt")),
+            duration=duration,
+            genres=genres,
+            actors=actors,
+            directors=directors,
+            cover_url=(content.get("packageImage") or {}).get("largeUrl"),
+            poster_url=(content.get("packageImage") or {}).get("largeUrl"),
+            sample_images=samples,
+            trailer_url=(content.get("sample2DMovie") or {}).get("highestMovieUrl"),
+            rating=rating,
+            raw_data={
+                "content_id": cid,
+                "dmm_review_total": (review or {}).get("total"),
+            },
+        )

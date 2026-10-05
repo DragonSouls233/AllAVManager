@@ -54,6 +54,14 @@ DISABLED_CRAWLERS: set[str] = {
     "airav_cc",     # airav.io → 403
     "gachi",        # www.gachinet.com → 代理无法解析
     "t28",          # www.t28-tokyo.com → 代理无法解析
+    # 🔴 2026-10-05 实测：`dmm`（旧 GraphQL）的两个端点都已废：
+    #   - `api.fanza.xyz` → DNS 完全无法解析（getaddrinfo failed）
+    #   - `api.dmm.com`   → 域名活着，但**全站 404**（`/graphql` 也返回
+    #     `{"result":{"status":404,"message":"NOT FOUND"}}`）
+    # 留着只会每次刮削白跑一轮请求。
+    # DMM 数据改由 `dmm_web` 走官方现行端点 `api.video.dmm.co.jp/graphql`
+    # （需日本出口），已在 app/crawlers/dmm.py 实测打通。
+    "dmm",
 }
 
 
