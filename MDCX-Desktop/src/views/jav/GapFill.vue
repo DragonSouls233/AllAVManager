@@ -128,8 +128,10 @@
       </div>
 
       <div class="source-hint">
-        源序：<code>JavDB 官方 API → JavBus → AVMOO → …</code>（主力源，字段最全最快）；
-        素人番号自动切换为 <code>javmenu → javmost → JavDB → …</code>（实测 JavBus 对素人命中率 0）。
+        源序按番号自动分流：有码 <code>JavDB 官方 API → JavMenu → JavMost → JavBus</code>；
+        素人番号自动切换为 <code>JavMenu → JavMost → JavDB → JavBus</code>（实测 JavBus 对素人命中率 0）。
+        前面的源命中即停；仍缺字段才依次补 <code>日本 DMM 官方源</code>（官方权威），
+        最后才用辅助源 <code>thejavdb → avmoo → javbooks → freejavbt</code>。
       </div>
     </el-card>
 

@@ -169,6 +169,12 @@ export const routes = [
         component: () => import('@/views/Tasks.vue')
       },
       {
+        path: 'proxy/jp',
+        name: 'JpProxy',
+        component: () => import('@/views/proxy/JpProxy.vue'),
+        meta: { title: '日本节点代理' }
+      },
+      {
         path: 'plugins',
         name: 'Plugins',
         component: () => import('@/views/Plugins.vue')

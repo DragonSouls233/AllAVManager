@@ -33,6 +33,7 @@ FANZA 全部 200）。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -73,6 +74,111 @@ def _data_dir() -> Path:
 
 def _nodes_file() -> Path:
     return _data_dir() / "proxy" / "jp_nodes.json"
+
+
+def _config_file() -> Path:
+    return _data_dir() / "proxy" / "jp_config.json"
+
+
+#: 默认订阅源。GitHub 仓库路径会变（作者改名/仓库删除/分支调整），
+#: 所以做成可配置项，失效时在 Web 界面直接换新地址即可，无需改代码。
+DEFAULT_SUB_URLS: tuple[str, ...] = (
+    "https://github.com/Au1rxx/free-vpn-subscriptions/raw/main/"
+    "output/by-country/v2ray-base64-JP.txt",
+)
+
+#: 默认刷新周期（小时）。免费节点寿命以**小时**计（2026-10-05 实测：
+#: 同一批 11:30 实测 21/24 可用，11:40 全部 TLS 握手失败），所以必须定期重拉。
+#: 用户明确要求「至少 8 小时」—— 间隔太密只是白耗执行开销，节点并不会更长寿。
+DEFAULT_REFRESH_HOURS = 8
+
+#: 刷新周期允许范围。低于 1h 意义不大（免费节点活不过几小时），
+#: 高于 24h 则可能整段时间都无可用节点。
+MIN_REFRESH_HOURS = 1
+MAX_REFRESH_HOURS = 168
+
+
+def load_jp_config() -> dict:
+    """读取日本节点的**可配置项**（订阅源、刷新周期）。
+
+    🔴 为什么要独立于 jp_nodes.json：节点池是机器写的（刷新脚本），
+    而订阅源/周期是人改的（用户在界面上换失效的 GitHub 地址）。
+    分开存避免两边互相覆盖。
+    """
+    cfg = {
+        "sub_urls": list(DEFAULT_SUB_URLS),
+        "refresh_hours": DEFAULT_REFRESH_HOURS,
+        "sample": 40,
+        "auto_start": True,
+    }
+    p = _config_file()
+    if p.exists():
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            subs = [str(u).strip() for u in (d.get("sub_urls") or []) if str(u).strip()]
+            # 允许配空数组（用户想手工维护节点池），但列表为空时回退默认源
+            if subs:
+                cfg["sub_urls"] = subs
+            try:
+                h = int(d.get("refresh_hours", DEFAULT_REFRESH_HOURS))
+                cfg["refresh_hours"] = max(MIN_REFRESH_HOURS,
+                                           min(MAX_REFRESH_HOURS, h))
+            except (TypeError, ValueError):
+                pass
+            try:
+                cfg["sample"] = max(5, min(200, int(d.get("sample", 40))))
+            except (TypeError, ValueError):
+                pass
+            cfg["auto_start"] = bool(d.get("auto_start", True))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("读取日本节点配置失败 %s: %s", p, e)
+    return cfg
+
+
+def save_jp_config(sub_urls: Optional[list] = None,
+                    refresh_hours: Optional[int] = None,
+                    sample: Optional[int] = None,
+                    auto_start: Optional[bool] = None) -> dict:
+    """保存可配置项（只覆盖传入的字段），返回保存后的完整配置。"""
+    cfg = load_jp_config()
+    if sub_urls is not None:
+        clean = [str(u).strip() for u in sub_urls if str(u).strip()]
+        if not clean:
+            raise ValueError("订阅源不能为空")
+        for u in clean:
+            if not u.startswith(("http://", "https://")):
+                raise ValueError("订阅源必须是 http(s) 地址: %s" % u)
+        cfg["sub_urls"] = clean
+    if refresh_hours is not None:
+        try:
+            h = int(refresh_hours)
+        except (TypeError, ValueError):
+            raise ValueError("刷新周期必须是整数小时")
+        cfg["refresh_hours"] = max(MIN_REFRESH_HOURS, min(MAX_REFRESH_HOURS, h))
+    if sample is not None:
+        try:
+            cfg["sample"] = max(5, min(200, int(sample)))
+        except (TypeError, ValueError):
+            raise ValueError("取样数必须是整数")
+    if auto_start is not None:
+        cfg["auto_start"] = bool(auto_start)
+
+    p = _config_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cfg
+
+
+def get_nodes_meta() -> dict:
+    """节点池的元信息（供界面展示）。"""
+    p = _nodes_file()
+    updated = ""
+    if p.exists():
+        try:
+            updated = str(json.loads(p.read_text(encoding="utf-8")).get("updated_at") or "")
+        except Exception:  # noqa: BLE001
+            updated = ""
+    return {"count": len(load_jp_nodes()), "updated_at": updated, "file": str(p)}
 
 
 def load_jp_nodes() -> list:
@@ -572,3 +678,197 @@ def get_jp_proxy_url(auto_start: bool = True) -> Optional[str]:
         if not svc.start():
             return None
     return svc.socks_url()
+
+
+# --------------------------------------------------------------------------
+# 节点池刷新（订阅 → 实测筛选 → 写盘 → 重启）
+# --------------------------------------------------------------------------
+# 🔴 为什么从 scripts/_refresh_jp_nodes.py 提升到正式模块：
+#   Web 界面要能「立即刷新」，API 必须能在**服务器上**直接调用；而
+#   scripts/ 下的东西未必随正式代码部署（2026-10-05 就踩过：刷新脚本
+#   依赖另一个测试脚本，服务器上 FileNotFoundError）。脚本改为调用本模块，
+#   两边共用一份实现。
+
+def node_host(node_url: str) -> str:
+    """取节点 URL 的 host（用于按 host 分散取样）。
+
+    同批 trojan 常共用同一批失效域名，按 host 轮转取样才不会全测同一批。
+    """
+    try:
+        if node_url.startswith("vmess://"):
+            import base64 as _b
+            raw = "".join(node_url[8:].split())
+            d = json.loads(_b.b64decode(raw + "=" * (-len(raw) % 4))
+                           .decode("utf-8", "replace"))
+            return str(d.get("add") or "")
+        rest = node_url.split("://", 1)[1].split("@", 1)[-1]
+        return rest.split(":")[0].split("?")[0]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def fetch_sub_nodes(sub_urls: Optional[list] = None) -> tuple:
+    """拉取订阅（v2ray base64）。
+
+    返回 ``(nodes, errors)``：节点 URL 列表 + 每个失败源的错误说明
+    （GitHub 仓库改名/删除时错误要能显示到界面上，否则用户无从下手）。
+
+    订阅源**可配置**（`load_jp_config()['sub_urls']`）—— GitHub 仓库地址
+    会随作者改名/仓库删除而失效，必须能在界面上换新地址。
+    """
+    import base64
+
+    import httpx
+
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    urls = list(sub_urls or load_jp_config()["sub_urls"])
+    proxy = get_effective_proxy_url()
+    nodes: list = []
+    errors: list = []
+    for u in urls:
+        try:
+            r = httpx.get(u, proxy=proxy, timeout=60, follow_redirects=True,
+                          headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            errors.append("%s → %s" % (u[:80], type(e).__name__))
+            logger.warning("订阅拉取失败 %s: %s", u[:80], e)
+            continue
+        raw = "".join(r.text.split())
+        try:
+            dec = base64.b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            dec = r.text
+        keep = ("vmess://", "vless://", "trojan://", "ss://")
+        got = [ln.strip() for ln in dec.split("\n") if ln.strip().startswith(keep)]
+        nodes.extend(got)
+    return nodes, errors
+
+
+def spread_sample(nodes: list, want: int) -> list:
+    """按 host 轮转取样，避免全测同一批失效域名。"""
+    by_host: dict = {}
+    for n in nodes:
+        by_host.setdefault(node_host(n), []).append(n)
+    out: list = []
+    i = 0
+    while len(out) < want:
+        added = False
+        for lst in by_host.values():
+            if i < len(lst):
+                cand = lst[i]
+                if cand not in out:
+                    out.append(cand)
+                    added = True
+                if len(out) >= want:
+                    break
+        if not added:
+            break
+        i += 1
+    return out
+
+
+async def refresh_jp_nodes(sample: Optional[int] = None,
+                           keep: int = MAX_JP_NODES,
+                           parallel: int = 6,
+                           front_socks: str = "",
+                           auto_restart: bool = True) -> dict:
+    """完整刷新流程：拉订阅 → 实测筛选 → 写盘 → 重启服务。
+
+    返回 ``{ok, total, sampled, ok_count, jp_count, kept, log, errors, updated_at}``。
+    本轮无可用节点时**保留原池不动**（宁可继续用旧的，也别把能用的清空）。
+    """
+    from app.services.proxy_manager import XRAY_BIN
+
+    cfg = load_jp_config()
+    want = int(sample or cfg.get("sample") or 40)
+    front = front_socks or resolve_front_socks()
+    log: list = []
+
+    log.append("拉取订阅 …")
+    nodes, errors = await fetch_sub_nodes()
+    for e in errors:
+        log.append("  ✘ %s" % e)
+    if not nodes:
+        log.append("订阅为空（或全部拉取失败），保留现有节点池")
+        return {"ok": False, "total": 0, "sampled": 0, "ok_count": 0,
+                "jp_count": 0, "kept": len(load_jp_nodes()), "log": log,
+                "errors": errors, "updated_at": get_nodes_meta()["updated_at"]}
+
+    log.append("订阅共 %d 个节点" % len(nodes))
+    picked = spread_sample(nodes, want)
+    log.append("按 host 轮转取样 %d 个开始实测（前置 %s）" % (len(picked), front))
+
+    sem = asyncio.Semaphore(parallel)
+
+    async def one(u: str):
+        async with sem:
+            return await probe_node(u, str(XRAY_BIN), front_socks=front)
+
+    t0 = time.time()
+    results = await asyncio.gather(*[one(u) for u in picked],
+                                   return_exceptions=True)
+    results = [r for r in results if isinstance(r, dict)]
+    # 排序：FANZA 可用 > 仅日本出口 > 其他
+    results.sort(key=lambda r: 0 if r.get("ok")
+                 else (1 if r.get("country") == "JP" else 2))
+    ok_list = [r for r in results if r.get("ok")]
+    jp_list = [r for r in results if r.get("country") == "JP"]
+    log.append("实测 %d 个（%.0fs）：FANZA 可用 %d，仅日本出口 %d"
+               % (len(results), time.time() - t0, len(ok_list), len(jp_list)))
+
+    usable = ok_list or jp_list
+    # 结果里 url 被截断，按 host 回查完整 URL
+    full_by_host: dict = {}
+    for n in nodes:
+        full_by_host.setdefault(node_host(n), n)
+    keep_urls: list = []
+    for r in usable[:max(1, keep)]:
+        u = full_by_host.get(node_host(r.get("url", "")))
+        if u and u not in keep_urls:
+            keep_urls.append(u)
+            log.append("  ✔ %-26s %-16s %s %s"
+                       % (r.get("name", "?")[:26], r.get("ip", ""),
+                          r.get("country", ""), r.get("fanza", "")))
+
+    if not keep_urls:
+        log.append("本轮无可用节点 —— 保留原节点池不动")
+        return {"ok": False, "total": len(nodes), "sampled": len(picked),
+                "ok_count": len(ok_list), "jp_count": len(jp_list),
+                "kept": len(load_jp_nodes()), "log": log, "errors": errors,
+                "updated_at": get_nodes_meta()["updated_at"]}
+
+    save_jp_nodes(keep_urls)
+    meta = get_nodes_meta()
+    log.append("已写入 %d 个节点（%s）" % (len(keep_urls), meta["updated_at"]))
+
+    if auto_restart:
+        svc = get_jp_proxy_service()
+        if svc.is_running():
+            svc.stop()
+        if svc.start(front_socks=front if front.startswith("1") else "socks5://" + front):
+            log.append("日本代理服务已重启")
+        else:
+            log.append("⚠ 日本代理服务启动失败：%s" % (svc.status().get("last_error") or "?"))
+    return {"ok": True, "total": len(nodes), "sampled": len(picked),
+            "ok_count": len(ok_list), "jp_count": len(jp_list),
+            "kept": len(keep_urls), "log": log, "errors": errors,
+            "updated_at": meta["updated_at"]}
+
+
+def parse_node_label(node_url: str) -> str:
+    """把节点 URL 解析成可读标签（名称/协议/host），供界面展示。
+
+    只显示 host 与协议尾部，**不暴露完整凭据**（订阅串含密码）。
+    """
+    try:
+        from app.services.proxy_parser import parse_node_url
+        node = parse_node_url(node_url)
+        name = str(getattr(node, "name", "") or "")
+        proto = node_url.split("://", 1)[0]
+        return {"name": name[:48], "proto": proto,
+                "host": node_host(node_url), "url": node_url}
+    except Exception:  # noqa: BLE001
+        return {"name": "", "proto": node_url.split("://", 1)[0],
+                "host": node_host(node_url), "url": node_url}

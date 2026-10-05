@@ -70,9 +70,20 @@ _blackout_until: dict[str, float] = {}
 _FAIL_THRESHOLD = 5
 _BLACKOUT_SECS = 180
 
-#: 默认源序：JavDB 官方 App API 主力（数据最全最快），JavBus 主力辅助，
-#: 其余按实测可用性兜底。素人走 canon.source_order_for 的专用序。
-DEFAULT_SOURCES = ["javdb", "javbus", "avmoo", "javbooks", "freejavbt", "thejavdb"]
+#: 自动源序的**兜底补充源**。
+#:
+#: 🔴 2026-10-05 起本模块不再自己硬编码源序 —— 完整源序（含日本 DMM 与辅助源）
+#: 统一由 ``canon.source_order_for(code)`` 维护。之前这里写死 ``DEFAULT_SOURCES``
+#: 不含 ``dmm_web``，且逐个 ``scrape_number(sources=[src])`` 单源调用会旁路 engine 的
+#: ``PRIMARY_CRAWLERS`` / ``JP_TAIL_CRAWLERS`` 整套编排，
+#: 导致「DMM 已进主力」这条决定在缺口补全页完全失效。
+#:
+#: 源序结构（2026-10-05 用户决定 DMM 优先于 thejavdb）：
+#:     主力(有码) javdb→javmenu→javmost→javbus
+#:     主力(素人) javmenu→javmost→javdb→javbus
+#:     日本官方   dmm_web          ← 在 thejavdb 之前
+#:     辅助源     thejavdb→avmoo→javbooks→freejavbt
+#: 本模块只负责**逐部取序并逐个试**，不再关心序里有哪些源。
 
 
 def _db():
@@ -226,7 +237,10 @@ class GapFillRequest(BaseModel):
     limit: int = Field(200, ge=1, le=5000)
     concurrency: int = Field(4, ge=1, le=10)
     gap_seconds: float = Field(0.0, ge=0, description="每部之间的额外间隔（秒）")
-    sources: list[str] = Field(default_factory=lambda: list(DEFAULT_SOURCES))
+    sources: list[str] = Field(
+        default_factory=list,
+        description="手动指定源序（留空 = 按番号走 canon 自动序，含 DMM）",
+    )
     dry_run: bool = Field(False, description="True = 只列出将要处理的番号，不动手")
 
 
@@ -272,7 +286,7 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
         from app.scraper.engine import ScraperEngine
         from app.scraper.workflow import ScraperWorkflow
         from app.config.manager import DATA_DIR
-        from app.scraper.canon import is_amateur_code, AMATEUR_SOURCE_ORDER
+        from app.scraper.canon import source_order_for
 
         # 新任务清空熔断状态（上一轮 JAVBUS 挂了不代表这轮 JAVDB 也挂）
         _fail_streak.clear()
@@ -280,15 +294,25 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
 
         wf = ScraperWorkflow(str(DATA_DIR / "movies"))
         sem = asyncio.Semaphore(data.concurrency)
-        sources = list(data.sources)
-        # 素人用专用源序（javbus 对素人实测 0/5，javmenu 5/5）
-        amateur_set = [i["code"] for i in picked if is_amateur_code(i["code"])]
-        if amateur_set:
-            head = [s for s in AMATEUR_SOURCE_ORDER if s in sources]
-            tail = [s for s in sources if s not in head]
-            sources = head + tail
+        # 手动指定则完全尊重；留空则逐部按 canon 自动序（见 _order_for）
+        manual = [s.strip() for s in (data.sources or []) if s.strip()]
+
+        def _order_for(code: str) -> list[str]:
+            """该番号的完整源序（主力 + 日本源 + 辅助源），全部由 canon 决定。
+
+            🔴 必须**逐部**算，不能全批共用一个序：``source_order_for`` 会按番号
+            分流素人 / 有码（javbus 对素人实测 0/5、javmenu 5/5），全批一刀切会让
+            素人和有码片共用错误的序，把可用源排到后面去。
+            """
+            return list(manual) if manual else list(source_order_for(code))
+
+        if manual:
+            _state["log"].append("手动源序：%s" % manual)
+        else:
             _state["log"].append(
-                "素人 %d 部，源序调整为 %s" % (len(amateur_set), sources))
+                "自动源序：有码 %s｜素人 %s"
+                % ("→".join(source_order_for("ABC-123")),
+                   "→".join(source_order_for("200GANA-3426"))))
 
         async def _try_source(code: str, src: str):
             """单源尝试。返回 ScrapeResult 或 None。超时/异常算「确定性故障」，
@@ -328,8 +352,9 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
         async def _one(item):
             code = item["code"]
             result = None
+            order = _order_for(code)
             async with sem:
-                for src in sources:
+                for src in order:
                     result = await _try_source(code, src)
                     if result is not None:
                         break

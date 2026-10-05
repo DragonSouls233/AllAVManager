@@ -4,7 +4,7 @@ API 路由模块
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, anime_routes, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates, jav_series, previews, avleague, wikipedia, actor_enrich, jav_gap_routes
+from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, anime_routes, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, proxy_jp, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates, jav_series, previews, avleague, wikipedia, actor_enrich, jav_gap_routes
 
 api_router = APIRouter()
 
@@ -75,6 +75,7 @@ api_router.include_router(nfo_scrape.router, prefix="/nfo-scrape", tags=["NFO免
 api_router.include_router(fanart.router, prefix="/fanart", tags=["Fanart背景图"])
 api_router.include_router(auto_organize.router, prefix="/auto-organize", tags=["自动整理规则"])
 api_router.include_router(proxy_xray.router, prefix="/proxy/xray", tags=["内置Xray代理"])
+api_router.include_router(proxy_jp.router, prefix="/proxy/jp", tags=["日本节点代理"])
 api_router.include_router(scan_control.router, prefix="/scan", tags=["扫描控制"])
 api_router.include_router(chinese_routes.router, tags=["国产模块"])
 api_router.include_router(modules.router, tags=["模块管理"])

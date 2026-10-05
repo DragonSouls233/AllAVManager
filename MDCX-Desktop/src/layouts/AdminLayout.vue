@@ -360,6 +360,10 @@
             <el-icon><List /></el-icon>
             <template #title>任务管理</template>
           </el-menu-item>
+          <el-menu-item index="/proxy/jp">
+            <el-icon><Connection /></el-icon>
+            <template #title>日本节点代理</template>
+          </el-menu-item>
           <el-menu-item index="/webhooks">
             <el-icon><Bell /></el-icon>
             <template #title>Webhook 通知</template>

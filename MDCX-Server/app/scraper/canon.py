@@ -170,8 +170,23 @@ def is_code_like_token(name: str | None) -> bool:
 #   javdb (official App API) hits both, and is the richest field-wise
 # So for 素人 we try javmenu/javmost first (they actually carry 素人 entries)
 # and only then fall back to the mainstream order.
-AMATEUR_SOURCE_ORDER = ("javmenu", "javmost", "javdb", "javbus", "thejavdb")
-MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus", "thejavdb")
+AMATEUR_SOURCE_ORDER = ("javmenu", "javmost", "javdb", "javbus")
+MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus")
+
+#: 辅助源（主力 + 日本源都试过仍未给全时才用）。
+#:
+#: 🔴 2026-10-05 用户决定：**thejavdb 降为辅助源，排在 DMM 之后**。
+#: 依据（两条都指向同一结论）：
+#:   1. 覆盖率：40 番号实测 thejavdb 仅 26/40 命中，作为首选命中率偏低；
+#:   2. 数据源性质：`thejavdb` 是第三方开放 API（api.thejavdb.net），
+#:      而 DMM 是 FANZA 官方 GraphQL（`api.video.dmm.co.jp`），真实番号 6/6 命中。
+#:      官方源的字段权威性天然高于第三方聚合站，且已经打通，不需要为了「快」
+#:      把第三方源排在官方源前面。
+#: 保留它在辅助池首位（命中即字段全，avgW 4.0）而不是删掉：它仍是有效的
+#: 补字段手段，只是**不该**先于 DMM 尝试。
+#:
+#: ⚠️ 命名陷阱见 engine.py 的分层注释：`thejavdb` ≠ JavDB 官方 API（那是 `javdb`）。
+AUX_SOURCE_ORDER = ("thejavdb", "avmoo", "javbooks", "freejavbt")
 
 # --------------------------------------------------------------------------
 # 3b) 日本专属源（FANZA / DMM）—— 2026-10-05 实测结论
@@ -250,18 +265,31 @@ def jp_fallback_order() -> tuple[str, ...]:
     return JP_SOURCE_ORDER if jp_sources_available() else ()
 
 
-def source_order_for(code: str) -> tuple[str, ...]:
+def source_order_for(code: str, include_aux: bool = True) -> tuple[str, ...]:
     """Return the crawler names to try, in order, for this code.
 
     素人 and mainstream titles live in different places, so a single global
     order wastes requests (or misses entirely) on one of the two kinds.
 
-    日本源（`dmm_web`）默认追加在尾部（DMM 无素人片，只对有码有意义，
-    但为保持两条源序结构一致这里统一追加；engine 侧已把它标为固定尾部源，
-    实际不会成为首选）。详见 JP_SOURCE_ORDER 段。
+    完整结构（2026-10-05 用户决定 **DMM 优先于 thejavdb**）：
+
+        主力（有码）  javdb → javmenu → javmost → javbus
+        主力（素人）  javmenu → javmost → javdb → javbus
+        日本官方源    dmm_web        ← 排在 thejavdb **之前**
+        辅助源        thejavdb → avmoo → javbooks → freejavbt
+
+    日本源由 ``jp_fallback_order()`` 追加，出口不可用时自动落空 ——
+    宁可少一个源，也不要让整条链路因日本节点起不来而失败。
+    设 ``MDCX_JP_SOURCE_IN_ORDER=0`` 可显式关闭。
+
+    ``include_aux=False`` 时只返回主力 + 日本源（供已自带辅助池的调用方，
+    如 engine 的分层执行，避免把辅助源重复算进主力池）。
     """
     order = AMATEUR_SOURCE_ORDER if is_amateur_code(code) else MAINSTREAM_SOURCE_ORDER
-    return order + jp_fallback_order()
+    order = order + jp_fallback_order()
+    if not include_aux:
+        return order
+    return order + tuple(s for s in AUX_SOURCE_ORDER if s not in order)
 
 
 # --------------------------------------------------------------------------

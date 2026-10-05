@@ -2628,8 +2628,16 @@ class RefillNfoCacheRequest(BaseModel):
     )
     concurrency: int = Field(5, ge=1, le=20, description="刮削并发度")
     sources: list[str] = Field(
-        default_factory=lambda: ["javdb", "javbus", "avmoo", "javbooks", "freejavbt", "xcity", "thejavdb"],
-        description="刮削源优先级顺序（实战验证 100% 可用代理的源）：JAVDB 官方 App API → JAVBUS → AVMOO → 4 补充（javbooks/freejavbt/xcity/thejavdb）。按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，连续失败自动熔断 10 分钟。已禁用 dmm_web/avsox/javdatabase/avsex/faleno/... 等 22+ 个 CF 403 源（爬虫仍注册可手动启用）。注：thejavdb 旧名 javdbapi 仍兼容可传。",
+        default_factory=list,
+        description="刮削源优先级顺序；留空 = 按番号走 canon 自动序"
+                    "（主力 javdb/javmenu/javmost/javbus → 日本官方 dmm_web → "
+                    "辅助 thejavdb/avmoo/javbooks/freejavbt）。"
+                    "按序逐个尝试，首个有效结果即用；某源超时(60s)/限流自动跳到下一源，"
+                    "连续失败自动熔断 10 分钟。"
+                    "🔴 2026-10-05：旧默认列表不含 dmm_web 且描述写「已禁用 dmm_web」，"
+                    "那是 DMM 打通前的旧结论（DMM 现行走官方 api.video.dmm.co.jp/graphql，"
+                    "真实番号 6/6 命中），已改为交由 canon 统一维护。"
+                    "注：thejavdb 旧名 javdbapi 仍兼容可传。",
     )
 
 
@@ -2933,7 +2941,15 @@ async def refill_nfo_cache(
                 # JAVBUS 连续失败自动熔断（_record_source_result），避免整批被坏源拖死。
                 if data.scrape and not _movie_has_full_preview_set(movie_dir):
                     result = None
-                    for src in data.sources:
+                    # 🔴 源序由 canon 统一维护（主力 → 日本 DMM → 辅助），
+                    # 显式传入 sources 时才覆盖。旧默认列表不含 dmm_web，
+                    # 且描述写「已禁用 dmm_web」——DMM 打通前的旧结论，已过时。
+                    if [s for s in (data.sources or []) if s.strip()]:
+                        order = [s.strip() for s in data.sources if s.strip()]
+                    else:
+                        from app.scraper.canon import source_order_for
+                        order = list(source_order_for(code))
+                    for src in order:
                         if _source_in_blackout(src):
                             logger.info(f"[refill] {code} 跳过熔断中的源 {src}")
                             continue
