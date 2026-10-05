@@ -152,6 +152,11 @@ export async function getJavGapFillStatus() {
   return api.get('/jav/gaps/fill/status')
 }
 
+// 中止批量补全：当前这部跑完即停，不再启动下一部
+export async function cancelJavGapFill() {
+  return api.post('/jav/gaps/fill/cancel')
+}
+
 // 刮削源序（后端 canon 是唯一真相源，前端不再硬编码源名列表）
 // 🔴 不要写 r.data：api/index.js 拦截器已 `response => response.data`，
 //    返回值就是后端返回体，再取 .data 会变 undefined。

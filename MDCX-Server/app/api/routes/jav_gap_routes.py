@@ -61,6 +61,7 @@ _state: dict = {
     "started_at": 0.0,
     "finished_at": 0.0,
     "current": "",
+    "cancel_requested": False,
     "by_reason": {},
     "failed_list": [],
     "log": [],
@@ -347,6 +348,8 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
         "running": True, "done": 0, "total": len(picked),
         "fixed": 0, "no_source": 0, "failed": 0,
         "started_at": time.time(), "finished_at": 0.0, "current": "",
+        # 🔴 必须重置：上一轮点过「中止」若残留，这轮会一部都不跑
+        "cancel_requested": False,
         "by_reason": {}, "failed_list": [], "log": [],
     })
     for i in picked:
@@ -490,8 +493,21 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
 
         async def _worker():
             for item in picked:
+                if _state.get("cancel_requested"):
+                    _log("已中止，跳过剩余 %d 部" % (len(picked) - _state["done"]))
+                    break
                 _state["current"] = item["code"]
-                await _one(item)
+                try:
+                    await _one(item)
+                except Exception as e:  # noqa: BLE001
+                    # 🔴 必须兜住：BackgroundTasks 里抛的异常只会进服务器日志，
+                    # 前端轮询会一直看到 running=true 以为还在跑 —— 表现为
+                    # 「进度条卡住、看不到任何日志」。这里单部失败不影响整批。
+                    _state["failed"] += 1
+                    _state["failed_list"].append(
+                        {"code": item["code"], "reason": str(e)[:160]})
+                    _log("  ✘ %s 处理异常：%s" % (item["code"], str(e)[:120]))
+                    logger.warning("[gaps] %s 未预期异常", item["code"], exc_info=True)
                 _state["done"] += 1
                 if data.gap_seconds:
                     await asyncio.sleep(data.gap_seconds)
@@ -520,3 +536,18 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
 async def gaps_fill_status():
     """一键补全进度（前端轮询）"""
     return _state
+
+
+@router.post("/gaps/fill/cancel")
+async def gaps_fill_cancel():
+    """请求中止正在跑的批量补全。
+
+    已在跑的一部会跑完（刮削/落盘都是不可中断的 IO，硬杀会留下半写状态），
+    但不再启动下一部 —— 和 refill 端点的 cancel 语义一致。
+    """
+    if not _state.get("running"):
+        return {"status": "idle", "running": False}
+    _state["cancel_requested"] = True
+    _log("收到中止请求，当前这部跑完后停止")
+    return {"status": "cancel_requested", "running": True,
+            "done": _state.get("done", 0), "total": _state.get("total", 0)}

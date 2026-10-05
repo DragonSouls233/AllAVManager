@@ -148,8 +148,13 @@
       <template #header>
         <div class="card-header">
           <span class="card-title"><el-icon><Loading /></el-icon>&nbsp;补全进度</span>
-          <el-tag v-if="running" type="warning" size="small">运行中</el-tag>
+          <el-tag v-if="progress.cancel_requested && running" type="danger" size="small">已请求中止</el-tag>
+          <el-tag v-else-if="running" type="warning" size="small">运行中</el-tag>
           <el-tag v-else type="success" size="small">已结束</el-tag>
+          <el-button
+            v-if="running && !progress.cancel_requested"
+            size="small" type="danger" plain @click="stopFill"
+          >中止</el-button>
         </div>
       </template>
 
@@ -261,7 +266,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getJavGaps, getJavGapFillStatus, fillJavGaps } from '@/api/jav'
+import { getJavGaps, getJavGapFillStatus, fillJavGaps, cancelJavGapFill } from '@/api/jav'
 
 const REASONS = {
   cover: '缺封面',
@@ -406,6 +411,15 @@ async function startFill(dry = false) {
     ElMessage.error('启动失败：' + (e?.message || e))
   } finally {
     starting.value = false
+  }
+}
+
+async function stopFill() {
+  try {
+    await cancelJavGapFill()
+    ElMessage.info('已请求中止，当前这部跑完后停止')
+  } catch (e) {
+    ElMessage.error('中止失败：' + (e?.message || e))
   }
 }
 
