@@ -133,7 +133,7 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="补刮来源">
-          <!-- 精简模式：只列后端真实启用的主力/备用源（看 SOURCE_POOL） -->
+          <!-- 精简模式：只列后端 canon 真实源序（主力 + 日本源 / 辅助源） -->
           <div v-if="hasCuratedSources" class="source-pool">
             <div class="source-row">
               <span class="source-tag primary">主力</span>
@@ -148,10 +148,11 @@
               </el-checkbox-group>
             </div>
             <div class="source-actions">
-              <el-button link type="primary" size="small" @click="selectSources('all')">全选</el-button>
+              <el-button link type="primary" size="small" @click="selectSources('auto')">自动序（推荐）</el-button>
+              <el-button link size="small" @click="selectSources('all')">全选</el-button>
               <el-button link size="small" @click="selectSources('primary')">仅主力</el-button>
-              <el-button link size="small" @click="selectSources('none')">清空</el-button>
-              <span class="hint">已选 {{ runForm.sources.length }} / {{ sourceOptions.length }} 个源</span>
+              <span class="hint" v-if="!runForm.sources.length">当前＝自动序，由后端按 canon 裁决</span>
+              <span class="hint" v-else>已选 {{ runForm.sources.length }} / {{ sourceOptions.length }} 个源</span>
             </div>
           </div>
           <!-- 兼容模式：其他模块仍按爬虫注册表动态列出 -->
@@ -263,6 +264,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, MagicStick, ArrowRight, Document } from '@element-plus/icons-vue'
 import { detectMissing, runPatch, getPatchStatus, getPatchReport, getPatchHistory, getConfig, getCrawlers } from '@/api'
+import { getSourceOrder } from '@/api/jav'
 
 const route = useRoute()
 
@@ -291,31 +293,24 @@ const MODULE_TYPES = {
   pornhub: ['pornhub'],
   chinese: ['chinese'],
 }
-// ── 补刮来源池（与后端 source pool 严格对齐）──────────────────────────────
-// 后端 app/scraper/engine.py：
-//   PRIMARY_CRAWLERS  = 主力源，按番号轮换错开起点，优先命中
-//   FALLBACK_CRAWLERS = 备用源，主力全部未命中时才启用
-// 补丁页只暴露这两个池。其余 60+ 注册源属历史遗留或已失效（实测 avmoo/avsox 502、
-// av123 404、missav_api 401、myjav 403、dmm 系无数据等），不再列出 ——
-// 既避免误选，也避免把请求发散到几十个源造成限流与信号量饥饿。
-const SOURCE_POOL = {
-  jav: {
-    primary: [
-      { value: 'javdb', label: 'JavDB（官方协议）' },
-      { value: 'javmenu', label: 'JavMenu' },
-      { value: 'javmost', label: 'JavMost' },
-      { value: 'javbus', label: 'JavBus' },
-    ],
-    fallback: [
-      { value: 'thejavdb', label: 'TheJavDB（第三方）' },
-      { value: 'javplace', label: 'JavPlace' },
-      { value: 'javdb_new', label: 'JavDB（新版）' },
-      { value: 'freejavbt', label: 'FreeJavBT' },
-      { value: 'mmtv', label: 'MMTV' },
-      { value: 'javdatabase', label: 'JavDatabase' },
-    ],
-  },
-}
+// ── 补刮来源池（从后端 canon 拉取真实源序）──────────────────────────────
+// 🔴 2026-10-05 起不再硬编码源名列表。此前这里写死 engine 的 PRIMARY/FALLBACK
+//    池，导致**漏掉 dmm_web**（用户已把 DMM/FANZA 定为主力源），且源序调整后
+//    必然漂移。canon.source_order_for() 是唯一真相源，这里只负责渲染。
+//    不传 sources 时后端会自己按 canon 序裁决（见 selectSources('auto')）。
+const sourceOrder = ref({ mainstream: [], aux: [], jp: [], jp_available: false, labels: {} })
+
+const _label = (name) => sourceOrder.value.labels?.[name] || name
+
+// 主力段 = canon 主力 + 日本官方源（DMM 已进主力，排在辅助源之前）
+const primaryOptions = computed(() => {
+  const s = sourceOrder.value
+  return [...(s.mainstream || []), ...(s.jp || [])].map(v => ({ value: v, label: _label(v) }))
+})
+// 辅助段 = canon 的 AUX_SOURCE_ORDER
+const fallbackOptions = computed(() =>
+  (sourceOrder.value.aux || []).map(v => ({ value: v, label: _label(v) }))
+)
 // 模块 → 补刮来源提示
 const SOURCE_HINTS = {
   fc2: 'FC2 专用刮削源（与「刮削管理 - FC2」完全一致）',
@@ -343,13 +338,8 @@ const runDirs = ref([])
 // 爬虫注册表（用于按模块动态生成「补刮来源」选项）
 const crawlers = ref([])
 
-// 来源池键：未指定模块（中心数据库）时按 jav 处理
-const poolKey = computed(() => currentModule.value || 'jav')
-
-// 精简模式：jav（及中心数据库）直接用内置来源池，不依赖注册表接口
-const hasCuratedSources = computed(() => !!SOURCE_POOL[poolKey.value])
-const primaryOptions = computed(() => SOURCE_POOL[poolKey.value]?.primary || [])
-const fallbackOptions = computed(() => SOURCE_POOL[poolKey.value]?.fallback || [])
+// 精简模式：jav（及中心数据库）用 canon 真实序，不依赖注册表接口
+const hasCuratedSources = computed(() => currentModule.value === 'jav' || !currentModule.value)
 
 // 兼容模式：其他模块仍从爬虫注册表按 supported_types 过滤（与「刮削管理」同源）
 const dynamicOptions = computed(() => {
@@ -375,16 +365,22 @@ const sourceOptions = computed(() =>
 const sourceHint = computed(() => {
   const m = currentModule.value
   if (!m || m === 'jav') {
-    return hasCuratedSources.value
-      ? '主力源按番号轮换错开，避免单站被限流；仅当主力全部未命中时才启用备用源'
-      : ''
+    if (!hasCuratedSources.value) return ''
+    const jp = sourceOrder.value.jp_available
+      ? ''
+      : '（日本出口当前不可用，DMM 已自动从源序中跳过）'
+    return `留空＝自动序：按番号在 canon 源序内轮换（素人/有码自动分流）${jp}` +
+      '；手动勾选则只打勾选的源。'
   }
   return SOURCE_HINTS[m] || ''
 })
 
-// 来源快捷选择（全选 / 仅主力 / 清空）
+// 来源快捷选择（自动 / 全选 / 仅主力 / 清空）
+// 🔴 「自动」= sources 留空，交给后端 canon 按番号裁决。这是最稳的模式：
+//    前端不猜顺序，素人/有码分流与日本源可用性都由后端实时判断。
 const selectSources = (which) => {
-  if (which === 'all') runForm.value.sources = sourceOptions.value.map(o => o.value)
+  if (which === 'auto') runForm.value.sources = []
+  else if (which === 'all') runForm.value.sources = sourceOptions.value.map(o => o.value)
   else if (which === 'primary') runForm.value.sources = primaryOptions.value.map(o => o.value)
   else runForm.value.sources = []
 }
@@ -467,14 +463,24 @@ const loadConfig = async () => {
   }
 }
 
-// 默认勾选：整个来源池（jav → 主力 + 备用）；仅在用户未手动改过时生效
+// 🔴 不再默认全选。旧实现在进入页面时把整个来源池写进 runForm.sources，
+// 那样等于用前端硬编码的列表覆盖后端 canon 序（且漏 dmm_web）。
+// 留空＝自动序，由后端按番号裁决，这才是正确默认。
 const applyDefaultSources = () => {
-  if (!runForm.value.sources.length) {
-    runForm.value.sources = sourceOptions.value.map(o => o.value)
+  runForm.value.sources = []
+}
+
+// 拉取 canon 真实源序（渲染主力/辅助两段 UI）
+const loadSourceOrder = async () => {
+  try {
+    const r = await getSourceOrder('ABC-123')
+    sourceOrder.value = r || { mainstream: [], aux: [], jp: [], jp_available: false, labels: {} }
+  } catch (e) {
+    console.error('加载源序失败', e)
   }
 }
 
-// 加载爬虫注册表（仅非 jav 模块动态来源需要它），随后套用默认来源
+// 加载爬虫注册表（仅非 jav 模块动态来源需要它）
 const loadCrawlers = async () => {
   try {
     const res = await getCrawlers()
@@ -483,6 +489,7 @@ const loadCrawlers = async () => {
     console.error('加载爬虫列表失败', e)
   }
   applyDefaultSources()
+  await loadSourceOrder()
 }
 
 const detectPercent = computed(() => {

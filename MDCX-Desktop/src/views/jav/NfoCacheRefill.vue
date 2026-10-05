@@ -62,17 +62,16 @@
 
         <el-col :xs="24" :sm="6">
           <div class="form-item">
-            <span class="label">刮削源（3 重点 + 4 辅助）</span>
+            <span class="label">刮削源</span>
             <el-select v-model="sources" multiple collapse-tags collapse-tags-tooltip
-                       placeholder="3 重点 + 4 辅助" style="width:100%">
-              <el-option label="JavDB API（重点）" value="thejavdb" />
-              <el-option label="JavBus（重点）" value="javbus" />
-              <el-option label="Avmoo（重点）" value="avmoo" />
-              <el-option label="JavBooks（辅助）" value="javbooks" />
-              <el-option label="JavDatabase（辅助）" value="javdatabase" />
-              <el-option label="AvSox（辅助）" value="avsox" />
-              <el-option label="DMM/FANZA（辅助）" value="dmm_web" />
+                       placeholder="留空＝自动序（推荐）" style="width:100%">
+              <el-option v-for="o in sourceOptions" :key="o.value" :label="o.label" :value="o.value" />
             </el-select>
+            <div class="hint">
+              留空＝按番号走后端 canon 源序（素人/有码自动分流，DMM 官方源排辅助源之前）。
+              手动勾选则只打勾选的源。
+              <span v-if="jpDown">日本出口当前不可用，DMM 已从自动序中跳过。</span>
+            </div>
           </div>
         </el-col>
       </el-row>
@@ -181,13 +180,24 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Download, Setting, VideoPlay, CopyDocument, Loading, Warning } from '@element-plus/icons-vue'
-import { refillNfoCache, getNfoRefillStatus, syncLocalPreviews, getLocalSyncStatus, getJavMovies } from '@/api/jav'
+import { refillNfoCache, getNfoRefillStatus, syncLocalPreviews, getLocalSyncStatus, getJavMovies, getSourceOrder } from '@/api/jav'
 import { ElMessage } from 'element-plus'
 
 const stats = ref({ total: 0, cover_ok: 0, cover_missing: 0, local_missing: 0 })
 const limit = ref(500)
 const concurrency = ref(5)
-const sources = ref(['thejavdb', 'javbus', 'avmoo', 'javbooks', 'javdatabase', 'avsox', 'dmm_web'])
+// 🔴 2026-10-05 改为留空＝自动序。旧默认写死 7 个源且**整体颠倒**
+//    （thejavdb 排第一、主力前 4 个源一个都没列、DMM 放末位），
+//    还会覆盖后端 canon 序。现在只拉 canon 真实序来渲染选项，不预选任何源。
+const sources = ref([])
+const sourceOrder = ref({ order: [], labels: {}, jp_available: false })
+const sourceOptions = computed(() =>
+  (sourceOrder.value.order || []).map(v => ({
+    value: v,
+    label: sourceOrder.value.labels?.[v] || v,
+  }))
+)
+const jpDown = computed(() => sourceOrder.value.jp_available === false)
 const steps = ref(['local_first', 'scrape'])
 const status = ref({ running: false, done: 0, total: 0, scraped: 0, no_source: 0, failed: 0, local_only: 0, started_at: 0, failed_list: [], failed_file: null })
 const syncStatus = ref({ running: false, done: 0, total: 0, copied: 0, no_video_dir: 0, failed: 0, started_at: 0 })
@@ -297,7 +307,18 @@ onMounted(() => {
   pollRefillStatus()
   pollSyncStatus()
   loadStats()
+  loadSourceOrder()
 })
+
+// 拉 canon 真实源序渲染下拉选项（不预选，留空＝自动序）
+async function loadSourceOrder() {
+  try {
+    const r = await getSourceOrder('ABC-123')
+    sourceOrder.value = r || { order: [], labels: {}, jp_available: false }
+  } catch (e) {
+    console.error('加载源序失败', e)
+  }
+}
 
 loadStats()
 

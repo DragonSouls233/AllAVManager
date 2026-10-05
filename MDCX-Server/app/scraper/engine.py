@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Optional, Callable
 
 from app.crawlers.base import ScrapeResult
+from app.scraper import canon as _canon
 from app.scraper.breaker import get_breaker
 from app.scraper.failure_reason import FailureAggregator
 from app.scraper.number import extract_number, NumberResult
@@ -279,14 +280,20 @@ class ScraperEngine:
     #: 判定标准 = 走昂贵/高时延链路（需日本出口），而字段与前序源高度重叠。
     JP_TAIL_CRAWLERS = ("dmm_web",)
 
-    FALLBACK_CRAWLERS = (
-        "thejavdb",      # 第三方开放 API —— 命中即字段全(avgW 4.0)
-        "javplace",      # JavPlace —— 命中即字段全(avgW 4.0)，覆盖率低
-        "javdb_new",     # JavDB (新版) —— 同一 App 通道，App 侧兜底
-        "freejavbt",     # FreeJavBT —— 31/40
-        "mmtv",          # MMTV —— 素人有覆盖
-        "javdatabase",   # JavDatabase 权威数据库 —— 有码专精
-    )
+    #: 备用源池 = canon 的 ``AUX_SOURCE_ORDER``。
+    #:
+    #: 🔴 2026-10-05 起**直接复用 canon**，不再在这里写死第二份。旧实现写死
+    #:    6 源元组，与 canon 各维护一份，漂移出两类问题：
+    #:      ① canon 序里有而这里没有的（avmoo）→ 被降级到 tier2，canon 把它排在
+    #:         辅助序前列、engine 却最后才试，源序意图被抵消；
+    #:      ② 这里有而 canon 没有的（javplace / javdb_new / javdatabase）
+    #:         → canon 序（缺口补全页、NFO 缓存重建页）根本看不到这些源。
+    #:    实测（SSIS-001 逐源真跑）已剔除死源 **javbooks / mmtv**：
+    #:    ``scrape()`` 返回 None（既非超时也非 CF 403），留着只会让未命中的
+    #:    片子白等两次超时。
+    #:
+    #: canon 是纯常量模块（只定义顺序元组与两个纯函数），此处 import 无循环依赖。
+    FALLBACK_CRAWLERS = _canon.AUX_SOURCE_ORDER
 
     # 兼容保留：旧「第一梯队」概念已由 PRIMARY / FALLBACK 池取代
     TIER1_CRAWLERS = set(PRIMARY_CRAWLERS) | set(FALLBACK_CRAWLERS)

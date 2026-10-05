@@ -3364,8 +3364,25 @@ def _movie_dir_has_media(module: str, code: str) -> bool:
     return False
 
 
-# 兑底来源：主来源链无结果或仅有元数据无封面时，用以下站点再补一轮
-_REFILL_FALLBACK_SOURCES = ["javdb", "avmoo", "avsox", "dmm_web"]
+# 兜底来源：主来源链无结果或仅有元数据无封面时，再补一轮的源。
+# 🔴 2026-10-05 改为走 canon 辅助序。旧硬编码 ["javdb","avmoo","avsox","dmm_web"]
+#    有三个问题：① 含 canon 源序里**不存在**的 avsox；② 漏掉主力源
+#    javmenu/javmost/javbus（刮到了元数据却没封面时，这些源根本不会被试）；
+#    ③ 与 jav_routes.py 里另一份内联副本各自维护，容易漂移。
+#: canon 源序之外的野生源：不在 canon 里但实测能出封面，删掉属能力倒退。
+_WILDCARD_REFILL_SOURCES = ("avsox",)
+
+
+def _refill_fallback_sources(code: str) -> list[str]:
+    """无封面兜底轮要试的源：canon 完整序 + 野生源，按 canon 顺序追加。
+
+    用 canon 序而不是固定 4 源，才能在「刮到了元数据但没封面」这种场景下
+    也覆盖到 javmenu / javmost / javbus 等主力源。
+    """
+    from app.scraper.canon import source_order_for
+    base = list(source_order_for(code))
+    return base + [s for s in _WILDCARD_REFILL_SOURCES if s not in base]
+
 
 
 @router.post("/scrape-media-refill")
@@ -3441,7 +3458,7 @@ async def scrape_media_refill(
                 if not getattr(result, "cover_url", None):
                     # 兑底：主来源无封面时用常见站点再补一轮
                     fallback = await engine.scrape_number(
-                        code, sources=_REFILL_FALLBACK_SOURCES, module=module
+                        code, sources=_refill_fallback_sources(code), module=module
                     )
                     if fallback and fallback.is_valid() and fallback.cover_url:
                         result = fallback
@@ -3562,7 +3579,7 @@ async def refill_movie_images(
                 if result and result.is_valid() and not getattr(result, "cover_url", None):
                     # 兑底来源再补一轮
                     fb = await engine.scrape_number(
-                        code, sources=_REFILL_FALLBACK_SOURCES, module=module
+                        code, sources=_refill_fallback_sources(code), module=module
                     )
                     if fb and fb.is_valid() and fb.cover_url:
                         result = fb

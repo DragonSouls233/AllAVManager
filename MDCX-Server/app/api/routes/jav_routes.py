@@ -2406,8 +2406,12 @@ async def _redownload_one_images(movie, code: str, fast: bool = True) -> str:
             engine = ScraperEngine()
             result = await engine.scrape_number(code, module="jav")
             if result and result.is_valid() and not getattr(result, "cover_url", None):
+                # 🔴 复用 movies.py 的兜底函数（canon 序），不再内联一份 4 源列表。
+                #    旧内联值 ["javdb","avmoo","avsox","dmm_web"] 漏掉主力源
+                #    javmenu/javmost/javbus，且与 movies.py 那份各自维护易漂移。
+                from app.api.routes.movies import _refill_fallback_sources
                 fb = await engine.scrape_number(
-                    code, sources=["javdb", "avmoo", "avsox", "dmm_web"], module="jav"
+                    code, sources=_refill_fallback_sources(code), module="jav"
                 )
                 if fb and fb.is_valid() and getattr(fb, "cover_url", None):
                     result = fb

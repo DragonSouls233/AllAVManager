@@ -86,11 +86,9 @@
         </el-form-item>
         <el-form-item label="刮削来源">
           <el-checkbox-group v-model="importForm.sources" :disabled="!importForm.scrape">
-            <el-checkbox value="javbus">JavBus</el-checkbox>
-            <el-checkbox value="javdb">JavDB</el-checkbox>
-            <el-checkbox value="avmoo">Avmoo</el-checkbox>
-            <el-checkbox value="dmm">DMM</el-checkbox>
+            <el-checkbox v-for="o in sourceOptions" :key="o.value" :value="o.value">{{ o.label }}</el-checkbox>
           </el-checkbox-group>
+          <span class="form-tip">留空＝按番号走后端 canon 源序（推荐）</span>
         </el-form-item>
         <el-form-item label="跳过已存在">
           <el-switch v-model="importForm.skip_existing" />
@@ -538,9 +536,29 @@ const scanForm = ref({
 
 const importForm = ref({
   scrape: true,
-  sources: ['javbus', 'javdb', 'avmoo'],
+  // 🔴 2026-10-05 改为留空＝自动序。旧默认 ['javbus','javdb','avmoo'] 顺序与 canon
+  //    相反（canon 有码是 javdb 第一），且 UI 里的 `dmm` 是**已废弃**的旧爬虫
+  //    （新的是 dmm_web），照传会白跑。现在只拉 canon 真实序渲染选项。
+  sources: [],
   skip_existing: true
 })
+
+// canon 源序下拉（拉不到就退回空，不阻塞导入）
+const sourceOrder = ref({ order: [], labels: {} })
+const sourceOptions = computed(() =>
+  (sourceOrder.value.order || []).map(v => ({
+    value: v,
+    label: sourceOrder.value.labels?.[v] || v,
+  }))
+)
+async function loadSourceOrder() {
+  try {
+    const { getSourceOrder } = await import('@/api/jav')
+    sourceOrder.value = (await getSourceOrder('ABC-123')) || { order: [], labels: {} }
+  } catch (e) {
+    console.error('加载源序失败', e)
+  }
+}
 
 // 已识别番号数：统计 directories 中 detected_number 非空的目录
 const scanMatched = computed(() => {
@@ -867,6 +885,7 @@ const clearMnamerKey = async (keyName) => {
 onMounted(() => {
   loadHistory()
   loadMnamerHealth()
+  loadSourceOrder()
 })
 </script>
 

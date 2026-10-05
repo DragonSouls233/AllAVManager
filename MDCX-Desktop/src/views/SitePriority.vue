@@ -37,7 +37,7 @@
         <template #header>
           <div class="group-header">
             <span class="group-title"><el-tag type="primary" effect="dark">JAV</el-tag> 有码 · 无码 · FC2</span>
-            <span class="group-desc"><el-tag size="small" type="warning">JavBus 第一序列</el-tag></span>
+            <span class="group-desc"><el-tag size="small" type="warning">刮削源序以 canon 为准（DMM 官方源 → thejavdb → …）</el-tag></span>
           </div>
         </template>
         <SiteRowList :items="javList" :ping-results="pingResults" :single-pinging="singlePinging"

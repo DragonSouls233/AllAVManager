@@ -6,8 +6,9 @@
           <el-icon><DataAnalysis /></el-icon>
           JAV 缺口体检与补全
         </h2>
-        <span class="page-subtitle">
-          查「缺封面 / 缺预览图 / 缺字段」的影片并一键补齐。缺口从磁盘实算，不信数据库标志位。
+        <span class="page-subtitle>
+          查「缺封面 / 封面损坏 / 缺预览图 / 缺字段」的影片并一键补齐。
+          缺口从磁盘实算，不信数据库标志位；封面不只看有没有，还验能不能解码。
         </span>
       </div>
       <div class="page-header-right">
@@ -151,6 +152,11 @@
         :stroke-width="18"
       />
 
+      <div v-if="running && progress.current" class="current-line">
+        正在处理：<code>{{ progress.current }}</code>
+        <span class="elapsed">已用 {{ elapsedText }}</span>
+      </div>
+
       <el-row :gutter="12" class="progress-stats">
         <el-col :span="4"><div class="ps-item">已处理 <b>{{ progress.done }}</b> / {{ progress.total }}</div></el-col>
         <el-col :span="4"><div class="ps-item ok">成功 <b>{{ progress.fixed }}</b></div></el-col>
@@ -164,7 +170,19 @@
       </el-row>
 
       <div v-if="progress.log && progress.log.length" class="progress-log">
-        <div v-for="(l, i) in progress.log.slice(-6)" :key="i" class="log-line">{{ l }}</div>
+        <div class="log-head">
+          运行日志（{{ progress.log.length }} 条，最新在下）
+          <el-button link size="small" @click="logExpanded = !logExpanded">
+            {{ logExpanded ? '收起' : '展开全部' }}
+          </el-button>
+        </div>
+        <div class="log-scroll">
+          <div
+            v-for="(l, i) in logExpanded ? progress.log : progress.log.slice(-12)"
+            :key="i"
+            class="log-line"
+          >{{ l }}</div>
+        </div>
       </div>
 
       <el-collapse v-if="progress.failed_list && progress.failed_list.length" class="fail-box">
@@ -264,8 +282,24 @@ const keyword = ref('')
 const page = ref(1)
 const pageSize = 50
 const dryRunMsg = ref('')
+const logExpanded = ref(false)
+// 计时器独立于轮询：即使接口短暂失败，「已用 X 分 Y 秒」也继续走，
+// 否则用户会以为页面卡死（这正是「不知道开始没有」的根源之一）。
+const nowTick = ref(Date.now())
+let tickTimer = null
 
 let timer = null
+
+const elapsedText = computed(() => {
+  const s0 = progress.value.started_at
+  if (!s0) return '0 秒'
+  const end = progress.value.running ? nowTick.value : (progress.value.finished_at || nowTick.value)
+  const sec = Math.max(0, Math.floor((end - s0) / 1000))
+  if (sec < 60) return `${sec} 秒`
+  const m = Math.floor(sec / 60)
+  if (m < 60) return `${m} 分 ${sec % 60} 秒`
+  return `${Math.floor(m / 60)} 时 ${m % 60} 分`
+})
 
 const count = (k) => (stats.value.by_reason || {})[k] || 0
 const reasonLabel = (k) => REASONS[k] || k
@@ -378,10 +412,13 @@ async function fillOne(code) {
 
 function startPolling() {
   stopPolling()
+  // 每秒刷新「已用时间」显示，与状态轮询解耦
+  tickTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
   timer = setInterval(async () => {
     try {
       const s = await getJavGapFillStatus()
       progress.value = s || {}
+      nowTick.value = Date.now()
       if (!s?.running) {
         stopPolling()
         running.value = false
@@ -398,6 +435,10 @@ function stopPolling() {
   if (timer) {
     clearInterval(timer)
     timer = null
+  }
+  if (tickTimer) {
+    clearInterval(tickTimer)
+    tickTimer = null
   }
 }
 
@@ -461,6 +502,27 @@ onBeforeUnmount(stopPolling)
 
 .progress-log { margin-top: 10px; font-size: 12px; color: #6b7280; line-height: 1.8; }
 .log-line { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.log-head {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 4px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  font-weight: 600; color: #4b5563;
+}
+/* 日志默认只露最近 12 条并可滚动，避免几百行把页面撑到看不到进度条 */
+.log-scroll {
+  max-height: 180px; overflow-y: auto;
+  background: var(--el-fill-color-lighter);
+  border-radius: 4px; padding: 6px 8px;
+}
+.current-line {
+  margin-top: 8px; font-size: 13px; color: #4b5563;
+  display: flex; align-items: center; gap: 12px;
+}
+.current-line code {
+  background: var(--el-fill-color); padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, Menlo, Consolas, monospace; color: #2563eb;
+}
+.current-line .elapsed { color: #909399; font-size: 12px; }
 
 .fail-box { margin-top: 10px; }
 .fail-line { font-size: 12px; padding: 2px 0; color: #4b5563; }

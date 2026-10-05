@@ -185,8 +185,16 @@ MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus")
 #: 保留它在辅助池首位（命中即字段全，avgW 4.0）而不是删掉：它仍是有效的
 #: 补字段手段，只是**不该**先于 DMM 尝试。
 #:
+#: 🔴 2026-10-05 二次实测（SSIS-001 逐源真跑，剔除死源）：
+#:   可用 → avmoo / javplace / javdb_new / javdatabase / thejavdb / freejavbt
+#:   全空 → **javbooks / mmtv 已死**（`scrape()` 返回 None，不是超时也不是 CF 403），
+#:          已从本序移除。留着只会让每部未命中的片子白等两次超时。
+#: 另注：`javplace` / `javdb_new` / `javdatabase` 原先只存在于 engine 的
+#: FALLBACK_CRAWLERS、不在 canon 序里，导致 engine 走全池时它们能被并发全打，
+#: 而 canon 序（缺口补全/NFO 重建页用）却看不到 —— 现在统一到 canon 维护。
+#:
 #: ⚠️ 命名陷阱见 engine.py 的分层注释：`thejavdb` ≠ JavDB 官方 API（那是 `javdb`）。
-AUX_SOURCE_ORDER = ("thejavdb", "avmoo", "javbooks", "freejavbt")
+AUX_SOURCE_ORDER = ("thejavdb", "avmoo", "javplace", "javdb_new", "javdatabase", "freejavbt")
 
 # --------------------------------------------------------------------------
 # 3b) 日本专属源（FANZA / DMM）—— 2026-10-05 实测结论

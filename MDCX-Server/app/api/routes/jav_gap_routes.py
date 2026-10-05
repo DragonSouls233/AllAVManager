@@ -59,10 +59,23 @@ _state: dict = {
     "no_source": 0,
     "failed": 0,
     "started_at": 0.0,
+    "finished_at": 0.0,
+    "current": "",
     "by_reason": {},
     "failed_list": [],
     "log": [],
 }
+
+#: 阶段日志上限。后端每部影片会产生 3~6 行（开始/试源/命中/落盘/完成），
+#: 2000 部就能刷出上万行 —— 不截断会把内存和前端 DOM 一起撑爆。
+_LOG_MAX = 400
+
+
+def _log(msg: str) -> None:
+    """追加一条阶段日志（带时间戳 + 环形截断）。"""
+    _state["log"].append("[%s] %s" % (time.strftime("%H:%M:%S"), msg))
+    if len(_state["log"]) > _LOG_MAX:
+        del _state["log"][: len(_state["log"]) - _LOG_MAX]
 
 #: 刮削源熔断（复用 refill 端点的机制，但独立计数，互不干扰）
 _fail_streak: dict[str, int] = {}
@@ -104,18 +117,30 @@ def _db():
 # --------------------------------------------------------------------------
 
 def _has_valid_poster(d: Path) -> bool:
-    """竖版封面是否存在且不是下载残留。
+    """竖版封面是否存在、够大、且**真的能解码**。
 
     只看 poster* 是历史遗留口径；实际上 fanart/thumb/cover 任一有效即可视为
     「有封面」（workflow._save_to_db 就是这么兜底选 _local_cover 的）。
+
+    🔴 2026-10-06 合并「封面问题修复」能力：原实现只判「文件在不在、>1024 字节」，
+    于是 182KB 但完全无法解码的损坏封面（CDN 半截下载 / 格式损坏）被判为**有效**
+    ⇒ 缺口体检永远看不见它们。实测 120 服务器 covers/problems 报 2772 部坏封面，
+    而旧 gaps 口径对同一批番号命中 **0**。现在改为复用 jav_routes 的
+    ``_inspect_cover_problem``（读文件头 + PIL 解码）逐个校验。
     """
+    # 损坏检测按需导入：避免本模块对 jav_routes 形成导入依赖
+    from app.api.routes.jav_routes import _inspect_cover_problem
+
     for name in ("poster.jpg", "fanart.jpg", "thumb.jpg", "cover.jpg"):
         p = d / name
         try:
-            if p.is_file() and p.stat().st_size > 1024:
-                return True
+            if not (p.is_file() and p.stat().st_size > 1024):
+                continue
         except OSError:
             continue
+        # 文件在且够大 → 再验内容。_inspect_cover_problem 返回 None = 图片正常
+        if _inspect_cover_problem(p) is None:
+            return True
     return False
 
 
@@ -131,6 +156,18 @@ def _has_valid_preview(d: Path) -> bool:
         except OSError:
             continue
     return False
+
+
+def _row_of(item: dict):
+    """从缺口 item 还原一个只带字段值的壳，供 _reasons_for 复查用。"""
+    class _R:
+        pass
+    r = _R()
+    r.plot = item.get("plot")
+    r.studio = item.get("studio")
+    r.series = item.get("series")
+    r.actor = item.get("actor")
+    return r
 
 
 def _reasons_for(movie_dir: Path, row) -> list[str]:
@@ -152,7 +189,8 @@ def _reasons_for(movie_dir: Path, row) -> list[str]:
 async def _scan(limit: int = 0) -> tuple[list[dict], dict]:
     """扫描全库缺口。返回 (items, stats)。
 
-    items: [{movie_id, code, title, reasons:[...], output_dir}]
+    items: [{movie_id, code, title, reasons:[...], output_dir, video_dir, 字段值…}]
+    ``video_dir`` = 真实片库里视频文件所在目录，供 local_first 离线拷图用。
     """
     from app.utils.media_helpers import get_movie_local_dir
 
@@ -162,28 +200,52 @@ async def _scan(limit: int = 0) -> tuple[list[dict], dict]:
         rows = (await session.execute(
             select(JavMovie.id, JavMovie.code, JavMovie.title,
                    JavMovie.output_dir, JavMovie.plot, JavMovie.studio,
-                   JavMovie.series, JavMovie.actor)
+                   JavMovie.series, JavMovie.actor, JavMovie.file_path)
         )).all()
     finally:
         await session.close()
 
-    items: list[dict] = []
-    counts: dict[str, int] = {}
-    for mid, code, title, output_dir, plot, studio, series, actor in rows:
-        if not code:
-            continue
-        # output_dir 可能是空/失效，用它优先（历史数据指向真实盘符）
-        d = Path(output_dir) if output_dir else None
-        if d is None or not d.is_dir():
-            d = get_movie_local_dir(MODULE, code)
+    total_movies = len(rows)
 
+    # 封面校验现在含 PIL 解码（见 _has_valid_poster），是 CPU + 网络盘 I/O 混合的
+    # 重活；串行做会让 9479 部体检从秒级变成分钟级。丢线程池并发，
+    # 每部内部仍是「按 poster→fanart→thumb→cover 顺序，命中即停」。
+    def _reasons_sync(code: str, d: Path, plot, studio, series, actor) -> list[str]:
         class _R:
             pass
         r = _R()
         r.plot, r.studio, r.series, r.actor = plot, studio, series, actor
-        reasons = _reasons_for(d, r)
+        return _reasons_for(d, r)
+
+    def _check(row):
+        mid, code, title, output_dir, plot, studio, series, actor, file_path = row
+        d = Path(output_dir) if output_dir else None
+        if d is None or not d.is_dir():
+            d = get_movie_local_dir(MODULE, code)
+        # 真实片库目录（视频文件所在处）——local_first 离线拷图的来源
+        vdir = None
+        if file_path and file_path != "N/A":
+            try:
+                p = Path(file_path)
+                if p.parent.is_dir():
+                    vdir = p.parent
+            except OSError:
+                vdir = None
+        reasons = _reasons_sync(code, d, plot, studio, series, actor)
+        return (code, title, str(d), reasons, vdir,
+                plot, studio, series, actor)
+
+    rows = [r for r in rows if r[1]]
+    computed = await asyncio.gather(
+        *(asyncio.to_thread(_check, r) for r in rows)
+    )
+
+    items: list[dict] = []
+    counts: dict[str, int] = {}
+    for (mid, *_rest), (code, title, dir_str, reasons, vdir,
+                        plot, studio, series, actor) in zip(rows, computed):
         if not reasons:
-            continue
+            continue          # 完整影片不进缺口清单
         for x in reasons:
             counts[x] = counts.get(x, 0) + 1
         items.append({
@@ -191,13 +253,15 @@ async def _scan(limit: int = 0) -> tuple[list[dict], dict]:
             "code": code,
             "title": title or code,
             "reasons": reasons,
-            "output_dir": str(d),
+            "output_dir": dir_str,
+            "video_dir": str(vdir) if vdir else "",
+            "plot": plot, "studio": studio, "series": series, "actor": actor,
         })
 
     if limit and len(items) > limit:
         items = items[:limit]
     stats = {
-        "total_movies": len(rows),
+        "total_movies": total_movies,
         "total_gap": sum(counts.values()),
         "by_reason": counts,
     }
@@ -242,6 +306,13 @@ class GapFillRequest(BaseModel):
         description="手动指定源序（留空 = 按番号走 canon 自动序，含 DMM）",
     )
     dry_run: bool = Field(False, description="True = 只列出将要处理的番号，不动手")
+    local_first: bool = Field(
+        True,
+        description=(
+            "先从真实片库目录离线拷贝已存在的 {code}-*.jpg（不联网、秒级），"
+            "拷到仍缺再走远程刮削。原「补全 NFO 缓存」页的独有能力，已并入此处"
+        ),
+    )
 
 
 @router.post("/gaps/fill")
@@ -275,12 +346,15 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
     _state.update({
         "running": True, "done": 0, "total": len(picked),
         "fixed": 0, "no_source": 0, "failed": 0,
-        "started_at": time.time(),
+        "started_at": time.time(), "finished_at": 0.0, "current": "",
         "by_reason": {}, "failed_list": [], "log": [],
     })
     for i in picked:
         for r in i["reasons"]:
             _state["by_reason"][r] = _state["by_reason"].get(r, 0) + 1
+    _log("任务开始：共 %d 部，并发 %d，缺口类型 %s"
+         % (len(picked), data.concurrency,
+            "/".join(sorted(_state["by_reason"]))))
 
     async def _run():
         from app.scraper.engine import ScraperEngine
@@ -307,12 +381,11 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
             return list(manual) if manual else list(source_order_for(code))
 
         if manual:
-            _state["log"].append("手动源序：%s" % manual)
+            _log("手动源序：%s" % manual)
         else:
-            _state["log"].append(
-                "自动源序：有码 %s｜素人 %s"
-                % ("→".join(source_order_for("ABC-123")),
-                   "→".join(source_order_for("200GANA-3426"))))
+            _log("自动源序：有码 %s｜素人 %s"
+                 % ("→".join(source_order_for("ABC-123")),
+                    "→".join(source_order_for("200GANA-3426"))))
 
         async def _try_source(code: str, src: str):
             """单源尝试。返回 ScrapeResult 或 None。超时/异常算「确定性故障」，
@@ -344,34 +417,66 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
                 if _fail_streak[src] >= _FAIL_THRESHOLD:
                     _blackout_until[src] = time.monotonic() + _BLACKOUT_SECS
                     _fail_streak[src] = 0
-                    _state["log"].append(
-                        "源 %s 连续故障 %d 次，熔断 %ds"
-                        % (src, _FAIL_THRESHOLD, _BLACKOUT_SECS))
+                    _log("源 %s 连续故障 %d 次，熔断 %ds"
+                         % (src, _FAIL_THRESHOLD, _BLACKOUT_SECS))
             return None
 
         async def _one(item):
             code = item["code"]
             result = None
+            reasons = set(item["reasons"])
+            _log("▶ %s 开始（缺 %s）" % (code, "/".join(item["reasons"])))
+
+            # 步骤 0（可选，默认开）：先离线拷本地图。
+            # 这是原「补全 NFO 缓存」页唯一的独有能力——片库里往往已经有
+            # {code}-*.jpg，拷过来比联网刮削快几个数量级且不消耗站点配额。
+            # 复用 refill 端点的同一个函数，别写第二份。
+            if data.local_first and (reasons & {"cover", "preview"}):
+                try:
+                    from app.api.routes.jav_routes import _copy_local_previews
+                    n = await asyncio.wait_for(
+                        asyncio.to_thread(_copy_local_previews, item["video_dir"], code),
+                        timeout=20.0,
+                    )
+                    if n:
+                        _log("  ⇩ %s 本地拷贝 %d 张图" % (code, n))
+                except asyncio.TimeoutError:
+                    _log("  ⏱ %s 本地拷贝超时 20s，跳过" % code)
+                except Exception as e:  # noqa: BLE001
+                    _log("  ! %s 本地拷贝失败：%s" % (code, str(e)[:80]))
+                # 拷完重新体检：本地图可能已经把该片的缺口填平了
+                if not _reasons_for(Path(item["output_dir"]), _row_of(item)).intersection(reasons):
+                    _state["fixed"] += 1
+                    _log("  ✔ %s 本地图已补齐，无需联网" % code)
+                    return
+
             order = _order_for(code)
             async with sem:
                 for src in order:
+                    _log("  · %s 试源 %s" % (code, src))
                     result = await _try_source(code, src)
                     if result is not None:
+                        _log(("  ✔ %s 命中 %s：%s" % (code, src, result.title or ""))[:160])
                         break
             if not result:
                 _state["no_source"] += 1
                 _state["failed_list"].append({"code": code, "reason": "no_source"})
+                _log("  ✘ %s 全部源未收录" % code)
                 return
             try:
+                _log("  ↓ %s 落盘中（写库/下封面/NFO）" % code)
                 await wf.persist(result, module=MODULE)
                 _state["fixed"] += 1
+                _log("  ✔ %s 完成" % code)
             except Exception as e:  # noqa: BLE001
                 _state["failed"] += 1
                 _state["failed_list"].append({"code": code, "reason": str(e)[:160]})
+                _log("  ✘ %s 落盘失败：%s" % (code, str(e)[:100]))
                 logger.warning("[gaps] %s 落盘失败: %s", code, e)
 
         async def _worker():
             for item in picked:
+                _state["current"] = item["code"]
                 await _one(item)
                 _state["done"] += 1
                 if data.gap_seconds:
@@ -381,10 +486,16 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
             await _worker()
         finally:
             _state["running"] = False
+            _state["current"] = ""
+            _state["finished_at"] = time.time()
+            cost = int(_state["finished_at"] - _state["started_at"])
             _, after = await _scan()
-            _state["log"].append("完成：剩余缺口 %d" % sum(after["by_reason"].values()))
+            left = sum(after["by_reason"].values())
+            _log("任务结束：耗时 %d分%02d秒，成功 %d，无源 %d，失败 %d｜剩余缺口 %d"
+                 % (cost // 60, cost % 60, _state["fixed"], _state["no_source"],
+                    _state["failed"], left))
             logger.info("[gaps] 补全结束 %s", {k: v for k, v in _state.items()
-                                              if k != "log"})
+                                              if k not in ("log", "failed_list")})
 
     background_tasks.add_task(_run)
     return {"status": "started", "total": len(picked),
