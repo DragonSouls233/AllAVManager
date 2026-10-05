@@ -24,10 +24,13 @@ jav_module_report.txt
 MDCX_QA_测试分析.md
 MDCX_QA自动化提示词.md
 _patch_audit
+dist/
 dist
 server_manager
 build
+_test_archive/
 _test_archive
+tmp_cover_check/
 qa_*.js
 qa_*.mjs
 qa_*.py
