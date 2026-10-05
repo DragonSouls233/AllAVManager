@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Iterable
 
 # --------------------------------------------------------------------------
@@ -198,33 +199,55 @@ MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus", "thejavdb")
 #
 # 番号→id 规则：`ABC-123` → `abc00123`（前缀小写 + 数字零填充 5 位）。
 #
-# ⚠️ 仍默认**不进**自动刮削序列，理由与数据可用性无关，纯粹是成本：
-# 日本节点是免费池、时延高（实测每部 ~70s），而 DMM 在字段丰富度上与
-# javdb 高度重叠（演员/厂牌/标签都全），把它排进主力序只会拖慢整体刮削。
-# 需要时用环境变量显式开启：
-#
-#   MDCX_JP_SOURCE_IN_ORDER=1   把 dmm_web 追加到源序尾部
+# ⚠️ 2026-10-05 用户决定：**DMM 已加入主力源序**（默认生效，无需环境变量）。
+# 数据本身早已实测可用（见上），真正的顾虑是成本 —— 日本免费节点单部 ~70s。
+# 因此在 engine 侧做了两处配套约束，使其「进主力但几乎不拖慢」：
+#   1. `engine.JP_TAIL_CRAWLERS` 把 `dmm_web` 标为**固定尾部源**，
+#      不参与 `_rotate_primary` 的按番号轮换 ⇒ 不会成为任何一部片的首选。
+#   2. 排在前面的 javdb/javmenu/javmost/javbus 命中即返回，走不到 DMM；
+#      只有前 4 个全未给出「标题+封面+演员」完整结果时，才付这 ~70s。
+# 要临时关掉（排障/节点不稳时）：设 MDCX_JP_SOURCE_IN_ORDER=0
 JP_SOURCE_ORDER: tuple[str, ...] = ("dmm_web",)
 
+#: `jp_sources_available()` 的结果缓存秒数。
+#: 🔴 必要性：`get_jp_proxy_url()` 在链路未起时会**同步拉起 xray 并 sleep 2.5s**，
+#: 而本函数在 `source_order_for()`（排序热路径，同步）里被调用。缓存两个作用：
+#:   1. 避免每部片子都付一次端口探活 + 可能 2.5s 的同步启动（阻塞事件循环）。
+#:   2. 节点失效时不会对每个番号反复尝试重启。
+_JP_AVAIL_TTL = 60.0
+_jp_avail_cache: tuple[float, bool] | None = None
 
-def jp_sources_available() -> bool:
-    """日本出口当前是否可用（不可用就别把日本源排进序里，白白浪费请求）。"""
+
+def jp_sources_available(force: bool = False) -> bool:
+    """日本出口当前是否可用（不可用就别把日本源排进序里，白白浪费请求）。
+
+    结果默认缓存 ``_JP_AVAIL_TTL`` 秒；``force=True`` 强制重探。
+    """
+    global _jp_avail_cache
+    if not force and _jp_avail_cache is not None:
+        ts, val = _jp_avail_cache
+        if (time.time() - ts) < _JP_AVAIL_TTL:
+            return val
     try:
         from app.services.jp_proxy import get_jp_proxy_url
-        return bool(get_jp_proxy_url())
+        val = bool(get_jp_proxy_url())
     except Exception:  # noqa: BLE001
-        return False
+        val = False
+    _jp_avail_cache = (time.time(), val)
+    return val
 
 
 def jp_fallback_order() -> tuple[str, ...]:
     """日本源在源序里的实际位置。
 
-    默认返回空 —— DMM 走免费日本节点池、时延高（实测每部 ~70s），而字段与
-    javdb 高度重叠，排进主力序只会拖慢整体刮削。要用请显式开启。
+    🔴 2026-10-05 起**默认追加**（用户决定加入主力），出口不可用时自动落空 ——
+    宁可少一个源，也不要让整条链路因日本节点起不来而失败。
+    设 ``MDCX_JP_SOURCE_IN_ORDER=0`` 可显式关闭。
     """
-    if os.environ.get("MDCX_JP_SOURCE_IN_ORDER", "").strip() in ("1", "true", "yes"):
-        return JP_SOURCE_ORDER if jp_sources_available() else ()
-    return ()
+    flag = os.environ.get("MDCX_JP_SOURCE_IN_ORDER", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return ()
+    return JP_SOURCE_ORDER if jp_sources_available() else ()
 
 
 def source_order_for(code: str) -> tuple[str, ...]:
@@ -233,9 +256,9 @@ def source_order_for(code: str) -> tuple[str, ...]:
     素人 and mainstream titles live in different places, so a single global
     order wastes requests (or misses entirely) on one of the two kinds.
 
-    日本源（FANZA/DMM）默认**不参与**自动刮削 —— 数据本身已实测可用
-    （见 JP_SOURCE_ORDER 段），但时延高且与 javdb 重叠。需显式设
-    `MDCX_JP_SOURCE_IN_ORDER=1` 才追加到尾部。
+    日本源（`dmm_web`）默认追加在尾部（DMM 无素人片，只对有码有意义，
+    但为保持两条源序结构一致这里统一追加；engine 侧已把它标为固定尾部源，
+    实际不会成为首选）。详见 JP_SOURCE_ORDER 段。
     """
     order = AMATEUR_SOURCE_ORDER if is_amateur_code(code) else MAINSTREAM_SOURCE_ORDER
     return order + jp_fallback_order()
