@@ -126,10 +126,10 @@
       </el-form>
 
       <div class="action-row">
-        <el-button type="primary" :loading="starting" :disabled="running" @click="startFill">
+        <el-button type="primary" :loading="starting" :disabled="running" @click="startFill()">
           <el-icon><Download /></el-icon>&nbsp;开始补全
         </el-button>
-        <el-button :disabled="running" @click="dryRun">
+        <el-button :disabled="running" @click="startFill({ dry: true })">
           <el-icon><View /></el-icon>&nbsp;试运行（只看名单）
         </el-button>
         <span v-if="dryRunMsg" class="dry-run-msg">{{ dryRunMsg }}</span>
@@ -369,7 +369,13 @@ async function runAudit() {
   }
 }
 
-async function startFill(dry = false) {
+async function startFill(opts = {}) {
+  // 🔴 2026-10-05 修复「点了开始补全没动静」：原来签名是 `startFill(dry = false)`
+  //    且模板写 `@click="startFill"` —— Vue 会把 MouseEvent 当第一个实参传进来，
+  //    事件对象恒 truthy ⇒ 「开始补全」每次都走进 dry_run 分支，只弹
+  //    「试运行完成，未做任何改动」，任务根本没启动（后端 running 一直是 false）。
+  //    现在改成接**具名对象**且模板显式传参，事件对象再也塞不进业务判断。
+  const dry = opts?.dry === true
   if (!reasons.value.length) {
     ElMessage.warning('请至少勾选一类缺口')
     return

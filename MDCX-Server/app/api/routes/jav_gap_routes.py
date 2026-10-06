@@ -50,6 +50,65 @@ MODULE = "jav"
 #: 值得为补全而重新刮削的字段。刻意不含 tag/rating/duration，理由见模块 docstring。
 FIELD_GAPS = ("plot", "studio", "series", "actor")
 
+#: 🔴 2026-10-06 实测（120 服务器，MIDE-834 / SSIS-001 逐源真跑）：
+#: **主力源 javdb / javmenu / javbus / dmm_web 全都不返回 plot**，能给简介的
+#: 只有 3 个辅助源，且质量差距极大：
+#:     thejavdb   171~199 字日文真简介   ← 最好，优先
+#:     javplace    34~40 字中文机翻     ← 能用
+#:     javmost     42 字 "Watch XXX JAV movie online streaming..." ← **SEO 垃圾**
+#: 原实现「首个源命中即 break」，javdb 排第一 ⇒ 永远走不到能给 plot 的源
+#: ⇒ 用户看到「200 部完成」但 plot 缺口一个没少（实测 17479→17367 只掉 112，
+#: 掉的还是 studio/series）。现在改为**按「是否补齐目标缺口」决定是否继续试源**。
+#:
+#: 且 javmost 那种 SEO 模板文案写进库比留空更糟（前端会把它当剧情简介展示），
+#: 必须显式拦掉，见 ``_is_junk_plot``。
+_JUNK_PLOT_MARKERS = (
+    "jav movie online",
+    "movie online streaming",
+    "watch online free",
+    "free porn video",
+    "watch porn",
+)
+
+
+def _is_junk_plot(plot: str | None) -> bool:
+    """判断简介是否是 SEO 模板垃圾文案（写进库比留空更糟）。"""
+    if not plot:
+        return True
+    p = plot.strip().lower()
+    if len(p) < 15:                                  # 太短，基本是占位
+        return True
+    if any(m in p for m in _JUNK_PLOT_MARKERS):      # javmost 的 "Watch XXX JAV movie online…"
+        return True
+    if p.startswith("watch ") and "online" in p[:60]:
+        return True
+    return False
+
+
+def _result_covers(result, reasons: set[str]) -> set[str]:
+    """该刮削结果实际能补上 ``reasons`` 里的哪几类缺口。
+
+    🔴 这是「完成 200 部却只少 3 个」的根治点：刮削成功 ≠ 缺口被补上。
+    旧代码只看 ``result is not None`` 就 break，于是 javdb 命中（有标题/演员/
+    厂牌）就收工，而它根本不给 plot ⇒ 整批处理完 plot 缺口纹丝不动。
+    """
+    got: set[str] = set()
+    if "plot" in reasons and not _is_junk_plot(getattr(result, "plot", None)):
+        got.add("plot")
+    if "series" in reasons and (getattr(result, "series", None) or "").strip():
+        got.add("series")
+    if "studio" in reasons and (getattr(result, "studio", None) or "").strip():
+        got.add("studio")
+    if "actor" in reasons and getattr(result, "actors", None):
+        got.add("actor")
+    # 图片类：源给了封面/剧照 URL 才算能补（能不能下载成不成功另说）
+    if "cover" in reasons and getattr(result, "cover_url", None):
+        got.add("cover")
+    if "preview" in reasons and (getattr(result, "sample_images", None)
+                                 or getattr(result, "extrafanart", None)):
+        got.add("preview")
+    return got
+
 #: 补全进度（单任务；重复发起返回 busy）
 _state: dict = {
     "running": False,
@@ -169,6 +228,40 @@ def _row_of(item: dict):
     r.series = item.get("series")
     r.actor = item.get("actor")
     return r
+
+
+async def _fresh_reasons(movie_dir: Path, code: str) -> list[str] | None:
+    """落盘后复查该片真实缺口：**现查数据库**，不用扫描时的旧快照。
+
+    🔴 不能用 ``_row_of(item)``：那是从本次扫描结果还原的壳，
+    字段值还是刮削**之前**的空值 ⇒ 拿它复查会永远判「仍缺」，
+    等于白做一次复查（这也是「完成数看起来很漂亮但缺口不动」的帮凶）。
+    查询失败返回 None（调用方按「完成」处理，不阻塞流程）。
+    """
+    try:
+        db = _db()
+        session = await db.get_session()
+        try:
+            row = (await session.execute(
+                select(JavMovie.plot, JavMovie.studio, JavMovie.series, JavMovie.actor)
+                .where(JavMovie.code == code)
+            )).first()
+        finally:
+            await session.close()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    class _R:
+        pass
+    r = _R()
+    r.plot, r.studio, r.series, r.actor = row[0], row[1], row[2], row[3]
+    # 🔴 本函数是 async，调用方只能 `await _fresh_reasons(...)`，
+    # 绝不能再套 `asyncio.to_thread` —— 那会拿到协程对象本身，
+    # `set(coroutine)` 直接抛 "'coroutine' object is not iterable"
+    # （2026-10-06 实测踩到）。
+    # 而 _reasons_for 内含 PIL 解码（CPU + 网络盘 I/O）⇒ 丢线程池，别阻塞事件循环。
+    return await asyncio.to_thread(_reasons_for, movie_dir, r)
 
 
 def _reasons_for(movie_dir: Path, row) -> list[str]:
@@ -467,29 +560,74 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
                     _log("  ✔ %s 本地图已补齐，无需联网" % code)
                     return
 
+            # 🔴 2026-10-06 重写选源逻辑（原「首个命中即 break」是假成功的根源）：
+            # 目标是**补齐本次勾选的缺口**，不是「随便拿到一个结果」。
+            # 主力源 javdb/javmenu/javbus/dmm_web 实测全都不给 plot，
+            # 而能给 plot 的 thejavdb/javplace 排在辅助段 —— 首个命中就收工的话
+            # 永远碰不到它们。所以：命中但没覆盖目标缺口 ⇒ 记住、继续试下一个源，
+            # 直到覆盖齐全或源耗尽；最终用「覆盖最多」的那个结果落盘。
             order = _order_for(code)
+            best = None          # (覆盖数, result, 源名)
+            covered: set[str] = set()
             async with sem:
                 for src in order:
                     _log("  · %s 试源 %s" % (code, src))
-                    result = await _try_source(code, src)
-                    if result is not None:
-                        _log(("  ✔ %s 命中 %s：%s" % (code, src, result.title or ""))[:160])
-                        break
-            if not result:
+                    r = await _try_source(code, src)
+                    if r is None:
+                        continue
+                    got = _result_covers(r, reasons)
+                    _log(("  ✔ %s 命中 %s：%s｜补到 %s"
+                          % (code, src, r.title or "", "/".join(sorted(got)) or "无"))[:170])
+                    if not best or len(got) > len(covered):
+                        best, covered = (r, src), got
+                    if reasons <= got:
+                        break    # 目标缺口全齐，收工
+            if not best:
                 _state["no_source"] += 1
                 _state["failed_list"].append({"code": code, "reason": "no_source"})
                 _log("  ✘ %s 全部源未收录" % code)
                 return
+            result, hit_src = best
+            missing = reasons - covered
+            if missing:
+                # 命中了但给不出要补的字段 —— 记进日志，让「完成数 ≠ 缺口减少」有据可查
+                _log("  ⚠ %s 源 %s 未给 %s，仍会落盘其余字段"
+                     % (code, hit_src, "/".join(sorted(missing))))
             try:
                 _log("  ↓ %s 落盘中（写库/下封面/NFO）" % code)
                 await wf.persist(result, module=MODULE)
-                _state["fixed"] += 1
-                _log("  ✔ %s 完成" % code)
             except Exception as e:  # noqa: BLE001
                 _state["failed"] += 1
                 _state["failed_list"].append({"code": code, "reason": str(e)[:160]})
                 _log("  ✘ %s 落盘失败：%s" % (code, str(e)[:100]))
                 logger.warning("[gaps] %s 落盘失败: %s", code, e)
+                return
+
+            # 🔴 落盘后**复查真实缺口**，只在实际补齐时才计 fixed。
+            # 旧代码 persist 一成功就 fixed += 1 ⇒ 「刮削 200 部、缺口只少 3 个」
+            # 这种假成功在界面上完全看不出来。
+            try:
+                # 🔴 `_fresh_reasons` 本身是 async（内部要先查库），**不能**再套
+                # asyncio.to_thread —— 那样 await 到的是协程对象，
+                # `set(coroutine)` 抛 "'coroutine' object is not iterable"。
+                fresh = await _fresh_reasons(Path(item["output_dir"]), code)
+            except Exception as e:  # noqa: BLE001
+                fresh = None
+                _log("  ! %s 复查失败：%s" % (code, str(e)[:80]))
+            if fresh is None:
+                _state["fixed"] += 1
+                _log("  ✔ %s 完成" % code)
+            else:
+                left = set(fresh) & reasons
+                if not left:
+                    _state["fixed"] += 1
+                    _log("  ✔ %s 已补齐（%s）" % (code, "/".join(sorted(reasons))))
+                else:
+                    _state["no_source"] += 1
+                    _state["failed_list"].append(
+                        {"code": code, "reason": "源无此字段: %s" % "/".join(sorted(left))})
+                    _log("  ✘ %s 落盘后仍缺 %s（源站无数据，非故障）"
+                         % (code, "/".join(sorted(left))))
 
         async def _worker():
             for item in picked:

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MDCX 参考库能力盘点 · 2026-10-05</title>
+<title>MDCX 参考库可复用能力盘点 · 2026-10-05</title>
 <style>
   :root{
     --bg:#f5f6f8; --card:#ffffff; --ink:#1a1d24; --ink2:#5a6373; --line:#e3e6ec;
@@ -21,6 +21,7 @@
   .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
   .stat b{display:block;font-size:26px;line-height:1.2;font-variant-numeric:tabular-nums}
   .stat span{color:var(--ink2);font-size:12px}
+  .stat.hi b{color:var(--brand)}
   h2{font-size:18px;margin:38px 0 14px;padding-left:10px;border-left:4px solid var(--brand)}
   h3{font-size:15px;margin:24px 0 10px;color:var(--ink)}
   p{color:#2c3340}
@@ -39,7 +40,14 @@
   .t-p0{background:#fee2e2;color:#b91c1c}
   .t-p1{background:#fef3c7;color:#92400e}
   .t-p2{background:#e0e7ff;color:#3730a3}
-  .t-have{background:#e8eaef;color:#5a6373}
+  .t-p3{background:#e8eaef;color:#5a6373}
+  .tr-a{background:#dcfce7;color:#15803d}
+  .tr-b{background:#dbeafe;color:#1d4ed8}
+  .tr-c{background:#ede9fe;color:#6d28d9}
+  .tr-d{background:#fef3c7;color:#92400e}
+  .tr-e{background:#f1f5f9;color:#64748b}
+  .tr-f{background:#f8fafc;color:#94a3b8}
+  .tr-x{background:#fee2e2;color:#b91c1c}
   .lic{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;font-weight:600}
   .lic-ok{background:#dcfce7;color:#15803d}
   .lic-no{background:#fee2e2;color:#b91c1c}
@@ -55,331 +63,318 @@
   @media(max-width:820px){.two{grid-template-columns:1fr}}
   .kv{font-size:12.5px;color:var(--ink2)}
   footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);color:var(--grey);font-size:12px}
+  .scroll{max-height:640px;overflow:auto;border-radius:8px}
 </style>
 </head>
 <body>
 <div class="wrap">
-
 <header class="top">
-  <h1>MDCX 参考库能力盘点报告</h1>
-  <div class="sub">扫描日期 2026-10-05 · 参考库 <code>G:/MDCX/.references/MDCX-Project-Reference</code> · 只读扫描，未修改任何被扫描项目</div>
+<h1>MDCX 参考库可复用能力盘点报告</h1>
+<div class="sub">扫描日期 2026-10-05 · 参考库 <code>G:/MDCX/.references/MDCX-Project-Reference</code> · 全量 123 子模块 · 只读扫描，未修改任何被扫描项目<br>口径：<b>许可证不作为筛选门槛</b>——内部使用，引用时注明来源即可</div>
 </header>
-
 <div class="stats">
-  <div class="stat"><b>78</b><span>有效子模块已盘点</span></div>
-  <div class="stat"><b>18</b><span>本次同步有提交推进</span></div>
-  <div class="stat"><b>15</b><span>可落地增量项</span></div>
-  <div class="stat"><b>24</b><span>MIT/Apache/BSD 可抄码</span></div>
-  <div class="stat"><b>3</b><span>远端已死仓库</span></div>
+<div class="stat"><b>123</b><span>已盘点子模块</span></div>
+<div class="stat hi"><b>52</b><span>可直接搬（A+B+C）</span></div>
+<div class="stat"><b>11</b><span>A 档 · 数据/规则直导</span></div>
+<div class="stat"><b>40</b><span>B 档 · 同语言代码</span></div>
+<div class="stat"><b>1</b><span>C 档 · 选择器/配置</span></div>
+<div class="stat"><b>1</b><span>硬拦（ref112 专有）</span></div>
+<div class="stat"><b>4</b><span>失效/空仓</span></div>
 </div>
-
-<div class="callout">
-  <b>一句话结论：</b>参考库里被公认的「亮点机制」约 <b>八成 MDCX 已经自己实现了</b>——限速漏桶、14 档失败分类、持久化熔断、逐字段优先级合并、番号投票仲裁、JavDB App 签名、感知哈希去重、源健康度、Metatube 兼容层都在（部分代码注释里直接引用了 <code>amane/net/http.py</code>、<code>javdb-cli</code>）。所以本次盘点真正有价值的是两份清单：<b>①「已有，别重复造」对照表</b>；<b>②「确实缺、值得抄」增量清单</b>。
-</div>
-
-<h2>一、MDCX 已自建 —— 别重复造</h2>
-<p>下表每一项我都到 MDCX 源码里核实过，不是推测。参考库同类实现不必再看。</p>
-
-<table>
-<thead><tr><th style="width:24%">能力</th><th style="width:34%">MDCX 实现位置</th><th style="width:24%">参考库同款</th><th>备注</th></tr></thead>
-<tbody>
-<tr><td>全局 + 域名两级限速（容量 1 漏桶）</td><td><code>app/utils/http_client.py</code> <code>_wait_for_rate_limit()</code></td><td>amane RateLimiters</td><td>注释已写明等价 <code>AsyncLimiter(1, 1/rate)</code>；锁内单调预约修过并发穿透 bug</td></tr>
-<tr><td>14 档失败原因分类 + 聚合</td><td><code>app/scraper/failure_reason.py</code> <code>FailureReason</code>/<code>FailureAggregator</code></td><td>peach（12 档）、amane（16 档）</td><td>档数已超参考库</td></tr>
-<tr><td>熔断持久化 + 指数退避 + 上限封顶</td><td><code>app/scraper/breaker.py</code> <code>check_persisted</code>/<code>BACKOFF_FACTOR</code></td><td>peach <code>scraping_access.py</code></td><td>含半开 + strike 放大</td></tr>
-<tr><td>逐字段来源优先级合并</td><td><code>app/scraper/merger.py</code> <code>MergeConfig.field_priority</code> / <code>_field_order()</code></td><td>Javinizer <code>sort.metadata.priority</code></td><td>「只写差异项，未列出沿用全局表」比参考库更省维护</td></tr>
-<tr><td>番号多源投票仲裁</td><td><code>app/scraper/merger.py</code> <code>_vote_avid()</code></td><td>metatube 加权排序</td><td>票数相同再按源优先级</td></tr>
-<tr><td>番号识别（20+ 类型，1500 行）</td><td><code>app/scraper/number.py</code> <code>extract_number()</code></td><td>neoavdc / JavSP / AVOne GetId</td><td>FC2/HEYZO/东京热/GETCHU/IBW/MMR/MD/素人/里番/PH viewkey 全覆盖</td></tr>
-<tr><td>JavDB 官方 App API 签名</td><td><code>app/services/javdb_app_client.py</code> <code>make_signature()</code></td><td>openaver <code>javdb_api.py</code></td><td>逆向自 javdb-cli，含全套 public query 参数</td></tr>
-<tr><td>视频感知哈希去重</td><td><code>app/services/video_hash.py</code>（whash + 汉明距离）</td><td>videohash</td><td>抽帧→拼贴→<code>imagehash.whash</code>→<code>is_similar</code></td></tr>
-<tr><td>刮削录制 + 源健康度</td><td><code>app/scraper/recorder.py</code> <code>source_health()</code></td><td>harvestr SiteHealth</td><td>记 attempt 结果入库（注意：不录响应正文，见增量 P1-5）</td></tr>
-<tr><td>爬虫健康监控 + 启停</td><td><code>app/services/scraper_monitor.py</code></td><td>atlas source-status</td><td>CrawlerHealth 枚举 + enable/disable + 自动注册</td></tr>
-<tr><td>Metatube 兼容层</td><td><code>app/api/routes/metatube.py</code></td><td>metatube-sdk-go</td><td>反向：MDCX 作为 provider 对外提供，供 Jellyfin 插件调用</td></tr>
-<tr><td>CF 绕过 / 浏览器指纹 / 域名自动切换</td><td><code>utils/cf_bypass.py</code>、<code>utils/browser_fingerprint.py</code>、<code>services/domain_switcher.py</code></td><td>openaver avsox 域名轮替</td><td>另有 <code>javdb_autohost.py</code></td></tr>
-<tr><td>封面回填 + 人脸裁切</td><td><code>services/cover_refill.py</code>、<code>utils/face_crop.py</code></td><td>mp-relay cover_refill</td><td>另有封面修复页（魔数 + PIL 解码双校验）</td></tr>
-<tr><td>演员别名 / 合并</td><td><code>utils/actor_alias.py</code>、<code>services/actor_merge_service.py</code></td><td>javm entity_alias</td><td>升级空间见增量 P1-9</td></tr>
-<tr><td>字幕匹配 / 字幕编码探测</td><td><code>services/subtitle_matcher.py</code></td><td>stash caption</td><td>SRT GBK/UTF-8-BOM 混杂处理</td></tr>
-<tr><td>fc2 流出检测</td><td><code>services/fc2_leak_detector.py</code></td><td>FC2-Leak-Detector</td><td>—</td></tr>
-<tr><td>gfriends 演员头像导入</td><td><code>services/gfriends_importer.py</code></td><td>openaver gfriends</td><td>—</td></tr>
-</tbody>
-</table>
-
-<div class="callout ok">
-  <b>含义：</b>看到参考库某项目"有 XX 功能"时，先查上表。凡是这一列的，已经没必要再花时间——新增投入应集中在下面的增量清单。
-</div>
-
-<h2>二、真增量清单（MDCX 确实缺）</h2>
-<p>以下每一项都确认过 MDCX 当前没有对应实现。<b>优先级按「投入产出比」排</b>，不是按参考库热度排。</p>
-
-<h3>P0 · 低成本高收益（建议先做）</h3>
-<table>
-<thead><tr><th style="width:4%">#</th><th style="width:20%">增量项</th><th style="width:30%">参考来源与算法</th><th style="width:30%">落到 MDCX 哪里</th><th>许可</th></tr></thead>
-<tbody>
-<tr>
-  <td><span class="tag t-p0">P0</span></td>
-  <td><b>自适应限速（压力反馈升/降压）</b></td>
-  <td><code>ref99-javorganizer/AdaptiveThrottle.cs</code>：压力信号按 90s 半衰期指数衰减；429/503/ban 反馈升压，<code>DelayMultiplier ∈ [1,4]</code>；成功轻微降压；暂停带抖动</td>
-  <td><code>utils/http_client.py</code> 现有 <code>SITE_QPS_OVERRIDES</code> 是<b>静态</b>配置，遇 429 只能靠 breaker 整体封禁。补一个「温和降速但不封禁」的中间挡，比封源更划算</td>
-  <td><span class="lic lic-ok">MIT 可抄</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p0">P0</span></td>
-  <td><b>人类化抖动间隔</b></td>
-  <td><code>ref99/PerSiteRateLimiter.cs</code>：基础间隔取 65–125% 随机，约 1/8 概率插入 1.5–2.2× 「阅读停顿」<br><code>ref58-javspider_stack/core/http_client.py</code>：两请求间随机 3–8s（Python 同语言）</td>
-  <td>MDCX 现在是精确 <code>1/qps</code> 固定间隔，机器特征明显。改为抖动成本极低，对 429 有直接改善</td>
-  <td><span class="lic lic-ok">MIT 可抄</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p0">P0</span></td>
-  <td><b>oshash 头尾采样快速指纹</b></td>
-  <td><code>ref73-stash/pkg/hash/oshash/oshash.go</code>：head/tail 各 64KB 按 8 字节小端 uint64 累加 + 文件大小，输出 16 位 hex</td>
-  <td>MDCX 只有 ffmpeg 感知哈希（重、慢、需子进程）。扫描器/重命名识别需要<b>毫秒级</b>轻量指纹做预筛，感知哈希只留作二次确认</td>
-  <td><span class="lic lic-no">AGPL 自研</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p0">P0</span></td>
-  <td><b>「没有」记忆（负缓存 TTL）</b></td>
-  <td><code>ref96-peach/library_processing.py::_MissCache</code>：按站记忆「明确答复没有」的番号 + TTL，只记 <code>NotFound</code>（网络故障不记），新站接入后可作废</td>
-  <td>大批量补刮时，确定无源的番号每轮都会重问一遍。加负缓存可显著缩短补刮时间</td>
-  <td><span class="lic lic-no">AGPL 自研</span></td>
-</tr>
-</tbody>
-</table>
-
-<h3>P1 · 中期（需要设计，但收益明确）</h3>
-<table>
-<thead><tr><th style="width:4%">#</th><th style="width:20%">增量项</th><th style="width:30%">参考来源与算法</th><th style="width:30%">落到 MDCX 哪里</th><th>许可</th></tr></thead>
-<tbody>
-<tr>
-  <td><span class="tag t-p1">P1</span></td>
-  <td><b>任务录制回放（HTTP 正文落盘 + 离线重放）</b></td>
-  <td><code>ref114-amane/observability/recorder.py</code> + <code>replay.py</code>：逐请求落 <code>index.jsonl</code>+<code>bodies/</code>；ReplayWebClient 按 method+url duck-type 回放，失败任务才留正文</td>
-  <td>MDCX 的 recorder 只记 attempt 结果，<b>不记响应正文</b>。后果：改一次源解析规则要重抓全库。这是根治点</td>
-  <td><span class="lic lic-no">GPL 自研</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p1">P1</span></td>
-  <td><b>NFO 补齐 Kodi 兼容字段</b></td>
-  <td><code>ref74-xbmc/video/VideoInfoTag.cpp::ParseNative()</code>：<code>&lt;ratings&gt;&lt;rating name default max&gt;</code>（max≠10 需归一）、<code>&lt;uniqueid type default&gt;</code>、<code>&lt;fileinfo&gt;&lt;streamdetails&gt;</code>（video/audio/subtitle 三块）、<code>&lt;actor order&gt;</code>、根节点 <code>override="true"</code><br>行业 schema：<code>ref24-CommunityScrapers/validator/scraper.schema.json</code></td>
-  <td><code>app/utils/nfo_fields.py</code> 现为 14 键。<code>streamdetails</code> 与结构化 <code>ratings</code> 缺失会导致 Emby/Jellyfin 侧技术信息空白</td>
-  <td><span class="lic lic-no">GPL 自研</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p1">P1</span></td>
-  <td><b>声明式站点目录（新增源不写类）</b></td>
-  <td><code>ref99/JavSiteCatalog.cs</code>：<code>SiteDefinition{Key, BaseUrl, SiteUrlMode(Canonical|Search|Custom), Priority, Cookie, SiteSelectors(XPath), MaxResultHops}</code> + <code>ToDmmCid()</code></td>
-  <td>MDCX 新增主力源必须改 <code>PRIMARY_CRAWLERS</code>（记忆里已有这条坑）。声明式目录可让「加源」变成加配置项，对 <code>canon.py</code> 是根治方向</td>
-  <td><span class="lic lic-ok">MIT 可抄</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p1">P1</span></td>
-  <td><b>图片代理 SSRF 白名单 + 防盗链 Referer</b></td>
-  <td><code>ref28-mp-relay/app/img_proxy.py</code>：<code>_ALLOWED_HOSTS</code> 白名单 + 按 host 设 Referer（<code>phncdn.com→pornhub.com</code>、JavBus CDN 防盗链）+ OrderedDict LRU 200 条</td>
-  <td>封面/预览图代理层，防 SSRF 且解决防盗链导致的图裂</td>
-  <td><span class="lic lic-ok">MIT 可抄</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p1">P1</span></td>
-  <td><b>多 CD / 分卷识别（去重侧）</b></td>
-  <td><code>ref39-JavLibrarian/rename.py::video_volume_key()/classify_videos()</code>：VOL_PATTERNS 支持数字与 A–F 分部，分 single/split/dup/none<br><code>ref108-avm/dedupe.py::_split_part/_mark_multi_part</code>：拆序号后基础名无数字则回退为「非分卷」</td>
-  <td><code>number.py</code> 只在 <code>clean_filename()</code> 里清理 <code>-CD1/-EP1</code> 后缀，<b>去重侧没有分卷概念</b> → CD1/CD2 可能被误判为重复或劣质版本</td>
-  <td><span class="lic lic-ok">Apache 可抄</span></td>
-</tr>
-<tr>
-  <td><span class="tag t-p1">P1</span></td>
-  <td><b>新增刮削源（见第三节）</b></td>
-  <td>r18.dev JSON API / AVSOX JSON API / javten / d2pass / 女优资料源 / 声明式站点族</td>
-  <td>按 canon 源序流程接入，注意必须同步改 <code>PRIMARY_CRAWLERS</code></td>
-  <td><span class="lic lic-ok">多为 MIT</span></td>
-</tr>
-</tbody>
-</table>
-
-<h3>P2 · 可选 / 需求待定</h3>
-<table>
-<thead><tr><th style="width:4%">#</th><th style="width:20%">增量项</th><th style="width:30%">参考来源与算法</th><th style="width:30%">适用场景</th><th>许可</th></tr></thead>
-<tbody>
-<tr><td><span class="tag t-p2">P2</span></td><td><b>雪碧图 + WebVTT 缩略图轨</b></td><td><code>ref73-stash/pkg/scene/generate/sprite.go</code>：25 帧 montage + <code>#xywh=</code> WebVTT 轨</td><td>播放器进度条 hover 预览图</td><td><span class="lic lic-no">AGPL 自研</span></td></tr>
-<tr><td><span class="tag t-p2">P2</span></td><td><b>音频指纹去广告</b></td><td><code>ref28-mp-relay/app/ad_fingerprint.py</code>：Haitsma-Kalker 32-bit 频带差分 + BER 匹配（0.28/0.36）+ <code>ffmpeg -c copy</code> 关键帧无损切割</td><td>片头广告自动剪除（需明确是否有此需求）</td><td><span class="lic lic-ok">MIT 可抄</span></td></tr>
-<tr><td><span class="tag t-p2">P2</span></td><td><b>Cookie E2E 加密同步</b></td><td><code>ref41-CookieCloud/api/app.js</code>：<code>key=MD5(uuid+'-'+password)[:16]</code> → AES-128-CBC，服务端只存密文</td><td>需要浏览器登录态同步时</td><td><span class="lic lic-no">GPL 自研</span></td></tr>
-<tr><td><span class="tag t-p2">P2</span></td><td><b>HLS 断点续传状态机</b></td><td><code>ref06-eaf_base_api/base.py</code>：分片 JSON 状态 + 并发下载 + remux<br><code>ref47</code>：m3u8 真实分片 URL 重写 + Range 续传</td><td>若 MDCX 要自建下载器（现依赖 yt-dlp）</td><td><span class="lic lic-mid">MIT/AGPL 混合</span></td></tr>
-<tr><td><span class="tag t-p2">P2</span></td><td><b>演员别名「证据→投影」架构</b></td><td><code>ref18-javm/entity_alias/</code>：证据 append-only + <code>merge/block/canonical</code> 人工校正不被重刮覆盖 + 可重建 + 单人作才归并（防合演者错并）</td><td>升级现有 <code>actor_alias.py</code>。若当前别名已被重刮覆盖过，值得做</td><td><span class="lic lic-ok">MIT 可抄</span></td></tr>
-<tr><td><span class="tag t-p2">P2</span></td><td><b>HTTP 层字符集探测</b></td><td><code>ref101-neoavdc/src/main/net/httpClient.ts</code>：content-type + meta 双探测 + gzip/br/deflate + 429 特判退避</td><td>日文站乱码排查时</td><td><span class="lic lic-ok">MIT 可抄</span></td></tr>
-</tbody>
-</table>
-
-<h2>三、新增数据源候选</h2>
+<div class="callout"><b>一句话结论：</b>把许可证门槛去掉之后，123 项里有 <b>52 项（A+B+C）可以「直接搬」，不需要重写</b>——A 档拿文件就能导，B 档抽出函数改个 import 就能用，C 档把选择器翻译成 Python 字典即可。真正被卡住的只剩 <code>ref112</code>（专有许可 + OTP 校验）一项。剩下的 D/E/F 档要么需要重写适配，要么只是思路来源。</div>
+<h2>一、Tier A · 数据 / 规则 —— 直接导入（11 项）</h2>
+<p>这一类<b>不需要读代码</b>，把文件拿出来就能用。</p>
+<table><thead><tr><th style="width:17%">目录</th><th style="width:7%">体积</th><th style="width:38%">可直接用什么</th><th style="width:30%">落到 MDCX 哪里</th><th>许可</th></tr></thead><tbody>
+<tr><td><code>ref152-embymetaeditor</code></td><td class="kv">30.3MB</td><td><b>27,781 行 × 40 字段演员库 CSV</b>（日文名/简体名/罗马字/假名 + 三围/生日/事务所/引退状态）</td><td><code>MovieActor</code> 表（长期空置）+ <code>utils/actor_alias.py</code> 别名底表</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref201-nsfwruleset</code></td><td class="kv">0.1MB</td><td><b>NSFW 分流规则 218 条</b>（NSFW.list / NSFW.yaml / geosite-nsfw-singbox.json）</td><td>代理配置的域名分流规则集（补 <code>get_effective_proxy_url()</code> 全局开关之外的一层）</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref24-CommunityScrapers</code></td><td class="kv">3.1MB</td><td><b>691 个 YAML 刮削器 + 1404 行 JSON Schema</b>（行业 schema 基准）</td><td><code>app/utils/nfo_fields.py</code> 字段契约校验 + 新源字段命名规范</td><td><span class="lic lic-mid">AGPL-3.0</span></td></tr>
+<tr><td><code>ref74-xbmc</code></td><td class="kv">106.8MB</td><td><b>NFO 兼容黄金标准</b>：<code>ParseNative()</code> 的 ratings / uniqueid / streamdetails 结构</td><td><code>app/utils/nfo_fields.py</code>（现 14 键，缺 streamdetails 与结构化 ratings）</td><td><span class="lic lic-mid">GPL-2.0</span></td></tr>
+<tr><td><code>ref191-jvmeta</code></td><td class="kv">10.4MB</td><td><b>21 源能力矩阵声明</b>（movie/performer/gallery 三能力）+ <code>/api/health</code> 每源熔断状态</td><td><code>app/scraper/canon.py</code> 旁加 capability 声明，取代「只按源序盲试」</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref68-pornhub</code></td><td class="kv">5.6MB</td><td><b>7 个未用的 webmasters 官方端点</b>（stars_detailed 2 万+演员 / is_video_active / search）</td><td>PH <code>/search</code> 替代每部 1.5MB 详情页；<code>/deleted_videos</code> 做下架检测</td><td><span class="lic lic-ok">BSD</span></td></tr>
+<tr><td><code>ref85-mdcx_sqlite</code></td><td class="kv">0.1MB</td><td><b>欧美厂牌缩写→全称表（上百条）</b> + 图片硬链接去重</td><td><code>western</code> 模块厂牌归一</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref104-javdb-cover-bot</code></td><td class="kv">0.2MB</td><td><b>演员名日→简映射表（约 200 条）</b> + 双引擎翻译回退</td><td><code>utils/actor_alias.py</code> 补充</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref150-javdb-top250</code></td><td class="kv">1.1MB</td><td><b>JavDB Top250 榜单数据</b>（all / censored / uncensored 分列）</td><td>榜单类功能 / 源优先级参考</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref166-mcp</code></td><td class="kv">0.3MB</td><td><b>javinfo.dev MCP server</b>：fanza / dmm / javdb / missav / javdatabase 五 provider（需 API key）</td><td>外部数据源；反向也可把 MDCX 做成 MCP server</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref97-openaver</code></td><td class="kv">32.3MB</td><td><b>AVSOX JSON API + javten + d2pass + 女优 4 源并行</b>（字段优先级可直接抄）</td><td>新增源候选（见「新增数据源」一节）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+</tbody></table>
+<div class="callout ok"><b>本轮最大发现：</b><code>ref152-embymetaeditor/data/actresses_export.csv</code> —— <b>27,781 行 × 40 字段</b>（<code>name_original / name_ja / name_zh_cn / name_romanized / kana</code> + 三围 / 生日 / 血型 / 事务所 / 出道·引退日期 / <code>career_status</code>）。MDCX 的 <code>MovieActor</code> 表长期「10+ 写入点但为空」，这份 CSV 的四种写法可直接充当 <code>utils/actor_alias.py</code> 的别名映射底表。</div>
+<h2>二、Tier B · 代码 —— 同语言可直接搬（40 项）</h2>
+<p><b>同一个语言、抽出函数改个 import 就能用</b>。按落地收益排序，前 12 项是重点。</p>
+<h3>重点 12 项（带落点）</h3>
+<table><thead><tr><th style="width:16%">目录</th><th style="width:6%">语言</th><th style="width:40%">可直接搬的东西</th><th style="width:30%">落到 MDCX 哪里</th><th>许可</th></tr></thead><tbody>
+<tr><td><code>ref195-jav-scraper</code></td><td class="kv">Python</td><td><b>番号清洗 <code>lib/code_extractor.py</code>（64 行）</b>：域名/水印剥离 + 中文字幕标剔除 + 7 类番号正则表</td><td><code>app/scraper/number.py</code>，与 <code>extract_fc2_id()</code> 同级</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref196-jd-online</code></td><td class="kv">Python</td><td><b>纯 Python h2c gRPC CloudDrive2 客户端（254 行，无 grpcio 依赖）</b> + aria2 RPC 封装</td><td>对照现有 <code>services/cloud_drive2.py</code>（h2c 握手与帧解析）</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref114-amane</code></td><td class="kv">Python</td><td><b>任务录制回放</b>：<code>observability/recorder.py</code> 逐请求落 <code>index.jsonl</code>+<code>bodies</code>，<code>ReplayWebClient</code> 离线重放</td><td><code>app/scraper/recorder.py</code>（现只记 attempt 结果、不记响应正文）</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref177-javcover_insert</code></td><td class="kv">Python</td><td><b>MP4 <code>dat</code> atom 损坏检测（LosslessCut 造成）+ moov faststart 复验 + mutagen 注入封面</b></td><td><code>movies.py</code> / <code>workflow.py</code> 的 faststart 链路</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref159-jav.bundle</code></td><td class="kv">Python</td><td><b>seesaawiki 演员名归一</b> <code>agents/seesaawiki.py</code>（300 行）</td><td><code>app/crawlers/wiki_amateur.py</code> 旁新增 seesaawiki 路</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref160-javdb-scraper</code></td><td class="kv">Python</td><td><b>DrissionPage 真实 Chromium + CloudflareBypasser</b> 单文件 225 行</td><td><code>app/utils/cf_bypass.py</code> 的第二条兜底路线</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref200-jable-downloader-cli</code></td><td class="kv">Python</td><td><b><code>hls_proxy.py</code> + <code>jable_downloader.py</code></b>：三源并行解析 + 按分辨率/码率选最佳 HLS</td><td><code>m3u8_engine.py</code> / universal_downloader 增源</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref199-mediamatrix-jav-expert</code></td><td class="kv">Python</td><td><b><code>scrapers/{base,dmm,javdb}.py</code></b>：番号三形态提取 + <b>DMM 结果叠加合并到 JavDB 之上</b></td><td><code>app/scraper/merger.py</code> 补一层叠加合并</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref99-javorganizer</code></td><td class="kv">C#</td><td><b>自适应限速 AdaptiveThrottle + 人类化抖动 PerSiteRateLimiter + 声明式站点目录 JavSiteCatalog</b></td><td><code>utils/http_client.py</code> 限速 + <code>scraper/canon.py</code> 声明式加源</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref96-peach</code></td><td class="kv">Python</td><td><b>「没有」记忆 <code>library_processing.py::_MissCache</code></b>（只记 NotFound + TTL，网络故障不记）</td><td>缺口体检 / 补全链路，省掉每轮重问</td><td><span class="lic lic-mid">AGPL-3.0</span></td></tr>
+<tr><td><code>ref108-avm</code></td><td class="kv">Python</td><td><b>四类劣质片口径 + 分卷识别</b> <code>dedupe.py::_split_part/_mark_multi_part</code></td><td><code>number.py</code> 去重侧（现无分卷概念，CD1/CD2 可能误判）</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref73-stash</code></td><td class="kv">Go</td><td><b>oshash 头尾 64KB 快速指纹</b>（毫秒级，200 行可转 Python） + phash 多指纹判重</td><td>扫描器 / 重命名的预筛指纹，感知哈希退为二次确认</td><td><span class="lic lic-mid">AGPL-3.0</span></td></tr>
+</tbody></table>
+<h3>其余 28 项</h3>
+<table><thead><tr><th style="width:22%">目录</th><th>可直接搬的东西</th><th style="width:14%">许可</th></tr></thead><tbody>
+<tr><td><code>ref06-eaf_base_api</code></td><td>HLS 断点续传状态机 + 分片 JSON 缓存（Python 同语言）</td><td><span class="lic lic-mid">AGPL-3.0</span></td></tr>
+<tr><td><code>ref17-JavBoss</code></td><td>ThePornDB 官方 REST + per-provider 限速器（Go）</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref18-javm</code></td><td>演员别名「证据→投影」：append-only + 人工校正不被重刮覆盖 + 单人作才归并</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref20-JavRename</code></td><td>dry-run + 失败队列 + 幂等跳过 + 冲突自动加序</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref21-JavSP</code></td><td>字节级路径长度截断 + 番号回退父目录</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref23-videohash</code></td><td>抽帧拼贴感知哈希（MDCX 已自建同款，仅对照）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref25-FC2-Leak-Detector</code></td><td>fc2ppvdb API + 封面 URL 规则 + Sukebei 磁力择优</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref27-mnamer</code></td><td>多源非空字段覆盖 + 命名模板 + SQLite 缓存</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref28-mp-relay</code></td><td><b>图片代理 SSRF 白名单 + 按 host 设 Referer</b>；音频指纹去广告</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref34-JavDB_magnet_Spider</code></td><td>磁力条件加权评分（无码 / 高清 / 字幕 / 体积）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref37-metatube-sdk-go</code></td><td>Provider 联邦协议 + 优先级加权排序（MDCX 已有兼容层）</td><td><span class="lic lic-ok">Apache-2.0</span></td></tr>
+<tr><td><code>ref38-mdcx</code></td><td>277 行番号规则 + FastAPI <code>safe_dirs</code> 白名单</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref39-JavLibrarian</code></td><td><code>video_volume_key()</code> / <code>classify_videos()</code> 多 CD 分卷识别</td><td><span class="lic lic-ok">Apache-2.0</span></td></tr>
+<tr><td><code>ref45-Javinizer</code></td><td>r18.dev JSON API + 别名表（PowerShell，转写）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref47-PH-DL-Plugin-v3</code></td><td>m3u8 真实分片 URL 重写 + Range 续传 + 镜像域名表</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref49-flask-video-streaming</code></td><td>单生产者多消费者 MJPEG 预览流</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref50-harvestr</code></td><td>站点漂移检测 ok / degraded / broken / dead</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref58-javspider_stack</code></td><td><b>四阶段流水线 + 资源自适应降并发 + 成功率加权代理池</b></td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref75-sickchill</code></td><td>纯正则文件名解析 + 质量标签提取器</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref84-mdcx</code></td><td>Jinja2 沙箱命名引擎 + 24 字段 + 智能截断</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref94-ph-heatmap</code></td><td>curl_cffi TLS 指纹轮换 + 精确播放量提取</td><td><span class="lic lic-no">无LICENSE</span></td></tr>
+<tr><td><code>ref101-neoavdc</code></td><td>HTTP 层字符集探测（content-type + meta 双探测）+ 429 特判退避</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref103-javranking-extension</code></td><td>NFKC 比较键 <code>toComparisonKey</code>（去所有分隔符）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref106-atlas</code></td><td>源健康度 0-100 质量分 + DB 驱动源管理</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref111-noadpornsite</code></td><td>按域 Referer 白名单流代理 + AES-128 HLS 解密</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref113-lustpress</code></td><td>PH leastFactor 质询求解器 + Cookie 缓存重试</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><code>ref190-miyabi</code></td><td><code>internal/api/strm.go</code> STRM 直链生成 + Emby 库目录布局 + 访问门禁（Go）</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+<tr><td><code>ref194-nassav</code></td><td>多源下载 + sqlite 去重 + 文件锁（Python 同语言）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+</tbody></table>
+<h2>三、Tier C · 选择器 / 配置表 —— 翻译即用（1 项）</h2>
+<table><thead><tr><th style="width:17%">目录</th><th style="width:7%">体积</th><th style="width:38%">可直接用什么</th><th style="width:30%">落到 MDCX 哪里</th><th>许可</th></tr></thead><tbody>
+<tr><td><code>ref155-crawlerx</code></td><td class="kv">10.3MB</td><td><b>25 份 <code>manifest.json</code> + 18 份 <code>Selectors.php</code></b>：base_url / 分页策略 / soft404 标记 / 浏览器头 / 节流区间</td><td>新增源的选择器与抓取参数表（翻译即用，零逻辑）</td><td><span class="lic lic-ok">MIT</span></td></tr>
+</tbody></table>
+<div class="callout warn"><b>crawlerx 的站点增量（实测）：</b><code>src/Adapters/</code> 下共 27 个站点目录，MDCX 已有 JavBus / JavDb / JavDatabase / FC2 ⇒ <b>21 个纯新站</b>：Aisex、Avfan、AvfanProfiles、Avjoho、CaribbeanCom、Duga、Eporner、FfJav、Heyzo、Jable、JavLibrary、JavPhotos、Javbtc、MinnanoAv、Missav、OneFourOneJav、OnePondo、Onejav、TokyoHot、Warashi、Xcity。<br>接入提醒：新增主力源必须同步改 <code>PRIMARY_CRAWLERS</code>——只改 <code>jp_fallback_order()</code> 是空转（<code>_rotate_primary</code> 按 <code>by_name</code> 过滤会静默丢弃）。</div>
+<h2>四、落地排期建议（按性价比）</h2>
+<table><thead><tr><th style="width:8%">优先级</th><th style="width:46%">动作</th><th style="width:18%">来源</th><th>工作量</th></tr></thead><tbody>
+<tr><td><span class="tag t-p0">P0</span></td><td>导入 27,781 行演员库 → <code>Actor</code> / <code>MovieActor</code> / 别名表</td><td><code>ref152</code></td><td class="kv">1 天</td></tr>
+<tr><td><span class="tag t-p0">P0</span></td><td>番号清洗规则补进 <code>number.py</code>（水印剥离 + 中文字幕标 + 7 类正则表）</td><td><code>ref195</code></td><td class="kv">半天</td></tr>
+<tr><td><span class="tag t-p0">P0</span></td><td>「没有」负缓存 <code>_MissCache</code> → 缺口补全链路</td><td><code>ref96</code></td><td class="kv">半天</td></tr>
+<tr><td><span class="tag t-p0">P0</span></td><td>限速抖动 + 自适应降压（替代「遇 429 直接封源」）</td><td><code>ref99</code>（转写）</td><td class="kv">1 天</td></tr>
+<tr><td><span class="tag t-p1">P1</span></td><td>任务录制回放（响应正文落盘 + 离线重放）</td><td><code>ref114</code></td><td class="kv">2 天</td></tr>
+<tr><td><span class="tag t-p1">P1</span></td><td>NFO 补 <code>streamdetails</code> / 结构化 <code>ratings</code> / <code>uniqueid</code></td><td><code>ref74</code> + <code>ref24</code></td><td class="kv">1 天</td></tr>
+<tr><td><span class="tag t-p1">P1</span></td><td>oshash 快速指纹预筛</td><td><code>ref73</code>（转写）</td><td class="kv">1 天</td></tr>
+<tr><td><span class="tag t-p1">P1</span></td><td>MP4 <code>dat</code> atom 校验 + 改完复验</td><td><code>ref177</code></td><td class="kv">半天</td></tr>
+<tr><td><span class="tag t-p1">P1</span></td><td>从 crawlerx 摘站点选择器：Jable / Missav / CaribbeanCom / Heyzo / OnePondo</td><td><code>ref155</code></td><td class="kv">每站 0.5 天</td></tr>
+<tr><td><span class="tag t-p2">P2</span></td><td>源能力矩阵 + <code>/api/health</code> 每源熔断状态</td><td><code>ref191</code></td><td class="kv">1 天</td></tr>
+<tr><td><span class="tag t-p2">P2</span></td><td>分卷识别（CD1/CD2 不误判重复）</td><td><code>ref108</code></td><td class="kv">半天</td></tr>
+<tr><td><span class="tag t-p2">P2</span></td><td>NSFW 域名分流规则进 Xray 配置生成</td><td><code>ref201</code></td><td class="kv">半天</td></tr>
+<tr><td><span class="tag t-p2">P2</span></td><td>PH <code>webmasters/search</code> 替代详情页抓取（省 1.5MB/部）</td><td><code>ref68</code></td><td class="kv">1 天</td></tr>
+<tr><td><span class="tag t-p3">P3</span></td><td>Jable/MissAV 新下载源；CloudDrive2 h2c 对照；录制回放压测</td><td><code>ref200</code> / <code>ref196</code></td><td class="kv">视需求</td></tr>
+</tbody></table>
+<h2>五、新增数据源候选</h2>
 <p>只列 MDCX 当前源序里没有、且实测有明确接口形式的。</p>
-<table>
-<thead><tr><th style="width:16%">源</th><th style="width:14%">类型</th><th style="width:38%">接口形式</th><th style="width:16%">来源</th><th>许可</th></tr></thead>
-<tbody>
-<tr><td><b>r18.dev</b></td><td>有码（JSON API）</td><td><code>GET /dvd_id=&lt;ID&gt;/json</code>、<code>/combined=&lt;contentId&gt;/json</code></td><td>ref45-Javinizer</td><td><span class="lic lic-ok">MIT</span></td></tr>
-<tr><td><b>AVSOX</b></td><td>无码（JSON API）</td><td><code>/javu/data/api/*</code>（另含域名轮替 + CSRF token 重试）</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
-<tr><td><b>javten</b></td><td>无码/FC2</td><td>openaver 的 javten 刮削器</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
-<tr><td><b>d2pass</b></td><td>无码</td><td>openaver 的 d2pass 刮削器</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
-<tr><td><b>graphis / wiki_ja</b></td><td>女优资料</td><td>女优资料 4 源并行（5s 预算），字段优先级 xcity&gt;wiki&gt;graphis；头像级联 graphis&gt;gfriends&gt;wiki&gt;xcity</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
-<tr><td><b>OneJAV / JavLand / 123AV / SEXTB / JavGG 等</b></td><td>声明式站点族</td><td>XPath selector + Priority + MaxResultHops 驱动，多为 WordPress / 流媒体站族</td><td>ref99-javorganizer</td><td><span class="lic lic-ok">MIT</span></td></tr>
-<tr><td><b>PH webmasters 未用端点</b></td><td>PornHub 官方 JSON</td><td><code>/webmasters/is_video_active</code>（存活校验）、<code>/stars_detailed</code>（2 万+ 演员，含 name/thumb/gender/video_count）、<code>/search</code>（结构化 JSON，免抓 1.5MB 详情页）、<code>/tags</code>、<code>/categories</code>、<code>/deleted_videos</code>、<code>/video_embed_code</code></td><td>ref68-pornhub</td><td><span class="lic lic-ok">BSD-3</span></td></tr>
-<tr><td><b>ThePornDB 官方 REST</b></td><td>欧美</td><td><code>GET https://api.theporndb.net/jav?external_id=&lt;code&gt;</code> + <code>Authorization: Bearer</code>（需自行申请 token）</td><td>ref17-JavBoss</td><td><span class="lic lic-no">GPL 只读</span></td></tr>
-</tbody>
-</table>
-
-<div class="callout warn">
-  <b>接入提醒：</b>新增主力源必须同步改 <code>PRIMARY_CRAWLERS</code>——只改 <code>jp_fallback_order()</code> 是空转（<code>_rotate_primary</code> 按 <code>by_name</code> 过滤会静默丢弃）。且新源接入前先用真实番号实测命中率，0 命中的源不要塞进源序。
-</div>
-
-<h2>四、许可证红线（务必遵守）</h2>
-<p>参考库混杂了多种许可证，<b>「能读思路」和「能抄代码」是两回事</b>，混用会给项目带来法律风险。</p>
-<div class="two">
-  <div class="card">
-    <h3 style="margin-top:0;color:var(--green)">✓ 可抄码（保留版权声明）</h3>
-    <ul class="kv">
-      <li><b>MIT</b>：ref02-AVMeta、ref45-Javinizer、ref97-openaver、ref99-javorganizer、ref101-neoavdc、ref103、ref104、ref106-atlas、ref107-garage、ref58-javspider_stack、ref48-core、ref50-harvestr、ref18-javm、ref20、ref19、ref30-Javdex、ref15、ref16、ref34、ref09、ref28-mp-relay、ref23-videohash、ref27-mnamer、ref49、ref111、ref110、ref47、ref04-avbook</li>
-      <li><b>Apache-2.0</b>：ref37-metatube-sdk-go、ref39-JavLibrarian（需保留 NOTICE）</li>
-      <li><b>BSD-3</b>：ref68-pornhub</li>
-    </ul>
-  </div>
-  <div class="card">
-    <h3 style="margin-top:0;color:var(--red)">✗ 只读禁抄（仅取思路，独立重写）</h3>
-    <ul class="kv">
-      <li><b>GPL</b>：ref01-AVDC、ref03-AVOne、ref98、ref31/38/84/43-mdcx、ref21-JavSP、ref36、ref25、ref17、ref70、ref109、ref74-xbmc、ref46-Medusa、ref75-sickchill、ref41-CookieCloud</li>
-      <li><b>AGPL（传染性最强）</b>：ref114-amane、ref96-peach、ref100-javdbviewed、ref73-stash、ref24-CommunityScrapers、ref06-eaf_base_api、ref33/72/95</li>
-      <li><b>PolyForm 非商业</b>：ref07-EcoHub</li>
-      <li><b>无 LICENSE（保留一切权利）</b>：ref108-avm、ref85、ref13、ref51、ref35、ref11、ref12、ref14、ref05、ref08、ref102-embylens、ref94-ph-heatmap、ref82-phdownloader、ref83、ref10-jav-scrapy（README 称 MIT 但仓库无 LICENSE 文件，保守处理）</li>
-      <li><b>专有/受限</b>：ref112（专有 SERP Apps 许可）、ref32（Source-Available 含反绕过条款）</li>
-    </ul>
-  </div>
-</div>
-
-<div class="callout warn">
-  <b>特别提示：</b>价值最高的几个项目（ref114-amane、ref96-peach、ref108-avm）恰好都是 <b>GPL/AGPL/无 LICENSE</b>——只能读架构、读参数取值，<b>不能复制代码或做逐行翻译</b>。而 MIT 阵营里的 ref99-javorganizer（限速）、ref58-javspider_stack（Python 同语言流水线）、ref18-javm（番号+别名）、ref28-mp-relay（封面/代理/指纹）可以放心借鉴实现。
-</div>
-
-<h2>五、78 个已盘点项目速查表</h2>
+<table><thead><tr><th style="width:20%">源</th><th style="width:13%">类型</th><th style="width:37%">接口形式</th><th style="width:16%">来源</th><th>许可</th></tr></thead><tbody>
+<tr><td><b>r18.dev</b></td><td class="kv">有码（JSON API）</td><td><code>GET /dvd_id=&lt;ID&gt;/json</code>、<code>/combined=&lt;contentId&gt;/json</code></td><td>ref45-Javinizer</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><b>AVSOX</b></td><td class="kv">无码（JSON API）</td><td><code>/javu/data/api/*</code>（含域名轮替 + CSRF token 重试）</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><b>javten / d2pass</b></td><td class="kv">无码 / FC2</td><td>openaver 现成刮削器</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><b>graphis / wiki_ja / xcity</b></td><td class="kv">女优资料</td><td>女优 4 源并行（5s 预算），优先级 xcity&amp;gt;wiki&amp;gt;graphis</td><td>ref97-openaver</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><b>Jable / Missav / CaribbeanCom / Heyzo / OnePondo 等</b></td><td class="kv">声明式站点族</td><td>crawlerx <code>Selectors.php</code> + <code>manifest.json</code> 驱动，共 21 个纯新站</td><td>ref155-crawlerx</td><td><span class="lic lic-ok">MIT</span></td></tr>
+<tr><td><b>PH webmasters 未用端点</b></td><td class="kv">PornHub 官方 JSON</td><td><code>/search</code>、<code>/stars_detailed</code>、<code>/is_video_active</code>、<code>/deleted_videos</code></td><td>ref68-pornhub</td><td><span class="lic lic-ok">BSD-3</span></td></tr>
+<tr><td><b>ThePornDB 官方 REST</b></td><td class="kv">欧美</td><td><code>GET https://api.theporndb.net/jav?external_id=&lt;code&gt;</code> + Bearer（需申请 token）</td><td>ref17-JavBoss</td><td><span class="lic lic-mid">GPL-3.0</span></td></tr>
+</tbody></table>
+<h2>六、MDCX 已自建 —— 别重复造</h2>
+<p>下表每一项都到 MDCX 源码核实过，不是推测。看到参考库某项目「有 XX 功能」时，先查这张表。</p>
+<table><thead><tr><th style="width:22%">能力</th><th style="width:32%">MDCX 实现位置</th><th style="width:22%">参考库同款</th><th>备注</th></tr></thead><tbody>
+<tr><td>全局 + 域名两级限速（容量 1 漏桶）</td><td><code>app/utils/http_client.py::_wait_for_rate_limit()</code></td><td class="kv">amane RateLimiters</td><td class="kv">注释已写明等价 <code>AsyncLimiter(1, 1/rate)</code></td></tr>
+<tr><td>14 档失败原因分类 + 聚合</td><td><code>app/scraper/failure_reason.py</code></td><td class="kv">peach（12 档）、amane（16 档）</td><td class="kv">档数已超参考库</td></tr>
+<tr><td>熔断持久化 + 指数退避 + 上封顶</td><td><code>app/scraper/breaker.py</code></td><td class="kv">peach <code>scraping_access.py</code></td><td class="kv">含半开 + strike 放大</td></tr>
+<tr><td>逐字段来源优先级合并</td><td><code>app/scraper/merger.py::_field_order()</code></td><td class="kv">Javinizer <code>sort.metadata.priority</code></td><td class="kv">只写差异项，比参考库省维护</td></tr>
+<tr><td>番号多源投票仲裁</td><td><code>app/scraper/merger.py::_vote_avid()</code></td><td class="kv">metatube 加权排序</td><td class="kv">票数相同再按源优先级</td></tr>
+<tr><td>番号识别（20+ 类型，1500 行）</td><td><code>app/scraper/number.py::extract_number()</code></td><td class="kv">neoavdc / JavSP / AVOne</td><td class="kv">FC2/HEYZO/东京热/GETCHU/素人/里番/PH 全覆盖</td></tr>
+<tr><td>JavDB 官方 App API 签名</td><td><code>app/services/javdb_app_client.py::make_signature()</code></td><td class="kv">openaver <code>javdb_api.py</code></td><td class="kv">逆向自 javdb-cli</td></tr>
+<tr><td>视频感知哈希去重</td><td><code>app/services/video_hash.py</code></td><td class="kv">videohash</td><td class="kv">抽帧→拼贴→whash→汉明距离</td></tr>
+<tr><td>刮削录制 + 源健康度</td><td><code>app/scraper/recorder.py::source_health()</code></td><td class="kv">harvestr SiteHealth</td><td class="kv">不录响应正文（见 B3）</td></tr>
+<tr><td>爬虫健康监控 + 启停</td><td><code>app/services/scraper_monitor.py</code></td><td class="kv">atlas source-status</td><td class="kv">CrawlerHealth 枚举 + 自动注册</td></tr>
+<tr><td>Metatube 兼容层</td><td><code>app/api/routes/metatube.py</code></td><td class="kv">metatube-sdk-go</td><td class="kv">反向对外提供 provider</td></tr>
+<tr><td>CF 绕过 / 浏览器指纹 / 域名切换</td><td><code>utils/cf_bypass.py</code>、<code>browser_fingerprint.py</code>、<code>domain_switcher.py</code></td><td class="kv">openaver avsox 轮替</td><td class="kv">另有 <code>javdb_autohost.py</code></td></tr>
+<tr><td>封面回填 + 人脸裁切</td><td><code>services/cover_refill.py</code>、<code>utils/face_crop.py</code></td><td class="kv">mp-relay cover_refill</td><td class="kv">魔数 + PIL 解码双校验</td></tr>
+<tr><td>演员别名 / 合并</td><td><code>utils/actor_alias.py</code>、<code>services/actor_merge_service.py</code></td><td class="kv">javm entity_alias</td><td class="kv">升级空间见 B-<code>ref18-javm</code></td></tr>
+<tr><td>字幕匹配 / 编码探测</td><td><code>services/subtitle_matcher.py</code></td><td class="kv">stash caption</td><td class="kv">SRT GBK/UTF-8-BOM 混杂</td></tr>
+<tr><td>fc2 流出检测</td><td><code>services/fc2_leak_detector.py</code></td><td class="kv">FC2-Leak-Detector</td><td class="kv">—</td></tr>
+<tr><td>gfriends 演员头像导入</td><td><code>services/gfriends_importer.py</code></td><td class="kv">openaver gfriends</td><td class="kv">—</td></tr>
+<tr><td>MP4 faststart</td><td><code>movies.py</code> / <code>workflow.py</code></td><td class="kv">—</td><td class="kv">缺 atom 级校验（见 B-<code>ref177</code>）</td></tr>
+</tbody></table>
+<h2>七、许可证口径变更说明</h2>
+<div class="callout ok"><b>本项目内部使用，许可证不作为使用门槛。</b>GPL / AGPL / 无 LICENSE 与 MIT <b>同等可用</b>，引用时在代码注释或文档里注明来源仓库即可。本报告「许可」列<b>仅用于产出引用说明</b>，不再表示可用性。</div>
+<p>据此，前版本报告里「GPL/AGPL/无 LICENSE 只读禁抄」的结论<b>已作废</b>。放开后：</p>
+<ul>
+<li>可抄码项目：<b>50 → 120 项</b>（123 项里唯一仍不建议复用是 <code>ref112</code>——专有许可 + OTP 激活校验）。</li>
+<li><code>ref07</code>（PolyForm 非商业）与 <code>ref32</code>（Source-Available 含反绕过条款）虽仍有附加条款，但它们在评估里只是 E 档（仅取思路），不构成风险。</li>
+<li>价值最高的 <code>ref114-amane</code>（GPL）与 <code>ref96-peach</code>（AGPL）现在可以直接搬代码，这两项是解禁后收益最大的。</li>
+</ul>
+<div class="callout warn"><b>远端已死的仓库</b>（本次同步确认，可用 <code>python sync_update.py --prune-dead</code> 清理）：<code>ref22-mdcx-diy</code>（Repository not found）、<code>ref42-Kesuy-mdcx</code>（Repository not found）、<code>ref105-misspipe</code>（HTTP 403，仓库被 GitHub 禁用）。</div>
+<h2>八、123 项分档速查表</h2>
+<p class="kv">档位含义：<span class="tag tr-a">A</span> 数据/规则直接导入 · <span class="tag tr-b">B</span> 代码同语言可直接搬 · <span class="tag tr-c">C</span> 选择器/配置表翻译即用 · <span class="tag tr-d">D</span> 需重写适配 · <span class="tag tr-e">E</span> 只借思路/参数 · <span class="tag tr-f">F</span> 不适用 · <span class="tag tr-x">X</span> 失效/空仓</p>
 <div class="filters" id="filters">
-  <button class="on" data-f="all">全部 78</button>
-  <button data-f="high">高价值</button>
-  <button data-f="ok">可抄码</button>
-  <button data-f="no">只读禁抄</button>
+<button class="on" data-f="all">全部 123</button>
+<button data-f="direct">可直接搬 52</button>
+<button data-f="A">A 数据/规则 (11)</button>
+<button data-f="B">B 同语言代码 (40)</button>
+<button data-f="C">C 选择器 (1)</button>
+<button data-f="D">D 需改写 (40)</button>
+<button data-f="E">E 借思路 (13)</button>
+<button data-f="F">F 不适用 (14)</button>
+<button data-f="X">X 失效 (4)</button>
 </div>
-<table id="tbl">
-<thead><tr>
-  <th style="width:15%">项目</th><th style="width:19%">仓库</th><th style="width:8%">语言</th>
-  <th style="width:12%">许可证</th><th style="width:10%">可借鉴度</th><th>一句话定位</th>
-</tr></thead>
-<tbody>
-<tr data-lic="ok" data-v="high"><td>ref99-javorganizer</td><td>CodeW-Otis/JavOrganizer</td><td>C#</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>声明式站点目录 + 自适应限速 + 人类化抖动（P0 首选）</td></tr>
-<tr data-lic="no" data-v="high"><td>ref114-amane</td><td>sqzw-x/amane</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td><b>高</b></td><td>25 站 + 字段依赖图并发 + 任务录制回放（同栈，概念最佳）</td></tr>
-<tr data-lic="no" data-v="high"><td>ref96-peach</td><td>longmeidao/peach</td><td>Python</td><td><span class="lic lic-no">AGPL-3.0</span></td><td><b>高</b></td><td>分档短路 + 持久化冷却 + per-host 限速 + 「没有」记忆</td></tr>
-<tr data-lic="no" data-v="high"><td>ref108-avm</td><td>dengji85/avm</td><td>Python+Vue</td><td><span class="lic lic-no">无 LICENSE</span></td><td><b>高</b></td><td>文件名解析 + 四类劣质片口径 + 分卷识别（口径最完整）</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref97-openaver</td><td>slive777/OpenAver</td><td>Python+JS</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>全套现代刮削范式 + 女优多源 + AVSOX JSON + JavDB 签名</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref45-Javinizer</td><td>javinizer/Javinizer</td><td>PowerShell</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>逐字段优先级合并 + 演员别名表 + r18.dev</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref18-javm</td><td>ddmoyu/javm</td><td>Rust+Vue</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>优先级加权番号识别 + 演员别名证据→投影</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref58-javspider_stack</td><td>hk-raints/javspider_stack</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>四阶段流水线 + 资源自适应降并发 + 成功率加权代理池</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref28-mp-relay</td><td>naughtyGitCat/mp-relay</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>封面回填 + 图片代理防 SSRF + 音频指纹去广告</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref37-metatube-sdk-go</td><td>metatube-community</td><td>Go</td><td><span class="lic lic-ok">Apache-2.0</span></td><td><b>高</b></td><td>Provider 联邦协议 + 优先级加权排序（MDCX 已有兼容层）</td></tr>
-<tr data-lic="ok" data-v="high"><td>ref23-videohash</td><td>akamhy/videohash</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td><b>高</b></td><td>抽帧拼贴感知哈希（MDCX 已自建同款）</td></tr>
-<tr data-lic="no" data-v="high"><td>ref73-stash</td><td>stashapp/stash</td><td>Go</td><td><span class="lic lic-no">AGPL-3.0</span></td><td><b>高</b></td><td>oshash/phash 多指纹 + 指纹判重命名 + 雪碧图</td></tr>
-<tr data-lic="no" data-v="high"><td>ref74-xbmc</td><td>xbmc/xbmc</td><td>C++</td><td><span class="lic lic-no">GPL-2.0+</span></td><td><b>高</b></td><td>NFO 兼容黄金标准 + 通用 link 表建模</td></tr>
-<tr data-lic="no" data-v="high"><td>ref24-CommunityScrapers</td><td>stashapp/CommunityScrapers</td><td>TS/YAML</td><td><span class="lic lic-no">AGPL-3.0</span></td><td><b>高</b></td><td>691 个 YAML 刮削器 + 1404 行 JSON Schema + 脚本协议</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref101-neoavdc</td><td>haoo999/NeoAVDC</td><td>TS</td><td><span class="lic lic-ok">MIT</span></td><td>中高</td><td>干净番号解析器 + 健壮 HTTP 客户端（字符集/退避）</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref68-pornhub</td><td>rodrigogs/pornhub</td><td>TS</td><td><span class="lic lic-ok">BSD-3</span></td><td>中高</td><td>7 个未用的 webmasters 官方端点 + full-jitter 退避</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref106-atlas</td><td>Zoroaaa/Atlas</td><td>TS</td><td><span class="lic lic-ok">MIT</span></td><td>中高</td><td>源健康度 0-100 质量分 + DB 驱动源管理</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref113-lustpress</td><td>sinkaroid/lustpress</td><td>TS</td><td><span class="lic lic-ok">MIT</span></td><td>中高</td><td>PH leastFactor 挑战求解器 + Cookie 缓存重试</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref39-JavLibrarian</td><td>syy674998887</td><td>Python</td><td><span class="lic lic-ok">Apache-2.0</span></td><td>中高</td><td>语义后缀→tag 映射 + 多 CD/分卷识别</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref50-harvestr</td><td>KevinStreetCoder</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>站点漂移检测 ok/degraded/broken/dead</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref02-AVMeta</td><td>ylqjgm/AVMeta</td><td>Go</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>per-site 正则路由表 + 群晖 vsmeta 生成</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref30-Javdex</td><td>JavdexLabs/Javdex</td><td>TS</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>评分式番号选择 + 资源身份待办（乐观锁）</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref103-javranking-ext</td><td>aizhimou</td><td>TS</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>NFKC 比较键 toComparisonKey（去所有分隔符）</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref104-javdb-cover-bot</td><td>shui1iao</td><td>JS</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>演员名日→简映射表（约 200 条）+ 双引擎翻译回退</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref34-JavDB_magnet_Spider</td><td>SiVeci</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>磁力条件加权评分（无码/高清/字幕/体积）</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref20-JavRename</td><td>HH-Shiba</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>dry-run + 失败队列 + 幂等跳过 + 冲突自动加序</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref19-JAVOneStop</td><td>ddd354</td><td>Python+React</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>正则命名组模板 + CD/字幕后缀 + 重命名预览</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref47-PH-DL-Plugin-v3</td><td>webLiang</td><td>TS</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>m3u8 真实分片重写 + Range 续传 + 镜像域名表</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref111-noadpornsite</td><td>jat785</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>按域 Referer 白名单流代理 + AES-128 HLS 解密</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref27-mnamer</td><td>jkwill87/mnamer</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>多源非空字段覆盖 + 命名模板 + SQLite 缓存</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref49-flask-video-streaming</td><td>miguelgrinberg</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>中</td><td>单生产者多消费者预览流（MJPEG）</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref04-avbook</td><td>guyueyingmu/avbook</td><td>PHP</td><td><span class="lic lic-ok">MIT*</span></td><td>中</td><td>番号自然键 + base36 跨源 id 映射（*据 composer.json）</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref31-mdcz</td><td>ShotHeadman/mdcz</td><td>TS</td><td><span class="lic lic-no">GPL-3.0</span></td><td>中</td><td>有序规则表 + 分片四态 + NamingEngine</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref84-mdcx</td><td>little6neko/mdcx</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>中</td><td>Jinja2 沙箱命名引擎 + 24 字段 + 智能截断</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref38-mdcx</td><td>sqzw-x/mdcx</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>中</td><td>277 行番号规则 + FastAPI safe_dirs 白名单</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref25-FC2-Leak-Detector</td><td>soundstarrain</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>中</td><td>fc2ppvdb API + 封面 URL 规则 + Sukebei 磁力择优</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref17-JavBoss</td><td>JavBoss/pornboss</td><td>Go</td><td><span class="lic lic-no">GPL-3.0</span></td><td>中</td><td>ThePornDB 官方 REST + per-provider 限速器</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref94-ph-heatmap</td><td>ansvier</td><td>Python</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>curl_cffi TLS 指纹轮换 + 精确播放量提取</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref100-javdbviewed</td><td>JavdBviewed</td><td>TS</td><td><span class="lic lic-no">AGPL-3.0</span></td><td>中</td><td>LWW 同步协议 + tombstone 防复活</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref85-mdcx_sqlite</td><td>bobo946</td><td>Python</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>欧美厂牌缩写→全称表（上百条）+ 图片硬链接去重</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref102-embylens</td><td>yarikkiler</td><td>Python+Vue</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>可配置多维去重评分器 Scorer</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref13-JAV-Manager</td><td>LinYuanovo</td><td>Dart</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>扫描事务化 + 孤立演员回收</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref21-JavSP</td><td>Yuukiy</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>中</td><td>字节级路径长度截断 + 番号回退父目录</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref14-javbus-api</td><td>ovnrain</td><td>TS</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>javbus 全量解析 + 校验器分层</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref05-dock-javbus</td><td>Mark111112</td><td>Python</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>可配置排除字典清洗文件名 + 分厂牌 scraper</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref51-javdb-api-scraper</td><td>Mmmtttt</td><td>Python</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>多适配器工厂 + 自动登录</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref35-JAVDB_AutoSpider</td><td>TongWu</td><td>Python</td><td><span class="lic lic-no">无 LICENSE</span></td><td>中</td><td>质量证据→推荐→人工复核三段式</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref11-JATLAS</td><td>xfcc</td><td>TS+Prisma</td><td><span class="lic lic-no">无 LICENSE</span></td><td>低中</td><td>文本归一 + 分级服务（算法少）</td></tr>
-<tr data-lic="no" data-v="mid"><td>ref12-javapi</td><td>ANDonekey</td><td>Go</td><td><span class="lic lic-no">无 LICENSE</span></td><td>低中</td><td>NormalizeCode 去分隔符比较键</td></tr>
-<tr data-lic="ok" data-v="mid"><td>ref16-javdb-python</td><td>phoenixthrush</td><td>Python</td><td><span class="lic lic-ok">MIT</span></td><td>低中</td><td>纯标准库 HTML DOM 解析器</td></tr>
-<tr data-lic="ok" data-v="low"><td>ref15-javdb-cli</td><td>FlanChanXwO</td><td>Go</td><td><span class="lic lic-ok">MIT</span></td><td>低</td><td>JavDB 资源选择器（MDCX 已借其签名方案）</td></tr>
-<tr data-lic="ok" data-v="low"><td>ref09-jav-tui</td><td>hyperq/jav</td><td>Rust</td><td><span class="lic lic-ok">MIT</span></td><td>低</td><td>SQLite 历史/收藏存储</td></tr>
-<tr data-lic="ok" data-v="low"><td>ref107-garage</td><td>gsxhnd</td><td>Go</td><td><span class="lic lic-ok">MIT</span></td><td>低</td><td>colly 同域串行 + RandomDelay（MDCX 已有更好方案）</td></tr>
-<tr data-lic="ok" data-v="low"><td>ref48-core</td><td>JAVClub/core</td><td>JS</td><td><span class="lic lic-ok">MIT</span></td><td>低</td><td>内存 TTL 缓存装饰器</td></tr>
-<tr data-lic="no" data-v="low"><td>ref01-AVDC</td><td>moyy996</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>cloudscraper 破 CF（源码含泄露的百度 AK/SK，勿照搬）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref03-AVOne</td><td>weloveloli</td><td>C#</td><td><span class="lic lic-no">GPL-2.0</span></td><td>低</td><td>GetId() 分类引擎 + 替换表（思路可读）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref98-sakuramedia</td><td>tinypinglite</td><td>Dart</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>纯客户端，仅可读 API 契约</td></tr>
-<tr data-lic="no" data-v="low"><td>ref10-jav-scrapy</td><td>raawaa</td><td>TS</td><td><span class="lic lic-mid">无 LICENSE</span></td><td>低</td><td>多级队列差异化并发（README 称 MIT，仓库无文件）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref07-EcoHub</td><td>fe-spark</td><td>Go</td><td><span class="lic lic-no">PolyForm NC</span></td><td>低</td><td>失败记录按维度去重 + 重试上限 + 一键恢复</td></tr>
-<tr data-lic="no" data-v="low"><td>ref46-Medusa</td><td>pymedusa</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>NFO 生成字段顺序 + 多前端 metadata 抽象</td></tr>
-<tr data-lic="no" data-v="low"><td>ref75-sickchill</td><td>sickchill</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>纯正则文件名解析 + 质量标签提取器</td></tr>
-<tr data-lic="no" data-v="low"><td>ref41-CookieCloud</td><td>easychen</td><td>JS</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>Cookie E2E 加密同步协议</td></tr>
-<tr data-lic="no" data-v="low"><td>ref06-eaf_base_api</td><td>EchterAlsFake</td><td>Python</td><td><span class="lic lic-no">AGPL-3.0</span></td><td>低</td><td>HLS 断点续传状态机 + 分片缓存</td></tr>
-<tr data-lic="no" data-v="low"><td>ref33-unofficial-api-PH</td><td>EchterAlsFake</td><td>Python</td><td><span class="lic lic-no">AGPL-3.0</span></td><td>低</td><td>PH 字段逆向最全（含登录/收藏，注意合规）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref72-api-porntrex</td><td>EchterAlsFake</td><td>Python</td><td><span class="lic lic-no">AGPL-3.0</span></td><td>低</td><td>KVS 引擎 mode=async 分块接口</td></tr>
-<tr data-lic="no" data-v="low"><td>ref95-api-xvideos</td><td>EchterAlsFake</td><td>Python</td><td><span class="lic lic-no">AGPL-3.0</span></td><td>低</td><td>xvideos 直链/m3u8 + embedframe 拼接</td></tr>
-<tr data-lic="no" data-v="low"><td>ref71-api-porngo</td><td>EchterAlsFake</td><td>Python</td><td><span class="lic lic-no">LGPL-3.0</span></td><td>低</td><td>单站直链（无签名，价值低）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref70-pornhub_archiver</td><td>H4ckerxx44</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>频道归档缺失集差分 + .part 残留复用</td></tr>
-<tr data-lic="ok" data-v="low"><td>ref110-pornhub-downloader</td><td>BbyGhost</td><td>JS</td><td><span class="lic lic-ok">MIT</span></td><td>低</td><td>PH flashvars 解析（与 ref33/47 重叠）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref82-phdownloader</td><td>ku3nez</td><td>Python</td><td><span class="lic lic-no">无 LICENSE</span></td><td>低</td><td>分布式下载集群心跳/卡死/ETA</td></tr>
-<tr data-lic="no" data-v="low"><td>ref109-scrawler</td><td>AAndyProgram</td><td>VB.NET</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>多站插件体系（技术已被 ref33/68 覆盖）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref32-Porn_Fetch</td><td>EchterAlsFake</td><td>Python</td><td><span class="lic lic-no">Source-Avail</span></td><td>低</td><td>SNI 分片代理抗封锁（含反绕过条款）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref112-PH-video-dl</td><td>serpapps</td><td>JS</td><td><span class="lic lic-no">专有</span></td><td>不适用</td><td>含 OTP 激活/付费校验，禁止复用</td></tr>
-<tr data-lic="no" data-v="low"><td>ref36-jvav</td><td>akynazh</td><td>Python</td><td><span class="lic lic-no">GPL-3.0</span></td><td>低</td><td>通用请求/翻译工具类</td></tr>
-<tr data-lic="no" data-v="low"><td>ref08-FapNation</td><td>QuantumGlitch404</td><td>JS</td><td><span class="lic lic-no">无 LICENSE</span></td><td>不适用</td><td>Eporner API 静态浏览页</td></tr>
-<tr data-lic="no" data-v="low"><td>ref83-video-scraping-apis</td><td>cporter202</td><td>MD</td><td><span class="lic lic-no">无 LICENSE</span></td><td>不适用</td><td>979 个付费 Apify actor 索引（仅线索价值）</td></tr>
-<tr data-lic="no" data-v="low"><td>ref44-AVDC-Next</td><td>bb964305</td><td>—</td><td><span class="lic lic-no">无 LICENSE</span></td><td>不适用</td><td>子模块未签出，仅 README</td></tr>
-</tbody>
-</table>
-
-<div class="callout warn" style="margin-top:22px">
-  <b>远端已死的 3 个仓库</b>（本次同步确认，可用 <code>python sync_update.py --prune-dead</code> 清理）：
-  <ul style="margin-bottom:0">
-    <li><code>ref22-mdcx-diy</code>（cdlongbow/mdcx-diy）— Repository not found</li>
-    <li><code>ref42-Kesuy-mdcx</code>（Kesuy/mdcx）— Repository not found</li>
-    <li><code>ref105-misspipe</code>（Kdroidwin/MISSPipe）— HTTP 403，仓库被禁用</li>
-  </ul>
-</div>
-
+<div class="scroll"><table id="tbl"><thead><tr><th style="width:5%">档</th><th style="width:20%">目录</th><th style="width:14%">语言</th><th style="width:7%">体积</th><th style="width:10%">许可</th><th>可直接用什么</th></tr></thead><tbody>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref104-javdb-cover-bot`</code></td><td class="kv">JS+YAML+JSON</td><td class="kv">0.2MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>演员名日→简映射表（约 200 条）</b> + 双引擎翻译回退</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref150-javdb-top250`</code></td><td class="kv">—</td><td class="kv">1.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>JavDB Top250 榜单数据</b>（all/censored/uncensored 分列）</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref152-embymetaeditor`</code></td><td class="kv">Go+Python+HTML</td><td class="kv">30.3MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>27,781 行 × 40 字段演员库 CSV</b>（日文名/简体名/罗马字/假名 + 三围/生日/事务所/引退状态）</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref166-mcp`</code></td><td class="kv">JSON+TypeScript+YAML</td><td class="kv">0.3MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>javinfo.dev MCP server</b>：fanza/dmm/javdb/missav/javdatabase 五 provider（需 API key）</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref191-jvmeta`</code></td><td class="kv">PHP+YAML+Shell</td><td class="kv">10.4MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>21 源能力矩阵声明</b>（movie/performer/gallery 三能力）+ /api/health 每源熔断状态</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref201-nsfwruleset`</code></td><td class="kv">YAML+JSON</td><td class="kv">0.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>NSFW 分流规则 218 条</b>（NSFW.list / NSFW.yaml / geosite-nsfw-singbox.json）</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref24-CommunityScrapers`</code></td><td class="kv">YAML+Python+TypeScript</td><td class="kv">3.1MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td><b>691 个 YAML 刮削器 + 1404 行 JSON Schema</b>（行业 schema 基准）</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref68-pornhub`</code></td><td class="kv">TypeScript+JSON+YAML</td><td class="kv">5.6MB</td><td><span class="lic lic-ok">BSD</span></td><td><b>7 个未用的 webmasters 官方端点</b>（stars_detailed 2 万+演员 / is_video_active / search）</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref74-xbmc`</code></td><td class="kv">C/C++h+C+++JSON</td><td class="kv">106.8MB</td><td><span class="lic lic-mid">GPL-2.0</span></td><td><b>NFO 兼容黄金标准</b>：ParseNative() 的 ratings/uniqueid/streamdetails 结构</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref85-mdcx_sqlite`</code></td><td class="kv">Python</td><td class="kv">0.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>欧美厂牌缩写→全称表（上百条）</b> + 图片硬链接去重</td></tr>
+<tr data-tier="A" data-direct="1"><td><span class="tag tr-a">A</span></td><td><code>`ref97-openaver`</code></td><td class="kv">Python+JS+CSS</td><td class="kv">32.3MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>AVSOX JSON API + javten + d2pass + 女优 4 源并行</b>（字段优先级可直接抄）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref06-eaf_base_api`</code></td><td class="kv">Python+TOML</td><td class="kv">0.4MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td><b>HLS 断点续传状态机</b> + 分片 JSON 缓存（Python 同语言，可直接改）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref101-neoavdc`</code></td><td class="kv">TypeScript+JSON+HTML</td><td class="kv">1.2MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>HTTP 层字符集探测</b>（content-type + meta 双探测）+ 429 特判退避</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref103-javranking-extension`</code></td><td class="kv">TypeScript+JSON+HTML</td><td class="kv">1.1MB</td><td><span class="lic lic-ok">MIT</span></td><td>NFKC 比较键 toComparisonKey（去所有分隔符）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref106-atlas`</code></td><td class="kv">TypeScript+JSON+SQL</td><td class="kv">3.8MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>源健康度 0-100 质量分</b> + DB 驱动源管理</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref108-avm`</code></td><td class="kv">Vue+Python+JS</td><td class="kv">5.5MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>四类劣质片口径 + 分卷识别</b>（去重侧口径最完整）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref111-noadpornsite`</code></td><td class="kv">Python+JS+HTML</td><td class="kv">0.3MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>按域 Referer 白名单流代理 + AES-128 HLS 解密</b></td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref113-lustpress`</code></td><td class="kv">TypeScript+YAML+JSON</td><td class="kv">1.4MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>PH leastFactor 质询求解器 + Cookie 缓存重试</b></td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref114-amane`</code></td><td class="kv">Python+TypeScript+JSON</td><td class="kv">9.0MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td><b>任务录制回放</b>：observability/recorder.py 逐请求落 index.jsonl+bodies，ReplayWebClient 离线重放</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref159-jav.bundle`</code></td><td class="kv">Python+YAML+JSON</td><td class="kv">3.9MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>seesaawiki 演员名归一</b> agents/seesaawiki.py（300 行，Python 可直接读）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref160-javdb-scraper`</code></td><td class="kv">Python+Batch</td><td class="kv">0.0MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>DrissionPage 真实 Chromium + CloudflareBypasser</b> 单文件 225 行</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref17-JavBoss`</code></td><td class="kv">Go+JS+YAML</td><td class="kv">46.3MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td><b>ThePornDB 官方 REST</b> + per-provider 限速器（Go）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref177-javcover_insert`</code></td><td class="kv">Python+Batch+YAML</td><td class="kv">1.9MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>MP4 <code>dat</code> atom 损坏检测（LosslessCut 造成）+ moov 标准化 faststart + mutagen 注入封面</b></td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref18-javm`</code></td><td class="kv">Vue+Rust+TypeScript</td><td class="kv">7.9MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>演员别名「证据→投影」架构</b>：append-only + 人工校正不被重刮覆盖</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref190-miyabi`</code></td><td class="kv">Go+TypeScript+JSON</td><td class="kv">5.3MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td><b>STRM 直链生成</b> internal/api/strm.go + Emby 库目录布局 + 访问门禁（Go）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref194-nassav`</code></td><td class="kv">Python+Vue+JS</td><td class="kv">116.4MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>多源下载 + sqlite 去重 + 文件锁</b>（Python 同语言）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref195-jav-scraper`</code></td><td class="kv">Python+Shell+Batch</td><td class="kv">1.3MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>番号清洗 lib/code_extractor.py（64 行）</b>：域名/水印剥离 + 中文字幕标剔除 + 7 类番号正则表</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref196-jd-online`</code></td><td class="kv">HTML+Python+YAML</td><td class="kv">1.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>纯 Python h2c gRPC CloudDrive2 客户端（254 行，无 grpcio）</b> + aria2 RPC 封装</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref199-mediamatrix-jav-expert`</code></td><td class="kv">Python+YAML+Shell</td><td class="kv">0.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td><b>scrapers/{base,dmm,javdb}.py</b>：番号三形态提取 + DMM 结果叠加合并到 JavDB 之上</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref20-JavRename`</code></td><td class="kv">Python</td><td class="kv">0.3MB</td><td><span class="lic lic-ok">MIT</span></td><td>dry-run + 失败队列 + 幂等跳过 + 冲突自动加序</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref200-jable-downloader-cli`</code></td><td class="kv">Python+JSON+Shell</td><td class="kv">0.9MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>hls_proxy.py + jable_downloader.py</b>：三源并行解析 + 按分辨率/码率选最佳 HLS</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref21-JavSP`</code></td><td class="kv">JSON+Python+YAML</td><td class="kv">11.3MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>字节级路径长度截断 + 番号回退父目录（Python）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref23-videohash`</code></td><td class="kv">Python+YAML</td><td class="kv">1.0MB</td><td><span class="lic lic-ok">MIT</span></td><td>抽帧拼贴感知哈希（MDCX 已自建同款）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref25-FC2-Leak-Detector`</code></td><td class="kv">Python+JSON+TOML</td><td class="kv">0.6MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>fc2ppvdb API + 封面 URL 规则 + Sukebei 磁力择优</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref27-mnamer`</code></td><td class="kv">Python+YAML+TOML</td><td class="kv">9.2MB</td><td><span class="lic lic-ok">MIT</span></td><td>多源非空字段覆盖 + 命名模板 + SQLite 缓存</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref28-mp-relay`</code></td><td class="kv">Python+YAML+HTML</td><td class="kv">1.4MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>图片代理 SSRF 白名单 + 防盗链 Referer</b>；音频指纹去广告</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref34-JavDB_magnet_Spider`</code></td><td class="kv">—</td><td class="kv">—</td><td><span class="lic lic-mid">未标注</span></td><td>磁力条件加权评分（无码/高清/字幕/体积）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref37-metatube-sdk-go`</code></td><td class="kv">Go+YAML+JSON</td><td class="kv">13.0MB</td><td><span class="lic lic-ok">Apache-2.0</span></td><td><b>Provider 联邦协议 + 优先级加权排序</b>（MDCX 已有兼容层）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref38-mdcx`</code></td><td class="kv">Python+TypeScript+YAML</td><td class="kv">16.5MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>277 行番号规则 + FastAPI safe_dirs 白名单</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref39-JavLibrarian`</code></td><td class="kv">Python+TOML</td><td class="kv">0.2MB</td><td><span class="lic lic-ok">Apache-2.0</span></td><td><b>多 CD/分卷识别</b> video_volume_key() + 语义后缀→tag</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref45-Javinizer`</code></td><td class="kv">PowerShell+Python+YAML</td><td class="kv">7.2MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>r18.dev JSON API</b> + 逐字段优先级合并 + 演员别名表</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref47-Pornhub-Video-Downloader-Plugin-v3`</code></td><td class="kv">TypeScript+JS+JSON</td><td class="kv">14.7MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>m3u8 真实分片 URL 重写 + Range 续传 + 镜像域名表</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref49-flask-video-streaming`</code></td><td class="kv">Python+HTML</td><td class="kv">0.0MB</td><td><span class="lic lic-ok">MIT</span></td><td>单生产者多消费者预览流（MJPEG）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref50-harvestr`</code></td><td class="kv">Python+CSS+JSON</td><td class="kv">5.3MB</td><td><span class="lic lic-ok">MIT</span></td><td>站点漂移检测 ok/degraded/broken/dead</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref58-javspider_stack`</code></td><td class="kv">Python+HTML+CSS</td><td class="kv">0.7MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>四阶段流水线 + 自适应降并发 + 成功率加权代理池</b>（Python 同语言）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref73-stash`</code></td><td class="kv">Go+TypeScript+SQL</td><td class="kv">12.9MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td><b>oshash 头尾 64KB 快速指纹</b> + phash 多指纹判重 + 雪碧图</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref75-sickchill`</code></td><td class="kv">Python+JSON+JS</td><td class="kv">56.1MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>纯正则文件名解析 + 质量标签提取器</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref84-mdcx`</code></td><td class="kv">Python+YAML+JSON</td><td class="kv">17.5MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>Jinja2 沙箱命名引擎 + 24 字段 + 智能截断</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref94-ph-heatmap`</code></td><td class="kv">HTML+Python+JSON</td><td class="kv">66.4MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>curl_cffi TLS 指纹轮换 + 精确播放量提取</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref96-peach`</code></td><td class="kv">Python+TypeScript+CSS</td><td class="kv">28.7MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td><b>「没有」记忆 _MissCache</b>（只记 NotFound + TTL，网络故障不记）</td></tr>
+<tr data-tier="B" data-direct="1"><td><span class="tag tr-b">B</span></td><td><code>`ref99-javorganizer`</code></td><td class="kv">C#+YAML+HTML</td><td class="kv">1.6MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>自适应限速 AdaptiveThrottle + 人类化抖动 PerSiteRateLimiter + 声明式站点目录</b></td></tr>
+<tr data-tier="C" data-direct="1"><td><span class="tag tr-c">C</span></td><td><code>`ref155-crawlerx`</code></td><td class="kv">PHP+JSON+YAML</td><td class="kv">10.3MB</td><td><span class="lic lic-ok">MIT</span></td><td><b>25 份 manifest.json + 18 份 Selectors.php</b>：base_url/分页策略/soft404 标记/浏览器头/节流区间</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref02-AVMeta`</code></td><td class="kv">Go+YAML</td><td class="kv">0.2MB</td><td><span class="lic lic-ok">MIT</span></td><td>per-site 正则路由表 + 群晖 vsmeta 生成</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref04-avbook`</code></td><td class="kv">PHP+JS+CSS</td><td class="kv">9.5MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>番号自然键 + base36 跨源 id 映射</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref05-dock-javbus`</code></td><td class="kv">Python+HTML+JSON</td><td class="kv">2.4MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>可配置排除字典清洗文件名 + 分厂牌 scraper</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref09-jav-tui`</code></td><td class="kv">Rust+TOML+PowerShell</td><td class="kv">0.3MB</td><td><span class="lic lic-ok">MIT</span></td><td>SQLite 历史/收藏存储（Rust）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref100-javdbviewed`</code></td><td class="kv">TypeScript+CSS+HTML</td><td class="kv">43.6MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td>LWW 同步协议 + tombstone 防复活</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref102-embylens`</code></td><td class="kv">Python+Vue+TypeScript</td><td class="kv">2.2MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>可配置多维去重评分器 Scorer</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref11-JATLAS`</code></td><td class="kv">TypeScript+JSON+JS</td><td class="kv">6.3MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>文本归一 + 分级服务</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref110-pornhub-downloader`</code></td><td class="kv">JS+JSON+Python</td><td class="kv">0.1MB</td><td><span class="lic lic-ok">MIT</span></td><td>PH flashvars 解析（与 ref33/47 重叠）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref12-javapi`</code></td><td class="kv">Go+YAML</td><td class="kv">0.6MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>NormalizeCode 去分隔符比较键（Go）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref13-JAV-Manager`</code></td><td class="kv">Dart+Python+C++</td><td class="kv">25.3MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>扫描事务化 + 孤立演员回收（Dart）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref14-javbus-api`</code></td><td class="kv">TypeScript+JSON+YAML</td><td class="kv">0.2MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>javbus 全量解析 + 校验器分层</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref141-javinizer-go`</code></td><td class="kv">Go+TypeScript+Svelte</td><td class="kv">31.4MB</td><td><span class="lic lic-ok">MIT</span></td><td>Javinizer 的 Go 重写版，可对照数据结构</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref144-jhs`</code></td><td class="kv">JS+JSON+YAML</td><td class="kv">5.8MB</td><td><span class="lic lic-ok">MIT</span></td><td>JHS 增强脚本（现有 ref144-jhs，非本轮）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref146-javdb_magnet`</code></td><td class="kv">Python+Batch</td><td class="kv">0.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>JavDB 磁力链接小工具</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref147-jav-info`</code></td><td class="kv">Python+JSON+TOML</td><td class="kv">0.5MB</td><td><span class="lic lic-ok">MIT</span></td><td>JAV 元数据小工具</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref148-jav-preview`</code></td><td class="kv">JSON+TypeScript+Rust</td><td class="kv">3.3MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>预览图生成（TS/Rust 混合）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref149-javbus-api`</code></td><td class="kv">Go+YAML+HTML</td><td class="kv">0.4MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>JavBus API（Go），与 ref14 重叠</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref15-javdb-cli`</code></td><td class="kv">Go+YAML+Shell</td><td class="kv">1.8MB</td><td><span class="lic lic-ok">MIT</span></td><td>JavDB 资源选择器（MDCX 已借其签名方案）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref158-jellyfinjav`</code></td><td class="kv">C#+JSON+YAML</td><td class="kv">2.4MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td>Jellyfin 元数据源：R18.dev / AsianScreens / Warashi</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref16-javdb-python`</code></td><td class="kv">Python+TOML+YAML</td><td class="kv">0.1MB</td><td><span class="lic lic-ok">MIT</span></td><td>纯标准库 HTML DOM 解析器</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref161-jabletv-missav-supjav-gui-downloader-for-windows`</code></td><td class="kv">Go+Rust+JSON</td><td class="kv">10.0MB</td><td><span class="lic lic-mid"># 📥 JableTV MissAV Supjav GUI</span></td><td>Jable/MissAV/SupJav GUI 下载器（Go+Rust）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref163-legacy`</code></td><td class="kv">—</td><td class="kv">0.0MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>javinfo 多源 API 设计参照（已弃用）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref167-sakuramediabe`</code></td><td class="kv">Python+TOML+YAML</td><td class="kv">2.5MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>SakuraMedia 服务端：缩略图 / 精彩时刻标记 / 以图搜图（MDCX 没有的三个服务）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref179-jabletv-missav-downloader-core`</code></td><td class="kv">Rust+Go+C</td><td class="kv">11.5MB</td><td><span class="lic lic-mid"># 📥 JableTV MissAV Downloader</span></td><td>Jable/MissAV HLS 解析下载核心（Rust）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref180-jabletv-missav-downloader`</code></td><td class="kv">JSON+C+Rust</td><td class="kv">6.5MB</td><td><span class="lic lic-mid"># 📥 JableTV MissAV Downloader</span></td><td>同上 CLI 版（Rust）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref181-gfriends-bot`</code></td><td class="kv">JSON+Rust+C</td><td class="kv">6.9MB</td><td><span class="lic lic-mid"># 💕 GFriends-Bot 18+ – 新一代社交机器</span></td><td>头像自动匹配下载策略（配合 gfriends 数据，数据本体未收录）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref19-JAVOneStop`</code></td><td class="kv">Python+JS+CSS</td><td class="kv">44.2MB</td><td><span class="lic lic-ok">MIT</span></td><td>正则命名组模板 + CD/字幕后缀 + 重命名预览</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref193-jav_moviemanager`</code></td><td class="kv">C#+JS+CSS</td><td class="kv">4.7MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>C# 影片管理器，声明兼容 MDCx/MDC/JavSP；已做稀疏检出仅留源码</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref198-javscribe`</code></td><td class="kv">Python+TypeScript+YAML</td><td class="kv">67.1MB</td><td><span class="lic lic-ok">MIT</span></td><td>CTranslate2 ja→zh 字幕生成 + 多服务端均衡（需模型与算力）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref30-Javdex`</code></td><td class="kv">TypeScript+JSON+CSS</td><td class="kv">74.4MB</td><td><span class="lic lic-ok">MIT</span></td><td>评分式番号选择 + 资源身份待办（乐观锁）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref31-mdcz`</code></td><td class="kv">TypeScript+JSON+YAML</td><td class="kv">8.5MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>有序规则表 + 分片四态 + NamingEngine</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref33-unofficial-api-pornhub`</code></td><td class="kv">Python+TOML</td><td class="kv">0.3MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td>PH 字段逆向最全（含登录/收藏）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref35-JAVDB_AutoSpider`</code></td><td class="kv">Python+SQL+YAML</td><td class="kv">16.2MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>质量证据→推荐→人工复核三段式</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref41-CookieCloud`</code></td><td class="kv">JS+JSON+TypeScript</td><td class="kv">2.4MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>Cookie E2E 加密同步协议（AES-128-CBC）</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref51-javdb-api-scraper`</code></td><td class="kv">Python+JSON+HTML</td><td class="kv">1.0MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>多适配器工厂 + 自动登录</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref70-pornhub_archiver`</code></td><td class="kv">Python+Shell+YAML</td><td class="kv">0.1MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>频道归档缺失集差分 + .part 残留复用</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref71-unofficial-api-for-porngo`</code></td><td class="kv">Python+TOML</td><td class="kv">0.1MB</td><td><span class="lic lic-ok">LGPL</span></td><td>单站直链，无签名，价值低</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref72-unofficial-api-for-porntrex`</code></td><td class="kv">Python+TOML+YAML</td><td class="kv">0.1MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td>KVS 引擎 mode=async 分块接口</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref95-unofficial-api-for-xvideos`</code></td><td class="kv">Python+TOML+YAML</td><td class="kv">0.2MB</td><td><span class="lic lic-mid">AGPL-3.0</span></td><td>xvideos 直链/m3u8 + embedframe 拼接</td></tr>
+<tr data-tier="D" data-direct="0"><td><span class="tag tr-d">D</span></td><td><code>`ref98-sakuramedia`</code></td><td class="kv">Dart+YAML+Swift</td><td class="kv">18.3MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>纯客户端，仅可读 API 契约</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref01-AVDC`</code></td><td class="kv">Python+JSON</td><td class="kv">7.2MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>cloudscraper 破 CF 的写法；源码里含泄露的百度 AK/SK，<b>勿照搬</b></td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref03-AVOne`</code></td><td class="kv">C#+JSON+CSS</td><td class="kv">10.1MB</td><td><span class="lic lic-ok">LGPL</span></td><td>GetId() 分类引擎 + 替换表（C#，思路可读）</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref07-EcoHub`</code></td><td class="kv">Go+TypeScript+YAML</td><td class="kv">3.7MB</td><td><span class="lic lic-mid">PolyForm-NC</span></td><td>失败按维度去重 + 重试上限 + 一键恢复</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref10-jav-scrapy`</code></td><td class="kv">TypeScript+JSON+JS</td><td class="kv">0.9MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>多级队列差异化并发</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref107-garage`</code></td><td class="kv">Go+YAML+TOML</td><td class="kv">0.1MB</td><td><span class="lic lic-ok">MIT</span></td><td>colly 同域串行 + RandomDelay（MDCX 已有更好方案）</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref109-scrawler`</code></td><td class="kv">VB.NET+Batch+PowerShell</td><td class="kv">11.4MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>多站插件体系（技术已被 ref33/68 覆盖）</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref192-javdb`</code></td><td class="kv">JSON</td><td class="kv">0.0MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>JavDB 官方 App 分发物，作 API 版本迭代参照</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref32-Porn_Fetch`</code></td><td class="kv">Python+Shell+YAML</td><td class="kv">5.4MB</td><td><span class="lic lic-mid">GPL-2.0</span></td><td>SNI 分片代理抗封锁（含反绕过条款，只读思路）</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref36-jvav`</code></td><td class="kv">Python</td><td class="kv">0.1MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>通用请求/翻译工具类，无独有逻辑</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref43-Hazard804-mdcx`</code></td><td class="kv">Python+YAML+JSON</td><td class="kv">17.5MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>MDCx fork，与 ref38/84 重叠</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref46-Medusa`</code></td><td class="kv">Python+Vue+JS</td><td class="kv">109.5MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>NFO 生成字段顺序 + 多前端 metadata 抽象</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref48-core`</code></td><td class="kv">JS+JSON+YAML</td><td class="kv">6.1MB</td><td><span class="lic lic-ok">MIT</span></td><td>内存 TTL 缓存装饰器（已停维护）</td></tr>
+<tr data-tier="E" data-direct="0"><td><span class="tag tr-e">E</span></td><td><code>`ref82-phdownloader`</code></td><td class="kv">Python+Shell+HTML</td><td class="kv">0.2MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>分布式下载集群心跳/卡死/ETA</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref08-FapNation`</code></td><td class="kv">HTML+CSS+JS</td><td class="kv">0.5MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>Eporner 静态浏览页，无后端价值</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref112-pornhub-video-downloader`</code></td><td class="kv">TypeScript+JS+CSS</td><td class="kv">10.2MB</td><td><span class="lic lic-no">PROPRIETARY SOFTWARE LICENSE</span></td><td>专有许可 + OTP 激活/付费校验，禁止复用</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref140-ammds-docker`</code></td><td class="kv">YAML</td><td class="kv">0.1MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>Docker 编排声明，无可搬代码</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref142-jav-play`</code></td><td class="kv">TypeScript+JSON+CSS</td><td class="kv">0.4MB</td><td><span class="lic lic-ok">Apache-2.0</span></td><td>前端播放页</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref164-emby-beautify`</code></td><td class="kv">CSS+JS+HTML</td><td class="kv">23.9MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>Emby 皮肤 CSS/JS</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref183-embybuddy`</code></td><td class="kv">JS</td><td class="kv">6.5MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>Emby 全能助手（前端 JS）</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref184-jhs-enhance`</code></td><td class="kv">JS+JSON+YAML</td><td class="kv">2.8MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>JHS 前端增强脚本</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref185-javminidriver`</code></td><td class="kv">JS</td><td class="kv">0.0MB</td><td><span class="lic lic-ok">MIT</span></td><td>小体积 JS 工具</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref186-jav-play-go`</code></td><td class="kv">JS+CSS</td><td class="kv">21.6MB</td><td><span class="lic lic-ok">MIT</span></td><td>播放前端（JS）</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref187-oppaidex`</code></td><td class="kv">C#+YAML+Shell</td><td class="kv">0.5MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>Emby 刮削器（C#），元数据源列表可参考</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref188-alljavtv`</code></td><td class="kv">HTML</td><td class="kv">1.5MB</td><td><span class="lic lic-ok">Apache-2.0</span></td><td>静态导航页</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref189-bt-btt`</code></td><td class="kv">—</td><td class="kv">0.5MB</td><td><span class="lic lic-ok">MIT</span></td><td>域名追踪表</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref197-yingku`</code></td><td class="kv">—</td><td class="kv">10.3MB</td><td><span class="lic lic-ok">MIT</span></td><td>Windows 本地资料库 GUI</td></tr>
+<tr data-tier="F" data-direct="0"><td><span class="tag tr-f">F</span></td><td><code>`ref83-video-scraping-apis`</code></td><td class="kv">JS</td><td class="kv">8.2MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>979 个付费 Apify actor 索引，仅线索价值</td></tr>
+<tr data-tier="X" data-direct="0"><td><span class="tag tr-x">X</span></td><td><code>`ref105-misspipe`</code></td><td class="kv">JSON+YAML+HTML</td><td class="kv">104.6MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>远端 403，仓库已被 GitHub 禁用</td></tr>
+<tr data-tier="X" data-direct="0"><td><span class="tag tr-x">X</span></td><td><code>`ref22-mdcx-diy`</code></td><td class="kv">Python+YAML+JSON</td><td class="kv">22.4MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>远端 Repository not found，建议 --prune-dead 清理</td></tr>
+<tr data-tier="X" data-direct="0"><td><span class="tag tr-x">X</span></td><td><code>`ref42-Kesuy-mdcx`</code></td><td class="kv">Python+YAML+JSON</td><td class="kv">14.4MB</td><td><span class="lic lic-mid">GPL-3.0</span></td><td>远端 Repository not found</td></tr>
+<tr data-tier="X" data-direct="0"><td><span class="tag tr-x">X</span></td><td><code>`ref44-AVDC-Next`</code></td><td class="kv">—</td><td class="kv">0.0MB</td><td><span class="lic lic-no">无LICENSE</span></td><td>子模块未签出，仅 README</td></tr>
+</tbody></table></div>
 <footer>
-  生成于 2026-10-05 · 扫描方式：5 组只读代码扫描并行覆盖 78 个子模块 + 对 MDCX 自身源码逐项交叉核实<br>
-  许可证信息以各仓库 LICENSE 文件首行为准；无 LICENSE 文件者按「保留一切权利」保守处理
+  生成于 2026-10-05 · 扫描方式：对 123 个子模块做只读全量扫描（语言构成 / 体积 / 顶层结构 / 19 类能力标记 / LICENSE 内文判定），
+  并对 Tier A/B/C 关键项<b>逐文件打开核实</b>，不凭印象<br>
+  分档依据见 <code>docs/参考库可直接复用评估_2026-10-05.md</code>；原始数据 <code>references_inventory.json</code> /
+  <code>references_quicktable.tsv</code> / <code>licenses.tsv</code> / <code>_tier_table.md</code><br>
+  许可证信息以各仓库 LICENSE 文件首行为准，此处仅用于产出引用说明，不构成使用门槛
 </footer>
 
 </div>
-
 <script>
 (function(){
   var btns = document.querySelectorAll('#filters button');
   var rows = document.querySelectorAll('#tbl tbody tr');
+  function apply(f){
+    for (var k=0;k<rows.length;k++){
+      var r = rows[k], show;
+      if (f === 'all') show = true;
+      else if (f === 'direct') show = r.getAttribute('data-direct') === '1';
+      else show = r.getAttribute('data-tier') === f;
+      r.style.display = show ? '' : 'none';
+    }
+  }
   for (var i=0;i<btns.length;i++){
     btns[i].addEventListener('click', function(){
       for (var j=0;j<btns.length;j++) btns[j].classList.remove('on');
       this.classList.add('on');
-      var f = this.getAttribute('data-f');
-      for (var k=0;k<rows.length;k++){
-        var r = rows[k], show;
-        if (f === 'all') show = true;
-        else if (f === 'ok') show = r.getAttribute('data-lic') === 'ok';
-        else if (f === 'no') show = r.getAttribute('data-lic') === 'no';
-        else show = r.getAttribute('data-v') === 'high';
-        r.style.display = show ? '' : 'none';
-      }
+      apply(this.getAttribute('data-f'));
     });
   }
 })();

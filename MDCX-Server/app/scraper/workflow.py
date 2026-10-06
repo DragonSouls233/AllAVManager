@@ -310,6 +310,13 @@ class ScraperWorkflow:
 
         # 3. 生成 NFO
         if self.generate_nfo:
+            # 🔴 2026-10-06：NFO 是在写库**之前**用 result 直接生成的，
+            # 而主力源（javdb/javmenu/javbus/dmm_web）实测**不给 plot** ⇒
+            # 一次「只补 studio」的刮削就会把上一轮千辛万苦补上的简介
+            # 从 NFO 里抹掉（库里靠 _KEEP_IF_NONE 保住了，NFO 却空了，
+            # 导致 Emby/Jellyfin 读不到剧情）。实测 MIDE-834：库里 plot 171 字、
+            # NFO 却变 0。所以生成前先用库中已有值把 result 的空字段补齐。
+            await self._backfill_result_from_db(result, number, module_name)
             logger.info("正在生成NFO")
             nfo_path = generate_nfo(result, str(movie_dir))
             if nfo_path:
@@ -321,6 +328,44 @@ class ScraperWorkflow:
             await self._save_to_db(result, str(movie_dir), file_path, module=module_name)
 
         return str(movie_dir)
+
+    async def _backfill_result_from_db(
+        self, result: "ScrapeResult", number: str, module_name: str
+    ) -> None:
+        """用库中已有值补齐 result 的空字段（只补空，不覆盖新值）。
+
+        🔴 2026-10-06：主力源普遍不给 plot/series，若直接拿 result 生成 NFO，
+        会把库里已补好的简介从 NFO 里抹掉（库靠 ``_KEEP_IF_NONE`` 保住，NFO 不会）。
+        这里保证 NFO 与库最终内容一致。查不到记录时静默跳过（新片首次刮削）。
+        """
+        try:
+            models = await self._get_module_models(module_name)
+            if models is None:
+                return
+            MovieCls, _ActorCls, mod_db = models
+            from sqlalchemy import select as _select
+            async with mod_db.session_factory() as session:
+                row = (await session.execute(
+                    _select(MovieCls).where(MovieCls.code == number)
+                )).scalar_one_or_none()
+                if row is None:
+                    return
+                for attr in ("plot", "series", "studio", "title", "original_title",
+                             "director", "cover_url", "release_date", "duration",
+                             "rating", "trailer_url"):
+                    if getattr(result, attr, None):
+                        continue          # 本次刮削有新值，不覆盖
+                    old = getattr(row, attr, None)
+                    if old:
+                        setattr(result, attr, old)
+                if not getattr(result, "actors", None) and getattr(row, "actor", None):
+                    from app.crawlers.base import ActorInfo
+                    result.actors = [
+                        ActorInfo(name=n.strip())
+                        for n in str(row.actor).split(",") if n.strip()
+                    ]
+        except Exception as _e:  # noqa: BLE001
+            logger.debug("backfill from db failed [%s] %s: %s", module_name, number, _e)
 
     async def _save_to_db(
         self,
@@ -518,7 +563,25 @@ class ScraperWorkflow:
 
             if movie:
                 # 更新现有记录
+                # 🔴 2026-10-06 修复「补上的简介又被清掉」：
+                # 主力源 javdb/javmenu/javbus/dmm_web **全都不返回 plot**（实测），
+                # 而 `plot=result.plot` 是无条件写入的 common_fields ⇒
+                # 用 thejavdb 千辛万苦补上的 plot，会被下一次「只补 studio/series」
+                # 的刮削（走 javdb，plot=None）**无声清空**。
+                # 实测 MIDE-834：00:23 补上 plot → 00:29 一次补 series 的刮削后 plot 归零。
+                # 这是「完成 200 部、缺口只少 3 个」的另一半原因。
+                # 规则同 is_uncensored/is_mosaic：**None (= 源站没说) 不该覆盖已知值**。
+                # 仅对「内容型」字段生效；source/source_url/scraped_at/status 这类
+                # 过程元数据仍无条件刷新（它们本来就该反映最近一次刮削）。
+                _KEEP_IF_NONE = {
+                    "title", "original_title", "plot", "cover_url", "poster_url",
+                    "thumb_url", "sample_images", "release_date", "duration",
+                    "rating", "genre", "tag", "director", "trailer_url",
+                    "file_path", "file_size", "output_dir",
+                }
                 for key, value in common_fields.items():
+                    if value is None and key in _KEEP_IF_NONE:
+                        continue
                     setattr(movie, key, value)
                 # 模块专属列：只有非 None 才写（None = 源站没说，不该清掉旧值）
                 for key, value in _module_cols.items():
