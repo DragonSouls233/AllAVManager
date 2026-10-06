@@ -48,6 +48,21 @@ _CODE_QUALIFIER_MAP = {
     "folder": "poster.jpg",
 }
 
+# 「番号 + 修饰词 + 限定词」后缀（_norm_key 已去掉 -/_，所以 rest 形如
+# "cposter" / "ucposter" / "4kposter" / "leakposter"）。
+# 🔴 2026-10-06 实测：片库里大量资源是 `JUFE-617-C-poster.jpg`、
+# `PRED-886-U-thumb.jpg`、`JUR-689-UC-poster.jpg`、`DLDSS-558-4k-poster.jpg`、
+# `STARS-071-Leak-poster.jpg` 这类命名，旧实现要求 rest **精确等于**
+# map 键 ⇒ 全部返回 None 被丢弃。抽样 150 个「缺封面」的片子，视频目录里
+# 其实 150/150 都有封面，只是被这条规则挡掉了 ⇒ 缺封面数长期不降。
+# 修饰词只允许 1~4 个字母（c/u/uc/hd/leak…）或 2k/4k/8k 分辨率标记，
+# **不容许以数字开头**，避免把「别的番号恰好以本番号开头」的文件
+# （如 ABP-12 遇到 ABP-123-45-poster.jpg 的 rest="45poster"）错认。
+_CODE_QUALIFIER_SUFFIX_RE = re.compile(
+    r"^(?:[a-z]{1,4}|\d{1,2}k)"
+    r"(landscape|background|backdrop|fanart|folder|poster|cover|thumb)$"
+)
+
 
 def _norm_key(s: str) -> str:
     """归一化用于比对的键：每段数字去前导零，再去掉 -/_。
@@ -97,8 +112,14 @@ def _resolve_asset_target(src_name: str, code: str) -> str | None:
         rest = s_key[len(code_key):]
         if is_nfo:
             return "movie.nfo"
-        if is_img and rest in _CODE_QUALIFIER_MAP:
-            return _CODE_QUALIFIER_MAP[rest]
+        if is_img:
+            hit = _CODE_QUALIFIER_MAP.get(rest)
+            if hit is not None:
+                return hit
+            # 兜底：「番号-修饰词-限定词」命名（见 _CODE_QUALIFIER_SUFFIX_RE 注释）
+            m = _CODE_QUALIFIER_SUFFIX_RE.match(rest)
+            if m:
+                return _CODE_QUALIFIER_MAP[m.group(1)]
     return None
 
 

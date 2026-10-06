@@ -424,7 +424,30 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
     if data.codes:
         picked = [i for i in items if i["code"] in set(data.codes)]
     else:
-        picked = [i for i in items if want & set(i["reasons"])]
+        # 🔴 按勾选类型**轮转**取片（2026-10-06 用户反馈「跑了 50 个，缺封面
+        # 才少了几个」）：items 是 movie_id 顺序，而缺预览图的片远多于缺封面
+        # （2385 vs 465）⇒ 直接切片时 50 个名额几乎全被 preview 占掉
+        # （实测 49 preview / 2 cover，cover 项在队列里排在第 23、24、65… 位），
+        # 用户勾了「封面」等于没勾，封面数自然纹丝不动。
+        # 轮转后每类都能拿到约 1/N 的名额，勾哪类哪类就降。
+        order_want = list(dict.fromkeys(
+            r for r in (data.reasons or []) if r in want)) or sorted(want)
+        buckets = [[i for i in items if r in i["reasons"]] for r in order_want]
+        picked = []
+        seen: set[str] = set()
+        while len(picked) < data.limit:
+            before = len(picked)
+            for b in buckets:
+                while b and b[0]["code"] in seen:
+                    b.pop(0)          # 已被其它类型取走的（如同时缺封面+预览图）
+                if b:
+                    it = b.pop(0)
+                    seen.add(it["code"])
+                    picked.append(it)
+                    if len(picked) >= data.limit:
+                        break
+            if len(picked) == before:
+                break                 # 所有桶都空了
     picked = picked[: data.limit]
 
     if not picked:
@@ -445,12 +468,14 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
         "cancel_requested": False,
         "by_reason": {}, "failed_list": [], "log": [],
     })
+    # 🔴 by_reason 只统计**本次勾选**的缺口（want）。旧实现统计的是 picked
+    # 片子的全部缺口（cover/plot/preview/series/studio），日志打出 5 类会让
+    # 用户以为「只勾了 2 个却按 5 个跑」（2026-10-06 实际反馈）。
     for i in picked:
-        for r in i["reasons"]:
+        for r in set(i["reasons"]) & want:
             _state["by_reason"][r] = _state["by_reason"].get(r, 0) + 1
-    _log("任务开始：共 %d 部，并发 %d，缺口类型 %s"
-         % (len(picked), data.concurrency,
-            "/".join(sorted(_state["by_reason"]))))
+    _log("任务开始：共 %d 部，并发 %d，本次只补 %s"
+         % (len(picked), data.concurrency, "/".join(sorted(want))))
 
     async def _run():
         from app.scraper.engine import ScraperEngine
@@ -520,8 +545,18 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
         async def _one(item):
             code = item["code"]
             result = None
-            reasons = set(item["reasons"])
-            _log("▶ %s 开始（缺 %s）" % (code, "/".join(item["reasons"])))
+            # 🔴 勾选即范围（2026-10-06）：只补**本次勾选的**缺口，不再牵连该片
+            # 的其他缺口。旧实现拿 `item["reasons"]`（全部缺口）去选源 ⇒ 用户勾
+            # cover/preview（本可由本地拷贝秒级解决）也会为 plot/series 试遍 11 个
+            # 源，单部从秒级涨到 1-2 分钟，且日志显示 5 类缺口像是勾选没生效。
+            # 落盘仍是全字段写入（顺手拿到的字段照写，不浪费），只是不为未勾选的
+            # 缺口额外花时间试源、也不作为成功/失败判据。
+            reasons = set(item["reasons"]) & want
+            _log("▶ %s 开始（缺 %s）" % (code, "/".join(sorted(reasons))))
+            extra = set(item["reasons"]) - reasons
+            if extra:
+                _log("  · %s 另有 %s（未勾选，本次不补）"
+                     % (code, "/".join(sorted(extra))))
 
             # 步骤 0（可选，默认开）：先离线拷本地图。
             # 这是原「补全 NFO 缓存」页唯一的独有能力——片库里往往已经有
@@ -551,11 +586,12 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
                 except Exception as e:  # noqa: BLE001
                     _log("  ! %s 本地拷贝失败：%s" % (code, str(e)[:80]))
                 # 拷完重新体检：本地图可能已经把该片的缺口填平了。
-                # 🔴 只复查「拷贝能解决的那几类」（cover/preview）——拷贝不可能
+                # 🔴 只复查「本次勾选的缺口」（reasons 已是 want 交集）——拷贝不可能
                 # 补上 plot/studio/series/actor，拿全量 reasons 去比会永远判未补齐，
-                # 于是白花一次站点请求。
+                # 于是白花一次站点请求；而拿硬编码的 {"cover","preview"} 比，
+                # 用户只勾 cover 时又会被未勾选的 preview 拖住。
                 still = set(_reasons_for(Path(item["output_dir"]), _row_of(item)))
-                if not (still & {"cover", "preview"}):
+                if not (still & reasons):
                     _state["fixed"] += 1
                     _log("  ✔ %s 本地图已补齐，无需联网" % code)
                     return
