@@ -302,14 +302,43 @@ const sourceOrder = ref({ mainstream: [], aux: [], jp: [], jp_available: false, 
 
 const _label = (name) => sourceOrder.value.labels?.[name] || name
 
+// 2026-10-08：源能力标记。并非每个源都给简介/系列/演员（实测差异极大：
+// xcity 有 plot 无 series，javbus 无 plot 有 series），选源时需要一眼看出能补什么。
+// 数据来自 GET /health/sources（能力矩阵），取不到就退化成只显示名字，不报错。
+const CAP_SHORT = {
+  movie: '片', performer: '演', gallery: '图',
+  plot: '简介', rating: '评分', genres: '标签',
+}
+const _capMap = ref({})
+const loadSourceCaps = async () => {
+  try {
+    const { getSourceHealth } = await import('@/api')
+    const res = await getSourceHealth()
+    const m = {}
+    for (const s of (res?.sources || [])) {
+      m[s.name] = { caps: s.capabilities || [], tier: s.tier, open: !!s.breaker?.open }
+    }
+    _capMap.value = m
+  } catch (e) {
+    _capMap.value = {}   // 老后端无此端点，静默降级
+  }
+}
+// 给选项加能力后缀；无数据时只返回原 label
+const withCaps = (opts) => opts.map(o => {
+  const info = _capMap.value[o.value]
+  if (!info || !info.caps.length) return o
+  const short = info.caps.filter(c => CAP_SHORT[c]).map(c => CAP_SHORT[c]).join('/')
+  return { ...o, label: short ? `${o.label}（${short}）` : o.label }
+})
+
 // 主力段 = canon 主力 + 日本官方源（DMM 已进主力，排在辅助源之前）
 const primaryOptions = computed(() => {
   const s = sourceOrder.value
-  return [...(s.mainstream || []), ...(s.jp || [])].map(v => ({ value: v, label: _label(v) }))
+  return withCaps([...(s.mainstream || []), ...(s.jp || [])].map(v => ({ value: v, label: _label(v) })))
 })
 // 辅助段 = canon 的 AUX_SOURCE_ORDER
 const fallbackOptions = computed(() =>
-  (sourceOrder.value.aux || []).map(v => ({ value: v, label: _label(v) }))
+  withCaps((sourceOrder.value.aux || []).map(v => ({ value: v, label: _label(v) })))
 )
 // 模块 → 补刮来源提示
 const SOURCE_HINTS = {
@@ -475,6 +504,7 @@ const loadSourceOrder = async () => {
   try {
     const r = await getSourceOrder('ABC-123')
     sourceOrder.value = r || { mainstream: [], aux: [], jp: [], jp_available: false, labels: {} }
+    loadSourceCaps()
   } catch (e) {
     console.error('加载源序失败', e)
   }

@@ -14,6 +14,11 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
+
+#: 判断标题是否含中日假名/汉字（用于「优先 CJK 标题、避免英文源覆盖」）。
+_HAS_CJK_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]"
+)
 from enum import Enum
 from typing import Optional
 
@@ -838,11 +843,21 @@ class ResultMerger:
         if cn_candidates:
             title = cn_candidates[0].title
         else:
-            # 无中文源：取优先级最高的非空标题（旧行为）
-            for r in sorted_results:
-                if r.title:
-                    title = r.title
-                    break
+            # 无中文源：优先选「含 CJK（日文/中文）」的标题，避免英文源（javmost 等）
+            # 在日文源未返回 title 时把英文写进展示标题；都没有 CJK 才退回优先级最高者。
+            cjk_candidates = [
+                r for r in sorted_results if r.title and _HAS_CJK_RE.search(r.title)
+            ]
+            if cjk_candidates:
+                cjk_candidates.sort(
+                    key=lambda r: self.config.source_priority.get(r.source, 100)
+                )
+                title = cjk_candidates[0].title
+            else:
+                for r in sorted_results:
+                    if r.title:
+                        title = r.title
+                        break
 
         # 2) original_title：优先取各源已提供的日文/英文原始标题
         original: Optional[str] = None

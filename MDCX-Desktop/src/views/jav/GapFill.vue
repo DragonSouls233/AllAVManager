@@ -172,7 +172,20 @@
       <el-row :gutter="12" class="progress-stats">
         <el-col :span="4"><div class="ps-item">已处理 <b>{{ progress.done }}</b> / {{ progress.total }}</div></el-col>
         <el-col :span="4"><div class="ps-item ok">成功 <b>{{ progress.fixed }}</b></div></el-col>
-        <el-col :span="4"><div class="ps-item warn">无源 <b>{{ progress.no_source }}</b></div></el-col>
+        <el-col :span="4">
+          <div class="ps-item warn">
+            无源 <b>{{ progress.no_source }}</b>
+            <!-- 2026-10-08：其中多少是负缓存短路（零联网直接跳过），
+                 用来量化 miss_cache 省下的请求数 -->
+            <el-tooltip
+              v-if="progress.neg_cache_hit > 0"
+              content="这些番号的所有源此前都已明确答复「没有」，本轮零联网直接跳过（负缓存生效）"
+              placement="top"
+            >
+              <el-tag size="small" type="info" class="neg-cache-tag">负缓存 {{ progress.neg_cache_hit }}</el-tag>
+            </el-tooltip>
+          </div>
+        </el-col>
         <el-col :span="4"><div class="ps-item err">失败 <b>{{ progress.failed }}</b></div></el-col>
         <el-col :span="8">
           <el-button v-if="!running && progress.done > 0" size="small" @click="runAudit">
@@ -283,7 +296,7 @@ const items = ref([])
 const auditing = ref(false)
 const running = ref(false)
 const starting = ref(false)
-const progress = ref({ done: 0, total: 0, fixed: 0, no_source: 0, failed: 0, log: [], failed_list: [] })
+const progress = ref({ done: 0, total: 0, fixed: 0, no_source: 0, neg_cache_hit: 0, failed: 0, log: [], failed_list: [] })
 
 const reasons = ref(['cover', 'preview'])
 const limit = ref(200)
@@ -561,4 +574,8 @@ onBeforeUnmount(stopPolling)
 .reason-tag { margin-right: 4px; }
 .pager { margin-top: 12px; justify-content: flex-end; }
 .empty-text { color: #9ca3af; }
+
+/* 负缓存命中标签（2026-10-08） */
+.neg-cache-tag { margin-left:6px; vertical-align:middle; }
+.ps-item { display:flex; align-items:center; gap:2px; }
 </style>

@@ -116,6 +116,10 @@ _state: dict = {
     "total": 0,
     "fixed": 0,
     "no_source": 0,
+    # 2026-10-08：负缓存短路命中数（区别于真「源站没收录」）。
+    # 语义：这部番号的所有源**此前都已明确答复没有**，本轮零联网直接跳过。
+    # 数值大 = 负缓存省下的请求多，是 miss_cache 的提速效果量化。
+    "neg_cache_hit": 0,
     "failed": 0,
     "started_at": 0.0,
     "finished_at": 0.0,
@@ -462,7 +466,7 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
 
     _state.update({
         "running": True, "done": 0, "total": len(picked),
-        "fixed": 0, "no_source": 0, "failed": 0,
+        "fixed": 0, "no_source": 0, "neg_cache_hit": 0, "failed": 0,
         "started_at": time.time(), "finished_at": 0.0, "current": "",
         # 🔴 必须重置：上一轮点过「中止」若残留，这轮会一部都不跑
         "cancel_requested": False,
@@ -489,6 +493,11 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
 
         wf = ScraperWorkflow(str(DATA_DIR / "movies"))
         sem = asyncio.Semaphore(data.concurrency)
+        # 负缓存（按源记「明确答复没有」的番号）：缺口补全每轮对同批「源站确实没收录」
+        # 的番号反复发起请求纯属浪费，记下来期内不再问。只记「源正常返回但无此片」，
+        # 网络故障/拦截走 fatal→熔断，绝不缓存（详见 app/scraper/miss_cache.py）。
+        from app.scraper.miss_cache import get_miss_cache
+        miss = get_miss_cache(MODULE)
         # 手动指定则完全尊重；留空则逐部按 canon 自动序（见 _order_for）
         manual = [s.strip() for s in (data.sources or []) if s.strip()]
 
@@ -508,9 +517,13 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
                  % ("→".join(source_order_for("ABC-123")),
                     "→".join(source_order_for("200GANA-3426"))))
 
-        async def _try_source(code: str, src: str):
+        async def _try_source(code: str, src: str, order: tuple = ()):
             """单源尝试。返回 ScrapeResult 或 None。超时/异常算「确定性故障」，
             「站点正常但没这片」不算 —— 否则连遇 10 个未收录片就会把好源熔断掉。"""
+            # 负缓存短路：该源已知明确答复「没有」且阵容未变 → 直接跳过，不浪费配额
+            if miss.fresh(src, code, lineup=order):
+                _log("  · %s 源 %s 负缓存命中（已知无此片），跳过" % (code, src))
+                return None
             if _blackout_until.get(src, 0) > time.monotonic():
                 return None
             fatal = False
@@ -540,6 +553,12 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
                     _fail_streak[src] = 0
                     _log("源 %s 连续故障 %d 次，熔断 %ds"
                          % (src, _FAIL_THRESHOLD, _BLACKOUT_SECS))
+            else:
+                # 源正常返回但没给有效结果（典型是「站点无此片」）。只记「干净无数据」
+                # 的情况（r is None）；r 非 None 但不 valid（解析/拦截残留）不记，
+                # 避免把临时故障误判成永久缺失。记录时带上阵容，新源接入后旧记忆作废。
+                if r is None:
+                    miss.record(src, code, lineup=order)
             return None
 
         async def _one(item):
@@ -603,12 +622,23 @@ async def gaps_fill(data: GapFillRequest, background_tasks: BackgroundTasks):
             # 永远碰不到它们。所以：命中但没覆盖目标缺口 ⇒ 记住、继续试下一个源，
             # 直到覆盖齐全或源耗尽；最终用「覆盖最多」的那个结果落盘。
             order = _order_for(code)
+            # 负缓存整体短路：若本轮阵容里**所有源**都已知「明确答复没有」这部片，
+            # 且阵容未变（无新源接入），直接判 no_source，省掉整轮无效请求。
+            # 这是缺口补全世界里提速最大的一处——几百个「源站确实没收录」的番号，
+            # 第二轮起一部都不用联网。
+            if order and all(miss.fresh(src, code, tuple(order)) for src in order):
+                _state["no_source"] += 1
+                _state["neg_cache_hit"] += 1
+                _state["failed_list"].append(
+                    {"code": code, "reason": "no_source(负缓存)"})
+                _log("  ✘ %s 全部源已知无此片（负缓存命中），跳过" % code)
+                return
             best = None          # (覆盖数, result, 源名)
             covered: set[str] = set()
             async with sem:
                 for src in order:
                     _log("  · %s 试源 %s" % (code, src))
-                    r = await _try_source(code, src)
+                    r = await _try_source(code, src, tuple(order))
                     if r is None:
                         continue
                     got = _result_covers(r, reasons)

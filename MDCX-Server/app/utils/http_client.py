@@ -24,6 +24,7 @@ from curl_cffi.requests import Response
 
 from app.services.jp_proxy import get_jp_proxy_url, needs_jp_proxy
 from app.config.manager import get_config
+from app.scraper.http_record import get_active_http_recorder
 from app.utils.browser_fingerprint import (
     BrowserFingerprint,
     RequestPurpose,
@@ -178,6 +179,111 @@ def site_qps(domain: str) -> float:
         if cand in SITE_QPS_OVERRIDES:
             return SITE_QPS_OVERRIDES[cand]
     return DEFAULT_DOMAIN_QPS
+
+
+# ── 自适应降压（进程级共享）─────────────────────────────────────────────
+# 每个域名维护一个压力信号 P∈[0,1]，按 90s 半衰期指数衰减：
+#   · 遇 429 / 503 / 5xx（含被 ban 的迹象）→ P += 0.5（封顶 1）
+#   · 成功 / 确定性 4xx（404 等，站点正常响应）→ P *= 0.7（轻微降压）
+# 有效请求间隔 = 基础间隔 × 抖动(0.65~1.25) × (1 + 3P)  （倍率 ∈ [1, 4]）
+# 约 1/8 概率再插入 1.5~2.2×「阅读停顿」，消解并发同步冲击、更像真人。
+#
+# 设计来源 ref99-javorganizer（MIT，C# 需转写）。与现有的漏桶单调预约
+# （_GLOBAL_DOMAIN_LAST 那段）是正交的两层：预约保证「不超过 QPS 上限」，
+# 自适应降压在「已经撞限流」时温和地把间隔拉长，避免整体封源（breaker）
+# 这种一刀切。两层叠加：预约负责硬上限，降压负责软减速。
+_PRESSURE: dict[str, tuple[float, float]] = {}   # domain -> (last_ts, pressure)
+_PRESSURE_LOCK = threading.Lock()
+_PRESSURE_HALFLIFE = 90.0          # 秒，压力信号半衰期
+_PRESSURE_READING_PAUSE_PROB = 1.0 / 8.0
+_PRESSURE_MAX_MULTIPLIER = 4.0
+
+
+def _pressure_now(domain: str, now: float) -> float:
+    """带衰减地取域名当前压力（调用方须持 _PRESSURE_LOCK）。"""
+    v = _PRESSURE.get(domain)
+    if not v:
+        return 0.0
+    ts, p = v
+    if p <= 0:
+        return 0.0
+    return p * (0.5 ** ((now - ts) / _PRESSURE_HALFLIFE))
+
+
+def _observe_response(url: str, status: Optional[int]) -> None:
+    """反馈一次请求结果，更新对应域名的压力信号。
+
+    ``status`` 为 None 表示请求根本没拿到响应（超时/连接失败）——这类交给
+    breaker 处理，这里不升压（避免把「网络抖」误判成「被限流」而过度减速）。
+    """
+    if not url:
+        return
+    host = urlparse(url).hostname
+    if not host:
+        return
+    if status is None:
+        return
+    # 429 限流 / 5xx 服务端错误 / 503 维护 → 升压；其余（含 404 等确定性 4xx、
+    # 2xx/3xx 成功）视为站点正常响应 → 降压。
+    rate_limited = status == 429 or 500 <= status < 600
+    now = time.monotonic()
+    with _PRESSURE_LOCK:
+        p = _pressure_now(host, now)
+        if rate_limited:
+            p = min(1.0, p + 0.5)
+        else:
+            p *= 0.7
+        _PRESSURE[host] = (now, p)
+
+
+def _domain_pressure_multiplier(domain: str) -> float:
+    """域名当前降压倍率 = 1 + 3P，∈ [1, 4]。"""
+    now = time.monotonic()
+    with _PRESSURE_LOCK:
+        p = _pressure_now(domain, now)
+    return 1.0 + 3.0 * p
+
+
+def _record_exchange_if_active(
+    method: str,
+    url: str,
+    request_headers: Optional[dict],
+    params: Optional[Any],
+    response: Any,
+    *,
+    error: Optional[str] = None,
+) -> None:
+    """透明录制：仅在 `http_record.set_active_http_recorder` 开启时落盘。
+
+    生产路径默认 `_active` 为 None → 本函数直接 return，**零文件 IO、零额外读体**。
+    任何异常都吞掉：录制失败绝不能变成一次刮削失败。
+    """
+    rec = get_active_http_recorder()
+    if rec is None:
+        return
+    try:
+        rec.record_exchange(method, url, request_headers, params, response, error=error)
+    except Exception as e:  # 录制写入失败非致命
+        logger.debug("HTTP 录制写入失败（已忽略）: %s", e)
+
+
+def _domain_jittered_interval(domain: str, qps: float) -> float:
+    """域名请求间隔：基础间隔 × 抖动 × 压力倍率，偶尔叠加阅读停顿。
+
+    抖动（0.65~1.25）刻意让并发请求的间隔不再精确相等 —— 原来所有并发协程
+    都预约在 1/qps 的整数倍边界上、到点一起冲，正是 javbus 被打出 429 的
+    同步根因之一（叠加在漏桶之上）。压力倍率在撞限流后把间隔拉长到 4 倍，
+    但不触发 breaker 的整体封源。
+    """
+    if qps <= 0:
+        return 0.0
+    base = 1.0 / qps
+    jitter = random.uniform(0.65, 1.25)
+    mult = _domain_pressure_multiplier(domain)
+    interval = base * jitter * mult
+    if random.random() < _PRESSURE_READING_PAUSE_PROB:
+        interval *= random.uniform(1.5, 2.2)
+    return interval
 
 
 class AsyncHttpClient:
@@ -410,6 +516,9 @@ class AsyncHttpClient:
                     url, headers=headers, cookies=cookies or {}, params=params,
                 )
             await resp.aread()
+            # 降级路径也反馈状态码（429/5xx 升压，其余降压），与 curl 路径一致
+            _observe_response(url, getattr(resp, "status_code", None))
+            _record_exchange_if_active("GET", url, headers, kwargs.get("params"), resp)
             return resp
         except Exception as e:
             # 连接池可能因代理断开等原因损坏 / 半开连接，重建客户端再试一次
@@ -437,6 +546,7 @@ class AsyncHttpClient:
                     url, headers=headers, cookies=cookies or {}, params=params,
                 )
             await resp.aread()
+            _record_exchange_if_active(method, url, headers, params, resp)
             return resp
     
     async def _wait_for_rate_limit(self, url: str = "") -> None:
@@ -478,12 +588,12 @@ class AsyncHttpClient:
             if delay > 0:
                 await asyncio.sleep(delay)
 
-        # 域名级速率限制（进程级共享 + 站点级 QPS 覆盖）
+        # 域名级速率限制（进程级共享 + 站点级 QPS 覆盖 + 抖动 + 自适应降压）
         if url:
             domain = urlparse(url).hostname or ""
             if domain:
                 qps = site_qps(domain)
-                interval = (1.0 / qps) if qps > 0 else 0.0
+                interval = _domain_jittered_interval(domain, qps)
                 if interval > 0:
                     async with _GLOBAL_DOMAIN_LOCK:
                         now = time.monotonic()
@@ -495,6 +605,9 @@ class AsyncHttpClient:
                             _GLOBAL_DOMAIN_LAST[domain] = now
                             return
                         # 锁内单调预约：next = max(now, last + interval)
+                        # 🔴 interval 已含抖动与压力倍率，每次预约的间隔可变，
+                        # 天然打散并发同步；用当前 interval 预约，下个协程再按其
+                        # 当下的 interval 续约，整体仍不超过 QPS 上限。
                         target = max(now, last + interval)
                         _GLOBAL_DOMAIN_LAST[domain] = target
                     delay = target - time.monotonic()
@@ -579,14 +692,21 @@ class AsyncHttpClient:
                     _ = response.content
                     # 检查响应状态码
                     if response.status_code and response.status_code in _NO_RETRY_STATUS:
-                        # 确定性失败：跳过剩余重试与 httpx 降级，直接失败
+                        # 确定性失败：跳过剩余重试与 httpx 降级，直接失败。
+                        # 站点**正常响应**（如 404），不算限流 → 降压。
+                        _observe_response(url, response.status_code)
                         no_retry_status = response.status_code
                         logger.warning(
                             f"GET {url} 确定性失败 HTTP {no_retry_status}，跳过重试"
                         )
                         break
                     if response.status_code and 400 <= response.status_code < 600:
+                        # 429 限流 / 5xx 服务端错误 → 升压（自适应降压）
+                        _observe_response(url, response.status_code)
                         raise Exception(f"HTTP {response.status_code}")
+                    # 2xx / 3xx 成功 → 降压
+                    _observe_response(url, response.status_code or 200)
+                    _record_exchange_if_active("GET", url, req_headers, kwargs.get("params"), response)
                     return response
 
                 except Exception as e:
@@ -794,6 +914,7 @@ class AsyncHttpClient:
                             f"POST {url} 确定性失败 HTTP {no_retry_status}，跳过重试"
                         )
                         break
+                    _record_exchange_if_active("POST", url, req_headers, kwargs.get("params"), response)
                     return response
 
                 except Exception as e:
@@ -950,6 +1071,15 @@ async def get_http_client() -> AsyncHttpClient:
     global _client
 
     if _client is None:
+        # 开发调试开关：设置 MDCX_HTTP_RECORD_DIR 即把本次进程所有出站 HTTP
+        # 录到该目录（仅本地调试用，生产不要设置）。录制经 http_record 的
+        # ContextVar 透明接入，不影响未开启时的是零开销。
+        try:
+            from app.scraper.http_record import auto_begin_from_env
+
+            auto_begin_from_env()
+        except Exception:
+            pass
         config = get_config()
         # 统一走项目唯一定义源：优先内置 xray 实际端口，回退旧版 config.proxy
         from app.services.proxy_manager import get_effective_proxy_url

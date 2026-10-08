@@ -353,6 +353,9 @@ export const pingCrawler = (name) => api.post(`/crawlers/${name}/ping`)
 export const pingCrawlers = () => api.post('/crawlers/ping')
 export const setCrawlerPriority = (priorities) => api.post('/crawlers/priority', { priorities })
 export const getCrawlerStats = () => api.get('/crawlers/stats')
+// 源健康：能力矩阵 + 层级 + 实时熔断（即时视角，轻量，可高频轮询）
+// 与 getCrawlerStats 的区别：后者查 scrape_attempts 算历史成功率（重），这个读内存态（轻）
+export const getSourceHealth = () => api.get('/health/sources')
 
 // ============================================
 // AVLeague 实时榜单 / 演员新作发现

@@ -46,6 +46,11 @@ SOURCE_LABELS: dict[str, str] = {
     "javdb_new": "JavDB 新版（App 通道兜底）",
     "javdatabase": "JavDatabase（有码专精）",
     "freejavbt": "FreeJavBT",
+    # HEYZO（P1-4 接入的辅助兜底源）。
+    # ⚠️ UI 必须写清番号形态：heyzo crawler 有番号守卫，只处理**纯数字番号**
+    # （如 3954）与 `HEYZO-` 前缀，普通有码番号（ABC-123）直接返回 None，
+    # 不发网络也不污染源序。不加这句说明，用户会以为它是通用源而白等一轮。
+    "heyzo": "HEYZO（英文站，仅纯数字/HEYZO- 番号）",
 }
 
 # 🔴 自检：labels 必须覆盖 canon 序的每一个源，否则前端下拉会退化成裸源名

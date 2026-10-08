@@ -682,6 +682,151 @@ def strip_episode_suffix(number: str) -> str:
     return number
 
 
+# ---------------------------------------------------------------------------
+# P2-2 · 分卷 / 分片识别（去重侧）· 来源 ref108-avm/app/dedupe.py
+# ---------------------------------------------------------------------------
+# 🔴 实测结论（2026-10-08，19 个真实分卷命名样本探针）：
+#   duplicate_scanner 的 `_CODE_PATTERNS` 要求「番号 + 可选 -C/-UC/-U」后**直接到串尾**，
+#   于是 `ABC-123-CD1` / `ABC-123-Part1` / `ABC-123 (1)` / `ABC-123-A` 这类分卷文件
+#   全部 `extract_base_code() → None`，被**静默跳过**（13/19 样本命中）。
+#
+#   后果与路线图原判「CD1/CD2 可能误判重复」**不同**：不是误删，而是分卷文件对
+#   去重扫描完全不可见 —— 既看不到「某番号有 CD1+CD2 两个分卷」（本来合法、不该删），
+#   更发现不了「分卷 1 被存了两份」（这才是真正该清理的重复）。
+#
+# 修法：先定位番号，再只对**番号之后的剩余部分**匹配分卷标记。
+#
+# 🟢 关键防误判（与 ref108 的差异）：ref108 的 `_split_part` 是拿**整个文件名主干**
+#   去匹配分卷后缀，所以 `ABC-123` 末尾的 `123` 也会命中它的 `[-_.\s](\d+)$`，
+#   它必须额外加「拆分后基础名无数字则回退」的补丁。这里**只在番号之后**匹配，
+#   番号自身的尾部数字根本不进入匹配范围，从源头规避该陷阱。
+#
+# 🟢 保守原则：剩余部分既不为空、也不是属性标记、也不是分卷标记时，返回
+#   `(None, None)`（维持「跳过」），与改动前行为一致 —— 不认识的尾巴绝不猜。
+
+#: 番号主干（只取这一段，其后才是后缀/分卷区）
+_CODE_HEAD_RE = re.compile(r"([A-Za-z]{2,6}-\d{2,5})")
+
+#: 属性标记（中字 / 无码），必须完整吃掉剩余部分
+_ATTR_FULL_RE = re.compile(r"[-_.\s]?(?:[Uu][Cc]|[Cc]|[Uu])")
+
+#: 分卷标记（只作用于番号之后的剩余部分）
+#:   1. -cd1 / -CD-2 / part03 / disk 2 / vol1 / dvd1 / EP1 / episode2
+#:   2. (1) / [2]
+#:   3. -1 / _2  （裸数字分卷）
+#:   4. -A / _b  （单字母分卷）
+_PART_RES = [
+    re.compile(
+        r"[-_.\s]?(?:cd|part|disk|disc|vol|dvd|ep|episode)[-_.\s]*(\d{1,2})$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"[-_.\s]?[\[(](\d{1,2})[\])]$"),
+    re.compile(r"[-_](\d{1,2})$"),
+    re.compile(r"[-_]([A-Za-z])$"),
+]
+
+#: 单字母分卷里要排除的字母 —— C/U 是**中字/无码属性标记**，不是分卷。
+#: 🔴 不排除会把 `ABC-123-C.mp4`（中字）判成「分卷 c」，于是它不再与
+#:    `ABC-123.mp4` 归入同组 ⇒ 破坏既有的「整片 vs 中字版」去重能力（真回归）。
+_ATTR_LETTERS = frozenset({"C", "U"})
+
+
+def _norm_part(num: str) -> str:
+    """分卷序号归一化：`01`→`1`、`B`→`b`，便于 CD1 / cd01 / -1 归为同一卷。"""
+    n = (num or "").strip()
+    if n.isdigit():
+        return str(int(n))
+    return n.lower()
+
+
+def _parse_tail(rem: str) -> Optional[str]:
+    """解析番号**之后**的尾巴。
+
+    返回：
+      - ``"1"`` / ``"a"`` → 分卷序号
+      - ``""``            → 合法但无分卷（空尾巴或纯 -C/-UC/-U 属性标记）
+      - ``None``          → 尾巴不认识 ⇒ 调用方应「跳过」，绝不猜
+    """
+    for rx in _PART_RES:
+        pm = rx.search(rem)
+        if not pm:
+            continue
+        token = pm.group(1)
+        # C/U 是属性标记而非分卷（否则会破坏 -C/-U 去重，见 _ATTR_LETTERS 注释）
+        if token.isalpha() and token.upper() in _ATTR_LETTERS:
+            continue
+        head = rem[: pm.start()]
+        if head == "" or _ATTR_FULL_RE.fullmatch(head):
+            return _norm_part(token)
+
+    if rem == "" or _ATTR_FULL_RE.fullmatch(rem):
+        return ""
+    return None
+
+
+#: 括号番号兜底 `[ABC-123]` —— 旧 `_CODE_PATTERNS` 的第二条，必须保留，
+#: 否则 `[ABC-123].mp4` 这类命名会从「能匹配」退化成「跳过」（真回归）。
+_BRACKET_CODE_RE = re.compile(r"\[([A-Za-z]{2,6}-\d{2,5})\]")
+
+
+def split_code_and_part(stem: str) -> tuple[Optional[str], Optional[str]]:
+    """把文件名主干拆成 ``(番号, 分卷序号)``。
+
+    - 无分卷标记：``("ABC-123", None)`` —— `ABC-123.mp4` / `ABC-123-C.mp4` / `ABC-123-UC.mp4`
+    - 有分卷标记：``("ABC-123", "1")`` —— `ABC-123-CD1` / `ABC-123-part01` / `ABC-123 (1)` / `ABC-123CD1`
+    - 识别不出（剩余尾巴不认识）：``(None, None)`` —— 维持「跳过」，不猜。
+
+    分卷序号已归一化（``CD1``/``cd01``/``-1`` 都得到 ``"1"``），因此
+    「同一卷的两个副本」能被去重扫到，而 **CD1 与 CD2 不会被当成彼此的重复**。
+
+    示例:
+        >>> split_code_and_part("ABC-123-CD1")
+        ('ABC-123', '1')
+        >>> split_code_and_part("ABC-123")
+        ('ABC-123', None)
+        >>> split_code_and_part("ABC-123-C")
+        ('ABC-123', None)
+    """
+    if not stem:
+        return None, None
+
+    # 🔴 遍历**所有**番号候选，取最后一个「尾巴可解析」的结果。
+    # 原因：旧 `_CODE_PATTERNS` 带 `$`，等价于「锚定串尾」，所以
+    # `ABC-123 DEF-456` 这种多番号文件名旧逻辑取的是 **DEF-456**。
+    # 若这里只取第一个匹配（ABC-123），尾巴 " DEF-456" 解析不了 ⇒ 返回 None，
+    # 会把「原本能匹配的文件」变成「跳过」——那是真回归。
+    best: Optional[tuple[str, Optional[str]]] = None
+    for m in _CODE_HEAD_RE.finditer(stem):
+        parsed = _parse_tail(stem[m.end():])
+        if parsed is None:
+            continue
+        best = (m.group(1).upper(), parsed or None)
+
+    if best is not None:
+        return best
+
+    # 括号兜底（旧行为的第二条 pattern）
+    bm = _BRACKET_CODE_RE.search(stem)
+    if bm:
+        return bm.group(1).upper(), None
+
+    return None, None
+
+
+def is_multi_part(stems: list[str]) -> bool:
+    """同一批文件名主干里是否出现了**多个不同分卷序号**。
+
+    用于给去重组打「分卷」标记：同一基础名下出现 ≥2 个不同序号 ⇒ 这些文件是
+    同一部片的合法分卷（CD1+CD2），**不是**冗余副本，不应计入可释放空间。
+    """
+    parts: set[str] = set()
+    for s in stems or []:
+        _code, part = split_code_and_part(os.path.splitext(s)[0] if s else "")
+        if part is not None:
+            parts.add(part)
+    return len(parts) >= 2
+
+
 def clean_filename(filename: str, escape_strings: Optional[list[str]] = None) -> str:
     """
     清洗文件名，去除广告词、分辨率、CRC等
@@ -701,6 +846,14 @@ def clean_filename(filename: str, escape_strings: Optional[list[str]] = None) ->
         for s in escape_strings:
             name = name.replace(s, "")
 
+    # 去除广告域名 / 水印前缀（hhd800.com@XXX-123、www.xxx.com@XXX-123）
+    # 必须放在分辨率清洗之前，否则 "hhd800" 里的 "HD" 会先被吃掉（见下方词边界说明）
+    name = re.sub(
+        r"(?i)(?:www\.)?[A-Za-z0-9_-]+\.(?:com|net|org|xyz|club|asia|vip|cc|cn|co|me"
+        r"|tw|to|live|work|info|icu|online|shop)@?",
+        "", name,
+    )
+
     # 去除分集标记 (CD1, CD2, Part1, EP.1)
     name = re.sub(r"[-_ .]?CD\d{1,2}", "", name, flags=re.IGNORECASE)
     name = re.sub(r"[-_ .]?[Pp]art\d{1,2}", "", name)
@@ -710,14 +863,30 @@ def clean_filename(filename: str, escape_strings: Optional[list[str]] = None) ->
     name = re.sub(r"\d{4}[-_.]\d{1,2}[-_.]\d{1,2}", "", name)
     name = re.sub(r"\d{2}[-_.]\d{2}[-_.]\d{2}", "", name)
 
-    # 去除分辨率标记
-    name = re.sub(r"[-_ .]?(1080p|720p|480p|4K|HD|FHD)", "", name, flags=re.IGNORECASE)
+    # 🔴 以下三组清洗一律加「词边界」保护：(?<![A-Za-z0-9]) … (?![A-Za-z0-9])
+    #    否则会发生子串误伤：
+    #      "hhd800.com@" 里的 HD 被吃掉 -> "h800.com@"
+    #      "javhd.net@"  里的 HD 被吃掉 -> "jav.net@"
+    #      "ABCN-123"    里的 CN 被吃掉 -> "AB-123"
+    #    写法要点：[-_ .]? 先吃掉左侧分隔符，再用后顾断言确认标记左边不是字母数字。
+
+    # 去除分辨率标记（补 8k / 2160p / UHD）
+    name = re.sub(
+        r"[-_ .]?(?<![A-Za-z0-9])(1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD)(?![A-Za-z0-9])",
+        "", name, flags=re.IGNORECASE,
+    )
 
     # 去除视频编码标记
-    name = re.sub(r"[-_ .]?(x264|x265|HEVC|H\.264|H\.265|AVC)", "", name, flags=re.IGNORECASE)
+    name = re.sub(
+        r"[-_ .]?(?<![A-Za-z0-9])(x264|x265|HEVC|H\.264|H\.265|AVC)(?![A-Za-z0-9])",
+        "", name, flags=re.IGNORECASE,
+    )
 
     # 去除字幕标记
-    name = re.sub(r"[-_ .]?(UNCENSORED|LEAKED|CHINESE|CN|中字|字幕)", "", name, flags=re.IGNORECASE)
+    name = re.sub(
+        r"[-_ .]?(?<![A-Za-z0-9])(UNCENSORED|LEAKED|CHINESE|CN|中字|字幕)(?![A-Za-z0-9])",
+        "", name, flags=re.IGNORECASE,
+    )
 
     # 去除 CRC
     name = re.sub(r"\[[A-Fa-f0-9]{8}\]", "", name)

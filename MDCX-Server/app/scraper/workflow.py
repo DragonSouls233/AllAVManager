@@ -318,7 +318,9 @@ class ScraperWorkflow:
             # NFO 却变 0。所以生成前先用库中已有值把 result 的空字段补齐。
             await self._backfill_result_from_db(result, number, module_name)
             logger.info("正在生成NFO")
-            nfo_path = generate_nfo(result, str(movie_dir))
+            # 🔴 2026-10-07（P1-2）：显式开启 Kodi 增强字段，让落盘 NFO 含
+            # <uniqueId>/<ratings>/<fileinfo><streamdetails>（播放器读视频规格必需）。
+            nfo_path = generate_nfo(result, str(movie_dir), kodi_compatible=True)
             if nfo_path:
                 logger.info(f"NFO已保存: {nfo_path}")
 

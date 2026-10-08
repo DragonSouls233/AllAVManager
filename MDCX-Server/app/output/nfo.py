@@ -62,7 +62,11 @@ class NFOGenerator:
         result: ScrapeResult,
         movie_dir: Optional[str] = None,
         filename: str = "movie.nfo",
-        kodi_compatible: bool = False,
+        # 🔴 2026-10-07（P1-2）：默认开启 Kodi 增强字段。
+        # 此前默认 False，导致刮削落盘 NFO 完全不写 <uniqueId>/<ratings>/<fileinfo><streamdetails>，
+        # 播放器（Emby/Kodi/Jellyfin）读不到视频规格与结构化评分。这些字段对所有播放器通用，
+        # 缺失字段（如 rating 为空）不会硬写，向后兼容。
+        kodi_compatible: bool = True,
     ) -> Optional[str]:
         """
         生成 NFO 文件
@@ -590,8 +594,16 @@ class NFOGenerator:
         # 番号（Kodi 专用 code 字段，与 <id> 并列）
         self._add_element(root, "code", _g(result, "code"))
 
-        # 国家（日本 AV 默认 Japan）
-        self._add_element(root, "country", "Japan")
+        # 国家：日本系（jav/fc2/uncensored）默认 Japan；其它模块（western/pornhub 等）
+        # 不盲标，避免错误数据。🔴 2026-10-07（P1-2 默认开启 Kodi 字段后，此分支对全模块生效，
+        # 此前 kodi_compatible=False 时根本不进这里，故未暴露）。
+        country = _g(result, "country")
+        if not country:
+            src = (_g(result, "source") or "").lower()
+            if any(k in src for k in ("jav", "fc2", "uncensored")):
+                country = "Japan"
+        if country:
+            self._add_element(root, "country", country)
 
         # aired（Kodi 使用此字段识别播出日期）
         if release_date:
@@ -764,15 +776,19 @@ class NFOGenerator:
                 if lang:
                     self._add_element(sub_elem, "language", lang)
 
-        # 时长（从 format 段获取，更准确）
+        # 时长（从 format 段获取，比单条 stream.duration 更准，覆盖整容器）
+        # 🔴 2026-10-07（P1-2）：video 块同时写 <durationinseconds>（秒）与 <duration>（分钟），
+        # Kodi 两种口径都认；此前只写其一，部分播放器显示时长为空。
         fmt = data.get("format", {})
         if fmt.get("duration"):
             try:
-                dur = float(fmt["duration"])
-                # 找到 video 元素并写入 duration（分钟）
+                dur_s = float(fmt["duration"])
                 video_elem = streamdetails.find("video")
-                if video_elem is not None and video_elem.find("duration") is None:
-                    self._add_element(video_elem, "duration", str(int(dur // 60)))
+                if video_elem is not None:
+                    if video_elem.find("durationinseconds") is None:
+                        self._add_element(video_elem, "durationinseconds", str(int(dur_s)))
+                    if video_elem.find("duration") is None:
+                        self._add_element(video_elem, "duration", str(int(dur_s // 60)))
             except (TypeError, ValueError):
                 pass
 
@@ -890,7 +906,8 @@ def generate_nfo(
     result: ScrapeResult,
     movie_dir: str,
     filename: str = "movie.nfo",
-    kodi_compatible: bool = False,
+    # 🔴 2026-10-07（P1-2）：默认开启 Kodi 增强字段，见 NFOGenerator.generate 说明。
+    kodi_compatible: bool = True,
 ) -> Optional[str]:
     """
     生成 NFO 文件的便捷函数

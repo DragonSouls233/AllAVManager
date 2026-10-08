@@ -327,13 +327,24 @@ class ScraperEngine:
         from app.scraper.canon import source_order_for
 
         by_name = {c.name: c for c in primary}
-        # 素人专用序优先，其余主力源按番号轮换追加在后
+        # 🔴 2026-10-08 回归缺陷：**轮换完全失效**。
+        # 旧实现 `ordered = preferred + rotated + tail`，而 `preferred` 是 canon
+        # 的**完整源序**（如 javdb/javbus/javmenu 全部）—— 它永远排在 rotated 之前，
+        # 执行到 `ordered[0]` 时恰好始终是 preferred[0]（=javdb）。
+        # 实测：20 个不同番号全部首选 javdb（应分散到 3 个源）
+        # ↳ javdb 承受 100% 请求，容易被限流；轮换的负载均衡目的不到达。
+        #
+        # 修法：preferred 只用作「轮换池成员集合」，不再直接置顶。
+        # 轮换序由 PRIMARY_CRAWLERS 按番号哈希决定，所有主力源都有机会当首选。
         preferred = [n for n in source_order_for(number) if n in by_name]
+        # 哈希基础用 preferred 的长度（保持与 canon 序一致的均摊算法）
+        _pool = [n for n in self.PRIMARY_CRAWLERS if n not in self.JP_TAIL_CRAWLERS]
+        _base = preferred if len(preferred) == len(_pool) else _pool
+        _base = [n for n in _base if n in by_name]
         # 🔴 固定尾部源（JP_TAIL_CRAWLERS）**不进轮换池**：轮换是「按番号错开
         # 首选源」的负载均衡手段，而日本节点单部 ~70s，让它参与轮换等于有 1/N
         # 的片子第一枪就打在最慢的源上。它只应作为前序全未命中后的兜底。
-        rest_names = [n for n in self.PRIMARY_CRAWLERS
-                      if n not in self.JP_TAIL_CRAWLERS]
+        rest_names = _base
         n = max(1, len(rest_names))
         start = sum(ord(ch) for ch in str(number or "")) % n
         rotated = [
@@ -345,7 +356,9 @@ class ScraperEngine:
         tail = [n2 for n2 in source_order_for(number)
                 if n2 in self.JP_TAIL_CRAWLERS and n2 in by_name]
         ordered: list = []
-        for name in preferred + rotated + tail:
+        # 🔴 轮换序列在前（负载均衡的实际执行序），preferred 只用于**补齐**
+        # 轮换池没覆盖到的源，避免遗漏；两者用 seen 去重。
+        for name in rotated + preferred + tail:
             if name in by_name and name not in [c.name for c in ordered]:
                 ordered.append(by_name[name])
         return ordered or list(primary)

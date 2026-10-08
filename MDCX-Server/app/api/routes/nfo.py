@@ -77,7 +77,8 @@ def _build_nfo_xml(
     movie,
     actors: list[dict],
     tags: list[str],
-    kodi: bool = False,
+    # 🔴 2026-10-07（P1-2）：默认开启 Kodi 增强字段（与 output/nfo.py 一致）。
+    kodi: bool = True,
 ) -> ET.Element:
     """
     根据电影数据构建 NFO XML 结构
@@ -414,7 +415,7 @@ async def _get_movie_tags(session, movie_id: int, module: str) -> list[str]:
 @router.get("/movie/{movie_id}")
 async def export_nfo(
     movie_id: int,
-    kodi: bool = Query(False, description="输出 Kodi 兼容的额外字段（uniqueId/ratings/art/fileinfo 等）"),
+    kodi: bool = Query(True, description="输出 Kodi 兼容的额外字段（uniqueId/ratings/art/fileinfo 等）"),
     module: str = Query("jav"),
 ):
     """导出单个电影的 NFO（返回 XML Response）
@@ -451,7 +452,7 @@ async def export_nfo(
 @router.get("/movie/{movie_id}/file")
 async def download_nfo(
     movie_id: int,
-    kodi: bool = Query(False, description="输出 Kodi 兼容的额外字段"),
+    kodi: bool = Query(True, description="输出 Kodi 兼容的额外字段"),
     module: str = Query("jav"),
 ):
     """下载 NFO 文件
@@ -705,7 +706,7 @@ async def import_nfo(
 @router.post("/batch-export")
 async def batch_export_nfo(
     movie_ids: list[int] = Body(..., description="电影 ID 列表"),
-    kodi: bool = Query(False, description="输出 Kodi 兼容的额外字段"),
+    kodi: bool = Query(True, description="输出 Kodi 兼容的额外字段"),
     module: str = Query("jav"),
 ):
     """批量导出 NFO（接收 movie_ids 列表，返回 zip 文件）

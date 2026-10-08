@@ -57,7 +57,7 @@ from app.services import stash_scraper_bridge
 from app.crawlers import chinese
 
 # 导入本次迁移新增爬虫
-from app.crawlers import dmm_api, missav_api, av123, myjav, javmost, javxx, javsb, javplace, javmenu
+from app.crawlers import dmm_api, missav_api, av123, myjav, javmost, javxx, javsb, javplace, javmenu, heyzo
 
 __all__ = [
     "BaseCrawler",

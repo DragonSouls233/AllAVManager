@@ -24,6 +24,16 @@
       <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-inner">
+            <div class="stat-num" :class="health.circuit_open > 0 ? 'danger' : 'info'">
+              {{ health.circuit_open || 0 }}
+            </div>
+            <div class="stat-label">熔断中</div>
+          </div>
+        </el-card>
+      </el-col>
+      <el-col :span="6">
+        <el-card shadow="hover" class="stat-card">
+          <div class="stat-inner">
             <div class="stat-num warning">{{ stats.disabled || 0 }}</div>
             <div class="stat-label">已禁用</div>
           </div>
@@ -39,6 +49,20 @@
       </el-col>
     </el-row>
 
+    <!-- 熔断中的源：一眼看清现在谁在跳过 -->
+    <el-alert
+      v-if="breakerList.length"
+      type="warning" show-icon :closable="false" class="breaker-banner"
+      :title="`${breakerList.length} 个源当前被熔断跳过`"
+    >
+      <div class="breaker-list">
+        <el-tag v-for="s in breakerList" :key="s.name" type="danger" size="small" class="breaker-tag">
+          {{ s.display_name || s.name }} · {{ Math.round(s.breaker.remaining_seconds) }}s
+          <span v-if="s.breaker.strike" class="breaker-strike">· 连续 {{ s.breaker.strike }} 次</span>
+        </el-tag>
+      </div>
+    </el-alert>
+
     <!-- 工具栏 -->
     <el-card class="toolbar-card" shadow="never">
       <div class="toolbar">
@@ -51,6 +75,16 @@
             <el-option label="已启用" value="enabled" />
             <el-option label="已禁用" value="disabled" />
           </el-select>
+          <el-select v-model="filterTier" placeholder="源序层级" style="width:120px">
+            <el-option label="全部层级" value="" />
+            <el-option label="主力源" value="primary" />
+            <el-option label="辅助源" value="aux" />
+            <el-option label="日本官方" value="jp" />
+            <el-option label="未入源序" value="other" />
+          </el-select>
+          <el-tooltip content="只显示当前熔断中的源" placement="top">
+            <el-checkbox v-model="onlyBreaker">仅熔断</el-checkbox>
+          </el-tooltip>
           <span class="filter-hint" v-if="moduleTypes.length">当前模块：<el-tag size="small" :type="moduleAlertType">{{ moduleTypes.join(' · ') }}</el-tag></span>
         </div>
         <div class="toolbar-right">
@@ -86,6 +120,34 @@
         <el-table-column prop="priority" label="优先级" width="90" sortable>
           <template #default="{ row }">
             <span :class="['priority-badge', `p-${priorityLevel(row.priority)}`]">{{ row.priority }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="源序层级" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="healthMap[row.name]" size="small" :type="tierTagType(healthMap[row.name].tier)">
+              {{ tierLabel(healthMap[row.name].tier) }}
+            </el-tag>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="能力" min-width="190">
+          <template #default="{ row }">
+            <template v-if="healthMap[row.name]">
+              <el-tag v-for="c in (healthMap[row.name].capabilities || [])" :key="c" size="small"
+                :type="capTagType(c)" class="cap-tag">{{ capLabel(c) }}</el-tag>
+            </template>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="熔断" width="120" align="center">
+          <template #default="{ row }">
+            <template v-if="healthMap[row.name]">
+              <el-tag v-if="healthMap[row.name].breaker?.open" type="danger" size="small"
+                class="breaker-cell">跳过 {{ Math.round(healthMap[row.name].breaker.remaining_seconds) }}s</el-tag>
+              <el-tag v-else-if="healthMap[row.name].breaker?.half_open" type="warning" size="small">半开</el-tag>
+              <span v-else class="text-ok">正常</span>
+            </template>
+            <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="80" fixed="right">
@@ -128,7 +190,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, Refresh, Connection } from '@element-plus/icons-vue'
-import { getCrawlers, getCrawlerStats, enableCrawler, disableCrawler, testCrawler, pingCrawler, pingCrawlers } from '@/api'
+import { getCrawlers, getCrawlerStats, getSourceHealth, enableCrawler, disableCrawler, testCrawler, pingCrawler, pingCrawlers } from '@/api'
 
 const route = useRoute()
 const loading = ref(false)
@@ -137,6 +199,8 @@ const crawlers = ref([])
 const stats = ref({})
 const searchKey = ref('')
 const filterStatus = ref('')
+const filterTier = ref('')
+const onlyBreaker = ref(false)
 
 // ---------- 模块检测 ----------
 const MODULE_MAP = {
@@ -159,6 +223,45 @@ const moduleDesc = computed(() => moduleCfg.value.desc)
 const moduleAlertType = computed(() => moduleCfg.value.alertType)
 const moduleTypes = computed(() => moduleCfg.value.types)
 
+// ---------- 源健康（能力矩阵 / 层级 / 熔断）----------
+// 端点 /health/sources 是 2026-10-08 新增；老后端未部署时返回 404，
+// 这里整体容错：拿不到就退化成只显示原有列，不报错、不白屏。
+const health = ref({})
+const healthMap = computed(() => {
+  const m = {}
+  for (const s of (health.value.sources || [])) m[s.name] = s
+  return m
+})
+const breakerList = computed(() =>
+  (health.value.sources || []).filter(s => s.breaker?.open)
+)
+
+const TIER_LABEL = { primary: '主力', aux: '辅助', jp: '日本', other: '未入序' }
+const TIER_TAG = { primary: 'success', aux: 'warning', jp: 'danger', other: 'info' }
+const tierLabel = (t) => TIER_LABEL[t] || t
+const tierTagType = (t) => TIER_TAG[t] || 'info'
+
+// 能力轴：与后端 SourceCapability 枚举一致
+const CAP_LABEL = {
+  movie: '影片', performer: '演员', gallery: '图集',
+  plot: '简介', rating: '评分', genres: '标签',
+}
+const CAP_TAG = {
+  movie: 'success', performer: 'primary', gallery: 'warning',
+  plot: 'danger', rating: 'info', genres: 'info',
+}
+const capLabel = (c) => CAP_LABEL[c] || c
+const capTagType = (c) => CAP_TAG[c] || 'info'
+
+const loadHealth = async () => {
+  try {
+    const res = await getSourceHealth()
+    health.value = res || {}
+  } catch (e) {
+    health.value = {}   // 老后端无此端点，静默降级
+  }
+}
+
 // ---------- 过滤 ----------
 const filteredCrawlers = computed(() => {
   return crawlers.value.filter(c => {
@@ -177,6 +280,16 @@ const filteredCrawlers = computed(() => {
     // 状态
     if (filterStatus.value === 'enabled' && !c.enabled) return false
     if (filterStatus.value === 'disabled' && c.enabled) return false
+    // 源序层级
+    if (filterTier.value) {
+      const h = healthMap.value[c.name]
+      if (!h || h.tier !== filterTier.value) return false
+    }
+    // 仅熔断
+    if (onlyBreaker.value) {
+      const h = healthMap.value[c.name]
+      if (!h?.breaker?.open) return false
+    }
     return true
   })
 })
@@ -213,6 +326,7 @@ const loadCrawlers = async () => {
     const res = await getCrawlers()
     crawlers.value = (res.items || res || []).map(c => ({ ...c, _ping: undefined, _switching: false, _testing: false, _pinging: false }))
     loadStats()
+    loadHealth()
   } catch (e) { /* ignore */ }
   finally { loading.value = false }
 }
@@ -299,6 +413,7 @@ onMounted(() => { loadCrawlers() })
 .stat-num.success { color:#67c23a; }
 .stat-num.warning { color:#e6a23c; }
 .stat-num.info { color:#909399; }
+.stat-num.danger { color:#f56c6c; }
 .stat-label { color:#909399; font-size:13px; margin-top:4px; }
 .toolbar-card, .table-card { border-radius:10px; }
 .toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
@@ -306,6 +421,17 @@ onMounted(() => { loadCrawlers() })
 .filter-hint { font-size:12px; color:#909399; }
 .crawler-name { font-family:Consolas,Monaco,monospace; font-weight:600; color:#303133; }
 .text-muted { color:#c0c4cc; }
+.text-ok { color:#67c23a; font-size:12px; }
+
+/* 熔断横幅 */
+.breaker-banner { margin-bottom:12px; }
+.breaker-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.breaker-tag { margin:0; }
+.breaker-strike { opacity:.75; margin-left:4px; }
+
+/* 能力标签 */
+.cap-tag { margin:0 4px 2px 0; }
+.breaker-cell { font-variant-numeric: tabular-nums; }
 .priority-badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:12px; font-weight:600; color:#fff; }
 .priority-badge.p-high { background:#f56c6c; }
 .priority-badge.p-mid { background:#e6a23c; }

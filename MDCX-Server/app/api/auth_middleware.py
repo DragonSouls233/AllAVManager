@@ -28,6 +28,7 @@ PUBLIC_PATHS = {
     "/api/v1/health/ready",
     "/api/v1/health/live",
     "/api/v1/health/metrics",
+    "/api/v1/health/sources",
     "/metrics",
     "/api/docs",
     "/api/redoc",

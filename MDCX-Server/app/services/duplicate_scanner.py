@@ -56,6 +56,8 @@ class DuplicateFile:
     suffix: str           # "-C" / "-UC" / "-U" / ""(无后缀)
     is_chinese: bool      # 含中字标记
     is_uncensored: bool   # 含无码标记
+    # P2-2：分卷序号（"1"/"2"/"a"...），None = 非分卷（整片/中字版/无码版）
+    part: Optional[str] = None
 
 
 @dataclass
@@ -66,6 +68,10 @@ class DuplicateGroup:
     # 推荐保留的文件（排序后第一个：优先中字 → 其次大文件）
     keep_index: int = 0
     category: str = ""                   # 分类/演员名（从路径提取）
+    # P2-2：该基础番号下是否还存在**其它分卷**（CD1+CD2 这种合法多文件）。
+    # True 表示本组只是整套分卷中的一卷 —— 用于界面提示「删掉会丢内容」。
+    # 注意：本组内部仍然是**同一卷**的副本，删副本依然安全。
+    multi_part: bool = False
 
     @property
     def wasted_bytes(self) -> int:
@@ -89,34 +95,49 @@ class DuplicateGroup:
                     "suffix": f.suffix or "(无后缀)",
                     "is_chinese": f.is_chinese,
                     "is_uncensored": f.is_uncensored,
+                    "part": f.part,          # P2-2：分卷序号（None = 整片）
+                    "part_display": (f"CD{f.part}" if f.part else "(整片)"),
                 }
                 for f in self.files
             ],
+            # P2-2：该番号是否还存在**其它分卷**（有 ⇒ 本组是分卷之一，删它=丢内容）
+            "multi_part": self.multi_part,
         }
 
 
-def extract_base_code(file_name: str, file_dir: Path) -> Optional[str]:
-    """从文件名提取基础番号（去除 -C/-UC/-U 后缀）
+def _code_from(stem: str, file_dir: Path) -> tuple[Optional[str], Optional[str]]:
+    """从文件名提取 ``(基础番号, 分卷序号)``，文件名无匹配时回退父目录名。
 
-    逻辑与 jav_scanner._extract_code 一致。
+    分卷识别交给 `number.split_code_and_part`（P2-2）：它**只在番号之后**匹配
+    分卷标记，所以不会把番号自身的尾部数字当成卷号。
     """
-    stem = Path(file_name).stem
+    from app.scraper.number import split_code_and_part
 
-    for pattern in _CODE_PATTERNS:
-        match = pattern.search(stem)
-        if match:
-            code = match.group(1).upper().rstrip("-_. ")
-            return code
+    code, part = split_code_and_part(Path(stem).stem)
+    if code:
+        return code, part
 
-    # 文件名无匹配时尝试父目录名
-    parent_name = file_dir.name
-    for pattern in _CODE_PATTERNS:
-        match = pattern.search(parent_name)
-        if match:
-            code = match.group(1).upper().rstrip("-_. ")
-            return code
+    # 文件名无匹配时尝试父目录名（保持与原实现一致的回退行为）
+    code, part = split_code_and_part(file_dir.name)
+    if code:
+        return code, part
+    return None, None
 
-    return None
+
+def extract_code_and_part(file_name: str, file_dir: Path) -> tuple[Optional[str], Optional[str]]:
+    """(基础番号, 分卷序号)。分卷序号为 None 表示整片 / 中字版 / 无码版。"""
+    return _code_from(file_name, file_dir)
+
+
+def extract_base_code(file_name: str, file_dir: Path) -> Optional[str]:
+    """从文件名提取基础番号（去除 -C/-UC/-U 后缀）。
+
+    ⚠️ 保留仅为兼容旧调用方。**分卷文件现在也会返回番号**（`ABC-123-CD1` →
+    `ABC-123`）—— 这正是 P2-2 的修的目标：以前这类文件返回 None 被静默跳过。
+    需要区分分卷时请用 `extract_code_and_part`。
+    """
+    code, _part = _code_from(file_name, file_dir)
+    return code
 
 
 def detect_suffix(file_name: str) -> tuple[bool, bool]:
@@ -249,7 +270,8 @@ async def scan_duplicates(
                 file_path = dir_path / file_name
                 total_files += 1
 
-                code = extract_base_code(file_name, dir_path)
+                # P2-2：同时取分卷序号 —— 分卷文件以前在这里被静默跳过
+                code, part = extract_code_and_part(file_name, dir_path)
                 if not code:
                     continue
                 matched_files += 1
@@ -269,23 +291,34 @@ async def scan_duplicates(
                     suffix=suffix,
                     is_chinese=is_chinese,
                     is_uncensored=is_uncensored,
+                    part=part,
                 )
 
-                code_to_files.setdefault(code, []).append(dup_file)
+                # 🔴 分组键 = (番号, 分卷)：CD1 与 CD2 落进**不同**组，
+                # 永远不会互相判为重复；而「同一卷存了两份」仍能被归到一组。
+                code_to_files.setdefault((code, part), []).append(dup_file)
 
+    unique_codes = len({code for code, _part in code_to_files})
     logger.info(
         f"[duplicate_scanner] 扫描完成: {total_files} 个视频文件, "
         f"{matched_files} 个成功提取番号, "
-        f"{len(code_to_files)} 个唯一番号"
+        f"{unique_codes} 个唯一番号（含分卷 {len(code_to_files)} 个番号×分卷组合）"
     )
 
-    # 构建重复组：只保留 >1 个文件的番号
+    # P2-2：哪些基础番号存在**多个不同分卷**（CD1+CD2 ⇒ 合法多文件，删一卷就丢内容）
+    parts_by_code: dict[str, set[str]] = {}
+    for code, part in code_to_files:
+        if part is not None:
+            parts_by_code.setdefault(code, set()).add(part)
+    multi_part_codes = {c for c, ps in parts_by_code.items() if len(ps) >= 2}
+
+    # 构建重复组：只保留 >1 个文件的组
     groups: list[DuplicateGroup] = []
     duplicate_files = 0
     total_wasted = 0
 
-    for code in sorted(code_to_files):
-        files = code_to_files[code]
+    for code, part in sorted(code_to_files, key=lambda k: (k[0], k[1] or "")):
+        files = code_to_files[(code, part)]
         if len(files) <= 1:
             continue
 
@@ -308,6 +341,7 @@ async def scan_duplicates(
             files=files,
             keep_index=0,
             category=_extract_category([f.path for f in files]),
+            multi_part=code in multi_part_codes,
         )
         groups.append(group)
         duplicate_files += len(files) - 1
