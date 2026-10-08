@@ -76,6 +76,23 @@ class ScrapeProgress:
     current_source: Optional[str] = None
 
 
+
+def _amateur_bare_code(number: str) -> Optional[str]:
+    """素人番号的「去前缀」写法，用于源格式回退。
+
+    🔴 2026-10-08 实测（8 个库内素人番号逐源真跑）：
+       javdb / javmenu / javdb_new **只认去前缀**（LUXU-1895）→ 带前缀 0/8
+       javbus / thejavdb        **只认带前缀**（259LUXU-1895）→ 去前缀 1/8
+    同一批番号在两种写法下命中集合几乎不重叠 ⇒ 引擎只按一种写法请求，
+    会让一半主力源白跑（表现为「刮削一直不是最完美」）。
+    """
+    from app.scraper.canon import split_code
+    prefix, head, tail = split_code(number or "")
+    if not prefix or not head:
+        return None            # 非素人番号（无数字前缀）→ 无需回退
+    return "%s-%s" % (head, tail)
+
+
 class ScraperEngine:
     """
     刮削引擎
@@ -273,7 +290,15 @@ class ScraperEngine:
     #   前 4 个源命中即返回，走不到它；只有主力全未命中才付这 ~70s 的日本节点时延。
     #   若让它进轮换池，按番号错开后会有 ~1/5 的片子**首选就打 DMM**，
     #   白等 70s 换一份与 javdb 重叠的数据。
-    PRIMARY_CRAWLERS = ("javdb", "javmenu", "javmost", "javbus", "dmm_web")
+    # 🔴 2026-10-08 实测重排（库内 69 番号，区分号码写法）：
+    #   javbus 7/8(带前缀)  javdb 8/8(去前缀)  javmenu 7/8(去前缀)
+    #   thejavdb 7/8(带前缀)  javdb_new 8/8(去前缀)  ← 五大主力（素人也覆盖）
+    #   dmm_web  ◆日本官方源，有码实测正常（SSIS-001/MIDE-980 有数据），排尾作替补
+    #   javmost  ⟳ 移出：实测日文标题 0%（纯英文源），且是 957 条英文标题污染主源
+    #   xcity    ⟳ 不纳入：对任何番号都返回同一标题「かれん&say」=占位垃圾
+    # ⚠ 素人号码写法分裂：库内带数字前缀（259LUXU-1895），但 javdb/javmenu/javdb_new
+    #   只认去前缀（LUXU-1895）。_engine 已加回退（_amateur_bare_code），首个写法无结果则换另一种。
+    PRIMARY_CRAWLERS = ("javbus", "javdb", "javmenu", "thejavdb", "javdb_new", "dmm_web")
 
     #: 主力池内但**固定排尾部**的源：不参与 `_rotate_primary` 的首选轮换，
     #: 只在主力前序全部未给出完整结果时才被调用。
@@ -476,17 +501,28 @@ class ScraperEngine:
             logger.info(f"爬虫 {crawler.name} 开始刮削 {number}")
             try:
                 # 检测 crawler 是否支持 ctx 参数（已迁移的 scraper 复用共享 client）
-                if ctx is not None and _scrape_accepts_ctx(crawler):
-                    result = await asyncio.wait_for(
-                        crawler.scrape(number, ctx=ctx),
-                        timeout=self.timeout,
-                    )
-                else:
-                    # 旧式 scraper 不支持 ctx，回退到原接口
-                    result = await asyncio.wait_for(
-                        crawler.scrape(number),
-                        timeout=self.timeout,
-                    )
+                async def _call(code: str):
+                    if ctx is not None and _scrape_accepts_ctx(crawler):
+                        return await asyncio.wait_for(
+                            crawler.scrape(code, ctx=ctx), timeout=self.timeout)
+                    return await asyncio.wait_for(
+                        crawler.scrape(code), timeout=self.timeout)
+
+                result = await _call(number)
+                # 🔴 素人番号格式回退（2026-10-08）：库内番号带数字前缀
+                # （259LUXU-1895），而 javdb/javmenu/javdb_new 只认去前缀
+                # （LUXU-1895）。首个写法无结果时再试另一种，避免半数主力源白跑。
+                if result is None:
+                    alt = _amateur_bare_code(number)
+                    if alt and alt != number:
+                        logger.info(
+                            f"爬虫 {crawler.name} 用 {number} 无结果，"
+                            f"回退去前缀写法 {alt} 重试"
+                        )
+                        try:
+                            result = await _call(alt)
+                        except Exception as _e:  # noqa: BLE001
+                            logger.debug(f"回退写法 {alt} 失败: {_e}")
                 logger.info(
                     f"爬虫 {crawler.name} 刮削 {number} 完成，耗时 "
                     f"{time.monotonic() - started:.1f}s"

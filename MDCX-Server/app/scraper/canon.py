@@ -32,6 +32,13 @@ AMATEUR_HEADS = frozenset({
     "INON", "STH", "MFCS", "ARA", "STCV", "PAK", "DCV", "HMDNV", "ENDX",
     "SRTD", "SIMM", "SDHS", "ORECO", "FTHT", "MMKA", "SSCJ", "OERO",
     "REFUCK", "GESY", "DDHP", "EROFV", "PIZ", "LADY", "SIKA", "MGFX", "ID",
+    # 🔴 2026-10-08 补：库里靠数字前缀被认成素人、但白名单漏掉的头
+    # （实测 counts：JNT 16 / NTK 8 / TNB 1 / HOI 1 / SGK 1）
+    "JNT", "NTK", "TNB", "HOI", "SGK",
+    # 实测 av_name wiki 收录的素人名义作品前缀（WIKI_PREFIXES 一致），
+    # 它们以**无数字前缀**形式出现，光靠数字前缀判不出来。
+    "PAKO", "IPZZ", "MIMK", "MFC", "MFCG", "MFCW", "MFYD", "HODV", "MNGS",
+    "SCUTE", "SOD",
 })
 
 # Leading numeric prefixes actually observed on the server's 469 repaired rows.
@@ -97,9 +104,20 @@ def code_aliases(code: str) -> list[str]:
 
 
 def is_amateur_code(code: str) -> bool:
-    """True when the code carries a 素人 numeric prefix (e.g. 200GANA-3426)."""
-    prefix, _head, _tail = split_code(code)
-    return prefix is not None
+    """True when the code is 素人（无码/素人名义作品）。
+
+    🔴 2026-10-08 修复：旧实现**只看数字前缀**（``prefix is not None``），
+    导致 ``AMATEUR_HEADS`` 白名单形同虚设 —— 库里 35/36 个素人厂牌头
+    （MIUM/GANA/LUXU/MAAN/JAC/STCV/MFCS/NTR/KNB/SIMM/ORECO…）都被判成**有码**。
+    两种素人番号写法都必须认：
+      ① 带数字前缀：``259LUXU-1895`` → prefix=('259','LUXU','1895')
+      ② 只��素人头：``MIUM-191`` / ``MAAN-141``（库里实际大量存在，约 800 条）
+    修复后这些番号才���正确落到 ``AMATEUR_SOURCE_ORDER`` 与 ``av_uncensored`` 表。
+    """
+    prefix, head, _tail = split_code(code)
+    if prefix is not None:
+        return True
+    return bool(head) and head in AMATEUR_HEADS
 
 
 # --------------------------------------------------------------------------
@@ -170,8 +188,26 @@ def is_code_like_token(name: str | None) -> bool:
 #   javdb (official App API) hits both, and is the richest field-wise
 # So for 素人 we try javmenu/javmost first (they actually carry 素人 entries)
 # and only then fall back to the mainstream order.
-AMATEUR_SOURCE_ORDER = ("javmenu", "javmost", "javdb", "javbus")
-MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus")
+# 🔴 2026-10-08 重测（库内 69 番号：随机 40 厂商×2 + 8 素人，走代理，并区分号码写法）推翻旧序：
+#   源         带前缀  去前缀  素人最优  日文标题  备注
+#   javdb        0/8      **8/8**   8/8        100%      只认去前缀
+#   javbus       **7/8**   1/8      7/8        98%       只认带前缀
+#   javmenu      1/8      **7/8**   7/8        100%      只认去前缀
+#   thejavdb     **7/8**   1/8      7/8        100%      只认带前缀
+#   javdb_new    0/8      **8/8**   8/8        100%      只认去前缀
+#   freejavbt    1/8      **6/8**   6/8        100%
+#   dmm_web      素人不收（cid 转换直接 None）、有码正常  ◆官方源
+#   xcity        8/8      8/8      8/8        —        ⇱ **占位垃圾**：对任何番号都返回同一标题「かれん&say」
+#   javplace/avmoo/javdatabase  素人 ≤1/8
+#
+# ⚠ 現作用户指定：主力 5 源（要各自补字段，因为没有任何一个源字段全《》）
+#   并列轮换均摊请求；日本官方源 dmm_web 作替补（排尾，不占首选）。
+# javmost：实测日文标题 0%（纯英文源）、且是 957 条英文标题污染主源 → 移出主力。
+# xcity：对不同番号返回同一标题 = 占位垃圾，不能当源用（否则会批量产出同一标题）。
+AMATEUR_SOURCE_ORDER = ("javbus", "javdb", "javmenu", "thejavdb", "javdb_new")
+MAINSTREAM_SOURCE_ORDER = ("javbus", "javdb", "javmenu", "thejavdb", "javdb_new")
+#: 纯英文兜底序（javmost：日文标题 0%，不进主流程）。
+ENGLISH_FALLBACK_ORDER = ("javmost",)
 
 #: 辅助源（主力 + 日本源都试过仍未给全时才用）。
 #:
@@ -194,7 +230,10 @@ MAINSTREAM_SOURCE_ORDER = ("javdb", "javmenu", "javmost", "javbus")
 #: 而 canon 序（缺口补全/NFO 重建页用）却看不到 —— 现在统一到 canon 维护。
 #:
 #: ⚠️ 命名陷阱见 engine.py 的分层注释：`thejavdb` ≠ JavDB 官方 API（那是 `javdb`）。
-AUX_SOURCE_ORDER = ("thejavdb", "avmoo", "javplace", "javdb_new", "javdatabase", "freejavbt")
+# 🔴 2026-10-08 实测重排：thejavdb 与 javdb_new 已进主力（素人 7/8、8/8），
+# 辅助序留给「能补特定字段」的源：freejavbt / javplace(plot 100%) /
+# avmoo(series 62%) / javdatabase / heyzo。javplace/avmoo 对素人 ≤1/8，因此排后。
+AUX_SOURCE_ORDER = ("freejavbt", "javplace", "avmoo", "javdatabase", "heyzo")
 
 # --------------------------------------------------------------------------
 # 3b) 日本专属源（FANZA / DMM）—— 2026-10-05 实测结论

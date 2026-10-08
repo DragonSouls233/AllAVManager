@@ -705,7 +705,13 @@ def strip_episode_suffix(number: str) -> str:
 #   `(None, None)`（维持「跳过」），与改动前行为一致 —— 不认识的尾巴绝不猜。
 
 #: 番号主干（只取这一段，其后才是后缀/分卷区）
-_CODE_HEAD_RE = re.compile(r"([A-Za-z]{2,6}-\d{2,5})")
+# 🔴 2026-10-08 修复：番号前缀字母数上限 6 → 10。
+#   实例：`PARATHD-4197-U.mp4` 被误识别成 `ARATHD-4197`——
+#   原因 `{2,6}` 不包含 7 字母的 `PARATHD`，正则回退匹配到
+#   5 字母的 `ARATHD`（同一串里的子串），多出一个错误番号。
+#   库内实测：>=7 字母的番号有 2 个（PARATHD-4032 / PARATHD-4197），
+#   6 字母 13 个；改后这些番号才能正确识别。
+_CODE_HEAD_RE = re.compile(r"([A-Za-z]{2,10}-\d{2,5})")
 
 #: 属性标记（中字 / 无码），必须完整吃掉剩余部分
 _ATTR_FULL_RE = re.compile(r"[-_.\s]?(?:[Uu][Cc]|[Cc]|[Uu])")
@@ -766,7 +772,7 @@ def _parse_tail(rem: str) -> Optional[str]:
 
 #: 括号番号兜底 `[ABC-123]` —— 旧 `_CODE_PATTERNS` 的第二条，必须保留，
 #: 否则 `[ABC-123].mp4` 这类命名会从「能匹配」退化成「跳过」（真回归）。
-_BRACKET_CODE_RE = re.compile(r"\[([A-Za-z]{2,6}-\d{2,5})\]")
+_BRACKET_CODE_RE = re.compile(r"\[([A-Za-z]{2,10}-\d{2,5})\]")
 
 
 def split_code_and_part(stem: str) -> tuple[Optional[str], Optional[str]]:

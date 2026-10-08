@@ -171,7 +171,7 @@ def is_valid_jav_code(code: str) -> bool:
     if not code:
         return False
     # 标准 JAV: 字母-数字，如 ABC-123
-    jav_pattern = re.compile(r'^[A-Za-z]{2,6}-\d{2,5}$', re.IGNORECASE)
+    jav_pattern = re.compile(r'^[A-Za-z]{2,10}-\d{2,5}$', re.IGNORECASE)
     return bool(jav_pattern.match(code))
 
 
@@ -460,8 +460,8 @@ class JavScanner(BaseScanner):
 
         # ② 回退：旧简易正则（字母开头）
         patterns = [
-            r'([A-Za-z]{2,6}-\d{2,5})(?:[-_.\s]?[CUc]?[UCuc]?)?$',
-            r'\[([A-Za-z]{2,6}-\d{2,5})\]',
+            r'([A-Za-z]{2,10}-\d{2,5})(?:[-_.\s]?[CUc]?[UCuc]?)?$',
+            r'\[([A-Za-z]{2,10}-\d{2,5})\]',
         ]
 
         for pattern in patterns:

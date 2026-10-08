@@ -26,9 +26,15 @@ VIDEO_EXTENSIONS = {
 }
 
 # 标准 JAV 番号正则（与 jav_scanner._extract_code 保持一致）
+# 🔴 2026-10-08 修复：番号前缀字母数上限 6 → 10。
+#   实例：`PARATHD-4197-U.mp4` 被误识别成 `ARATHD-4197`——
+#   原因 `{2,6}` 不包含 7 字母的 `PARATHD`，正则回退匹配到
+#   5 字母的 `ARATHD`（同一串里的子串），多出一个错误番号。
+#   库内实测：>=7 字母的番号有 2 个（PARATHD-4032 / PARATHD-4197），
+#   6 字母 13 个；改后这些番号才能正确识别。
 _CODE_PATTERNS = [
-    re.compile(r"([A-Za-z]{2,6}-\d{2,5})(?:[-_.\s]?[CUc]?[UCuc]?)?$"),
-    re.compile(r"\[([A-Za-z]{2,6}-\d{2,5})\]"),
+    re.compile(r"([A-Za-z]{2,10}-\d{2,5})(?:[-_.\s]?[CUc]?[UCuc]?)?$"),
+    re.compile(r"\[([A-Za-z]{2,10}-\d{2,5})\]"),
 ]
 
 # -C / -UC / -U 后缀检测（与 jav_scanner._detect_suffix 保持一致）
