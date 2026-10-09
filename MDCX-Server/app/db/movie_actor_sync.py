@@ -45,6 +45,95 @@ def _lock_for(module: str) -> asyncio.Lock:
     return lock
 
 
+# --------------------------------------------------------------------------
+# 归一化索引（2026-10 新增）：同一人多种写法 => 同一个 canon_key
+# --------------------------------------------------------------------------
+
+#: module -> (构建时间戳, {canon_key: (actor_id, canonical_name)})
+_CANON_INDEX: dict[str, tuple[float, dict[str, tuple[int, str]]]] = {}
+
+#: 索引 TTL（秒）。只影响「新增演员」后多久对其它协程可见；
+#: 本协程新建的会立即写回缓存，所以批量刮削不会因此重复插入。
+_CANON_TTL = 300.0
+
+
+def invalidate_canon_index(module: str | None = None) -> None:
+    """清空归一化索引。批量改名 / 合并演员后必须调用，否则拿到的是旧映射。"""
+    if module is None:
+        _CANON_INDEX.clear()
+    else:
+        _CANON_INDEX.pop(module, None)
+
+
+def _remember_canon(module: str, name: str, actor_id: int, canonical: str) -> None:
+    """把新建/已知演员登记进缓存，保持索引与库同步。"""
+    try:
+        from app.utils.actor_name_canon import canon_key
+
+        k = canon_key(name)
+        if not k:
+            return
+        entry = _CANON_INDEX.get(module)
+        idx = entry[1] if entry else {}
+        cur = idx.get(k)
+        # 已存在且不是同一个 id 时不覆盖（先入库的通常信息更全）
+        if cur is None or int(actor_id) == cur[0] or actor_id < cur[0]:
+            idx[k] = (int(actor_id), canonical)
+        _CANON_INDEX[module] = (_time.time(), idx)
+    except Exception:  # pragma: no cover - 归一化是辅助逻辑，永不影响主流程
+        pass
+
+
+async def _canon_index(session, module: str, ActorCls) -> dict[str, tuple[int, str]]:
+    """取（必要时构建）该模块的 归一键 -> (actor_id, 规范名) 映射。
+
+    canonical 取「movie_count 最大、其次 id 最小」的那条 —— 与存量合并脚本
+    `_merge_actor_alias.py::pick()` 的规则一致，保证「新建时选的规范名」
+    和「合并存量时保留的行」是同一条，不会出现一边合并到 A、一边又建 B。
+    """
+    import time as _time_mod  # 局部导入，避免与模块级 import 混淆
+
+    entry = _CANON_INDEX.get(module)
+    if entry and (_time_mod.time() - entry[0]) < _CANON_TTL:
+        return entry[1]
+
+    from app.utils.actor_name_canon import canon_key
+
+    rows = (
+        await session.execute(select(ActorCls.id, ActorCls.name, ActorCls.movie_count))
+    ).all()
+    best: dict[str, tuple[int, int, str]] = {}
+    for aid, name, mc in rows:
+        if not name:
+            continue
+        k = canon_key(name)
+        if not k:
+            continue
+        rank = (int(mc or 0), -int(aid))          # movie_count 降序、id 升序
+        cur = best.get(k)
+        if cur is None or rank > (cur[0], -cur[1]):
+            best[k] = (int(mc or 0), int(aid), str(name))
+    idx = {k: (v[1], v[2]) for k, v in best.items()}
+    _CANON_INDEX[module] = (_time_mod.time(), idx)
+    return idx
+
+
+async def _find_by_canon_key(session, module: str, ActorCls, name: str):
+    """按归一键查已有演员；命中则返回 ORM 对象，未命中返回 None。永不抛错。"""
+    try:
+        from app.utils.actor_name_canon import canon_key
+
+        hit = (await _canon_index(session, module, ActorCls)).get(canon_key(name))
+        if not hit:
+            return None
+        return (
+            await session.execute(select(ActorCls).where(ActorCls.id == hit[0]))
+        ).scalars().first()
+    except Exception as e:  # pragma: no cover
+        logger.debug("归一化查找失败 [%s] %r: %s", module, name, e)
+        return None
+
+
 def split_actor_names(raw: object) -> list[str]:
     """把演员字段拆成去重后的名字列表。
 
@@ -142,9 +231,38 @@ async def sync_movie_actors(
                         )
                     ).scalars().first()
                 if found is None:
-                    found = ActorCls(name=name, source=source, movie_count=0)
-                    session.add(found)
+                    # 🔴 归一化兜底（2026-10 新增）：库里同一个人的**简繁 / 括号别名 /
+                    #    异体字 / 假名汉字化** 写法此前一律当新演员插入。
+                    #    实测成因：森沢かな(78部) / 森沢かな（飯岡かなこ）(70部) /
+                    #    森泽佳奈(52部) 被拆成三条，影片重叠 0~5 但厂牌完全一致。
+                    #    精确匹配与 lower() 兜底都抓不到「簡体↔繁体」和「かな↔佳奈」。
+                    found = await _find_by_canon_key(session, module, ActorCls, name)
+                if found is None:
+                    # 🔴 马甲兜底（2026-10 新增）：基础表 actor_base.aliases 收了
+                    #    35378 条「别名 -> 规范名」（gfriends/avleague/wiki/javdb/dmm），
+                    #    能吃掉「本名 vs 化名」这种 canon_key 吃不掉的**身份差异**。
+                    #    查不到就静默降级，绝不让归一化阻塞落盘。
+                    alias_hit = None
+                    try:
+                        from app.utils.actor_base_alias import resolve_alias
+
+                        alias_hit = resolve_alias(name)
+                    except Exception:
+                        alias_hit = None
+                    if alias_hit and alias_hit != name:
+                        name = alias_hit
+                        found = (
+                            await session.execute(select(ActorCls).where(ActorCls.name == name))
+                        ).scalar_one_or_none()
+                        if found is None:
+                            found = await _find_by_canon_key(session, module, ActorCls, name)
+                if found is None:
+                    new_actor = ActorCls(name=name, source=source, movie_count=0)
+                    session.add(new_actor)
                     await session.flush()
+                    # 新建后立刻并入缓存，否则同一批里的后几部片还会再插一条
+                    _remember_canon(module, name, new_actor.id, name)
+                    found = new_actor
                 actor_id = found.id
                 if not actor_id:
                     continue
