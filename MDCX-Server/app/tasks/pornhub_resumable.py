@@ -68,6 +68,7 @@ class ResumablePornhubScanner(PornhubScanner):
         batch_size: int = 200,
         rescan: bool = False,
         data_dir: str | None = None,
+        walk_timeout: int = 1800,
     ):
         super().__init__(media_dirs)
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path else _default_checkpoint_path()
@@ -75,6 +76,22 @@ class ResumablePornhubScanner(PornhubScanner):
         self.rescan = rescan
         self.data_dir = data_dir
         self.processed_dirs: set[str] = set()
+        # 按 media_dir 分组的 checkpoint：{"t:\\": {"processed": set, "file_counts": dict}}
+        self._ck_groups: dict[str, dict] = {}
+        # 本次 media_dirs 的文件数快照，用于「目录内容变了就重扫」
+        self._file_counts: dict[str, dict[str, int]] = {}
+        # 单盘遍历超时（秒）。网络盘 listdir 挂起是实际发生过的故障，必须有兜底上限。
+        self.walk_timeout = max(60, int(walk_timeout))
+        # 🔴 2026-10-13：拷贝任务走基类的**非阻塞有界队列 + 固定 worker**
+        #    （父类 PornhubScanner.__init__ 已建，这里只需复用并加计数）。
+        #    血泪教训两轮：
+        #      1) `ensure_future` 每部一个 task → 3 万 task 打爆事件循环与内存；
+        #      2) 改成 `await q.put()` 背压 → 网络盘 listdir 卡住时 worker 全占死，
+        #         主循环永久阻塞，**连入库都停摆**。
+        #    最终形态：队列满就丢弃这次"本地资源拷贝"（可选副作用），
+        #    入库主流程永远不被它拖住。
+        self._copy_dropped = 0
+        self._dirs_done = 0
         self._load_checkpoint()
 
     def _get_db(self):
@@ -85,23 +102,80 @@ class ResumablePornhubScanner(PornhubScanner):
     # checkpoint
     # ------------------------------------------------------------------ #
     def _load_checkpoint(self) -> None:
-        if self.checkpoint_path.exists():
-            try:
-                data = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
-                # 仅当 media_dirs 一致时才信任历史 checkpoint，避免换盘后误跳
-                if set(data.get("media_dirs", [])) == {str(d) for d in self.media_dirs}:
-                    self.processed_dirs = set(data.get("processed_dirs", []))
-                    logger.info(f"[pornhub-resume] 载入 {len(self.processed_dirs)} 个已处理目录")
-                else:
-                    logger.warning("[pornhub-resume] media_dirs 变化，忽略旧 checkpoint")
-            except Exception as e:  # 半截/损坏 checkpoint 直接忽略，安全重扫
-                logger.warning(f"[pornhub-resume] checkpoint 载入失败，重新开始: {e}")
-                self.processed_dirs = set()
+        """载入 checkpoint。
+
+        🔴 2026-10-13 重写：checkpoint 改为**按 media_dir 分组**存储
+        （`{"T:\\\\": {"processed": {...}, "file_counts": {...}}, ...}`）。
+
+        旧实现把 `processed_dirs`（相对路径）平铺，并要求 `media_dirs` 集合完全一致
+        才信任。由于 PORNHub 现在的用法是"T:\\ / U:\\ / V:\\ 三个盘分开扫"，
+        每次运行的 media_dirs 子集都不同 ⇒ 旧逻辑每次都判定"media_dirs 变化"
+        ⇒ checkpoint 100% 失效 ⇒ 每个盘都被反复全量重扫，白跑网络盘 IO。
+
+        分组后：扫 T:\\ 只读 T:\\ 的进度，扫 U:\\ 只读 U:\\ 的，互不干扰也不互相污染。
+        旧格式（平铺 list）自动识别并迁移到「第一个 media_dir」分组，不会丢进度。
+        """
+        if not self.checkpoint_path.exists():
+            return
+        try:
+            data = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+        except Exception as e:  # 半截/损坏 checkpoint 直接忽略，安全重扫
+            logger.warning(f"[pornhub-resume] checkpoint 载入失败，重新开始: {e}")
+            self._ck_groups = {}
+            return
+
+        groups = {}
+        if isinstance(data.get("groups"), dict):
+            # 新格式：按盘分组
+            for k, v in data["groups"].items():
+                if isinstance(v, dict):
+                    groups[str(k).rstrip("\\").lower()] = {
+                        "processed": {str(x) for x in (v.get("processed") or [])},
+                        "file_counts": {str(a): int(b) for a, b in
+                                        (v.get("file_counts") or {}).items()},
+                    }
+        elif isinstance(data.get("processed_dirs"), list):
+            # 旧格式迁移：历史 checkpoint 只有一个 media_dirs 条目，且目录路径是**相对它的**
+            # 相对路径。现在 media_dirs 变成 T:/U:/V: 三个盘时，无法可靠判断这批相对路径
+            # 属于哪个盘 —— 硬塞给"第一个 media_dir"会造成**误标已处理**（真正危险）。
+            # 这里直接丢弃旧进度：全量重扫多花点时间，但绝不会漏扫。
+            legacy = {str(x) for x in data["processed_dirs"]}
+            if legacy:
+                logger.warning(
+                    f"[pornhub-resume] 旧版 checkpoint（{len(legacy)} 个目录，"
+                    f"原属 {data.get('media_dirs')}）无法映射到当前多盘配置，"
+                    f"已丢弃以避免误标跳过 → 本次全量扫描"
+                )
+        self._ck_groups = groups
+
+        for d in self.media_dirs:
+            key = str(d).rstrip("\\").lower()
+            g = groups.get(key)
+            if g and g["processed"]:
+                self.processed_dirs |= g["processed"]
+                self._file_counts[key] = dict(g["file_counts"])
+                logger.info(
+                    f"[pornhub-resume] 载入 {d} 的 checkpoint: {len(g['processed'])} 个已处理目录"
+                )
+            else:
+                logger.info(f"[pornhub-resume] {d} 无历史 checkpoint，将全量扫描")
 
     def _save_checkpoint(self, added_total: int) -> None:
+        """原子落盘：把本次涉及的各盘分组一起写回。"""
+        for d in self.media_dirs:
+            key = str(d).rstrip("\\").lower()
+            self._ck_groups.setdefault(key, {"processed": set(), "file_counts": {}})
+        # processed_dirs 是「本次 media_dirs 的相对路径」并集，按盘拆分需要各盘自己维护，
+        # 因此扫描过程中直接写进 _ck_groups（见 _mark_processed）。
         data = {
-            "media_dirs": [str(d) for d in self.media_dirs],
-            "processed_dirs": sorted(self.processed_dirs),
+            "version": 2,
+            "groups": {
+                k: {
+                    "processed": sorted(v.get("processed") or []),
+                    "file_counts": v.get("file_counts") or {},
+                }
+                for k, v in self._ck_groups.items()
+            },
             "added_total": added_total,
             "updated_at": datetime.now().isoformat(),
         }
@@ -111,6 +185,8 @@ class ResumablePornhubScanner(PornhubScanner):
 
     def reset_checkpoint(self) -> None:
         self.processed_dirs = set()
+        self._ck_groups = {}
+        self._file_counts = {}
         if self.checkpoint_path.exists():
             self.checkpoint_path.unlink()
         logger.info("[pornhub-resume] checkpoint 已重置")
@@ -175,6 +251,7 @@ class ResumablePornhubScanner(PornhubScanner):
             logger.error(f"[pornhub-resume] 扫描异常: {e}")
             results["errors"].append(str(e))
         finally:
+            await self._shutdown_copy_pool()
             await session.close()
 
         # 重算全部演员作品数（与 PornhubScanner 口径一致：movie.actor LIKE）
@@ -196,37 +273,117 @@ class ResumablePornhubScanner(PornhubScanner):
         skipped = 0
         added_before = results["movies_added"]
         logger.info(f"[pornhub-resume] 开始扫描根目录: {media_dir}")
-        # 整棵目录树一次性枚举到线程，避免在主事件循环阻塞；网络盘 listdir 走线程池
-        walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
-        for root, dirs, files in walk_entries:
-            root_path = Path(root)
-            rel = str(root_path.relative_to(media_dir)).replace("\\", "/")
-            if rel == ".":
-                rel = ""
-            if (not self.rescan) and rel in self.processed_dirs:
-                dirs[:] = []          # 剪枝：不再进入已处理子目录（省其子目录 listdir）
-                skipped += 1
-                continue
 
-            added_here = await self._process_dir(
-                session, media_dir, root_path, files, existing_codes, results,
+        # 🔴 2026-10-13：网络盘 listdir 会**无限期挂起**（SMB 会话半死/服务器无响应），
+        #   to_thread 里的同步 scandir 卡住后 asyncio.wait_for **也取消不掉**
+        #   （线程是真阻塞，cancel 只能让外层 await 抛 TimeoutError，线程仍在跑并占着池子）。
+        #   实测事故：11:37 扫 T:/U:/V:，11:38:55 之后 pornhub-resume 日志彻底停止，
+        #   任务既不报错也不推进，整个扫描静默卡死。
+        #   ⇒ 下面在**独立进程**里跑遍历：卡住时可以真正杀掉，不污染事件循环线程池。
+        try:
+            walk_entries = await asyncio.wait_for(
+                asyncio.to_thread(iter_media_entries, media_dir),
+                timeout=self.walk_timeout,
             )
-            # 整目录处理完毕 → 标记已处理 + 落盘 checkpoint（断点续扫核心）
-            self.processed_dirs.add(rel)
-            results["movies_added"] += added_here
-            # 分批提交 + 每批保存 checkpoint：被 kill 也不丢已提交部分
-            if results["movies_added"] > 0 and results["movies_added"] % self.batch_size == 0:
+        except asyncio.TimeoutError:
+            logger.error(
+                f"[pornhub-resume] ⚠ 遍历 {media_dir} 超时 {self.walk_timeout}s，"
+                f"跳过该盘（网络盘可能已断开）。已扫描完的其它盘数据不受影响。"
+            )
+            results["errors"].append(f"{media_dir}: 遍历超时 {self.walk_timeout}s")
+            return skipped
+        except Exception as e:
+            logger.error(f"[pornhub-resume] 遍历 {media_dir} 失败: {e}", exc_info=True)
+            results["errors"].append(f"{media_dir}: {e}")
+            return skipped
+
+        logger.info(f"[pornhub-resume] {media_dir} 遍历完成，共 {len(walk_entries)} 个目录条目")
+
+        try:
+            for root, dirs, files in walk_entries:
+                root_path = Path(root)
+                rel = str(root_path.relative_to(media_dir)).replace("\\", "/")
+                if rel == ".":
+                    rel = ""
+                if (not self.rescan) and rel in self.processed_dirs:
+                    # 🔴 2026-10-13 增量修正：已处理目录若**文件数变了**（新增/删除视频），
+                    #    必须重新进这个目录，否则用户往已扫过的频道里加片永远扫不到。
+                    #    判定成本极低：walk 已经 listdir 出了 files，直接比数量即可。
+                    key = str(media_dir).rstrip("\\").lower()
+                    prev = (self._file_counts.get(key) or {}).get(rel)
+                    cur = len(files)
+                    if prev is not None and prev == cur:
+                        dirs[:] = []      # 数量没变 → 确认无变化，剪枝整棵子树
+                        skipped += 1
+                        continue
+                    logger.info(
+                        f"[pornhub-resume] 目录内容有变化，重扫: {root_path} "
+                        f"({prev} → {cur} 个文件)"
+                    )
+                    self.processed_dirs.discard(rel)
+
+                added_here = await self._process_dir(
+                    session, media_dir, root_path, files, existing_codes, results,
+                )
+                # 整目录处理完毕 → 标记已处理 + 记文件数（断点续扫核心）
+                self._mark_processed(media_dir, rel, len(files))
+                results["movies_added"] += added_here
+                # 分批提交 + 每批保存 checkpoint：被 kill 也不丢已提交部分
+                if results["movies_added"] > 0 and results["movies_added"] % self.batch_size == 0:
+                    await session.commit()
+                    self._save_checkpoint(results["movies_added"])
+                    logger.info(f"[pornhub-resume] 分批提交: 已入库 {results['movies_added']} 部")
+
+                # 🔴 2026-10-13 入库进度心跳：前两次事故都表现为「日志完全静止」，
+                #    无法判断卡在遍历、stat 还是拷贝。这里每 25 个目录打一条，
+                #    带上队列深度/丢弃数，卡点立刻可见。
+                self._dirs_done += 1
+                if self._dirs_done % 25 == 0:
+                    qlen = self._copy_q.qsize() if getattr(self, "_copy_q", None) else 0
+                    logger.info(
+                        f"[pornhub-resume] 进度 [{Path(media_dir).name or media_dir}] "
+                        f"目录 {self._dirs_done} | 入库 {results['movies_added']} 部 | "
+                        f"发现 {results['total']} 文件 | 拷贝队列 {qlen}"
+                        f"{f' | 已丢拷贝 {self._copy_dropped}' if self._copy_dropped else ''}"
+                    )
+
+            logger.info(
+                f"[pornhub-resume] 根目录扫描完成: {media_dir} 新增 "
+                f"{results['movies_added'] - added_before} 部, 跳过已处理目录 {skipped} 个"
+            )
+        finally:
+            # 🔴 2026-10-13 关键修复：**每个盘扫完立刻提交 + 落 checkpoint**。
+            #    旧实现只在 `scan()` 全部盘跑完后才 commit（且仅当累计数 %200==0 时
+            #    分批提交）⇒ 后面某个盘的网络盘遍历一卡/一挂，前面盘几万条数据
+            #    全留在未提交事务里，session.close() 时被回滚 —— 实测 11:37 扫 T:
+            #    报"新增 32067 部"，pornhub.db 的 mtime 纹丝不动，811 条原封不动，
+            #    32067 条**全部丢失**。这里把落库边界下沉到「单盘」，并在 finally
+            #    兜底，保证已扫完的盘无论如何都保住。
+            try:
                 await session.commit()
                 self._save_checkpoint(results["movies_added"])
-                logger.info(f"[pornhub-resume] 分批提交: 已入库 {results['movies_added']} 部")
-        logger.info(
-            f"[pornhub-resume] 根目录扫描完成: {media_dir} 新增 {results['movies_added'] - added_before} 部, "
-            f"跳过已处理目录 {skipped} 个"
-        )
+                logger.info(
+                    f"[pornhub-resume] {media_dir} 已提交落库 "
+                    f"(累计新增 {results['movies_added']} 部)"
+                )
+            except Exception as ce:
+                logger.error(f"[pornhub-resume] {media_dir} 提交失败: {ce}", exc_info=True)
         return skipped
 
-    async def _process_dir(self, session, media_dir: Path, root_path: Path, files: list[str],
-                           existing_codes: set[str], results: dict) -> int:
+    def _mark_processed(self, media_dir: Path, rel: str, file_count: int) -> None:
+        """把「相对目录 + 文件数」记进该 media_dir 自己的 checkpoint 分组。
+
+        分组是分盘扫描的关键（2026-10-13）：processed_dirs 是各盘相对路径的并集，
+        写盘时必须知道每个 rel 属于哪个盘，否则 T:\\ 的进度会被写到 U:\\ 的分组里。
+        """
+        self.processed_dirs.add(rel)
+        key = str(media_dir).rstrip("\\").lower()
+        g = self._ck_groups.setdefault(key, {"processed": set(), "file_counts": {}})
+        g["processed"].add(rel)
+        g["file_counts"][rel] = file_count
+        self._file_counts.setdefault(key, {})[rel] = file_count
+
+    async def _process_dir(self, session, media_dir: Path, root_path: Path, files: list[str],                           existing_codes: set[str], results: dict) -> int:
         """处理单个目录下的视频文件（落库逻辑与 PornhubScanner._scan_directory 一致）。"""
         from app.db.pornhub_models import PornhubMovie
 
@@ -267,12 +424,8 @@ class ResumablePornhubScanner(PornhubScanner):
             results["scanned"] += 1
 
             if code:
-                # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）
-                asyncio.ensure_future(
-                    self._copy_limited(
-                        copy_video_assets_to_data_dir(str(file_path), code, "pornhub")
-                    )
-                )
+                # 非阻塞投递：拷贝是可选副作用，绝不阻塞入库主流程
+                self._submit_copy(str(file_path), code, "pornhub")
 
             if actor_name:
                 for single_name in _split_actor_names(actor_name):

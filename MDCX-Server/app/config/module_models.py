@@ -100,8 +100,11 @@ class ModulesConfig(BaseModel):
     chinese: ChineseModuleConfig = ChineseModuleConfig()
     pornhub: ModuleConfig = ModuleConfig()
     western: WesternModuleConfig = WesternModuleConfig()
-    anime: AnimeModuleConfig = AnimeModuleConfig(
-        enabled=True,
-        media_dirs=["J:\\动漫"],
-    )
+    # 🔴 2026-10-13 移除硬编码默认目录 `media_dirs=["J:\\动漫"]`：
+    #   那是开发机上的一次性路径，写死在模型默认值里有两个害处——
+    #     1) 新装/配置丢键时**自动复活**成 J 盘，用户的目录选择被悄悄改回去；
+    #     2) 新装的用户看到"已配置 1 个目录"，实际那目录根本不存在。
+    #   现在默认为空，由用户在「设置 → 各模块媒体目录 → 日本里番」里自行选择
+    #   （该 UI 本就支持添加/删除多个目录）。
+    anime: AnimeModuleConfig = AnimeModuleConfig(enabled=True)
     scanner: ScannerConfig = ScannerConfig()

@@ -7,6 +7,7 @@ import asyncio
 import os
 import re
 import shutil
+from typing import Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -399,7 +400,7 @@ class BaseScanner(ABC):
     _COPY_SEM: asyncio.Semaphore | None = None
 
     async def _copy_limited(self, coro) -> None:
-        """并发受限地执行复制任务"""
+        """并发受限地执行复制任务（保留给旧的 ensure_future 调用方）"""
         if BaseScanner._COPY_SEM is None:
             BaseScanner._COPY_SEM = asyncio.Semaphore(5)
         try:
@@ -407,6 +408,101 @@ class BaseScanner(ABC):
                 await asyncio.wait_for(coro, timeout=60)
         except Exception:
             pass  # 复制失败不影响扫描主流程
+
+    # ------------------------------------------------------------------ #
+    # 🔴 2026-10-13：非阻塞拷贝投递（PORNHUB 实测教训）
+    #
+    # `_copy_limited` 的 Semaphore(5) **只限"同时执行数"、不限"创建的 task 数"**。
+    # 扫描器在文件循环里逐个 `ensure_future`，PORNHUB 单盘 3 万+ 文件就会创建
+    # 3 万+ 个 task：事件循环被调度压垮 + task 对象内存膨胀（实测内存占用 83%、
+    # 日志完全静止、连一条分批提交都没有）。
+    #
+    # 正确做法：**有界队列 + 固定 worker + 非阻塞投递**。
+    #   - 队列满 → `put_nowait` 抛 QueueFull → 直接跳过这次拷贝
+    #   - 跳过只丢"本地 NFO/封面拷贝"这个可选副作用，**绝不影响入库主流程**
+    #   - worker 执行的网络盘 listdir 还有单项超时兜底，防止 worker 全被占死
+    # ------------------------------------------------------------------ #
+    def _init_copy_pool(self, worker_n: int = 3, queue_size: int = 200) -> None:
+        self._copy_q: Optional[asyncio.Queue] = None
+        self._copy_workers: list = []
+        self._copy_worker_n = worker_n
+        self._copy_queue_size = queue_size
+        self._copy_dropped = 0
+
+    def _ensure_copy_pool(self) -> "asyncio.Queue":
+        if getattr(self, "_copy_q", None) is None:
+            self._copy_q = asyncio.Queue(maxsize=self._copy_queue_size)
+            self._copy_workers = [
+                asyncio.create_task(self._copy_worker())
+                for _ in range(self._copy_worker_n)
+            ]
+        return self._copy_q
+
+    async def _copy_worker(self) -> None:
+        q = self._copy_q
+        while True:
+            try:
+                item = await q.get()
+            except asyncio.CancelledError:
+                raise
+            path, code, module_name = item
+            try:
+                from app.tasks.base_scanner import (
+                    copy_video_assets_to_data_dir as _copy_assets,
+                )
+                await asyncio.wait_for(
+                    _copy_assets(path, code, module_name), timeout=30
+                )
+            except Exception:
+                pass
+            finally:
+                q.task_done()
+
+    def _submit_copy(self, file_path: str, code: str,
+                     module_name: str = "") -> None:
+        """非阻塞投递拷贝任务；队列满直接跳过，绝不阻塞扫描主循环。
+
+        ⚠️ `module_name` 必须有默认值：各扫描器只服务一个模块，调用方漏传时
+        应当退化到 `self.module_name`，而不是抛 TypeError 把整个扫描打断
+        （2026-10-13 实测：续扫器漏传 → 第一个文件就抛"missing ... module_name"，
+          339 个目录只扫了 1 个文件就结束）。
+        """
+        if not code:
+            return
+        try:
+            q = self._ensure_copy_pool()
+        except RuntimeError:
+            return          # 没在事件循环里（同步上下文），直接跳过
+        try:
+            q.put_nowait((file_path, code, module_name or self.module_name))
+        except asyncio.QueueFull:
+            self._copy_dropped += 1
+
+    async def _shutdown_copy_pool(self, drain_timeout: int = 60) -> None:
+        """停止拷贝 worker；已入队项最多再等 drain_timeout。"""
+        q, self._copy_q = getattr(self, "_copy_q", None), None
+        workers, self._copy_workers = getattr(self, "_copy_workers", []), []
+        if q is not None:
+            try:
+                await asyncio.wait_for(q.join(), timeout=drain_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"拷贝队列未在 {drain_timeout}s 内排空，放弃剩余 {q.qsize()} 项"
+                )
+        for w in workers:
+            w.cancel()
+        for w in workers:
+            try:
+                await w
+            except asyncio.CancelledError:
+                pass      # 正常取消路径（py3.11+ CancelledError 不继承 Exception）
+            except Exception:
+                pass
+        if self._copy_dropped:
+            logger.info(
+                f"因队列积压跳过 {self._copy_dropped} 部影片的本地资源拷贝"
+                f"（不影响入库，封面可事后批量补）"
+            )
 
     @abstractmethod
     async def scan(self) -> dict:

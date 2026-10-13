@@ -737,7 +737,22 @@ export const getCloudDrive2StreamUrl = (path) => api.get('/cloud-drive2/stream-u
 // 扫描控制
 // ============================================
 export const getScanStatus = () => api.get('/scan/status')
-export const triggerManualScan = (module) => api.post('/scan/trigger', null, { params: module ? { module } : {} })
+// paths：分盘扫描（2026-10-13）。传 ['T:\\','U:\\'] 则本次只扫这两个媒体目录，
+// 用于把 PORNHUB 这种超大目录拆成多次扫，避免单次全量压垮慢网络盘。
+//
+// 🔴 坑（2026-10-13 踩过）：不能把数组直接丢给 axios 的 `params`，
+//    axios 默认序列化成 `paths[]=T:%5C`，而 FastAPI 的参数名是 `paths`，
+//    于是后端收到 paths=None → 过滤失效 → 三个盘全扫（用户点的是"只扫 T"）。
+//    访问日志原文：`POST /api/v1/scan/trigger?module=pornhub&paths%5B%5D=T:%5C`
+//    ⇒ 这里必须用 URLSearchParams 手动拼，生成重复的 `paths=`。
+export const triggerManualScan = (module, paths) => {
+  const qs = new URLSearchParams()
+  if (module) qs.append('module', module)
+  if (paths && paths.length) {
+    paths.forEach((p) => qs.append('paths', p))
+  }
+  return api.post(`/scan/trigger?${qs.toString()}`, null)
+}
 export const getScanRecords = (params) => api.get('/scan/records', { params })
 
 // ============== 115 网盘离线下载 ==============

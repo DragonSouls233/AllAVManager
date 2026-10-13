@@ -203,6 +203,8 @@ class PornhubScanner(BaseScanner):
 
     def __init__(self, media_dirs: list[str]):
         super().__init__("pornhub", media_dirs)
+        # 非阻塞拷贝池（2026-10-13）：PORNHUB 单盘 3 万+ 文件，必须避免 task 风暴
+        self._init_copy_pool(worker_n=3, queue_size=200)
 
     async def scan(self) -> dict:
         """扫描 PORNHub 媒体目录并落库"""
@@ -365,12 +367,12 @@ class PornhubScanner(BaseScanner):
                         logger.info(f"[pornhub] 增量提交: 已入库 {result['movies_added']} 部")
 
                     if code:
-                        # 并发受限（防整盘扫描时无限制 ensure_future 风暴拖死事件循环）
-                        asyncio.ensure_future(
-                            self._copy_limited(
-                                copy_video_assets_to_data_dir(str(file_path), code, "pornhub")
-                            )
-                        )
+                        # 🔴 2026-10-13：`Semaphore(5)` 只限"同时执行数"、不限"task 数"。
+                        #    PORNHUB 单盘可达 3 万+ 文件，逐个 ensure_future 会创建同等数量
+                        #    task 把事件循环和内存打爆（实测扫到一半完全静止、内存 83%）。
+                        #    改成固定 worker 消费**非阻塞**队列：队列满就跳过这次拷贝，
+                        #    绝不阻塞入库（封面可事后用「批量补封面」补）。
+                        self._submit_copy(str(file_path), code, "pornhub")
 
                     if actor_name:
                         # 多演员文件夹名（Anna + Sunny）按 + / & / , 拆分，逐个建表，

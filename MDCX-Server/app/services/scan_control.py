@@ -19,6 +19,40 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _norm_dir(p: str) -> str:
+    """目录归一化：去尾部反斜杠、转小写，便于比较（Windows 路径不区分大小写）。"""
+    return str(p).strip().rstrip("\\/").lower()
+
+
+def _restrict_to_requested(valid_dirs: list[str],
+                           paths: list[str] | None) -> list[str]:
+    """把「本次要扫的目录」限制到调用方指定的 paths 与配置目录的交集内。
+
+    🔴 2026-10-13（分盘扫描）：PORNHUB 配了 T:/U:/V: 三个盘，需要能一次只扫一个，
+    否则整盘遍历会把慢网络盘 / 事件循环压垮。paths 为空 = 不过滤（保持原行为）。
+
+    匹配是**双向包含**的：
+      - 配置 `V:\\`、请求 `V:\\`      → 命中（按盘扫）
+      - 配置 `V:\\`、请求 `V:\\波兰`  → 命中（只扫某个国家）
+      - 配置 `V:\\波兰`、请求 `V:\\`  → 命中（配置更窄，用请求的父级去匹配它）
+    配置之外的路径一律拒绝，避免被诱导扫整盘。
+    """
+    if not paths:
+        return valid_dirs
+    want = {_norm_dir(p) for p in paths if p and str(p).strip()}
+    if not want:
+        return valid_dirs
+    out = []
+    for d in valid_dirs:
+        dn = _norm_dir(d)
+        for w in want:
+            if dn == w or dn.startswith(w + "\\") or w.startswith(dn + "\\"):
+                out.append(d)
+                break
+    logger.info(f"分盘扫描过滤: 请求={sorted(want)} → 实际={out}")
+    return out
+
+
 class ScanControlService:
     """扫描控制服务
 
@@ -270,7 +304,8 @@ class ScanControlService:
     # 手动扫描（不受冷却限制）
     # ============================================
 
-    async def trigger_manual_scan(self, module_name: str | None = None) -> dict:
+    async def trigger_manual_scan(self, module_name: str | None = None,
+                                  paths: list[str] | None = None) -> dict:
         """触发手动扫描
 
         手动扫描不受冷却限制，立即执行。指定 module_name 时只扫描该模块，
@@ -278,6 +313,9 @@ class ScanControlService:
 
         Args:
             module_name: 模块名（jav/fc2/uncensored/chinese/pornhub/western/anime），None=全部
+            paths: 🔴 2026-10-13 新增——本次**只扫这些媒体目录**（分盘扫描用）。
+                   None 或空 = 扫该模块配置里的全部 media_dirs（保持原行为）。
+                   例：PORNHUB 配了 T:/U:/V: 三个盘，paths=["U:\\"] 就只扫 U:。
 
         Returns:
             {record_id, message}
@@ -288,7 +326,7 @@ class ScanControlService:
         )
 
         # 启动后台扫描任务
-        asyncio.create_task(self._run_manual_scan(record_id, module_name))
+        asyncio.create_task(self._run_manual_scan(record_id, module_name, paths))
 
         scope = f"模块 {module_name}" if module_name else "全部模块"
         return {
@@ -298,9 +336,14 @@ class ScanControlService:
         }
 
     async def _run_manual_scan(
-        self, record_id: int, module_name: str | None = None
+        self, record_id: int, module_name: str | None = None,
+        paths: list[str] | None = None,
     ) -> None:
-        """执行手动扫描（在后台运行）。module_name 指定时只扫描该模块，否则扫描全部。"""
+        """执行手动扫描（在后台运行）。module_name 指定时只扫描该模块，否则扫描全部。
+
+        paths 指定时，只在**该模块自己的 media_dirs 范围内**取交集作为本次扫描目录
+        （2026-10-13 分盘扫描）。绝不接受配置之外的路径，避免误扫整盘。
+        """
         import importlib
         from pathlib import Path
 
@@ -342,9 +385,12 @@ class ScanControlService:
                 return
             dirs = getattr(mod_cfg, "media_dirs", None) or []
             valid_dirs = filter_reachable([str(d) for d in dirs])
+            valid_dirs = _restrict_to_requested(valid_dirs, paths)
             if not valid_dirs:
                 await self.complete_scan_record(
-                    record_id, "failed", error_message=f"模块 {module_name} 无可用媒体目录"
+                    record_id, "failed",
+                    error_message=f"模块 {module_name} 无可用媒体目录"
+                    + ("（指定的目录均不在配置内或不可达）" if paths else ""),
                 )
                 return
 
@@ -360,6 +406,7 @@ class ScanControlService:
             if mod_cfg and getattr(mod_cfg, "enabled", False):
                 dirs = getattr(mod_cfg, "media_dirs", None) or []
                 valid_dirs = filter_reachable([str(d) for d in dirs])
+                valid_dirs = _restrict_to_requested(valid_dirs, paths)
                 if valid_dirs:
                     try:
                         logger.info(f"手动扫描 开始模块 [{mod_name}]: {valid_dirs}")

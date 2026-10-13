@@ -37,11 +37,32 @@ async def trigger_manual_scan(
     module: str | None = Query(
         None, description="指定模块名（jav/fc2/uncensored/chinese/pornhub/western/anime），省略则扫描全部"
     ),
+    paths: list[str] | None = Query(
+        None,
+        description="🔴 2026-10-13 分盘扫描：本次只扫这些媒体目录（可重复传）。"
+                    "必须落在该模块配置的 media_dirs 范围内；省略则扫该模块全部目录。"
+                    '例：paths=T:\\&paths=U:\\ 只扫这两个盘',
+    ),
+    paths_bracket: list[str] = Query(
+        None, alias="paths[]",
+        description="兼容 axios 把数组序列化成的 paths[]=X 形式（历史 bug："
+                    "axios 用 paths[] 而 FastAPI 只认 paths ⇒ 过滤静默失效、全盘扫）",
+    ),
     _admin: dict = Depends(require_admin),
 ):
-    """手动触发扫描（不受冷却限制）：可指定单模块或全部模块"""
+    """手动触发扫描（不受冷却限制）：可指定单模块或全部模块
+
+    `paths` 用于把一次大扫描拆成多次（例如 PORNHUB 的 T:/U:/V: 三个盘分开扫），
+    避免单次全量遍历把慢网络盘 / 事件循环压垮。
+    """
+    final_paths = paths or paths_bracket or None
+    if paths_bracket and not paths:
+        logger.warning(
+            f"[scan] 收到 paths[] 形式参数（{paths_bracket}），已按 paths 处理；"
+            f"请检查前端是否仍在用 axios 数组序列化"
+        )
     service = ScanControlService.get_instance()
-    result = await service.trigger_manual_scan(module)
+    result = await service.trigger_manual_scan(module, final_paths)
     return result
 
 

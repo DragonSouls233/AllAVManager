@@ -91,22 +91,48 @@
                 :key="mod.name"
                 class="module-scan-row"
               >
-                <span class="module-scan-name">
-                  {{ moduleLabel(mod.name) }}
-                  <el-tag size="small" type="info" effect="plain">
-                    {{ mod.media_dirs?.length || 0 }} 目录
-                  </el-tag>
-                </span>
-                <el-button
-                  size="small"
-                  type="primary"
-                  plain
-                  :loading="scanningModule === mod.name"
-                  :disabled="scanStatus?.in_cooldown"
-                  @click="handleModuleScan(mod)"
+                <div class="module-scan-main">
+                  <span class="module-scan-name">
+                    {{ moduleLabel(mod.name) }}
+                    <el-tag size="small" type="info" effect="plain">
+                      {{ mod.media_dirs?.length || 0 }} 目录
+                    </el-tag>
+                  </span>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="scanningModule === mod.name"
+                    :disabled="scanStatus?.in_cooldown"
+                    @click="handleModuleScan(mod)"
+                  >
+                    扫描
+                  </el-button>
+                </div>
+                <!-- 🔴 2026-10-13 分盘扫描：多目录模块逐目录单独扫，
+                     避免 PORNHUB 的 T:/U:/V: 三个盘一次全扫把服务器压垮 -->
+                <div
+                  v-if="(mod.media_dirs?.length || 0) > 1"
+                  class="module-scan-dirs"
                 >
-                  扫描
-                </el-button>
+                  <div
+                    v-for="dir in mod.media_dirs"
+                    :key="dir"
+                    class="module-scan-dir"
+                  >
+                    <span class="dir-path" :title="dir">{{ dir }}</span>
+                    <el-button
+                      size="small"
+                      text
+                      type="primary"
+                      :loading="scanningKey === mod.name + '||' + dir"
+                      :disabled="scanStatus?.in_cooldown || !!scanningModule"
+                      @click="handleDirScan(mod, dir)"
+                    >
+                      扫这个
+                    </el-button>
+                  </div>
+                </div>
               </div>
               <div v-if="!enabledModules.length" class="module-scan-empty">无已启用模块</div>
             </div>
@@ -237,6 +263,8 @@ const filters = reactive({ type: '', status: '' })
 const modules = ref([])
 const modulesLoading = ref(false)
 const scanningModule = ref('')
+// 分盘扫描的 loading key：`模块名||目录路径`（2026-10-13）
+const scanningKey = ref('')
 
 // 已启用且有媒体目录的模块
 const enabledModules = computed(() =>
@@ -382,6 +410,25 @@ const handleModuleScan = async (mod) => {
   } catch (e) {
     ElMessage.error(`触发「${moduleLabel(mod.name)}」扫描失败：` + (e?.response?.data?.detail || e.message || '未知错误'))
   } finally {
+    scanningModule.value = ''
+  }
+}
+
+// 分盘扫描（2026-10-13）：只扫指定的一个媒体目录。
+// PORNHUB 这类模块配了多个盘时，逐盘扫描能把单次负载压到 1/N，
+// 中途出问题也只影响那一盘，下一次可从 checkpoint 续。
+const handleDirScan = async (mod, dir) => {
+  const key = mod.name + '||' + dir
+  scanningKey.value = key
+  scanningModule.value = mod.name
+  try {
+    await triggerManualScan(mod.name, [dir])
+    ElMessage.success(`「${moduleLabel(mod.name)}」 ${dir} 扫描已触发，可在下方记录查看进度`)
+    await loadAll()
+  } catch (e) {
+    ElMessage.error(`触发 ${dir} 扫描失败：` + (e?.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    scanningKey.value = ''
     scanningModule.value = ''
   }
 }
@@ -538,11 +585,45 @@ onBeforeUnmount(() => {
 
 .module-scan-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   padding: 6px 8px;
   border-radius: 6px;
   background: #f5f7fa;
+}
+
+.module-scan-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 分盘扫描（2026-10-13）：多目录模块在模块行下方列出每个目录 */
+.module-scan-dirs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 2px 10px;
+  border-left: 2px solid #dcdfe6;
+  margin-left: 4px;
+}
+
+.module-scan-dir {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.dir-path {
+  color: #606266;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .module-scan-name {
