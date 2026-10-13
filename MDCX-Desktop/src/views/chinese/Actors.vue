@@ -12,7 +12,7 @@
     </div>
 
     <div class="actors-grid" v-loading="loading">
-      <div v-for="actor in pagedActors" :key="actor.id" class="actor-card" @click="goActorDetail(actor.id)">
+      <div v-for="actor in actors" :key="actor.id" class="actor-card" @click="goActorDetail(actor.id)">
         <div class="actor-avatar">
           <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
         </div>
@@ -26,15 +26,15 @@
     </div>
 
     <div class="pagination-wrap" v-if="total > pageSize">
-      <el-pagination v-model:current-page="page" v-model:page-size="pageSize"
-        :total="total" :page-sizes="[60, 120, 240]" layout="total, sizes, prev, pager, next"
-        @size-change="page=1" @current-change="scrollTop" />
+      <el-pagination v-model:current-page="store.actorPage" v-model:page-size="store.actorPageSize"
+        :total="store.actorTotal" :page-sizes="[24, 48, 96, 192, 480]" layout="total, sizes, prev, pager, next"
+        @size-change="onActorPageSizeChange" @current-change="onActorPageChange" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChineseStore } from '@/stores/chinese'
 import defaultAvatar from '@/assets/default-avatar.png'
@@ -45,26 +45,21 @@ const store = useChineseStore()
 const keyword = ref('')
 const loading = ref(false)
 const actors = ref([])
-const page = ref(1)
-const pageSize = ref(60)
-const total = ref(0)
 
-const pagedActors = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return actors.value.slice(start, start + pageSize.value)
-})
-
+function onActorPageChange() {
+  loadActors()
+}
+function onActorPageSizeChange() {
+  store.actorPage = 1
+  loadActors()
+}
 async function loadActors() {
   loading.value = true
   try {
-    const res = await store.loadActors()
-    if (Array.isArray(res)) {
-      actors.value = res
-      total.value = res.length
-    } else {
-      actors.value = res?.items || []
-      total.value = res?.total || 0
-    }
+    // 2026-10-13：store.loadActors() 走服务端分页，返回当前页数组；
+    // 总数从 store.actorTotal 取（后端 count 下推 SQL）
+    actors.value = await store.loadActors()
+    total.value = store.actorTotal
   } catch (e) {
     console.error('国产演员加载失败:', e)
     actors.value = []
@@ -75,7 +70,7 @@ async function loadActors() {
 }
 
 function search() {
-  page.value = 1
+  store.actorPage = 1
   loadActors()
 }
 

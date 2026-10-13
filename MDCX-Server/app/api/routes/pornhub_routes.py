@@ -354,7 +354,9 @@ async def get_actor(actor_id: int):
 @router.get("/movies")
 async def list_movies(
     skip: int = Query(0, ge=0, description="跳过数量"),
-    limit: int = Query(24, ge=1, le=200, description="返回数量"),
+    # 🔴 2026-10-13：le 从 200 放宽到 500，与 `/actors` 的 limit 上限对齐。
+    #    前端「每页条数」提供到 288，原先选 240/288 直接 422。
+    limit: int = Query(24, ge=1, le=500, description="返回数量"),
     unscraped_only: bool = Query(False, description="仅列出未刮削的影片"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
     # 2026-08-08 新增: 详情页跳转筛选参数

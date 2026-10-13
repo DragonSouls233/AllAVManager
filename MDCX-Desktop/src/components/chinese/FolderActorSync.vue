@@ -54,8 +54,9 @@ async function startSync() {
 
 onMounted(async () => {
   try {
-    const actors = await getChineseActors()
-    if (!actors) notConfigured.value = true
+    // 2026-10-13：/chinese/actors 改为返回 {items,total} 信封
+    const actors = (await getChineseActors())?.items || []
+    if (!actors.length) notConfigured.value = true
   } catch {
     notConfigured.value = true
   }

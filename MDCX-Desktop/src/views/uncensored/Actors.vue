@@ -4,7 +4,7 @@
       <el-input v-model="keyword" placeholder="搜索无码演员..." clearable style="width: 300px">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-button type="primary" @click="loadActors">搜索</el-button>
+      <el-button type="primary" @click="page = 1; loadActors()">搜索</el-button>
     </div>
 
     <div class="actors-grid" v-loading="loading">
@@ -19,6 +19,14 @@
       </div>
       <el-empty v-if="!loading && !actors.length" description="暂无无码演员，请先扫描影片" />
     </div>
+
+    <!-- 🔴 2026-10-13：补分页（对齐 JAV 有码/国产）-->
+    <div class="actors-pagination" v-if="store.actorTotal > 0">
+      <el-pagination v-model:current-page="store.actorPage" v-model:page-size="store.actorPageSize"
+        :total="store.actorTotal" :page-sizes="[24, 48, 96, 192, 480]"
+        layout="total, sizes, prev, pager, next"
+        @size-change="onActorPageSizeChange" @current-change="onActorPageChange" />
+    </div>
   </div>
 </template>
 
@@ -29,6 +37,9 @@ import { useUncensoredStore } from '@/stores/uncensored'
 import defaultAvatar from '@/assets/default-avatar.png'
 import { getAvatarSrc } from '@/utils/media'
 
+// 🔴 2026-10-13：补每页条数选择器。换条数必须回第 1 页，
+// 否则可能停在一个不存在的页码上（如原本在第 5 页，改成 24 条/页后共 2 页）。
+
 const router = useRouter()
 const store = useUncensoredStore()
 const keyword = ref('')
@@ -38,10 +49,25 @@ const actors = ref([])
 async function loadActors() {
   loading.value = true
   try {
-    actors.value = await store.loadActors({ search: keyword.value || undefined })
+    actors.value = await store.loadActors()
+  } catch (e) {
+    console.error('无码演员加载失败:', e)
+    actors.value = []
   } finally {
     loading.value = false
   }
+}
+
+function onActorPageChange() {
+  loadActors()
+}
+function onActorPageSizeChange() {
+  store.actorPage = 1
+  loadActors()
+}
+
+function scrollTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 function goActorDetail(id) {
@@ -56,6 +82,7 @@ onMounted(loadActors)
 </script>
 
 <style scoped>
+.actors-pagination { margin-top: 20px; display: flex; justify-content: center; }
 .module-actors { padding: 20px; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
 .actors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }

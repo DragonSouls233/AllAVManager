@@ -369,8 +369,47 @@ async def get_western_cover_file(movie_id: int):
 
 
 @router.get("/actors")
-async def list_actors():
-    """列出欧美演员"""
+async def list_actors(
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(24, ge=1, le=500, description="每页数量"),
+    search: Optional[str] = Query(None, description="按名字/日文名/别名搜索"),
+):
+    """列出欧美演员列表（分页 + 搜索）
+
+    🔴 2026-10-13：改为分页返回 {items, total, skip, limit}。
+    旧实现 `select(AllActor)` 全表返回裸数组，既不支持翻页也违反
+    "过滤/分页下推 SQL"。前端已按信封消费。
+    """
+    db = get_western_db()
+    session = await db.get_session()
+    try:
+        from app.db.western_models import WesternActor
+        from sqlalchemy import select, func
+
+        filters = []
+        if search:
+            filters.append(WesternActor.name.contains(search))
+        # 分页与统计都下推 SQL，不再全表捞出
+        total_stmt = select(func.count(WesternActor.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
+        total = (await session.execute(total_stmt)).scalar() or 0
+
+        stmt = select(WesternActor).order_by(WesternActor.movie_count.desc()).offset(skip).limit(limit)
+        if filters:
+            stmt = stmt.where(*filters)
+        actors = (await session.execute(stmt)).scalars().all()
+
+        return {
+            "items": [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
+                        "source": a.source, "avatar_url": a.avatar_url,
+                        "module_type": "western"} for a in actors],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        }
+    finally:
+        await session.close()
     db = get_western_db()
     session = await db.get_session()
     try:

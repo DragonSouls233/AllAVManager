@@ -10,6 +10,11 @@ export const useFc2Store = defineStore('fc2', () => {
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
+  // 🔴 2026-10-13 演员分页（服务端）。后端 /actors 已支持 skip/limit，
+  // 不再全表捞出后在前端切片。
+  const actorPage = ref(1)
+  const actorPageSize = ref(24)
+  const actorTotal = ref(0)
 
   async function loadMovies(params = {}) {
     loading.value = true
@@ -27,8 +32,22 @@ export const useFc2Store = defineStore('fc2', () => {
   }
 
   async function loadActors(params = {}) {
-    const res = await getFc2Actors(params)
-    actors.value = res || []
+    // 服务端分页：skip/limit 下推 SQL，count 也下推（不再全表捞）
+    const q = {
+      skip: (actorPage.value - 1) * actorPageSize.value,
+      limit: actorPageSize.value,
+      ...params,
+    }
+    const res = await getFc2Actors(q)
+    // 兼容信封（现行）与历史裸数组
+    if (Array.isArray(res)) {
+      actors.value = res
+      actorTotal.value = res.length
+    } else {
+      actors.value = res?.items || []
+      actorTotal.value = res?.total || 0
+    }
+    // 返回数组：ActorDetail.vue 等调用方要 .find(a => a.id === id)
     return actors.value
   }
 
@@ -40,5 +59,6 @@ export const useFc2Store = defineStore('fc2', () => {
     return await scanModule('fc2')
   }
 
-  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
+  return { movies, total, actors, loading, page, pageSize,
+           actorPage, actorPageSize, actorTotal, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
 })

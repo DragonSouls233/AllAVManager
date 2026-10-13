@@ -9,6 +9,11 @@ export const useWesternStore = defineStore('western', () => {
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
+  // 🔴 2026-10-13 演员分页（服务端）。后端 /actors 已支持 skip/limit，
+  // 不再全表捞出后在前端切片。
+  const actorPage = ref(1)
+  const actorPageSize = ref(24)
+  const actorTotal = ref(0)
 
   async function loadMovies(params = {}) {
     loading.value = true
@@ -25,9 +30,23 @@ export const useWesternStore = defineStore('western', () => {
     return await getWesternMovie(id)
   }
 
-  async function loadActors() {
-    const res = await getWesternActors()
-    actors.value = res || []
+  async function loadActors(params = {}) {
+    // 服务端分页：skip/limit 下推 SQL，count 也下推（不再全表捞）
+    const q = {
+      skip: (actorPage.value - 1) * actorPageSize.value,
+      limit: actorPageSize.value,
+      ...params,
+    }
+    const res = await getWesternActors(q)
+    // 兼容信封（现行）与历史裸数组
+    if (Array.isArray(res)) {
+      actors.value = res
+      actorTotal.value = res.length
+    } else {
+      actors.value = res?.items || []
+      actorTotal.value = res?.total || 0
+    }
+    // 返回数组：ActorDetail.vue 等调用方要 .find(a => a.id === id)
     return actors.value
   }
 
@@ -39,5 +58,6 @@ export const useWesternStore = defineStore('western', () => {
     return await scanWesternMedia()
   }
 
-  return { movies, total, actors, loading, page, pageSize, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
+  return { movies, total, actors, loading, page, pageSize,
+           actorPage, actorPageSize, actorTotal, loadMovies, loadMovieDetail, loadActors, loadActorDetail, triggerScan }
 })

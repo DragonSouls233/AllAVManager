@@ -186,6 +186,73 @@ def detect_version_flags(file_name: str) -> dict:
     return flags
 
 
+# ─── 外挂字幕识别（移植自 ref114-amane，2026-10-13） ──────────────────────
+# amane 的口径：中字标识 = 文件名特征 ∪ 同目录字幕文件。
+# 文件名特征 detect_version_flags 早已覆盖；这里补「同目录字幕文件」一半。
+# 扩展名表与 amane library/rules.py::DEFAULT_SUBTITLE_EXTENSIONS 一致。
+_SUBTITLE_EXTS = frozenset({".srt", ".ass", ".ssa", ".vtt", ".sub"})
+
+
+def dir_subtitle_stems(files: list[str]) -> set[str]:
+    """从目录文件清单提取外挂字幕 stem 集合。
+
+    ``files`` 直接来自 ``iter_media_entries`` 的 ``(root, dirs, files)``——
+    它含目录下**全部**文件（不只视频），因此这里是**零额外磁盘 IO**：
+    整盘/网络盘扫描不会多一次 listdir。
+    """
+    stems: set[str] = set()
+    for name in files:
+        if Path(name).suffix.lower() in _SUBTITLE_EXTS:
+            stems.add(Path(name).stem)
+    return stems
+
+
+def has_external_subtitle(
+    video_stem: str, subtitle_stems: set[str], code: str | None = None
+) -> bool:
+    """视频是否有外挂字幕。
+
+    口径移植自 amane ``cleanup/footprint.py::_add_subtitles``：
+    ``stem == video.stem`` 或 ``stem.startswith(video.stem + ".")``
+    （即「同名」与「视频名.语言」两种形式，如 ``ABC-123.chs.srt``）。
+    额外接受番号命名：``ABC-123-C.mp4`` 配 ``ABC-123.srt`` 也算
+    （同目录同番号，字幕大概率属于该片；JAV 社区的外挂字幕基本即中字）。
+
+    注意：这里**不区分字幕语言**——目录里出现 .srt 即视为中字证据，
+    与 amane 的口径一致（英文外挂字幕极罕见；若以后要区分，可按
+    chs/cht/sc/tc/简/繁 关键字收紧）。
+    """
+    if not subtitle_stems:
+        return False
+    keys = [video_stem]
+    if code:
+        keys.append(code)
+    for k in keys:
+        if not k:
+            continue
+        if k in subtitle_stems:
+            return True
+        prefix = k + "."
+        if any(s.startswith(prefix) for s in subtitle_stems):
+            return True
+    return False
+
+
+def find_external_subtitle(video_path: str | Path, code: str | None = None) -> bool:
+    """按完整路径判定外挂字幕（给补刮/修补 route 用，会真列一次目录）。
+
+    扫描器热路径请用 :func:`dir_subtitle_stems` + :func:`has_external_subtitle`
+    （复用遍历已得到的 files，零 IO）；本函数用于单部影片的事后判定。
+    """
+    try:
+        video_dir = Path(video_path).parent
+        children = list(video_dir.iterdir())
+    except OSError:
+        return False
+    stems = {c.stem for c in children if c.suffix.lower() in _SUBTITLE_EXTS}
+    return has_external_subtitle(Path(video_path).stem, stems, code)
+
+
 def find_local_cover(video_file_path: str | Path, code: str) -> str | None:
     """在视频目录中查找本地封面，返回绝对路径（用于回填 cover_url）。
 

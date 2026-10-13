@@ -48,7 +48,8 @@ function handleAvatarError(e) {
 onMounted(async () => {
   try {
     const id = Number(route.params.id)
-    const actorList = await getFc2Actors()
+    // 2026-10-13：/fc2/actors 改为返回 {items,total} 信封
+    const actorList = (await getFc2Actors())?.items || []
     actor.value = actorList.find(a => a.id === id)
     if (actor.value) {
       const res = await getFc2Movies({ actor: actor.value.name })

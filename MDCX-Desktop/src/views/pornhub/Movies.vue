@@ -56,10 +56,12 @@
     <div class="pagination" v-if="store.total > 0">
       <el-pagination
         v-model:current-page="store.page"
-        :page-size="store.pageSize"
+        v-model:page-size="store.pageSize"
+        :page-sizes="[12, 24, 48, 96, 192, 240, 288]"
         :total="store.total"
-        layout="total, prev, pager, next"
+        layout="total, sizes, prev, pager, next"
         @current-change="loadMovies"
+        @size-change="onPageSizeChange"
       />
     </div>
 
@@ -125,6 +127,7 @@
 </template>
 
 <script setup>
+
 import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
@@ -139,6 +142,12 @@ import {
 } from '@/api/pornhub'
 import { Link, Delete } from '@element-plus/icons-vue'
 
+// 🔴 2026-10-13：补每页条数选择器（对齐 JAV 有码）。
+// 换每页条数时必须回到第 1 页，否则可能停在一个不存在的页码上。
+function onPageSizeChange() {
+  store.page = 1
+  loadMovies()
+}
 const router = useRouter()
 const route = useRoute()
 const store = usePornhubStore()

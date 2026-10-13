@@ -24,8 +24,56 @@ def get_fc2_db() -> ModuleDatabase:
 
 
 @router.get("/actors")
-async def list_actors(search: Optional[str] = Query(None, description="按名字/日文名/别名搜索")):
-    """列出 FC2 演员列表"""
+async def list_actors(
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(24, ge=1, le=500, description="每页数量"),
+    search: Optional[str] = Query(None, description="按名字/日文名/别名搜索"),
+):
+    """列出FC2演员列表（分页 + 搜索）
+
+    🔴 2026-10-13：改为分页返回 {items, total, skip, limit}。
+    旧实现 `select(AllActor)` 全表返回裸数组，既不支持翻页也违反
+    "过滤/分页下推 SQL"。前端已按信封消费。
+    """
+    db = get_fc2_db()
+    session = await db.get_session()
+    try:
+        from app.db.fc2_models import Fc2Actor
+        from sqlalchemy import select, func, or_
+
+        filters = []
+        if search:
+            # 名字/日文名/英文名/别名 任一命中即算（or_ 需保留）
+            alias_col = getattr(Fc2Actor, "alias", None)
+            cond = or_(
+                Fc2Actor.name.contains(search),
+                Fc2Actor.name_jp.contains(search),
+                Fc2Actor.name_en.contains(search),
+            )
+            if alias_col is not None:
+                cond = or_(cond, alias_col.contains(search))
+            filters.append(cond)
+        # 分页与统计都下推 SQL，不再全表捞出
+        total_stmt = select(func.count(Fc2Actor.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
+        total = (await session.execute(total_stmt)).scalar() or 0
+
+        stmt = select(Fc2Actor).order_by(Fc2Actor.movie_count.desc()).offset(skip).limit(limit)
+        if filters:
+            stmt = stmt.where(*filters)
+        actors = (await session.execute(stmt)).scalars().all()
+
+        return {
+            "items": [{"id": a.id, "name": a.name, "movie_count": a.movie_count,
+                        "source": a.source, "avatar_url": a.avatar_url,
+                        "module_type": "fc2"} for a in actors],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        }
+    finally:
+        await session.close()
     db = get_fc2_db()
     session = await db.get_session()
     try:

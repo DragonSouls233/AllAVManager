@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from app.scraper.folder_actor import extract_actor_from_folder
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags, find_local_cover
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags, find_local_cover, dir_subtitle_stems, has_external_subtitle
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -253,11 +253,50 @@ class JavScanner(BaseScanner):
                 )
             ).scalars().all()
             pending_by_code: dict[str, object] = {m.code: m for m in pending_rows if m.code}
+            # is_chinese 未判定/为假的存量行（code→id）。扫描走查每个文件时按本地
+            # 证据（文件名标记 ∪ 同目录外挂字幕）就地补 True——「没中文」TAB 靠每次
+            # 全量扫描自愈，无需另跑回填脚本（只加不减，无证据的保持原值）。
+            chinese_missing_by_code: dict[str, int] = {
+                m.code: m.id
+                for m in (
+                    await session.execute(
+                        select(JavMovie.id, JavMovie.code).where(
+                            JavMovie.is_chinese.isnot(True)
+                        )
+                    )
+                ).all()
+                if m.code
+            }
+            chinese_selfheal_ids: list[int] = []
+            # file_path 为空的存量行（code→id）。缺口补全/批量刮削的 persist() 会建
+            # file_path=NULL 的影片行（视频可能不在盘上，也可能后来才出现），而下面
+            # known 分支只查 pending 且从不写 file_path ⇒ 这些行永远停在「没视频路径」。
+            # 扫描走查见到文件就补：只补空的，绝不覆盖已有路径；同番号多文件先到先得。
+            from sqlalchemy import or_
+
+            fp_missing_by_code: dict[str, int] = {
+                m.code: m.id
+                for m in (
+                    await session.execute(
+                        select(JavMovie.id, JavMovie.code).where(
+                            or_(
+                                JavMovie.file_path.is_(None),
+                                JavMovie.file_path == "",
+                                JavMovie.file_path == "N/A",
+                            )
+                        )
+                    )
+                ).all()
+                if m.code
+            }
+            fp_link_updates: list[tuple[int, str, int]] = []
             walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             pending_movies: list[JavMovie] = []
             for root, dirs, files in walk_entries:
                 # 收集当前目录的演员信息
                 dir_path = Path(root)
+                # 同目录外挂字幕 stem 集合（零额外 IO：files 已含目录下全部文件）
+                sub_stems = dir_subtitle_stems(files)
 
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
@@ -277,6 +316,16 @@ class JavScanner(BaseScanner):
                     # 说明它早就刮好了，只是没写回库。**就地回填并转 scraped**，
                     # 绝不能 continue 跳过 —— 那正是"缺口永不消失"的根因。
                     if code in existing_codes:
+                        # 🔴 存量补 file_path（2026-10-13）：见 fp_missing_by_code 注释。
+                        # pop ⇒ 同番号多文件（分卷/副本）只链第一个，避免互相覆盖。
+                        if code in fp_missing_by_code:
+                            _mid = fp_missing_by_code.pop(code)
+                            try:
+                                fp_link_updates.append(
+                                    (_mid, str(file_path), _file_size(file_path) or 0)
+                                )
+                            except Exception:
+                                pass
                         known = pending_by_code.get(code)
                         if known is not None:
                             nfo_path = _find_local_nfo(code, dir_path)
@@ -302,6 +351,21 @@ class JavScanner(BaseScanner):
                                 logger.info(
                                     "[jav] 回填已刮削影片（磁盘已有 NFO）: %s", code
                                 )
+                        # 存量自愈：本地有中字证据（文件名标记 ∪ 同目录外挂字幕）
+                        # 而库里 is_chinese 还不是 True ⇒ 收集 id 稍后批量置 True。
+                        # 🔴 必须在 `if known is not None:` 之外（pending 回填分支的
+                        # 兄弟级）：存量行绝大多数 status=scraped，放进 pending 分支
+                        # 等于只对 pending 行生效，自愈形同虚设。
+                        # 每次全量扫描都会走查所有文件，故存量会随扫描逐步自愈。
+                        if code in chinese_missing_by_code and (
+                            detect_version_flags(file_name)["is_chinese"]
+                            or has_external_subtitle(
+                                Path(file_name).stem, sub_stems, code
+                            )
+                        ):
+                            chinese_selfheal_ids.append(
+                                chinese_missing_by_code[code]
+                            )
                         continue
                     existing_codes.add(code)
 
@@ -327,7 +391,12 @@ class JavScanner(BaseScanner):
 
                     # 检测版本标记（-C 中文 / -U 无码 / -UC 无码中文 / -Leak 破解 / -4K）
                     flags = detect_version_flags(file_name)
-                    is_chinese = flags["is_chinese"]
+                    # 外挂字幕兜底（移植 amane）：同目录有 .srt/.ass 等即视为中字版。
+                    # JAV 有码库同样大量存在外挂 SRT，文件名无 -C 标记时靠它补判定。
+                    has_sub = has_external_subtitle(
+                        Path(file_name).stem, sub_stems, code
+                    )
+                    is_chinese = flags["is_chinese"] or has_sub
                     is_uncensored = flags["is_uncensored"]
 
                     # 提取工作室
@@ -427,6 +496,46 @@ class JavScanner(BaseScanner):
                     logger.warning(
                         f"[jav] 目录 {media_dir} 跳过 {skipped_dup} 个重复番号（并发扫描冲突）"
                     )
+            # 存量 is_chinese 自愈落库。放在主提交之后独立提交：UNIQUE 重试路径
+            # 会 rollback，不能把自愈 UPDATE 卷进去；单表 UPDATE 无唯一约束风险。
+            if chinese_selfheal_ids:
+                try:
+                    from sqlalchemy import update as _update
+
+                    for i in range(0, len(chinese_selfheal_ids), 500):
+                        await session.execute(
+                            _update(JavMovie)
+                            .where(
+                                JavMovie.id.in_(chinese_selfheal_ids[i : i + 500])
+                            )
+                            .values(is_chinese=True)
+                        )
+                    await session.commit()
+                    logger.info(
+                        "[jav] 存量 is_chinese 自愈: %d 部（本地中字证据）",
+                        len(chinese_selfheal_ids),
+                    )
+                except Exception as e:
+                    logger.warning("[jav] 存量 is_chinese 自愈失败: %s", e)
+            # 存量 file_path 补链落库。与自愈同理独立提交：UNIQUE 重试路径会
+            # rollback，不能把补链 UPDATE 卷进去；单表 UPDATE 无唯一约束风险。
+            if fp_link_updates:
+                try:
+                    from sqlalchemy import update as _update
+
+                    for _mid, _fp, _sz in fp_link_updates:
+                        await session.execute(
+                            _update(JavMovie)
+                            .where(JavMovie.id == _mid)
+                            .values(file_path=_fp, file_size=_sz)
+                        )
+                    await session.commit()
+                    logger.info(
+                        "[jav] 存量补 file_path: %d 部（扫描见到视频文件）",
+                        len(fp_link_updates),
+                    )
+                except Exception as e:
+                    logger.warning("[jav] 存量补 file_path 失败: %s", e)
         finally:
             await session.close()
 

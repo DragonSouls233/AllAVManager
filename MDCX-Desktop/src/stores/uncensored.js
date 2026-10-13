@@ -15,6 +15,10 @@ export const useUncensoredStore = defineStore('uncensored', {
     total: 0,
     page: 1,
     pageSize: 24,
+    // 🔴 2026-10-13 演员分页（服务端，与影片的 page/pageSize 分开）
+    actorPage: 1,
+    actorPageSize: 24,
+    actorTotal: 0,
     loading: false,
     searchKeyword: '',
     sortField: 'created_at',
@@ -67,17 +71,22 @@ export const useUncensoredStore = defineStore('uncensored', {
     async loadActors() {
       this.loading = true
       try {
-        const params = { page: this.page, page_size: this.pageSize }
+        // 🔴 2026-10-13：后端 /uncensored/actors 只认 skip/limit（不认 page/page_size），
+        //    原先发 page/page_size 被静默忽略 ⇒ 永远只拿到前 N 条。
+        const params = {
+          skip: (this.actorPage - 1) * this.actorPageSize,
+          limit: this.actorPageSize,
+        }
         if (this.searchKeyword) params.search = this.searchKeyword
-        if (this.sortField) params.sort = this.sortField
-        if (this.sortOrder) params.order = this.sortOrder
         const res = await api.getActors(params)
-        this.actors = res.items || res.data || []
-        this.total = res.total || 0
-        return res
+        this.actors = res?.items || (Array.isArray(res) ? res : [])
+        this.actorTotal = res?.total || this.actors.length
+        // 返回数组：ActorDetail.vue 要 .find(a => a.id === id)
+        return this.actors
       } catch (e) {
         console.error('Load actors failed:', e)
         this.actors = []
+        this.actorTotal = 0
         this.total = 0
         throw e
       } finally {

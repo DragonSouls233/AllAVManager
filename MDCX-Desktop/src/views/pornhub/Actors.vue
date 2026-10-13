@@ -32,6 +32,19 @@
       </div>
       <el-empty v-if="!loading && !actors.length" description="暂无 PORNHub 演员，请先扫描影片" />
     </div>
+
+    <!-- 🔴 2026-10-13：本页原先缺分页组件，832 位演员只能看到前 24 位、无法翻页 -->
+    <div class="actors-pagination" v-if="store.actorTotal > 0">
+      <el-pagination
+        v-model:current-page="store.actorPage"
+        v-model:page-size="store.actorPageSize"
+        :page-sizes="[24, 48, 96, 192, 480]"
+        :total="store.actorTotal"
+        layout="total, sizes, prev, pager, next"
+        @current-change="onActorPageChange"
+        @size-change="onActorPageSizeChange"
+      />
+    </div>
   </div>
 </template>
 
@@ -54,10 +67,22 @@ async function loadActors() {
   loading.value = true
   try {
     store.actorSearch = keyword.value
+    // 换搜索词时回到第一页，否则会停在第 N 页而看不到结果
+    store.actorPage = 1
     actors.value = await store.loadActors()
   } finally {
     loading.value = false
   }
+}
+
+// 分页：换页 / 换每页条数（2026-10-13 补齐，原先本页完全没有分页组件，
+// 832 位演员只显示前 24 位且无法翻页）
+function onActorPageChange() {
+  loadActors()
+}
+function onActorPageSizeChange() {
+  store.actorPage = 1
+  loadActors()
 }
 
 async function batchScrape() {
@@ -119,6 +144,7 @@ onMounted(loadActors)
 .module-actors { padding: 20px; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
 .actors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+.actors-pagination { margin-top: 20px; display: flex; justify-content: center; }
 .actor-card { cursor: pointer; text-align: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px; transition: all 0.2s; }
 .actor-card:hover { border-color: #409eff; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
 .actor-avatar { width: 120px; height: 120px; margin: 0 auto 8px; border-radius: 50%; overflow: hidden; }

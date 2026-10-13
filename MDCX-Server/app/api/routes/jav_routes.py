@@ -1241,6 +1241,17 @@ async def scrape_jav_movie(movie_id: int):
                     movie.is_4k = True
         except Exception:
             pass
+        # 外挂字幕兜底（移植 ref114-amane）：同目录存在 .srt/.ass/.ssa/.vtt/.sub
+        # （同名或「视频名.语言」形式）⇒ 视为中字版。文件名无 -C/-UC 标记但目录
+        # 带字幕的片（JAV 有码库大量存在），靠这里在补刮/改刮时补判定。
+        if not movie.is_chinese and getattr(movie, "file_path", None):
+            try:
+                from app.tasks.base_scanner import find_external_subtitle
+
+                if find_external_subtitle(movie.file_path, movie.code):
+                    movie.is_chinese = True
+            except Exception:
+                pass
         if scrape_result.genres:
             movie.genre = ",".join(scrape_result.genres)
         if scrape_result.tags:

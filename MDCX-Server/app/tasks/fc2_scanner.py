@@ -9,7 +9,7 @@ import os
 import re
 from pathlib import Path
 
-from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags
+from app.tasks.base_scanner import BaseScanner, copy_video_assets_to_data_dir, iter_media_entries, _file_size, detect_version_flags, dir_subtitle_stems, has_external_subtitle
 from app.utils.logger import get_logger
 from app.utils.nfo_fields import empty_nfo_fields, parse_nfo_fields
 
@@ -103,6 +103,8 @@ class Fc2Scanner(BaseScanner):
 
             walk_entries = await asyncio.to_thread(iter_media_entries, media_dir)
             for root, dirs, files in walk_entries:
+                # 同目录外挂字幕 stem 集合（零额外 IO：files 已含目录下全部文件）
+                sub_stems = dir_subtitle_stems(files)
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
                     if ext not in self.video_extensions:
@@ -155,7 +157,8 @@ class Fc2Scanner(BaseScanner):
                         source="nfo" if nfo_path is not None else None,
                         file_path=str(file_path),
                         file_size=_file_size(file_path),
-                        is_chinese=flags["is_chinese"],
+                        is_chinese=flags["is_chinese"]
+                        or has_external_subtitle(Path(file_name).stem, sub_stems, code),
                         is_uncensored=flags["is_uncensored"],
                         is_leak=flags["is_leak"],
                         is_4k=flags["is_4k"],

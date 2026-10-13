@@ -3056,6 +3056,18 @@ async def _apply_scrape_result(session, movie, result, module: str = "jav", skip
     except Exception:
         pass
 
+    # 外挂字幕兜底（移植 ref114-amane）：同目录存在 .srt/.ass/.ssa/.vtt/.sub
+    # （同名或「视频名.语言」形式）⇒ 视为中字版。文件名无 -C/-UC 标记但目录
+    # 带字幕的片（JAV 有码库大量存在），靠这里在补刮/改刮时补判定。
+    if not movie.is_chinese and getattr(movie, "file_path", None):
+        try:
+            from app.tasks.base_scanner import find_external_subtitle
+
+            if find_external_subtitle(movie.file_path, movie.code):
+                movie.is_chinese = True
+        except Exception:
+            pass
+
     # 演员库只保留女演员：用源站标记的男演员 + 持久化男演员名单过滤
     from app.utils.actor_gender import filter_female_only
 
