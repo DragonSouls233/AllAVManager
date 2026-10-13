@@ -865,8 +865,20 @@ async def get_actor_movies(actor_id: int):
             .where(MovieActor.actor_id == actor_id)
         )
         rows = (await session.execute(stmt)).all()
+        # 🔴 必须带 module_type：前端 `utils/media.js::getCoverSrc()` 的判据是
+        #    `movie.id && movie.module_type` ⇒ 走 `/api/v1/<module>/movies/<id>/cover/file`
+        #    后端代理（本地有图才出图）。缺这个字段时会退到 `movie.cover_url` 分支，
+        #    而 PH 的 cover_url 是 ei/pix-*.phncdn.com 外链（带 24h 过期的 hdnea 令牌），
+        #    浏览器直连 ⇒ 防盗链/过期 ⇒ 演员页作品封面全裂。
         movies_data = [
-            {"id": m.id, "title": m.title, "cover_url": m.cover_url, "code": m.code, "role": role}
+            {
+                "id": m.id,
+                "title": m.title,
+                "cover_url": m.cover_url,
+                "code": m.code,
+                "role": role,
+                "module_type": "pornhub",
+            }
             for m, role in rows
         ]
         return {"actor_id": actor_id, "movies": movies_data}
@@ -1673,50 +1685,85 @@ async def batch_refetch_covers(
     only_missing: bool = Query(True, description="仅补缺失封面"),
     limit: int = Query(100, ge=1, le=1000),
 ):
-    """批量从 source_url 重新下载封面到本地（按 source_id 重新构建 cover_url）"""
+    """批量补 PORNHUB 封面到本地 `data/movies/pornhub/<code>/poster.jpg`。
+
+    🔴 2026-10-13 重写。旧实现四处都错，等于坏掉：
+      1. `only_missing` 用 `cover_url IS NULL` 过滤 ⇒ 库里 cover_url 都有值时**一部都选不中**
+         （PH 的 cover_url 是**永久留着的过期签名址**，不等于本地有图）；
+      2. 存到 `data/movies/pornhub/covers/<code>.jpg`，而 `/cover/file` 只认
+         `{code}/poster.jpg|fanart.jpg|thumb.jpg` ⇒ 前端永远看不到；
+      3. 每部影片新建一个 `httpx.AsyncClient` 且**不带代理** ⇒ 墙外 CDN 必超时；
+      4. 只判 `len(content) > 1024` 不校验魔数 ⇒ PH 返回 MP4 时把视频流写成 poster.jpg。
+
+    现在：按**本地文件是否存在**判缺 → 走 ImageProcessor（自动带代理 + 魔数校验）
+    → 主图址失败时用 `app/utils/ph_cover.py` 从详情页取长效图址重试 → 回写 DB。
+    """
     async def _run():
-        try:
-            import httpx
-        except ImportError:
-            logger.error("httpx 未安装，无法批量补封")
-            return
+        from app.output.images import ImageProcessor
+        from app.utils.media_helpers import (
+            fast_file_exists, get_movie_cover_path, get_movie_fanart_path,
+            get_movie_thumb_path,
+        )
+        from app.utils.ph_cover import fetch_cover_candidates
+
         db = get_pornhub_db()
         session = await db.get_session()
         try:
             from app.db.pornhub_models import PornhubMovie
             from sqlalchemy import select
+
             stmt = select(PornhubMovie).order_by(PornhubMovie.id.desc()).limit(limit)
-            if only_missing:
-                stmt = stmt.where(PornhubMovie.cover_url.is_(None))
             movies = (await session.execute(stmt)).scalars().all()
-            from app.config.manager import DATA_DIR
-            cover_dir = DATA_DIR / "movies" / "pornhub" / "covers"
-            cover_dir.mkdir(parents=True, exist_ok=True)
-            success = 0
-            failed = 0
+
+            targets = []
             for mv in movies:
-                url = mv.cover_url
-                if not url and mv.source_id:
-                    url = f"https://ci.phncdn.com/videos/{mv.source_id}/(mh=default)/1.jpg"
-                if not url:
-                    failed += 1
+                if not mv.code:
                     continue
-                try:
-                    target = cover_dir / f"{mv.code}.jpg"
-                    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-                        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-                        if r.status_code == 200 and len(r.content) > 1024:
-                            target.write_bytes(r.content)
-                            mv.cover_url = str(target)
+                if only_missing:
+                    has = any(
+                        fast_file_exists(str(getter("pornhub", mv.code)))
+                        for getter in (get_movie_cover_path, get_movie_fanart_path,
+                                       get_movie_thumb_path)
+                    )
+                    if has:
+                        continue
+                targets.append(mv)
+            logger.info("PORNHub 批量补封 待处理: %d 部", len(targets))
+            if not targets:
+                return
+
+            success = failed = 0
+            async with ImageProcessor(output_dir="") as proc:
+                for mv in targets:
+                    out_path = str(get_movie_cover_path("pornhub", mv.code))
+                    cands = [mv.cover_url] if mv.cover_url else []
+                    # 先按已有地址试；失败再从详情页取长效候选
+                    if cands:
+                        saved = await proc.download_first_image(
+                            cands, out_path,
+                            referer=f"https://www.pornhub.com/view_video.php?viewkey={mv.code[2:]}")
+                        if saved:
                             success += 1
-                        else:
-                            failed += 1
-                except Exception as e:
-                    logger.debug(f"批量补封失败 {mv.code}: {e}")
-                    failed += 1
-                await asyncio.sleep(0.2)
+                            continue
+                    extra = await fetch_cover_candidates(mv.code)
+                    saved = await proc.download_first_image(
+                        extra, out_path,
+                        referer=f"https://www.pornhub.com/view_video.php?viewkey={mv.code[2:]}")
+                    if saved:
+                        # 回写库里那条 24h 就过期的地址，避免它继续被当作封面来源
+                        fresh = next((u for u in extra if u), None)
+                        if fresh:
+                            mv.cover_url = fresh
+                            mv.thumb_url = fresh
+                        success += 1
+                    else:
+                        failed += 1
+                    await asyncio.sleep(0.5)
+
             await session.commit()
-            logger.info(f"PORNHub 批量补封 完成: success={success} failed={failed}")
+            logger.info("PORNHub 批量补封 完成: success=%d failed=%d", success, failed)
+        except Exception:
+            logger.exception("PORNHub 批量补封 失败")
         finally:
             await session.close()
 

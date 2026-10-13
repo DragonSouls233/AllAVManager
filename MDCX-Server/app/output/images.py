@@ -216,6 +216,28 @@ class ImageProcessor:
             except Exception as e:
                 logger.error(f"Download error: {url} - {e}")
                 return None
+
+    async def download_first_image(
+        self,
+        urls,
+        save_path: str,
+        referer: Optional[str] = None,
+    ) -> Optional[str]:
+        """依次尝试多个候选 URL，第一个真正下到图的才算成功。
+
+        用途：某些站点（实测 PORNHUB 2026-10-13）同一张图有多种 CDN 形态，
+        爬虫给的那条签名地址可能已过期、或返回的是视频流而非图片。
+        把详情页里捞到的候选一起传进来逐个试，就能拿到图而不是空手而归。
+        """
+        if isinstance(urls, str):
+            urls = [urls]
+        for u in urls or []:
+            if not u:
+                continue
+            saved = await self.download_image(u, save_path, referer)
+            if saved:
+                return saved
+        return None
     
     async def download_and_process(
         self,

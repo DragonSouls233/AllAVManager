@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -71,12 +72,21 @@ _JUNK_PLOT_MARKERS = (
 )
 
 
+#: 简介里若出现未转义的 HTML 实体（javplace 等源直接把 ``&middot;`` / ``&times;``
+#: 这种原始实体塞进简介，写进库就是一堆乱码，比留空更糟），一律判垃圾。
+_PLOT_ENTITY_RE = re.compile(
+    r"&(?:amp|lt|gt|quot|apos|nbsp|ndash|mdash|middot|hellip|times|deg|"
+    r"copy|reg|frac\d+|#\d+|#x[0-9a-fA-F]+);", re.I)
+
+
 def _is_junk_plot(plot: str | None) -> bool:
     """判断简介是否是 SEO 模板垃圾文案（写进库比留空更糟）。"""
     if not plot:
         return True
     p = plot.strip().lower()
     if len(p) < 15:                                  # 太短，基本是占位
+        return True
+    if _PLOT_ENTITY_RE.search(p):                    # javplace 的未转义 HTML 实体乱码
         return True
     if any(m in p for m in _JUNK_PLOT_MARKERS):      # javmost 的 "Watch XXX JAV movie online…"
         return True
@@ -299,6 +309,14 @@ async def _scan(limit: int = 0) -> tuple[list[dict], dict]:
             select(JavMovie.id, JavMovie.code, JavMovie.title,
                    JavMovie.output_dir, JavMovie.plot, JavMovie.studio,
                    JavMovie.series, JavMovie.actor, JavMovie.file_path)
+            # 🔴 排除「空壳」：file_path 为空的记录是补刮/补图流程误建的伪记录
+            # （番号在库里、刮到了元数据，但根本没有对应视频文件）。把它们放进缺口清单
+            # 只会让补刮不断「更新」这些空壳、甚至为库中根本不存在的番号新建空壳，
+            # 表现为「影片数虚增、列表里一堆没视频路径的条目」。缺口补全是给「已有视频」
+            # 的影片补元数据的，没视频路径的条目不应进入清单。
+            .where(JavMovie.file_path.isnot(None),
+                   JavMovie.file_path != "",
+                   JavMovie.file_path != "N/A")
         )).all()
     finally:
         await session.close()

@@ -286,6 +286,25 @@ def _domain_jittered_interval(domain: str, qps: float) -> float:
     return interval
 
 
+def _strip_accept_encoding(headers: Optional[dict]) -> Optional[dict]:
+    """去掉请求头里的 ``Accept-Encoding``，让 httpx 用自己实际支持的编码。
+
+    httpx 默认只声明"装了对应解码器"的编码（gzip/deflate 永远支持，
+    br 需 brotli/brotlicffi，zstd 需 zstandard）。而调用方传的 headers
+    来自 curl_cffi 浏览器指纹，恒带 ``br, zstd`` —— 一旦运行环境没装对应
+    解码器，响应体就是未解压的二进制，且**不报任何错**，只是内容全是乱码。
+
+    返回新字典，不改原对象（指纹 headers 是进程内共享的，不能就地改）。
+    """
+    if not headers:
+        return headers
+    cleaned = {
+        k: v for k, v in headers.items()
+        if k.lower() != "accept-encoding"
+    }
+    return cleaned
+
+
 class AsyncHttpClient:
     """
     异步 HTTP 客户端
@@ -504,6 +523,16 @@ class AsyncHttpClient:
         params = kwargs.get("params")
         data = kwargs.get("data")
         json_body = kwargs.get("json")
+
+        # 🔴 2026-10-13 修复「httpx 降级路径拿到的是压缩后的二进制」：
+        #   调用方 headers 来自 curl_cffi 浏览器指纹，Accept-Encoding 里带
+        #   `br` / `zstd`；但 httpx 只有在装了 brotli / zstandard 包时才解得动，
+        #   服务器 venv 实测**三个都没装** ⇒ 站点回 `content-encoding: br`，
+        #   而 `resp.content` / `resp.text` 是**未解压的原始字节**。
+        #   症状极隐蔽：状态码 200、无异常，但爬虫拿到 195KB 乱码，
+        #   正则一律匹配不上 ⇒ "刮削成功但字段全空、封面也下不到"。
+        #   做法：把 Accept-Encoding 交给 httpx 自己决定（它只声明真能解码的编码）。
+        headers = _strip_accept_encoding(headers)
 
         try:
             if method == "POST":

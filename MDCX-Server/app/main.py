@@ -244,6 +244,28 @@ async def _lifespan_impl(app: FastAPI):
     warnings.filterwarnings("ignore", category=SAWarning, message=".*non-checked-in connection.*")
     warnings.filterwarnings("ignore", category=SAWarning, message=".*configure_mappers.*")
 
+    # ========== 网络存储重连（映射盘） ==========
+    # 服务常以计划任务/服务方式在**非交互会话**运行，Windows 开机不会自动重建用户
+    # 的持久映射盘（如 Z: -> \\dragon\JAV1）。若不在此重连：
+    #   1) 下方 filter_reachable 会把网络盘判为不可达 → 启动扫描被跳过；
+    #   2) 前端「选择媒体目录」浏览 S:\ 等网络盘报「路径不存在」（截图2 的根因）。
+    # 放在扫描/filter_reachable 之前，同步等待其完成（已连接的盘探测很快返回）。
+    try:
+        from app.utils import net_drives
+        _net_results = await asyncio.wait_for(
+            asyncio.to_thread(net_drives.ensure_all), timeout=120
+        )
+        _ok = [r["drive"] for r in _net_results if r.get("connected")]
+        logger.info(
+            "网络存储重连完成: %d/%d 已连接%s",
+            len(_ok), len(_net_results),
+            (" [" + ", ".join(_ok) + "]") if _ok else "",
+        )
+    except asyncio.TimeoutError:
+        logger.warning("网络存储重连超时(120s)，改为后台继续，不影响启动")
+    except Exception as e:
+        logger.warning(f"网络存储重连失败: {e}")
+
     # ========== 扫描控制：判断是否执行自动扫描 ==========
     from app.services.scan_control import ScanControlService
     _scan_ctrl = ScanControlService.get_instance()

@@ -648,6 +648,7 @@ async def list_movies(
     code_prefix: Optional[str] = Query(None, description="番号前缀精确过滤"),
     source_filter: Optional[str] = Query(None, alias="source", description="按刮削来源过滤（nfo_cache/javbus/javdb/local 等）"),
     is_chinese: Optional[int] = Query(None, description="1=仅中文"),
+    no_chinese: Optional[int] = Query(None, description="1=仅没中文(无中字，含未判定)"),
     is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
     solo: Optional[int] = Query(None, description="1=仅单人作品（actor 字段恰好一个演员）"),
     info_state: Optional[str] = Query(None, description="complete=信息全 / incomplete=信息不全（NFO+封面+预览图）"),
@@ -689,6 +690,9 @@ async def list_movies(
             filters.append(JavMovie.source == source_filter)
         if is_chinese:
             filters.append(JavMovie.is_chinese == 1)
+        if no_chinese:
+            # 没中文 = is_chinese 为 0 或未判定(NULL)，与 is_chinese=1 互补
+            filters.append(or_(JavMovie.is_chinese == 0, JavMovie.is_chinese.is_(None)))
         if is_uncensored:
             filters.append(JavMovie.is_uncensored == 1)
         if solo:

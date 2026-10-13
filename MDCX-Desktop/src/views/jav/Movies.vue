@@ -53,11 +53,12 @@
       <el-tag v-if="route.query.code_prefix" type="info" closable @close="clearRouteFilter('code_prefix')">番号：{{ route.query.code_prefix }}</el-tag>
     </div>
 
-    <!-- 信息筛选 TAB：中文 / 无码 / 信息全 / 信息不全 -->
+    <!-- 信息筛选 TAB：中文 / 没中文 / 无码 / 单人 / 信息全 / 信息不全 -->
     <div class="info-tabs">
       <el-radio-group v-model="infoTab" @change="onInfoTabChange">
         <el-radio-button value="">全部</el-radio-button>
-        <el-radio-button value="chinese">中文</el-radio-button>
+        <el-radio-button value="chinese">有中文</el-radio-button>
+        <el-radio-button value="no_chinese">没中文</el-radio-button>
         <el-radio-button value="uncensored">无码</el-radio-button>
         <el-radio-button value="solo">单人</el-radio-button>
         <el-radio-button value="complete">信息全</el-radio-button>
@@ -238,7 +239,7 @@ function resetFilters() {
   loadMovies()
 }
 
-// 信息筛选 TAB：''=全部 / chinese=中文 / uncensored=无码 / complete=信息全 / incomplete=信息不全
+// 信息筛选 TAB：''=全部 / chinese=有中文 / no_chinese=没中文 / uncensored=无码 / complete=信息全 / incomplete=信息不全
 const infoTab = ref('')
 
 function onInfoTabChange() {
@@ -250,6 +251,7 @@ async function loadMovies() {
   const params = { keyword: keyword.value || undefined, ...routeFilterParams() }
   if (sortBy.value) params.sort = sortBy.value
   if (infoTab.value === 'chinese') params.is_chinese = 1
+  else if (infoTab.value === 'no_chinese') params.no_chinese = 1
   else if (infoTab.value === 'uncensored') params.is_uncensored = 1
   else if (infoTab.value === 'solo') params.solo = 1
   else if (infoTab.value === 'complete' || infoTab.value === 'incomplete') params.info_state = infoTab.value

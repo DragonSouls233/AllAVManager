@@ -137,6 +137,23 @@ def _get_module_model(module: str) -> type:
     return _MODULE_MODEL_MAP[module]
 
 
+_IMAGE_DETECTOR_CACHE: dict[str, object] = {}
+
+
+def _get_image_detector(module: str):
+    """按模块复用 MissingDetector（仅用于图片/演员头像缺失检测）。
+
+    🔴 2026-10-13：`MissingDetector(module_name=...)` 首次构造会
+    `ModuleDatabase.get_instance(module_name)`，**必须**该模块数据库已初始化，
+    否则抛「首次初始化必须提供 base_class」。这里只缓存实例、不额外建库。
+    """
+    if module not in _IMAGE_DETECTOR_CACHE:
+        from app.patcher.detector import MissingDetector
+
+        _IMAGE_DETECTOR_CACHE[module] = MissingDetector(module_name=module)
+    return _IMAGE_DETECTOR_CACHE[module]
+
+
 async def _detect_module_missing_for_engine(
     module: str,
     directories: Optional[list[str]] = None,
@@ -232,12 +249,46 @@ async def _detect_module_missing_for_engine(
                     output_dir = str(Path(fp).parent)
 
             if missing_fields:
-                missing_infos.append(MissingInfo(
+                info = MissingInfo(
                     movie_id=movie.id,
                     movie_code=getattr(movie, "code", "") or "",
                     missing_fields=missing_fields,
                     output_dir=output_dir,
-                ))
+                )
+                # 🔴 2026-10-13 修复「带 module 的补刮一张图都不下载」：
+                #   这条轻量路径原本只填 missing_fields，`missing_images` 恒为空
+                #   ⇒ PatchStrategy.create_plan 拿到 images=0、need_download_images=False
+                #   ⇒ `_download_missing_images` 根本不会被调用。
+                #   而 `PatchWorkflow._detect_missing()` 只要 options.module 非空就走这里
+                #   （前端"补丁刮削"永远带 module）⇒ 全模块封面长期缺失的真正原因。
+                #   这里复用 MissingDetector 的图片检测（纯文件系统判断，开销很小）。
+                if output_dir:
+                    try:
+                        from app.patcher.detector import MissingDetector
+
+                        _img_det = _get_image_detector(module)
+                        _movie_dict = {
+                            col.name: getattr(movie, col.name, None)
+                            for col in model.__table__.columns
+                        }
+                        (
+                            info.missing_images,
+                            info.nfo_exists,
+                            info.nfo_path,
+                        ) = await _img_det._detect_missing_images(
+                            _movie_dict, output_dir
+                        )
+                        info.nfo_checked = True
+                        info.actor_images_missing = (
+                            await _img_det._detect_missing_actor_images(
+                                _movie_dict, output_dir
+                            )
+                        )
+                    except Exception as e:  # 观测性增强，失败绝不能拖垮检测
+                        logger.warning(
+                            f"图片缺失检测失败（不影响补刮）: {getattr(movie, 'id', '?')} - {e}"
+                        )
+                missing_infos.append(info)
 
         return missing_infos
     finally:

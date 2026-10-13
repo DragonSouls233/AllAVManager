@@ -370,7 +370,13 @@ async function getApi () {
   const prefix = name.charAt(0).toUpperCase() + name.slice(1)
   // 单演员详情统一走通用端点 /actors/{id}?module={module}（actors.py 已支持全模块，避免各模块专属单 actor 端点缺失/不一致）
   getActor = commonApi.getActor
-  getActorMovies = m[`get${prefix}ActorMovies`] || m.getActorMovies || commonApi.getActorMovies
+  // 🔴 2026-10-13：作品列表也必须走通用端点 /actors/{id}/movies?module={module}。
+  //    模块专属端点（pornhub/chinese/fc2/western）返回的是 `{actor_id, movies:[...]}`，
+  //    而本页 loadMovies 读的是 `res.items` / `res.total` ⇒ `res.items` 恒为 undefined
+  //    ⇒ 作品列表永远显示"暂无作品"（时间线走通用端点所以一直正常）。
+  //    通用端点返回 `{items,total,...}` 且每项带 module_type，封面才能经
+  //    `/api/v1/<module>/movies/<id>/cover/file` 后端代理出图。
+  getActorMovies = commonApi.getActorMovies
   getActorTimeline = m[`get${prefix}ActorTimeline`] || commonApi.getActorTimeline
   getActorTags = m[`get${prefix}ActorTags`] || commonApi.getActorTags
   addActorTag = m[`add${prefix}ActorTag`] || commonApi.addActorTag

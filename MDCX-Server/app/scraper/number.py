@@ -366,6 +366,13 @@ def is_valid_ph_viewkey(s: str) -> bool:
         return False
     if t.startswith(_PH_VIEWKEY_DENY_PREFIXES):
         return False
+    # 🔴 2026-10-12：必须含至少一个数字。实测频道名 `velvetcouplee`(13 个纯字母)
+    #    被 _PH_IN_TEXT_RE 从文件名里误提成 viewkey ⇒ 该频道 45 个文件全部得到
+    #    同一 code `phvelvetcouplee`，判重时第 1 个入库、其余 44 个被 existing_codes
+    #    跳过 ⇒ PORNHUB 磁盘 822 / 库 764、重扫 added=0 的根因。
+    #    真实 viewkey(十六进制/随机 base36)几乎必含数字；纯字母英文词不含数字，据此排除。
+    if not any(ch.isdigit() for ch in t):
+        return False
     return True
 
 

@@ -809,7 +809,12 @@ class PatchEngine:
                     "tags": getattr(result, "tags", None) or [],
                     "actors": getattr(result, "actors", None),
                     "cover_url": getattr(result, "cover_url", None),
-                    "poster_url": getattr(result, "poster_url", None),
+                    # 🔴 2026-10-13：poster_url 也必须回退到 cover_url。
+                    #    原先只有 thumb_url / fanart_url 回退，poster_url 没有，
+                    #    而 PORNHUB/多数爬虫**不产出** result.poster_url ⇒
+                    #    poster 永远拿不到 URL、永远不落盘（Kodi 等按 poster.jpg 取图）。
+                    "poster_url": getattr(result, "poster_url", None)
+                    or getattr(result, "cover_url", None),
                     "thumb_url": getattr(result, "cover_url", None),
                     "fanart_url": getattr(result, "cover_url", None),
                     "trailer_url": getattr(result, "trailer_url", None),
@@ -941,6 +946,27 @@ class PatchEngine:
                     referer = _detail_referer(source, missing_info.movie_code) or _origin_of(url)
                     output_path = f"{missing_info.output_dir}/{image_type.value}.jpg"
                     saved = await proc.download_image(url, output_path, referer=referer)
+
+                    # 🔴 2026-10-13：PORNHUB 的签名图址 hdnea/hash 令牌**只有 24h**，
+                    #    且对一部分视频**返回 MP4 而不是图片**（head=ftyp，被魔数校验拒收）
+                    #    ⇒ 刮削日志显示成功、实际本地图一直没落盘，库里 cover_url 24h 后成死链。
+                    #    补救：只有真 PH 番号才多花一次详情页请求，把长效图址补进候选重试。
+                    if not saved:
+                        from app.utils.ph_cover import (
+                            fetch_cover_candidates,
+                            viewkey_from_code,
+                        )
+                        if viewkey_from_code(missing_info.movie_code):
+                            cands = await fetch_cover_candidates(
+                                missing_info.movie_code)
+                            if cands:
+                                logger.info(
+                                    f"{missing_info.movie_code} 主图址不可用，"
+                                    f"改用详情页候选 {len(cands)} 个重试"
+                                )
+                                saved = await proc.download_first_image(
+                                    cands, output_path, referer=referer)
+
                     if saved:
                         downloaded.append(image_type.value)
 
