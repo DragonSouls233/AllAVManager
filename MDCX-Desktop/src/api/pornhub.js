@@ -25,6 +25,17 @@ export async function updatePornhubMovie(id, data) {
   return api.patch(`/pornhub/movies/${id}`, data)
 }
 
+// 🔴 2026-10-13 补批量刮削入口：后端早有 /pornhub/movies/scrape-all-pending，
+// 但前端从未绑定 ⇒ 影片库页面没有「批量刮削」按钮，86350 部 pending
+// 只能一部部手点（这也是「补丁刮削没效果」的直接原因）。
+// ⚠️ PH 详情页 1.5MB/次且限流严，后端是**串行**处理的，86350 部会跑很久。
+export async function scrapeAllPendingPornhub() {
+  return api.post('/pornhub/movies/scrape-all-pending')
+}
+export async function rescrapePornhubAll() {
+  return api.post('/pornhub/movies/scrape-all-pending')
+}
+
 export async function scrapePornhubMovie(id, force = false) {
   return api.post(`/pornhub/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
 }

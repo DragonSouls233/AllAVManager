@@ -19,6 +19,14 @@
           <el-icon><Link /></el-icon> 同步演员关联
         </el-button>
       </el-tooltip>
+      <el-tooltip content="对全部待刮削影片执行补丁刮削（后台串行执行，PORNHUB 限流较严，耗时较长）" placement="top">
+        <el-button type="warning" @click="startScrapeAll" :loading="scrapingAll" :disabled="!store.pendingCount">
+          <el-icon><MagicStick /></el-icon> 批量刮削
+          <el-tag v-if="store.pendingCount" size="small" type="danger" style="margin-left:4px">
+            {{ store.pendingCount > 999 ? '999+' : store.pendingCount }}
+          </el-tag>
+        </el-button>
+      </el-tooltip>
       <el-tooltip content="SHA1 内容指纹去重，识别重复文件并可选择删除" placement="top">
         <el-button type="danger" @click="openDedup">
           <el-icon><Delete /></el-icon> 内容去重
@@ -131,7 +139,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
 import { getCoverSrc } from '@/utils/media'
 import {
@@ -140,10 +148,39 @@ import {
   pornhubDedupApply,
   pornhubDedupStatus,
 } from '@/api/pornhub'
-import { Link, Delete } from '@element-plus/icons-vue'
+import { Link, Delete, MagicStick } from '@element-plus/icons-vue'
 
 // 🔴 2026-10-13：补每页条数选择器（对齐 JAV 有码）。
 // 换每页条数时必须回到第 1 页，否则可能停在一个不存在的页码上。
+// 🔴 2026-10-13：补「批量刮削」入口。
+// 后端 /pornhub/movies/scrape-all-pending 一直存在，但前端从未绑定，
+// 导致 86350 部 pending 只能一部部手点——这是"补丁刮削没效果"的直接原因。
+async function startScrapeAll() {
+  const n = store.pendingCount
+  let go = true
+  try {
+    await ElMessageBox.confirm(
+      `将对 ${n} 部待刮削影片启动批量刮削。\n\n` +
+      `PORNHUB 详情页约 1.5MB/次且限流较严，后台是串行处理的，` +
+      `全部跑完需要相当长的时间（可在日志查看进度）。\n是否现在开始？`,
+      '批量刮削',
+      { confirmButtonText: '开始刮削', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    go = false
+  }
+  if (!go) return
+  scrapingAll.value = true
+  try {
+    const res = await store.triggerScrapeAll()
+    ElMessage.success(res.message || '批量刮削已启动，可在日志查看进度')
+  } catch (e) {
+    ElMessage.error('启动失败：' + (e?.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    scrapingAll.value = false
+  }
+}
+
 function onPageSizeChange() {
   store.page = 1
   loadMovies()
@@ -153,6 +190,7 @@ const route = useRoute()
 const store = usePornhubStore()
 const keyword = ref('')
 const scanning = ref(false)
+const scrapingAll = ref(false)
 const syncing = ref(false)
 const showDedupDialog = ref(false)
 const dedupScanning = ref(false)

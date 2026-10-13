@@ -42,6 +42,21 @@ _SUFFIX_UC = re.compile(r"[-_.\s]?(UC|uc)$")
 _SUFFIX_C = re.compile(r"[-_.\s]?C$")
 _SUFFIX_U = re.compile(r"[-_.\s]?U$")
 
+# 🔴 伴随片（预告/样本/广告）护栏 —— 移植 mp-relay 的判重护栏（2026-10-14）
+# 同一番号里常夹着几十 MB 的官方预告片/样本片。它们会被算成「重复文件」：
+# 让可释放空间虚高，且排序一旦选中它就会诱导用户删错（把正片当副本删掉）。
+# 判据两条，命中任一即视为伴随片、**不参与重复分组**：
+#   1) 文件名含预告/样本关键字（独立词匹配，避免 PVD-123 这类番号误伤）；
+#   2) 组内存在 >=200MiB 的正片，而本文件 <100MiB（mp-relay 实测阈值）。
+#     🔴 只在「组内有正片」时才按体积判——否则纯素人短片（全组都 <100MiB）
+#     会被整组过滤掉，那才是真重复。
+_TRAILER_TOKEN_RE = re.compile(
+    r"(?:^|[^a-z0-9])(trailer|preview|sample|promo|pv)(?:[^a-z0-9]|$)", re.I
+)
+_TRAILER_CJK_KEYWORDS = ("预告", "予告", "サンプル", "見本", "样片")
+_MAIN_FILE_MIN_BYTES = 200 * 1024 * 1024
+_COMPANION_MAX_BYTES = 100 * 1024 * 1024
+
 
 def _format_size(size_bytes: int) -> str:
     """人类可读的文件大小"""
@@ -176,6 +191,27 @@ def _build_suffix_label(is_chinese: bool, is_uncensored: bool) -> str:
     return ""
 
 
+def is_companion_file(stem: str, size: int, group_max_size: int) -> bool:
+    """判定是否为伴随片（预告/样本/广告），命中则不参与重复分组。
+
+    Args:
+        stem: 文件名主干（不含扩展名）
+        size: 本文件字节数
+        group_max_size: 同组（同番号+同分卷）内最大文件字节数
+
+    判据见模块顶部 `_TRAILER_TOKEN_RE` / `_MAIN_FILE_MIN_BYTES` 注释。
+    """
+    low = stem.lower()
+    if _TRAILER_TOKEN_RE.search(low):
+        return True
+    if any(k in low for k in _TRAILER_CJK_KEYWORDS):
+        return True
+    # 体积判据只在「组里确实有正片」时生效，避免整组短片被误过滤
+    if group_max_size >= _MAIN_FILE_MIN_BYTES and 0 < size < _COMPANION_MAX_BYTES:
+        return True
+    return False
+
+
 def _extract_category(file_paths: list[str]) -> str:
     """从一组重复文件的路径中提取分类名。
 
@@ -239,8 +275,15 @@ async def scan_duplicates(
             "duplicate_files": int,      # 多余的重复文件数（各组 len-1 之和）
             "space_wasted_bytes": int,    # 可释放空间（字节）
             "space_wasted_display": str,  # 可读格式
+            "companion_files": int,       # 被排除的伴随片数量（mp-relay 护栏）
+            "companion_bytes": int,
+            "companion_display": str,
+            "companion_paths": [str],     # 最多 100 条，供审计
             "groups": [ DuplicateGroup.to_dict(), ... ],
         }
+
+    🔴 伴随片护栏（2026-10-14）：预告/样本/广告片不参与分组，见
+    :func:`is_companion_file`。它们既不算重复，也不会被选为保留项。
     """
     if not media_dirs:
         return {
@@ -250,6 +293,10 @@ async def scan_duplicates(
             "duplicate_files": 0,
             "space_wasted_bytes": 0,
             "space_wasted_display": "0 B",
+            "companion_files": 0,
+            "companion_bytes": 0,
+            "companion_display": "0 B",
+            "companion_paths": [],
             "groups": [],
         }
 
@@ -322,9 +369,23 @@ async def scan_duplicates(
     groups: list[DuplicateGroup] = []
     duplicate_files = 0
     total_wasted = 0
+    # mp-relay 护栏：被判定为伴随片而排除出分组的文件（可审计，不静默丢弃）
+    companion_files: list[DuplicateFile] = []
 
     for code, part in sorted(code_to_files, key=lambda k: (k[0], k[1] or "")):
         files = code_to_files[(code, part)]
+        if len(files) <= 1:
+            continue
+
+        # 🔴 先剔除伴随片：组里哪怕只剩 1 个正片，也不该报成「有重复」
+        group_max = max((f.size for f in files), default=0)
+        kept: list[DuplicateFile] = []
+        for f in files:
+            if is_companion_file(Path(f.path).stem, f.size, group_max):
+                companion_files.append(f)
+            else:
+                kept.append(f)
+        files = kept
         if len(files) <= 1:
             continue
 
@@ -353,6 +414,12 @@ async def scan_duplicates(
         duplicate_files += len(files) - 1
         total_wasted += group.wasted_bytes
 
+    companion_bytes = sum(f.size for f in companion_files)
+    if companion_files:
+        logger.info(
+            f"[duplicate_scanner] 排除伴随片（预告/样本）{len(companion_files)} 个，"
+            f"合计 {_format_size(companion_bytes)}（不计入重复统计）"
+        )
     logger.info(
         f"[duplicate_scanner] 发现 {len(groups)} 组重复, "
         f"共 {duplicate_files} 个重复文件, "
@@ -367,5 +434,10 @@ async def scan_duplicates(
         "duplicate_files": duplicate_files,
         "space_wasted_bytes": total_wasted,
         "space_wasted_display": _format_size(total_wasted),
+        # mp-relay 护栏：被排除的伴随片（预告/样本/广告），供界面/审计核对
+        "companion_files": len(companion_files),
+        "companion_bytes": companion_bytes,
+        "companion_display": _format_size(companion_bytes),
+        "companion_paths": [f.path for f in companion_files[:100]],
         "groups": [g.to_dict() for g in groups],
     }

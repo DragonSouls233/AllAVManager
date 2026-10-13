@@ -8,7 +8,27 @@
       <el-button :loading="batchScraping" @click="batchScrape">批量增强刮削</el-button>
     </div>
 
-    <div class="actors-grid" v-loading="loading">
+    <!-- 国籍选择 TAB：国籍 = 扫描时记录的媒体根下顶级文件夹名（如 N:\澳大利亚\xxx → 澳大利亚） -->
+    <div class="nationality-tabs">
+      <span class="nat-label">国籍</span>
+      <button
+        class="nat-tab"
+        :class="{ active: !store.actorNationality }"
+        @click="selectNationality('')"
+      >全部<span v-if="allTotal" class="nat-count">{{ allTotal }}</span></button>
+      <button
+        v-for="n in sortedNationalities"
+        :key="n.nationality"
+        class="nat-tab"
+        :class="{ active: store.actorNationality === n.nationality }"
+        @click="selectNationality(n.nationality)"
+      >{{ n.nationality }}<span class="nat-count">{{ n.count }}</span></button>
+      <span v-if="!natLoading && !nationalities.length" class="nat-empty">
+        暂无国籍数据，请先扫描影片
+      </span>
+    </div>
+
+    <div class="actors-grid" v-loading="loading || natLoading">
       <div v-for="actor in actors" :key="actor.id" class="actor-card" @click="goActorDetail(actor.id)">
         <div class="actor-avatar">
           <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
@@ -49,7 +69,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage } from 'element-plus'
@@ -63,6 +83,38 @@ const loading = ref(false)
 const batchScraping = ref(false)
 const actors = ref([])
 
+// 国籍 TAB
+const nationalities = ref([])
+const natLoading = ref(false)
+// 「全部」的人数：只在无任何筛选（无国籍、无关键词）时记录，避免随搜索词漂移
+const allTotal = ref(0)
+
+// 后端已按人数倒序，这里再兜一层排序，保证 TAB 顺序稳定
+const sortedNationalities = computed(() =>
+  [...nationalities.value].sort((a, b) => (b.count || 0) - (a.count || 0) ||
+    String(a.nationality).localeCompare(String(b.nationality), 'zh'))
+)
+
+async function loadNationalityTabs() {
+  natLoading.value = true
+  try {
+    const list = await store.loadNationalities()
+    nationalities.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    nationalities.value = []
+  } finally {
+    natLoading.value = false
+  }
+}
+
+function selectNationality(nat) {
+  if (store.actorNationality === nat) return
+  store.actorNationality = nat
+  // 换国籍必须回第一页，否则会停在第 N 页而看不到该国籍的演员
+  store.actorPage = 1
+  loadActors()
+}
+
 async function loadActors() {
   loading.value = true
   try {
@@ -70,6 +122,9 @@ async function loadActors() {
     // 换搜索词时回到第一页，否则会停在第 N 页而看不到结果
     store.actorPage = 1
     actors.value = await store.loadActors()
+    if (!store.actorNationality && !keyword.value) {
+      allTotal.value = store.actorTotal
+    }
   } finally {
     loading.value = false
   }
@@ -137,13 +192,33 @@ function handleAvatarError(e) {
   e.target.src = 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="120" height="120"%3E%3Crect width="120" height="120" fill="%23111827"/%3E%3Ctext x="60" y="66" text-anchor="middle" font-size="40" fill="%23666"%3E%3F%3C/text%3E%3C/svg%3E'
 }
 
-onMounted(loadActors)
+onMounted(async () => {
+  // 国籍 TAB 与演员列表并行加载，互不阻塞
+  await Promise.all([loadNationalityTabs(), loadActors()])
+})
 </script>
 
 <style scoped>
 .module-actors { padding: 20px; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
 .actors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+.nationality-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+.nat-label { font-size: 13px; color: #909399; margin-right: 2px; flex-shrink: 0; }
+.nat-tab {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 12px; font-size: 13px; line-height: 1;
+  border: 1px solid #dcdfe6; border-radius: 14px;
+  background: #fff; color: #606266; cursor: pointer;
+  transition: all 0.2s; white-space: nowrap;
+}
+.nat-tab:hover { border-color: #409eff; color: #409eff; }
+.nat-tab.active { background: #409eff; border-color: #409eff; color: #fff; }
+.nat-tab.active .nat-count { background: rgba(255,255,255,0.25); color: #fff; }
+.nat-count {
+  font-size: 11px; padding: 1px 6px; border-radius: 8px;
+  background: #f0f2f5; color: #909399;
+}
+.nat-empty { font-size: 12px; color: #c0c4cc; }
 .actors-pagination { margin-top: 20px; display: flex; justify-content: center; }
 .actor-card { cursor: pointer; text-align: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px; transition: all 0.2s; }
 .actor-card:hover { border-color: #409eff; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }

@@ -424,7 +424,13 @@ async def list_movies(
         if filters:
             stmt = stmt.where(*filters)
         movies = (await session.execute(stmt)).scalars().all()
-        return {"total": total, "items": [
+        # 🔴 2026-10-13：补 pending_count，供影片库「批量刮削」按钮显示待刮削数。
+        # 与 total 用同一组 filters（搜"A"时两个数一致），一次 count 下推 SQL。
+        pending_count = (await session.execute(
+            select(func.count(PornhubMovie.id)).where(
+                PornhubMovie.status == "pending", *filters)
+        )).scalar() or 0
+        return {"total": total, "pending_count": pending_count, "items": [
             {
                 "id": m.id, "code": m.code, "title": m.title,
                 "source_id": m.source_id, "source_views": m.source_views,

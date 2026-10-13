@@ -346,41 +346,12 @@ class ResumableAnimeScanner:
         return added
 
     async def cleanup_orphans(self) -> int:
-        """删除磁盘已不存在影片的 DB 记录（沿用 BaseScanner 逻辑）。"""
-        from sqlalchemy import text
+        """删除磁盘已不存在影片的 DB 记录（带缺失宽限期，见 BaseScanner）。"""
+        from app.tasks.base_scanner import cleanup_orphans_with_grace
 
-        db = self._get_db()
-        session = await db.get_session()
-        removed = 0
-        try:
-            result = await session.execute(text("SELECT id, file_path FROM movies"))
-            rows = result.fetchall()
-            if not rows:
-                return 0
-            dir_prefixes = [
-                os.path.normcase(os.path.normpath(str(d))) for d in self.media_dirs
-            ]
-            to_delete = []
-            for row in rows:
-                fp = row[1]
-                if not fp:
-                    continue
-                norm_fp = os.path.normcase(os.path.normpath(str(fp)))
-                if not any(norm_fp.startswith(p) for p in dir_prefixes):
-                    continue
-                if not os.path.exists(norm_fp):
-                    to_delete.append(row[0])
-            for rid in to_delete:
-                await session.execute(text("DELETE FROM movies WHERE id = :id"), {"id": rid})
-                removed += 1
-            if to_delete:
-                await session.commit()
-                logger.info(f"[anime-resume] 孤儿清理: 删除 {removed} 条")
-        except Exception as e:
-            logger.warning(f"[anime-resume] 孤儿清理失败: {e}")
-        finally:
-            await session.close()
-        return removed
+        return await cleanup_orphans_with_grace(
+            "anime", self.media_dirs, self._get_db(), log_tag="[anime-resume] "
+        )
 
     async def dry_run(self) -> dict:
         """只读统计：本次运行会处理多少目录/视频、跳过多少已处理目录。不写库。"""

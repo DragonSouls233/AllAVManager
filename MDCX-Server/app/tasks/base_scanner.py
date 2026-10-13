@@ -4,9 +4,11 @@
 """
 
 import asyncio
+import json
 import os
 import re
 import shutil
+from datetime import datetime
 from typing import Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -298,6 +300,143 @@ def _file_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+# 🔴 孤儿清理宽限期（天）——移植 avm（片匣）的「缺失宽限期」设计：
+# 影片文件消失后不立即删记录，先标记；连续缺失满 30 天才真正删除。
+# 背景：媒体库在网络盘（Z:/Y:/X:/W: 映射盘）上，盘临时掉线/重连时
+# os.path.exists 全部返回 False，旧逻辑会把这些记录当孤儿一次性删光。
+ORPHAN_GRACE_DAYS = 30
+
+
+def _load_grace_state(path: Path) -> dict:
+    """读取孤儿宽限状态 {记录id: 首次发现缺失的 ISO 时间}。损坏时返回空。"""
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
+    except Exception as e:
+        logger.warning(f"孤儿宽限状态读取失败（按空处理）: {e}")
+    return {}
+
+
+def _save_grace_state(path: Path, state: dict) -> None:
+    """持久化孤儿宽限状态（失败只警告，不影响清理主流程）。"""
+    try:
+        path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"孤儿宽限状态写入失败: {e}")
+
+
+async def cleanup_orphans_with_grace(
+    module_name: str,
+    media_dirs: list,
+    db,
+    log_tag: str = "",
+) -> int:
+    """带缺失宽限期的孤儿清理（BaseScanner / anime_resumable 共用）。
+
+    与旧实现的差异（2026-10-14，修网络盘掉线误删）：
+    1. **盘可达性预检**：清理前对每个 media_dir 根做带超时探测，不可达的盘
+       整体跳过——扫描中途掉线的盘不会再让它的记录被误判为"文件已删除"；
+    2. **宽限期**：文件确实消失（且盘可达）时不立即删，先在状态文件
+       `<模块db>.orphan_grace.json` 登记"首次缺失时间"，满 ORPHAN_GRACE_DAYS
+       天才删除；文件重新出现则自动清除标记（盘重新挂上即自愈）；
+    3. 状态文件里已不存在记录的残留 key 会顺手剪除。
+
+    返回：本次实际删除的记录数。
+    """
+    from sqlalchemy import text
+
+    from app.utils.media_helpers import path_reachable
+
+    session = await db.get_session()
+    removed = 0
+    try:
+        result = await session.execute(text("SELECT id, file_path FROM movies"))
+        rows = result.fetchall()
+        if not rows:
+            return 0
+
+        # 1) 媒体盘可达性预检（不可达的盘整体跳过，防掉线误删）
+        reachable_prefixes: list[str] = []
+        skipped_drives: list[str] = []
+        for d in media_dirs:
+            if path_reachable(str(d), timeout=2.0):
+                reachable_prefixes.append(os.path.normcase(os.path.normpath(str(d))))
+            else:
+                skipped_drives.append(str(d))
+        if skipped_drives:
+            logger.warning(
+                f"{log_tag}孤儿清理: 媒体盘不可达，跳过其下记录: {skipped_drives}"
+            )
+        if not reachable_prefixes:
+            logger.warning(f"{log_tag}孤儿清理: 无可达媒体盘，本次跳过")
+            return 0
+
+        # 2) 宽限状态文件（与模块 DB 同目录，重启不丢）
+        state_path = Path(str(db.db_path) + ".orphan_grace.json")
+        grace_state = _load_grace_state(state_path)
+        now = datetime.now()
+
+        to_delete: list = []
+        newly_marked: list = []
+        in_grace: list = []
+        recovered: list = []
+        seen_ids: set[str] = set()
+        for row in rows:
+            fp = row[1]
+            if not fp:
+                continue
+            norm_fp = os.path.normcase(os.path.normpath(str(fp)))
+            if not any(norm_fp.startswith(p) for p in reachable_prefixes):
+                continue
+            rid = row[0]
+            seen_ids.add(str(rid))
+            if os.path.exists(norm_fp):
+                # 文件在（或盘重连后回来了）：清除宽限标记
+                if grace_state.pop(str(rid), None):
+                    recovered.append(rid)
+                continue
+            first_seen = grace_state.get(str(rid))
+            if not first_seen:
+                grace_state[str(rid)] = now.isoformat()
+                newly_marked.append(rid)
+                continue
+            try:
+                age_days = (now - datetime.fromisoformat(first_seen)).days
+            except ValueError:
+                age_days = ORPHAN_GRACE_DAYS  # 状态损坏按到期处理，避免永远卡着
+            if age_days >= ORPHAN_GRACE_DAYS:
+                to_delete.append(rid)
+            else:
+                in_grace.append(rid)
+
+        # 3) 剪除已不存在记录的状态残留 + 本轮已删记录的宽限标记
+        for stale_key in [k for k in grace_state if k not in seen_ids]:
+            grace_state.pop(stale_key, None)
+        for rid in to_delete:
+            grace_state.pop(str(rid), None)  # 已删除，标记随之清除
+
+        for rid in to_delete:
+            await session.execute(text("DELETE FROM movies WHERE id = :id"), {"id": rid})
+            removed += 1
+        if to_delete:
+            await session.commit()
+        _save_grace_state(state_path, grace_state)
+
+        if to_delete or newly_marked or in_grace or recovered or skipped_drives:
+            logger.info(
+                f"{log_tag}孤儿清理: 删除 {removed} 条（宽限 {ORPHAN_GRACE_DAYS} 天到期）；"
+                f"新标记缺失 {len(newly_marked)} 条；宽限期内 {len(in_grace)} 条；"
+                f"恢复清除标记 {len(recovered)} 条"
+            )
+    except Exception as e:
+        logger.warning(f"{log_tag}孤儿清理失败: {e}")
+    finally:
+        await session.close()
+    return removed
 
 
 def iter_media_entries(
@@ -649,41 +788,13 @@ class BaseScanner(ABC):
         扫描只做增量新增，这里用于同步"文件删除"事件：磁盘文件已消失但 DB 记录仍在，
         应将其删除并计入 removed，使统计反映真实净变化（新增 - 删除）。
         仅处理本模块 media_dirs 前缀下的记录，避免误删其它来源数据。
+
+        🔴 2026-10-14 起带缺失宽限期（见 cleanup_orphans_with_grace）：
+        媒体盘在网络盘上，掉线时 os.path.exists 全 False，旧逻辑会误删整批记录。
         """
         from app.db.module_db import ModuleDatabase
-        from sqlalchemy import text
 
-        db = ModuleDatabase.get_instance(self.module_name)
-        session = await db.get_session()
-        removed = 0
-        try:
-            result = await session.execute(text("SELECT id, file_path FROM movies"))
-            rows = result.fetchall()
-            if not rows:
-                return 0
-            dir_prefixes = [
-                os.path.normcase(os.path.normpath(str(d))) for d in self.media_dirs
-            ]
-            to_delete = []
-            for row in rows:
-                fp = row[1]
-                if not fp:
-                    continue
-                norm_fp = os.path.normcase(os.path.normpath(str(fp)))
-                if not any(norm_fp.startswith(p) for p in dir_prefixes):
-                    continue
-                if not os.path.exists(norm_fp):
-                    to_delete.append(row[0])
-            for rid in to_delete:
-                await session.execute(text("DELETE FROM movies WHERE id = :id"), {"id": rid})
-                removed += 1
-            if to_delete:
-                await session.commit()
-                logger.info(
-                    f"模块 [{self.module_name}] 孤儿清理: 删除 {removed} 条已移除文件的记录"
-                )
-        except Exception as e:
-            logger.warning(f"模块 [{self.module_name}] 孤儿清理失败: {e}")
-        finally:
-            await session.close()
-        return removed
+        return await cleanup_orphans_with_grace(
+            self.module_name, self.media_dirs, ModuleDatabase.get_instance(self.module_name),
+            log_tag=f"模块 [{self.module_name}] ",
+        )

@@ -271,6 +271,54 @@ class MissingDetector:
         if module_name:
             from app.db.module_db import ModuleDatabase
             self._module_db = ModuleDatabase.get_instance(module_name)
+
+        # 🔴 2026-10-13 批量预取缓存（修 detect 超时）。
+        # 旧实现 `_detect_from_dict` 对**每一部**影片都开 3 个新 session 分别查
+        # movie_actors / studios / series ⇒ PORNHUB 8.7 万部要建约 26 万次 session，
+        # `/patch/detect?module=pornhub` 180s 都跑不完（实测超时，history 里
+        # PORNHUB 补刮任务从未成功过一次）。
+        # 现在这三个维度一次性全量预取到内存字典，逐部检测改为纯内存查表。
+        self._cache_actor_counts: dict[int, int] | None = None
+        self._cache_studio_names: dict[int, str] | None = None
+        self._cache_series_names: dict[int, str] | None = None
+        self._cache_loaded = False
+
+    async def _prefetch_caches(self) -> None:
+        """一次性预取 movie_actors 计数 / studios / series 名称。
+
+        幂等：重复调用直接返回。任一维度失败只让该维度退化为逐部查（不影响正确性）。
+        """
+        if self._cache_loaded:
+            return
+        self._cache_loaded = True
+        try:
+            async with self._get_session() as session:
+                try:
+                    rows = (await session.execute(sa_text(
+                        "SELECT movie_id, COUNT(*) AS c FROM movie_actors "
+                        "GROUP BY movie_id"))).fetchall()
+                    self._cache_actor_counts = {r[0]: r[1] for r in rows}
+                except Exception as e:
+                    logger.debug(f"预取 movie_actors 失败，退化为逐部查: {e}")
+                try:
+                    rows = (await session.execute(sa_text(
+                        "SELECT id, name FROM studios"))).fetchall()
+                    self._cache_studio_names = {r[0]: r[1] for r in rows}
+                except Exception as e:
+                    logger.debug(f"预取 studios 失败，退化为逐部查: {e}")
+                try:
+                    rows = (await session.execute(sa_text(
+                        "SELECT id, name FROM series"))).fetchall()
+                    self._cache_series_names = {r[0]: r[1] for r in rows}
+                except Exception as e:
+                    logger.debug(f"预取 series 失败，退化为逐部查: {e}")
+            logger.info(
+                f"补刮检测预取完成: movie_actors {len(self._cache_actor_counts or {})} 组, "
+                f"studios {len(self._cache_studio_names or {})}, "
+                f"series {len(self._cache_series_names or {})}"
+            )
+        except Exception as e:
+            logger.warning(f"预取缓存整体失败，将逐部查库: {e}")
     
     @contextlib.asynccontextmanager
     async def _get_session(self):
@@ -387,11 +435,19 @@ class MissingDetector:
             total_scanned = len(rows)
             logger.info(f"数据库扫描完成: 共 {total_scanned} 部影片")
 
-            for row in rows:
+            # 🔴 2026-10-13：批量预取 actors/studios/series，把逐部 N+1 查询
+            # 降为 3 次全量查询（8.7 万部时这是分钟级 vs 小时级的差别）
+            await self._prefetch_caches()
+
+            for i, row in enumerate(rows, 1):
                 movie_data = dict(zip(columns, row))
                 info = await self._detect_from_dict(movie_data)
                 if info and info.has_missing():
                     results.append(info)
+                # 大库进度心跳：1 万部一条，避免看起来像卡死
+                if i % 10000 == 0:
+                    logger.info(f"补刮检测进度: {i}/{total_scanned}，"
+                                f"已发现缺失 {len(results)} 部")
 
         logger.info(
             f"检测完成: 扫描 {total_scanned} 部, "
@@ -420,41 +476,51 @@ class MissingDetector:
         )
         
         # 预填 actors 关联表计数（movies 表没有 actors 列，需查关联表）
-        try:
-            async with self._get_session() as session:
-                result = await session.execute(
-                    sa_text("SELECT COUNT(*) FROM movie_actors WHERE movie_id = :mid"),
-                    {"mid": movie_id},
-                )
-                movie_data["_actors_count"] = result.scalar() or 0
-        except Exception:
-            movie_data["_actors_count"] = 0
-        
+        # 🔴 2026-10-13：优先读批量预取缓存，不再每部开一个 session
+        if self._cache_actor_counts is not None:
+            movie_data["_actors_count"] = self._cache_actor_counts.get(movie_id, 0)
+        else:
+            try:
+                async with self._get_session() as session:
+                    result = await session.execute(
+                        sa_text("SELECT COUNT(*) FROM movie_actors WHERE movie_id = :mid"),
+                        {"mid": movie_id},
+                    )
+                    movie_data["_actors_count"] = result.scalar() or 0
+            except Exception:
+                movie_data["_actors_count"] = 0
+
         # 预填 studio 名称（从 studio_id 查 studios 表）
         studio_id = movie_data.get("studio_id")
         if studio_id:
-            try:
-                async with self._get_session() as session:
-                    result = await session.execute(
-                        sa_text("SELECT name FROM studios WHERE id = :sid"),
-                        {"sid": studio_id},
-                    )
-                    movie_data["studio"] = result.scalar()
-            except Exception:
-                pass
-        
+            if self._cache_studio_names is not None:
+                movie_data["studio"] = self._cache_studio_names.get(studio_id)
+            else:
+                try:
+                    async with self._get_session() as session:
+                        result = await session.execute(
+                            sa_text("SELECT name FROM studios WHERE id = :sid"),
+                            {"sid": studio_id},
+                        )
+                        movie_data["studio"] = result.scalar()
+                except Exception:
+                    pass
+
         # 预填 series 名称（从 series_id 查 series 表）
         series_id = movie_data.get("series_id")
         if series_id:
-            try:
-                async with self._get_session() as session:
-                    result = await session.execute(
-                        sa_text("SELECT name FROM series WHERE id = :sid"),
-                        {"sid": series_id},
-                    )
-                    movie_data["series"] = result.scalar()
-            except Exception:
-                pass
+            if self._cache_series_names is not None:
+                movie_data["series"] = self._cache_series_names.get(series_id)
+            else:
+                try:
+                    async with self._get_session() as session:
+                        result = await session.execute(
+                            sa_text("SELECT name FROM series WHERE id = :sid"),
+                            {"sid": series_id},
+                        )
+                        movie_data["series"] = result.scalar()
+                except Exception:
+                    pass
 
         # 获取输出目录
         # 规则：刮削产物（NFO/封面/预览图）全部存在服务端 data/movies/<番号>/ 下，
@@ -484,11 +550,10 @@ class MissingDetector:
             output_dir = str(server_data_dir)
 
         info.output_dir = output_dir
-        # 确保目录存在
-        try:
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        # 🔴 2026-10-13：**检测阶段不再 mkdir**。
+        # 旧实现每部影片都 `Path(output_dir).mkdir(parents=True, exist_ok=True)`
+        # ⇒ PORNHUB 8.7 万部 = 8.7 万次 mkdir 系统调用，且让"只读检测"
+        # 产生副作用（在磁盘上留下一堆空目录）。目录创建应推迟到真正补刮落盘时。
 
         # 1. 检测字段缺失
         info.missing_fields = self._detect_missing_fields(movie_data)

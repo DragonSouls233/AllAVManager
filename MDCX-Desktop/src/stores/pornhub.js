@@ -26,6 +26,7 @@ import {
   pornhubExternalSeedAll,
   pornhubBackfillUrls,
   pornhubSeedFromExternal,
+  scrapeAllPendingPornhub,
 } from '@/api/pornhub'
 import { scanModule } from '@/api/modules'
 
@@ -33,6 +34,8 @@ export const usePornhubStore = defineStore('pornhub', () => {
   // 影片
   const movies = ref([])
   const total = ref(0)
+  // 待刮削数量（批量刮削按钮的角标）
+  const pendingCount = ref(0)
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
@@ -86,6 +89,7 @@ export const usePornhubStore = defineStore('pornhub', () => {
       const res = await getPornhubMovies(params)
       movies.value = res.items || []
       total.value = res.total || 0
+        pendingCount.value = res.pending_count || 0
     } finally {
       loading.value = false
     }
@@ -198,6 +202,13 @@ export const usePornhubStore = defineStore('pornhub', () => {
     return await triggerPornhubResumableScan(rescan)
   }
 
+  async function triggerScrapeAll() {
+    // 🔴 2026-10-13：PORNHUB 详情页 1.5MB/次且限流严于 JSON 端点，
+    // 后端 scrape_module_pending 是**串行**的。86350 部 × 约 10s/部 ≈ 10 天，
+    // 所以这里明确告知用户预期耗时，避免以为又卡住了。
+    const res = await scrapeAllPendingPornhub()
+    return res
+  }
   return {
     // state
     movies, total, loading, page, pageSize, sortBy, sortDir, filters,
@@ -217,5 +228,7 @@ export const usePornhubStore = defineStore('pornhub', () => {
     backfillUrls, seedFromExternal,
     // 扫描
     triggerScan, triggerResumableScan,
+    // 批量刮削
+    triggerScrapeAll, pendingCount,
   }
 })
