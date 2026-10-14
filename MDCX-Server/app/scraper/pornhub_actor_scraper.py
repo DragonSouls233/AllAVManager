@@ -86,6 +86,22 @@ def _canonicalize_country(name: str) -> str:
     return _COUNTRY_ALIASES.get(name, name)
 
 
+def _slugify(name: str) -> str:
+    """演员名 → pornhub URL slug。
+
+    2026-10-14 修：原代码用 `actor_name.replace(" ", "_")` 生成下划线 slug，
+    实测 `/pornstar/lexi_luna` 返回 200 但抓到的是 **Pornstars 列表页**
+    （title="Top Pornstars and Models..."），压根不是详情页 ⇒ `#getAvatar`
+    永远取不到 ⇒ 头像功能从未成功。真实 slug 是**连字符**形式
+    （`/pornstar/alexis-fawx`），且部分模特只有 `/model/` 路由有页面。
+    """
+    s = (name or "").strip().lower()
+    s = re.sub(r"[''`\.]", "", s)        # 去撇号/点（St. Mary → st-mary）
+    s = re.sub(r"[^a-z0-9]+", "-", s)    # 非字母数字一律转连字符
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s
+
+
 async def scrape_actor_profile(actor_name: str, nationality: Optional[str] = None) -> Optional[EnhancedActorProfile]:
     profile = await _scrape_from_pornhub_selectolax(actor_name)
     if profile:
@@ -319,59 +335,65 @@ async def _scrape_from_pornhub_selectolax(actor_name: str) -> Optional[EnhancedA
     except ImportError:
         return None
 
-    ph_name = actor_name.replace(" ", "_")
-    url = f"https://www.pornhub.com/pornstar/{ph_name}"
+    # 2026-10-14：连字符 slug + 双路由（pornstar/model）。下划线 slug 会抓到
+    # 列表页而非详情页；部分模特（uploader/amateur）只有 /model/ 有页面。
+    slug = _slugify(actor_name)
+    best: Optional[EnhancedActorProfile] = None
+    for route in ("pornstar", "model"):
+        url = f"https://www.pornhub.com/{route}/{slug}"
 
-    html = await _fetch_with_impersonate_fallback(url, _PH_BASE_COOKIES)
-    if not html:
-        logger.debug("selectolax 抓取失败 [%s]", actor_name)
-        return None
+        html = await _fetch_with_impersonate_fallback(url, _PH_BASE_COOKIES)
+        if not html:
+            continue
 
-    try:
-        tree = HTMLParser(html)
-    except Exception:
-        return None
+        try:
+            tree = HTMLParser(html)
+        except Exception:
+            continue
 
-    profile = EnhancedActorProfile(name=actor_name)
+        profile = EnhancedActorProfile(name=actor_name)
 
-    h1 = tree.css_first("h1")
-    if h1 is not None:
-        profile.name = h1.text(strip=True)
+        h1 = tree.css_first("h1")
+        if h1 is not None:
+            profile.name = h1.text(strip=True)
 
-    profile.avatar_url = _extract_photo_url(tree)
-    profile.total_views = _extract_video_views(tree)
-    profile.country = _extract_country_from_tree(tree)
+        profile.avatar_url = _extract_photo_url(tree)
+        profile.total_views = _extract_video_views(tree)
+        profile.country = _extract_country_from_tree(tree)
 
-    info_fields = {}
-    for piece in tree.css(".infoPiece"):
-        text = piece.text(strip=True)
-        if ":" in text:
-            key, _, val = text.partition(":")
-            info_fields[key.strip().lower()] = val.strip()
+        info_fields = {}
+        for piece in tree.css(".infoPiece"):
+            text = piece.text(strip=True)
+            if ":" in text:
+                key, _, val = text.partition(":")
+                info_fields[key.strip().lower()] = val.strip()
 
-    for key, val in info_fields.items():
-        if key == "birthday":
-            profile.birth_date = val
-        elif key == "height":
-            profile.height = val
-        elif key == "measurements":
-            profile.measurements = val
-        elif key == "birth place":
-            profile.birthplace = val
-        elif key == "ethnicity":
-            profile.ethnicity = val
-        elif key == "background":
-            profile.background = val
-            if not profile.country:
-                mapped = _NATIONALITY_TO_COUNTRY.get(val)
-                if mapped:
-                    profile.country = mapped
+        for key, val in info_fields.items():
+            if key == "birthday":
+                profile.birth_date = val
+            elif key == "height":
+                profile.height = val
+            elif key == "measurements":
+                profile.measurements = val
+            elif key == "birth place":
+                profile.birthplace = val
+            elif key == "ethnicity":
+                profile.ethnicity = val
+            elif key == "background":
+                profile.background = val
+                if not profile.country:
+                    mapped = _NATIONALITY_TO_COUNTRY.get(val)
+                    if mapped:
+                        profile.country = mapped
 
-    profile.profile_url = url
-    if profile.avatar_url or profile.birth_date or profile.country:
-        return profile
+        profile.profile_url = url
+        # 头像优先：本路由有头像就直接返回；否则留作兜底继续试下一个路由
+        if profile.avatar_url:
+            return profile
+        if (profile.birth_date or profile.country) and best is None:
+            best = profile
 
-    return None
+    return best
 
 
 async def _scrape_from_pornhub_regex(actor_name: str) -> Optional[EnhancedActorProfile]:
@@ -379,85 +401,96 @@ async def _scrape_from_pornhub_regex(actor_name: str) -> Optional[EnhancedActorP
         from app.crawlers.pornhub import _PH_BASE_COOKIES
         from app.services.proxy_manager import get_effective_proxy_url
 
-        ph_name = actor_name.replace(" ", "_")
-        url = f"https://www.pornhub.com/pornstar/{ph_name}"
+        # 2026-10-14：连字符 slug + 双路由。下划线 slug 抓到的是列表页（无头像）。
+        slug = _slugify(actor_name)
         proxy_url = get_effective_proxy_url()
 
         client = AsyncHttpClient(proxy=proxy_url, timeout=30)
-        resp = await client.get(
-            url,
-            cookies=_PH_BASE_COOKIES,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-            timeout=30,
-        )
+        best: Optional[EnhancedActorProfile] = None
 
-        if not resp or resp.status_code != 200:
-            return None
+        for route in ("pornstar", "model"):
+            url = f"https://www.pornhub.com/{route}/{slug}"
+            resp = await client.get(
+                url,
+                cookies=_PH_BASE_COOKIES,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+                timeout=30,
+            )
 
-        html = resp.text
-        profile = EnhancedActorProfile(name=actor_name)
+            if not resp or resp.status_code != 200:
+                continue
 
-        name_match = re.search(r'<h1[^>]*class="[^"]*name[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL)
-        if name_match:
-            profile.name = name_match.group(1).strip()
+            html = resp.text
+            profile = EnhancedActorProfile(name=actor_name)
 
-        avatar_match = re.search(r'<img[^>]*id="getAvatar"[^>]*src="([^"]+)"', html, re.DOTALL)
-        if avatar_match:
-            profile.avatar_url = avatar_match.group(1).strip()
-        else:
-            avatar_match = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="([^"]+)"', html, re.DOTALL)
+            name_match = re.search(r'<h1[^>]*class="[^"]*name[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL)
+            if name_match:
+                profile.name = name_match.group(1).strip()
+
+            avatar_match = re.search(r'<img[^>]*id="getAvatar"[^>]*src="([^"]+)"', html, re.DOTALL)
             if avatar_match:
                 profile.avatar_url = avatar_match.group(1).strip()
+            else:
+                avatar_match = re.search(r'<img[^>]*id="getAvatar"[^>]*data-src="([^"]+)"', html, re.DOTALL)
+                if avatar_match:
+                    profile.avatar_url = avatar_match.group(1).strip()
+                else:
+                    avatar_match = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="([^"]+)"', html, re.DOTALL)
+                    if avatar_match:
+                        profile.avatar_url = avatar_match.group(1).strip()
 
-        country_match = re.search(r'<span[^>]*class="[^"]*country[^"]*"[^>]*>(.*?)</span>', html, re.DOTALL)
-        if country_match:
-            profile.country = country_match.group(1).strip()
+            country_match = re.search(r'<span[^>]*class="[^"]*country[^"]*"[^>]*>(.*?)</span>', html, re.DOTALL)
+            if country_match:
+                profile.country = country_match.group(1).strip()
 
-        info_items = re.findall(
-            r'<div[^>]*class="[^"]*infoPiece[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>\s*<span[^>]*>(.*?)</span>',
-            html, re.DOTALL
-        )
-        for label, value in info_items:
-            label_clean = label.strip().lower()
-            value_clean = value.strip()
-            if "birthday" in label_clean or "born" in label_clean:
-                profile.birth_date = value_clean
-            elif "height" in label_clean:
-                profile.height = value_clean
-            elif "measurements" in label_clean:
-                profile.measurements = value_clean
-            elif "birthplace" in label_clean:
-                profile.birthplace = value_clean
-            elif "ethnicity" in label_clean:
-                profile.ethnicity = value_clean
-            elif "country" in label_clean:
-                if not profile.country:
-                    profile.country = value_clean
+            info_items = re.findall(
+                r'<div[^>]*class="[^"]*infoPiece[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>\s*<span[^>]*>(.*?)</span>',
+                html, re.DOTALL
+            )
+            for label, value in info_items:
+                label_clean = label.strip().lower()
+                value_clean = value.strip()
+                if "birthday" in label_clean or "born" in label_clean:
+                    profile.birth_date = value_clean
+                elif "height" in label_clean:
+                    profile.height = value_clean
+                elif "measurements" in label_clean:
+                    profile.measurements = value_clean
+                elif "birthplace" in label_clean:
+                    profile.birthplace = value_clean
+                elif "ethnicity" in label_clean:
+                    profile.ethnicity = value_clean
+                elif "country" in label_clean:
+                    if not profile.country:
+                        profile.country = value_clean
 
-        count_pattern = re.compile(r'<span[^>]*class="[^"]*count[^"]*"[^>]*>\s*([\d,.KMB]+)\s*</span>', re.DOTALL)
-        count_labels = re.findall(r'<span[^>]*class="[^"]*label[^"]*"[^>]*>\s*(Videos|Photos)\s*</span>', html, re.DOTALL)
-        counts = count_pattern.findall(html)
-        for i, label in enumerate(count_labels):
-            if i < len(counts):
-                val = _parse_number(counts[i])
-                if label.lower() == "videos":
-                    profile.video_count = val
-                elif label.lower() == "photos":
-                    profile.photo_count = val
+            count_pattern = re.compile(r'<span[^>]*class="[^"]*count[^"]*"[^>]*>\s*([\d,.KMB]+)\s*</span>', re.DOTALL)
+            count_labels = re.findall(r'<span[^>]*class="[^"]*label[^"]*"[^>]*>\s*(Videos|Photos)\s*</span>', html, re.DOTALL)
+            counts = count_pattern.findall(html)
+            for i, label in enumerate(count_labels):
+                if i < len(counts):
+                    val = _parse_number(counts[i])
+                    if label.lower() == "videos":
+                        profile.video_count = val
+                    elif label.lower() == "photos":
+                        profile.photo_count = val
 
-        rank_match = re.search(r'#(\d+)\s*Rank', html, re.DOTALL)
-        if rank_match:
-            profile.rank = int(rank_match.group(1))
+            rank_match = re.search(r'#(\d+)\s*Rank', html, re.DOTALL)
+            if rank_match:
+                profile.rank = int(rank_match.group(1))
 
-        profile.profile_url = url
+            profile.profile_url = url
 
-        if not profile.avatar_url and not profile.birth_date and not profile.country:
-            return None
+            # 头像优先：本路由有头像直接返回；否则留作兜底继续试下一个路由
+            if profile.avatar_url:
+                return profile
+            if (profile.birth_date or profile.country) and best is None:
+                best = profile
 
-        return profile
+        return best
     except Exception as e:
         logger.debug("PH regex 解析失败 [%s]: %s", actor_name, e)
         return None
@@ -474,7 +507,10 @@ async def _scrape_from_cn_model(actor_name: str) -> Optional[EnhancedActorProfil
     """
     from app.services.proxy_manager import get_effective_proxy_url
 
-    url = f"https://cn.pornhub.com/model/{actor_name}/videos"
+    # 2026-10-14：必须用连字符 slug。原代码直接拼原始名（带空格），
+    # URL 里的空格会被编码成 %20， pornhub 无此路由 ⇒ 永远 404。
+    slug = _slugify(actor_name)
+    url = f"https://cn.pornhub.com/model/{slug}/videos"
     proxy_url = get_effective_proxy_url()
     try:
         client = AsyncHttpClient(proxy=proxy_url, timeout=30)

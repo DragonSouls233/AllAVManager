@@ -113,8 +113,16 @@ _SUCCESS_RATE_EXEMPT = 0.0
 #:
 #: 注意 ``unsupported`` **仍在**触发列表里：它表示"这个源根本不支持该番号类型"
 #: （如拿 javdb 刮 FC2），是**源级别**的不匹配，确实该熔断。
+#:
+#: 🔴 2026-10-14 追加 ``not_covered``：含义是「本爬虫没配这个站点/这种输入」
+#:    （如 stash_generic 收到 ph 番号）。与 unsupported 的区别很关键：
+#:    · unsupported = 源**设计上**就不接这类活，且通常伴随真的网络请求失败；
+#:    · not_covered = 源健康，只是对这类输入一律回答"我没有"，**永不成功也永不失败**。
+#:    这类源如果按"全败"熔断，会把真正能用的场景一起堵掉
+#:    （实测 stash_generic 被熔断 11475s，期间 western 类也一起短路）。
 _NON_TRIPPING_REASONS = frozenset(
-    set(LOCAL_REASONS) | (set(PERMANENT_REASONS) - {"unsupported"})
+    set(LOCAL_REASONS)
+    | (set(PERMANENT_REASONS) - {"unsupported"})
 )
 
 
@@ -311,6 +319,14 @@ class SourceBreaker:
             return BreakerDecision(False, stats=stats)
 
         top_reason = stats.get("top_reason") or "unknown"
+        # 🔴 2026-10-14：与 `record_failure` 保持同一套判据。
+        #   此前这里**漏了** `_NON_TRIPPING_REASONS` 检查，导致
+        #   not_found / no_resource / gone（源站确认没有这个资源，源是健康的）
+        #   在「查库批量判定」这条路上**照样熔断**，与 `record_failure`
+        #   的豁免行为自相矛盾。表现：PH 死片占比高时，重启服务后
+        #   `check_persisted` 读历史统计又把它熔断上，"点了刮削没效果"。
+        if top_reason in _NON_TRIPPING_REASONS:
+            return BreakerDecision(False, stats=stats)
         cooldown = _cooldown_for_reason(top_reason)
         if cooldown is None:
             return BreakerDecision(False, stats=stats)

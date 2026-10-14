@@ -150,7 +150,17 @@ class ImageProcessor:
     
     async def __aenter__(self) -> "ImageProcessor":
         """上下文管理器入口"""
-        self._client = AsyncHttpClient(timeout=self.timeout)
+        # 🔴 2026-10-14：图片下载用 max_retries=1（默认是 3）。
+        #   图片是**尽力而为**的附加产物：调用方全部容错（失败返回 None / 少一张），
+        #   而 PH 的 sample_images 里混着大量「根本不是图片」的地址
+        #   （实测 539 条「下载内容不是有效图片」里有 95 条是 .mp4/.mov 视频流）。
+        #   对这些地址重试 3 次 + 再降级 httpx = **4 次全废的网络往返**，
+        #   实测单个补刮周期 2,108 次「重试 3 次均失败」，是补刮耗时的主因。
+        #   ⚠️ 不能按扩展名过滤 URL：实测 pix-fl 的 `.mov` 地址**实际返回合法 JPEG**
+        #   （content-type=image/jpeg + 魔数 ff d8 ff e1）⇒ 扩展名不可信，
+        #   只能靠 content-type / 魔数判定（_looks_like_image 已做）。
+        #   因此这里选择「少重试」而非「提前剔除」，既省时间又不误杀真图。
+        self._client = AsyncHttpClient(timeout=self.timeout, max_retries=1)
         await self._client.init_session()
         return self
     

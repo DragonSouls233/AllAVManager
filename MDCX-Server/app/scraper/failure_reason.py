@@ -41,6 +41,7 @@ class FailureReason(str, Enum):
     NO_RESOURCE = "no_resource"  # 站点明确回复"无此资源"
     GONE = "gone"                # HTTP 410
     UNSUPPORTED = "unsupported"  # 源不支持该番号类型
+    NOT_COVERED = "not_covered"  # 本爬虫未收录该站点/番号（≠ 源故障）
 
     # --- 拦截类：换源有效，本源需降权 ---
     BLOCKED = "blocked"          # 403 / WAF / CF 挑战 / IP ban
@@ -65,6 +66,7 @@ PERMANENT_REASONS: frozenset[str] = frozenset(
         FailureReason.NO_RESOURCE.value,
         FailureReason.GONE.value,
         FailureReason.UNSUPPORTED.value,
+        FailureReason.NOT_COVERED.value,
     }
 )
 
@@ -91,6 +93,44 @@ TRANSIENT_REASONS: frozenset[str] = frozenset(
 LOCAL_REASONS: frozenset[str] = frozenset(
     {FailureReason.PARSE_ERROR.value, FailureReason.CLIENT_ERROR.value}
 )
+
+
+# ----------------------------------------------------------------------
+# ResourceUnavailable → FailureReason 映射（2026-10-14 新增）
+# ----------------------------------------------------------------------
+
+#: kind → FailureReason。键来自 `app.scraper.errors.ResourceUnavailable.kind`：
+#: not_found/gone/disabled/empty（源确认没有）与
+#: not_listed/not_a_url/bad_config（**本爬虫不收录**，不是源故障）。
+#: 全部落在 PERMANENT_REASONS 内，因此会被熔断器正确豁免。
+_RESOURCE_UNAVAILABLE_REASON: dict[str, FailureReason] = {
+    "not_found": FailureReason.NOT_FOUND,
+    "gone": FailureReason.GONE,
+    "disabled": FailureReason.NO_RESOURCE,
+    "empty": FailureReason.NO_RESOURCE,
+    # 本爬虫不收录该番号/URL —— 语义上等于"源不支持该类型"
+    # 🔴 2026-10-14 改用 **NOT_COVERED**（不用 UNSUPPORTED）：
+    #   `unsupported` 仍在熔断触发列表里（注释见 breaker._NON_TRIPPING_REASONS），
+    #   而 `not_listed` 的真实含义是「这个爬虫没配这个站点」——
+    #   源本身完全健康，只是对这类输入一律回答"我没有"。
+    #   实测 stash_generic（supported_types 含 pornhub）对 PH 番号恒返回 not_listed，
+    #   若记成 unsupported ⇒ successes 恒 0 ⇒ 被 _evaluate 判"全败"熔断 11475s。
+    "not_listed": FailureReason.NOT_COVERED,
+    "not_a_url": FailureReason.NOT_COVERED,
+    "bad_config": FailureReason.CLIENT_ERROR,
+}
+
+
+def _resource_unavailable_cls() -> Optional[type]:
+    """惰性取 `ResourceUnavailable` 类；取不到返回 None（不影响本模块独立使用）。
+
+    延迟导入是为避免 `failure_reason` ↔ `errors` 之间形成导入环。
+    """
+    try:
+        from app.scraper.errors import ResourceUnavailable
+        return ResourceUnavailable
+    except Exception:  # pragma: no cover - 仅为防御性降级
+        return None
 
 
 @dataclass
@@ -282,6 +322,19 @@ def classify_scrape_error(
 
     ``error`` 为 ``None`` 表示"没有异常但也没结果"——无法判断原因，
     归为 ``UNKNOWN`` 且**不判永久失败**（宁可重试也不误伤）。
+
+    🔴 2026-10-14：新增 :class:`ResourceUnavailable` 分支（此前完全没有）。
+       没有这个分支时，爬虫抛出的"源站确认没有这个资源"会走
+       `classify_exception` 兜底成 **UNKNOWN**，后果很严重：
+       · `scrape_attempts` 里 `reason=unknown` 而 `error_type=ResourceUnavailable`
+         自相矛盾，统计看不出真实原因；
+       · `unknown` **不在** `LOCAL_REASONS` 豁免名单里 ⇒
+         `breaker._load_window_stats` 把它计入失败样本 ⇒
+         一个**从来不会成功**的源（如 `stash_generic` 对 PH 番号恒抛此异常）
+         会被 `_evaluate` 判成"全败"而熔断。
+       实测：修复 stash_generic 让它正确抛 ResourceUnavailable 之后，
+       反而产生 472 条 unknown 失败、把它熔断了 11475s。
+       映射到既有永久原因即可被 `PERMANENT_REASONS`/统计正确归类。
     """
     if error is None:
         return FailureInfo(
@@ -294,6 +347,21 @@ def classify_scrape_error(
 
     if isinstance(error, FailureInfo):
         return error
+
+    # 🔴 ResourceUnavailable：源站明确回答"没有这个资源"，属永久性失败。
+    #    按 kind 细分映射，让统计/日志能看出是"不存在"还是"本就不收录"。
+    ru_cls = _resource_unavailable_cls()
+    if ru_cls is not None and isinstance(error, ru_cls):
+        kind = getattr(error, "kind", "") or ""
+        reason = _RESOURCE_UNAVAILABLE_REASON.get(kind, FailureReason.NOT_FOUND)
+        return FailureInfo(
+            reason=reason,
+            source=source,
+            number=number,
+            message=str(error),
+            exception_type=type(error).__name__,
+            matched_rule=f"resource_unavailable:{kind or 'default'}",
+        )
 
     if isinstance(error, BaseException):
         reason, rule = classify_exception(error)

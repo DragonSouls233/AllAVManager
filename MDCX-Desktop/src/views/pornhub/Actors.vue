@@ -4,8 +4,20 @@
       <el-input v-model="keyword" placeholder="搜索 PORNHub 演员..." clearable style="width: 300px">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-button type="primary" @click="loadActors">搜索</el-button>
+      <el-button type="primary" @click="searchActors">搜索</el-button>
       <el-button :loading="batchScraping" @click="batchScrape">批量增强刮削</el-button>
+      <!--
+        🔴 2026-10-14 补：原先演员库**没有任何头像刮削入口**，
+        用户只能进详情页逐个点。后端 `POST /pornhub/actors/batch/download-avatars`
+        与 api/store 封装（batchDownloadAvatars）**早就齐了**，只是 views 里零处调用
+        ⇒ 纯粹漏了 UI。这里加一个独立按钮，不改动原有「批量增强刮削」入口。
+      -->
+      <el-button
+        type="success"
+        plain
+        :loading="avatarScraping"
+        @click="batchDownloadAvatars"
+      >批量下载头像</el-button>
     </div>
 
     <!-- 国籍选择 TAB：国籍 = 扫描时记录的媒体根下顶级文件夹名（如 N:\澳大利亚\xxx → 澳大利亚） -->
@@ -72,7 +84,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAvatarSrc } from '@/utils/media'
 import { scrapeAllPornhubActorProfilesEnhanced } from '@/api/pornhub'
 
@@ -81,6 +93,7 @@ const store = usePornhubStore()
 const keyword = ref('')
 const loading = ref(false)
 const batchScraping = ref(false)
+const avatarScraping = ref(false)
 const actors = ref([])
 
 // 国籍 TAB
@@ -119,8 +132,6 @@ async function loadActors() {
   loading.value = true
   try {
     store.actorSearch = keyword.value
-    // 换搜索词时回到第一页，否则会停在第 N 页而看不到结果
-    store.actorPage = 1
     actors.value = await store.loadActors()
     if (!store.actorNationality && !keyword.value) {
       allTotal.value = store.actorTotal
@@ -130,8 +141,19 @@ async function loadActors() {
   }
 }
 
-// 分页：换页 / 换每页条数（2026-10-13 补齐，原先本页完全没有分页组件，
-// 832 位演员只显示前 24 位且无法翻页）
+// 🔴 2026-10-14 修复「点第二页没反应」：
+//   `loadActors()` 原先无条件执行 `store.actorPage = 1`，而 `onActorPageChange`
+//   正好也调 `loadActors()` ⇒ 点第 2 页 → 页码刚被设成 2 → 立刻被重置回 1
+//   → 又渲染第 1 页 ⇒ **看起来点了没反应**（死循环）。
+//   正确做法：页码归 1 只发生在「筛选条件变化」时（换搜索词 / 换国籍 / 换每页条数），
+//   翻页本身绝不能归 1。
+function searchActors() {
+  // 换搜索词回到第一页，否则会停在第 N 页而看不到结果
+  store.actorPage = 1
+  return loadActors()
+}
+
+// 分页：换页 / 换每页条数（2026-10-13 补齐分页组件，2026-10-14 修好换页失效）
 function onActorPageChange() {
   loadActors()
 }
@@ -149,6 +171,35 @@ async function batchScrape() {
     ElMessage.error('启动失败')
   } finally {
     batchScraping.value = false
+  }
+}
+
+// 批量下载头像（2026-10-14 新增 UI 入口，调用早已存在的后端接口）
+// 后端是 BackgroundTasks 异步跑，接口立即返回 started ⇒ 只能提示"已启动"，
+// 进度要看服务日志（logger.info「PORNHub 批量头像下载 完成: success=… failed=…」）。
+async function batchDownloadAvatars() {
+  try {
+    await ElMessageBox.confirm(
+      '将为**缺少头像**的演员批量下载头像（先抓 PH 资料页，失败回退 JavDB）。' +
+      '任务在后台进行，数量较多时可能需要较长时间。是否继续？',
+      '批量下载演员头像',
+      { confirmButtonText: '开始下载', cancelButtonText: '取消', type: 'info' },
+    )
+  } catch {
+    return  // 用户点了取消
+  }
+
+  avatarScraping.value = true
+  try {
+    // 传给后端的默认参数与 UI 文案对齐：只补缺失、限 2000 人
+    const res = await store.batchDownloadAvatars({ only_missing: true, limit: 2000 })
+    ElMessage.success(res?.message || '已启动批量头像下载（后台进行）')
+    // 后台任务可能要跑很久，延迟后刷一次列表让新头像尽快显示
+    setTimeout(() => loadActors(), 5000)
+  } catch (e) {
+    ElMessage.error(`启动头像下载失败：${e?.message || e}`)
+  } finally {
+    avatarScraping.value = false
   }
 }
 

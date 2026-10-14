@@ -27,6 +27,7 @@ except ImportError:
 
 from app.crawlers.base import ActorInfo, BaseCrawler, CrawlerPriority, ScrapeResult
 from app.crawlers.provider import register_crawler
+from app.scraper.errors import ResourceUnavailable
 from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 
@@ -149,14 +150,26 @@ class StashGenericCrawler(BaseCrawler):
         if not scraper_name:
             if "brazzers" in code.lower():
                 scraper_name = "brazzers"
-            elif "realitykings" in code.lower() or "realitykings" in code.lower():
+            elif "realitykings" in code.lower():
                 scraper_name = "realitykings"
             else:
-                return None
+                # 🔴 2026-10-14：这个源根本不收录该番号 ⇒ **必须抛
+                #    ResourceUnavailable，不能 return None**。
+                #    本爬虫 supported_types 含 pornhub，所以每一道 PH 番号都会走到这里；
+                #    旧实现 return None ⇒ engine 记一次「源失败」并喂给熔断器 ⇒
+                #    每刮一部就跳闸一次，45s 冷却被指数放大到 **6 小时上限**
+                #    （实测 stash_generic 熔断 20,503s、触发 300 次），
+                #    期间整条无码/欧美源序被白白短路。
+                #    语义上这属于「源站确认没有这个资源」，不是「源坏了」。
+                raise ResourceUnavailable(
+                    f"stash 未收录该番号/URL: {code}", kind="not_listed"
+                )
 
         scraper = bridge.get_scraper(scraper_name)
         if not scraper:
-            return None
+            raise ResourceUnavailable(
+                f"stash 刮削器不存在: {scraper_name}", kind="not_listed"
+            )
 
         return await self._scrape_with_stash(code, scraper)
 
@@ -170,14 +183,27 @@ class StashGenericCrawler(BaseCrawler):
     async def _scrape_with_stash(self, code: str, scraper: dict) -> Optional[ScrapeResult]:
         xpath = scraper.get("xpath", {})
         if not xpath:
-            return None
+            raise ResourceUnavailable(
+                f"stash 刮削器缺 xpath: {scraper.get('name')}", kind="bad_config"
+            )
 
         url = code  # code 就是 URL
+        # 🔴 2026-10-14：code 必须是 URL 才会被当地址请求。
+        #   PORNHUB 番号形如 `ph69a4d19084d2f`，直接丢给 httpx 会得到
+        #   "unsupported/invalid URL" 类异常，旧实现 except Exception → return None
+        #   ⇒ 又一次「源失败」。这里提前判定并抛 ResourceUnavailable（语义正确、不熔断）。
+        if not re.match(r"^https?://", url.strip(), re.I):
+            raise ResourceUnavailable(
+                f"stash 需要 URL 而非番号: {code}", kind="not_a_url"
+            )
+
         async with AsyncHttpClient(timeout=30, proxy=self._proxy) as client:
             try:
                 html = await client.get_text(url, headers={"User-Agent": _USER_AGENT})
                 if not html:
-                    return None
+                    raise ResourceUnavailable(
+                        f"stash 抓取到空页面: {url}", kind="empty"
+                    )
 
                 from lxml import html as lxml_html
                 doc = lxml_html.fromstring(html)
@@ -217,7 +243,13 @@ class StashGenericCrawler(BaseCrawler):
 
                 return result
 
+            except ResourceUnavailable:
+                # 🔴 必须放行：否则会被下面的 `except Exception` 吞掉并退化成
+                #   return None ⇒ 又被 engine 记成「源失败」⇒ 无谓触发熔断。
+                raise
             except Exception as e:
+                # 真正的网络/解析异常仍走这里：此时该源确实可能有问题，
+                # 让它 return None（记录源失败）是合理的。
                 logger.debug("stash scrape failed for %s: %s", code, e)
         return None
 
