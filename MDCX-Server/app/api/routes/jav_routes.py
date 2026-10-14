@@ -3426,3 +3426,62 @@ async def javdb_top250(
         "missing": total - have,
         "zone": zone,
     }
+
+
+# 🔴 2026-10-14 TOP250 封面修复
+# TOP250 的 cover_url 全部指向 `tp.spfcas.com`（实测 250/250），该 CDN 对 JPEG 做了
+# **XOR 混淆**（key = 首字节，其余字节 XOR key）。浏览器直接拉会拿到乱码二进制，
+# `<img>` 解码失败 ⇒ 前端 el-image 走 #error 分支显示「无封面」。
+# 实测解密后 4/4 均为合法 JPEG（800×539 等，PIL 可解码），
+# 项目里早有现成实现 `app.utils.media_helpers.maybe_decrypt_javdb_image`（无损检测）。
+#
+# 所以：**不能**把 spfcas 原始 URL 丢给浏览器，必须由服务端代理下载 → 解密 → 回传。
+# 该端点同时解决另一个隐患：spfcas 在墙外，服务端走代理才稳定，
+# 浏览器（用户机器）直连未必通。
+@router.get("/top250/cover")
+async def javdb_top250_cover(url: str = Query(..., description="spfcas 原始封面 URL")):
+    """TOP250 封面代理：服务端带代理下载 → XOR 解密 → 以 image/jpeg 回传。"""
+    from fastapi.responses import Response
+    from app.services.javdb_top250 import PROXY_ALLOWED_COVER_HOSTS
+    from urllib.parse import urlparse
+
+    # 🔴 SSRF 防护：本端点会按调用方给的 URL 发起请求，必须白名单锁定域名，
+    # 否则任何登录用户都能让它去请求内网地址（127.0.0.1 / 169.254.169.254 等）。
+    host = (urlparse(url).hostname or "").lower()
+    if host not in PROXY_ALLOWED_COVER_HOSTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"封面域名不在白名单: {host}",
+        )
+
+    import httpx
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    ref = f"{urlparse(url).scheme}://{urlparse(url).netloc}/"
+    try:
+        async with httpx.AsyncClient(
+            proxy=get_effective_proxy_url(), timeout=20, follow_redirects=True
+        ) as c:
+            r = await c.get(url, headers={"Referer": ref})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"封面下载失败: {e}")
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=f"源站 HTTP {r.status_code}")
+
+    from app.utils.media_helpers import maybe_decrypt_javdb_image
+
+    data = maybe_decrypt_javdb_image(r.content)
+    # 解密后仍不是图片 ⇒ 宁可明确报错，也不要把乱码当图片回传（前端会再次显示「无封面」，
+    # 且无从判断是代理失败还是源站变了）
+    if data[:2] != b"\xff\xd8" and data[:4] != b"\x89PNG":
+        raise HTTPException(status_code=502, detail="封面解密后不是有效图片")
+
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Length": str(len(data)),
+        },
+    )

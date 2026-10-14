@@ -17,6 +17,7 @@ import logging
 import time
 import uuid
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -33,6 +34,13 @@ _USER_AGENT = "Dart/3.4 (dart:io)"
 
 # 分区掩码（与 javdb-cli model.Zones 一致）
 ZONES = {"censored": 0, "uncensored": 1, "western": 2, "fc2": 3}
+
+# 封面代理端点（/jav/top250/cover）的**域名白名单**。
+# 🔴 该端点会按调用方传入的 URL 发起服务端请求 ⇒ 必须白名单，否则等于给
+#    登录用户提供一个任意 URL 抓取器（SSRF，可打内网 / 云元数据 169.254.169.254）。
+#    2026-10-14 实测 TOP250 全部 250 条封面都来自 tp.spfcas.com，故只放行它；
+#    将来若 JavDB 换图床，把新域名加进来即可（不要用通配符）。
+PROXY_ALLOWED_COVER_HOSTS = frozenset({"tp.spfcas.com"})
 
 # 进程内 token 缓存（登录成功后写入；GET 端点 token 解析顺序：query > config > cache）
 _token_cache: dict = {"token": None, "ts": 0.0}
@@ -295,6 +303,13 @@ async def get_top250(
     present = await crossref_library(codes)
     for i in items:
         i["in_library"] = i["code"].lower() in present
+        # 🔴 2026-10-14：把 spfcas 原始 URL 改写成本服务的封面代理路径。
+        #    原因：该 CDN 对 JPEG 做了 XOR 混淆，浏览器直连拿到的是乱码二进制，
+        #    <img> 解码失败 ⇒ 页面显示「无封面」；且 spfcas 在墙内未必直连得到。
+        #    代理端点会服务端下载 → XOR 解密 → 回传合法 JPEG。
+        #    前端 el-image 直接用这个字段，无需改任何 Vue 代码。
+        if i.get("cover_url"):
+            i["cover_url"] = f"/api/v1/jav/top250/cover?url={quote(i['cover_url'], safe='')}"
 
     if only_missing:
         items = [i for i in items if not i["in_library"]]

@@ -219,6 +219,10 @@
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
           </el-menu-item>
+          <el-menu-item index="/pornhub/nationalities">
+            <el-icon><MapLocation /></el-icon>
+            <template #title>国籍</template>
+          </el-menu-item>
           <el-menu-item index="/pornhub/scrape">
             <el-icon><Connection /></el-icon>
             <template #title>刮削管理</template>
@@ -856,7 +860,7 @@ import {
   ChatLineRound, UserFilled, FolderOpened, CircleCheck, WarningFilled, Cloudy, Download, Grid,
   Film, Loading, RefreshLeft, RefreshRight, CircleCheckFilled, CloseBold,
   PictureFilled, Collection, Share, Promotion, SetUp,
-  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading
+  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading, MapLocation
 } from '@element-plus/icons-vue'
 import { getNsfwConfig, updateNsfwConfig, toggleNsfwMode } from '@/api'
 import { getSystemHealth, getDashboardStats, getTaskStats, getVersion, getTags } from '@/api'
@@ -1384,6 +1388,7 @@ const pageTitle = computed(() => {
     // PORNHub
     '/pornhub/movies': 'PORNHub - 影片库',
     '/pornhub/actors': 'PORNHub - 演员库',
+    '/pornhub/nationalities': 'PORNHub - 国籍',
     '/pornhub/scrape': 'PORNHub - 刮削管理',
     '/pornhub/compare': 'PORNHub - 本地对比',
     '/pornhub/patch': 'PORNHub - 补丁刮削',

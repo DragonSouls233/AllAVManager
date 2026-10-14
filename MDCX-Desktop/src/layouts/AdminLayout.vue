@@ -101,6 +101,10 @@
             <el-icon><DataAnalysis /></el-icon>
             <template #title>AV联盟榜单</template>
           </el-menu-item>
+          <el-menu-item index="/jav/top250">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>TOP 250</template>
+          </el-menu-item>
           <el-menu-item index="/jav/wikipedia">
             <el-icon><Reading /></el-icon>
             <template #title>维基女优</template>
@@ -220,6 +224,10 @@
           <el-menu-item index="/pornhub/actors">
             <el-icon><User /></el-icon>
             <template #title>演员库</template>
+          </el-menu-item>
+          <el-menu-item index="/pornhub/nationalities">
+            <el-icon><MapLocation /></el-icon>
+            <template #title>国籍</template>
           </el-menu-item>
           <el-menu-item index="/pornhub/scrape">
             <el-icon><Connection /></el-icon>
@@ -862,7 +870,7 @@ import {
   ChatLineRound, UserFilled, FolderOpened, CircleCheck, WarningFilled, Cloudy, Download, Grid,
   Film, Loading, RefreshLeft, RefreshRight, CircleCheckFilled, CloseBold,
   PictureFilled, Collection, Share, Promotion, SetUp,
-  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading
+  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading, MapLocation
 } from '@element-plus/icons-vue'
 import { getNsfwConfig, updateNsfwConfig, toggleNsfwMode } from '@/api'
 import { getSystemHealth, getDashboardStats, getTaskStats, getVersion, getTags } from '@/api'
@@ -1367,6 +1375,7 @@ const pageTitle = computed(() => {
     '/jav/code-test': 'JAV 有码 - 番号提取测试',
     '/jav/categories': 'JAV 有码 - 类别',
     '/jav/gap-fill': 'JAV 有码 - 缺口体检与补全',
+    '/jav/top250': 'JAV 有码 - TOP 250',
     // JAV 无码
     '/uncensored/movies': 'JAV 无码 - 影片库',
     '/uncensored/categories': 'JAV 无码 - 类别',
@@ -1390,6 +1399,7 @@ const pageTitle = computed(() => {
     // PORNHub
     '/pornhub/movies': 'PORNHub - 影片库',
     '/pornhub/actors': 'PORNHub - 演员库',
+    '/pornhub/nationalities': 'PORNHub - 国籍',
     '/pornhub/scrape': 'PORNHub - 刮削管理',
     '/pornhub/compare': 'PORNHub - 本地对比',
     '/pornhub/patch': 'PORNHub - 补丁刮削',

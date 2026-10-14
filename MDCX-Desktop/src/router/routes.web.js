@@ -629,6 +629,12 @@ export const routes = [
         component: () => import('@/views/pornhub/Actors.vue')
       },
       {
+        path: 'pornhub/nationalities',
+        name: 'PornhubNationalities',
+        component: () => import('@/views/pornhub/Nationalities.vue'),
+        meta: { title: 'PORNHUB · 国籍' }
+      },
+      {
         path: 'pornhub/actors/:id',
         name: 'PornhubActorDetail',
         component: () => import('@/views/ActorDetail.vue')
