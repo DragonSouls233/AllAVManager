@@ -121,7 +121,12 @@ async def login(username: str, password: str, proxy: Optional[str] = None) -> st
 
 
 def _parse_movie(m: dict) -> Optional[dict]:
-    """宽松解析单部影片条目 → 统一字段。"""
+    """宽松解析单部影片条目 → 统一字段。
+
+    实测（2026-10-14 登录态抓取 250 条）：TOP250 接口**不返回 score/评分**字段，
+    但会返回 duration(秒)、magnets_count、has_cnsub(中字幕)、has_preview_video 等。
+    评分改由前端在缺失时不显示（v-if="score != null"），此处只做透传不臆造。
+    """
     if not isinstance(m, dict):
         return None
     code = (m.get("number") or "").strip()
@@ -135,6 +140,10 @@ def _parse_movie(m: dict) -> Optional[dict]:
         score = float(m.get("score")) if m.get("score") not in (None, "") else None
     except (TypeError, ValueError):
         score = None
+    try:
+        duration = int(m.get("duration") or 0) or None
+    except (TypeError, ValueError):
+        duration = None
     return {
         "ranking": ranking,
         "code": code,
@@ -142,6 +151,10 @@ def _parse_movie(m: dict) -> Optional[dict]:
         "cover_url": cover,
         "score": score,
         "release_date": (m.get("release_date") or "").strip(),
+        "duration": duration,
+        "magnets_count": m.get("magnets_count"),
+        "has_cnsub": bool(m.get("has_cnsub")),
+        "has_preview_video": bool(m.get("has_preview_video")),
         "in_library": False,  # 后续 crossref 填充
     }
 
@@ -235,12 +248,14 @@ async def get_top250(
     """编排：解析 token → （缓存）抓榜 → 对照本地库 → 返回带 in_library 的列表。
 
     token 解析顺序：显式参数 > 进程缓存 > 配置 token > 配置账号自动登录。
-    自动登录确保 token 过期/缺失时自愈（无需手动重新输入）。
+    🔴 关键：预置的 token 可能**过期或无效**（实测踩过：配置里留了编造的占位 token，
+    会让 TOP250 直接 401 且永不回退）。故抓到鉴权类错误时强制用账号重新登录重试一次，
+    只有重试仍失败才向上抛错。
     """
     proxy = get_effective_proxy_url()
     tok = token or _token_cache.get("token")
+    cfg_tok, usr, pwd = _read_config_creds()
     if not tok:
-        cfg_tok, usr, pwd = _read_config_creds()
         tok = cfg_tok
         if not tok and usr and pwd:
             log.info("JavDB App Token 缺失，使用配置账号自动登录")
@@ -249,15 +264,31 @@ async def get_top250(
         raise RuntimeError("NO_TOKEN")
 
     now = time.time()
-    if (
+    cached_ok = (
         not refresh
         and _CACHE["items"]
         and _CACHE["zone"] == zone
         and now - _CACHE["ts"] < _CACHE_TTL
-    ):
+    )
+    if cached_ok:
         items = [dict(i) for i in _CACHE["items"]]
     else:
-        items = await fetch_top250(tok, zone)
+        try:
+            items = await fetch_top250(tok, zone, proxy=proxy)
+        except RuntimeError as e:
+            # token 失效/无权限：若配置里有账号，自动重新登录重试一次
+            msg = str(e)
+            auth_bad = any(
+                k in msg
+                for k in ("JWT", "401", "403", "unauthorized", "Unauthorized",
+                          "token", "Token", "登录")
+            )
+            if auth_bad and usr and pwd:
+                log.warning("JavDB TOP250 token 失效（%s），用配置账号重新登录重试", msg[:120])
+                tok = await login(usr, pwd, proxy=proxy)
+                items = await fetch_top250(tok, zone, proxy=proxy)
+            else:
+                raise
         _CACHE.update(items=items, zone=zone, ts=now)
 
     codes = [i["code"] for i in items]

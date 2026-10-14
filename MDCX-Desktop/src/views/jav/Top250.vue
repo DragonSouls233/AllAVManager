@@ -7,17 +7,17 @@
         </span>
       </template>
 
-      <!-- 未登录：登录框 -->
+      <!-- 未登录：登录框（后端已配置账号时可自动登录，无需手工输入） -->
       <el-alert
-        v-if="!token"
+        v-if="!token && !autoOk"
         type="warning"
         show-icon
         :closable="false"
         style="margin-bottom: 14px"
         title="该功能需要 JavDB App 登录"
-        description="TOP250 仅 JavDB App（登录态）提供，网站与匿名接口均无。输入你的 JavDB App 账号密码登录后即可抓取并对照本地库。"
+        description="TOP250 仅 JavDB App（登录态）提供，网站与匿名接口均无。若后端已配置 crawler.javdb_app_username/password 会自动登录；否则在此输入账号密码登录后即可抓取并对照本地库。"
       />
-      <el-form v-if="!token" :inline="true" class="login-bar" @submit.prevent>
+      <el-form v-if="!token && !autoOk" :inline="true" class="login-bar" @submit.prevent>
         <el-form-item label="用户名">
           <el-input v-model="username" placeholder="JavDB App 用户名/邮箱" clearable />
         </el-form-item>
@@ -31,7 +31,7 @@
         </el-form-item>
       </el-form>
 
-      <!-- 已登录：筛选条 -->
+      <!-- 已登录 / 后端自动登录：筛选条 -->
       <div v-else class="filter-bar">
         <el-radio-group v-model="zone" @change="reload">
           <el-radio-button value="censored">有码</el-radio-button>
@@ -53,12 +53,13 @@
         <el-button :loading="loading" @click="reload(true)">
           <el-icon><Refresh /></el-icon> 刷新
         </el-button>
-        <el-button text type="info" @click="logout()">退出登录</el-button>
+        <el-button v-if="token" text type="info" @click="logout()">退出登录</el-button>
+        <el-tag v-else type="success" effect="plain">已用后端配置账号自动登录</el-tag>
       </div>
 
       <el-alert
-        v-if="token"
-        title="数据抓取自 JavDB App TOP250，并对照本地 jav 库标记「已有 / 未收录」。绿色为本地已收录，橙色为待补。"
+        v-if="token || autoOk"
+        title="数据抓自 JavDB App TOP250，并对照本地 jav 库标记「已有 / 未收录」。绿色为本地已收录，橙色为待补。"
         type="info"
         show-icon
         :closable="false"
@@ -82,6 +83,8 @@
             <div class="title" :title="m.title">{{ m.title || '（无标题）' }}</div>
             <div class="meta">
               <span v-if="m.score != null" class="score">★ {{ m.score }}</span>
+              <span v-if="m.duration" class="dur">{{ fmtDur(m.duration) }}</span>
+              <el-tag v-if="m.has_cnsub" size="small" type="info" effect="plain">中字幕</el-tag>
               <span v-if="m.release_date" class="date">{{ m.release_date }}</span>
             </div>
           </div>
@@ -113,6 +116,8 @@ const items = ref([])
 const total = ref(0)
 const have = ref(0)
 const missing = ref(0)
+// 后端已用配置账号自动登录成功（无需本地手工登录）
+const autoOk = ref(false)
 
 async function doLogin() {
   if (!username.value || !password.value) {
@@ -136,28 +141,45 @@ function logout() {
   token.value = ''
   localStorage.removeItem(TOKEN_KEY)
   items.value = []
+  autoOk.value = false
 }
 
 async function load() {
-  if (!token.value) return
+  // 🔴 不强制要求本地 token：后端会先读配置 crawler.javdb_app_username/password 自动登录，
+  //    这里允许 token 为空直接尝试，失败再提示手工登录。
   loading.value = true
   try {
     const res = await getJavTop250({
       zone: zone.value,
       only_missing: onlyMissing.value,
-      token: token.value,
+      token: token.value || undefined,
     })
     items.value = res.items || []
     total.value = res.total || 0
     have.value = res.have || 0
     missing.value = res.missing || 0
+    autoOk.value = true
   } catch (e) {
     const detail = e?.response?.data?.detail || ''
-    ElMessage.error(detail || '抓取 TOP250 失败')
-    if (detail.includes('Token')) logout()
+    // NO_TOKEN / 需要 Token ⇒ 后端也没配置账号，才要求手工登录
+    if (detail.includes('Token') || detail.includes('NO_TOKEN')) {
+      ElMessage.warning(detail || '尚未配置 JavDB App 账号，请登录或在后端配置 crawler.javdb_app_username/password')
+    } else {
+      ElMessage.error(detail || '抓取 TOP250 失败')
+    }
+    if (detail.includes('JWT') || detail.includes('401')) logout()
   } finally {
     loading.value = false
   }
+}
+
+// 秒 → 时长文本（TOP250 的 duration 单位是秒）
+function fmtDur(sec) {
+  const s = Number(sec)
+  if (!s || s <= 0) return ''
+  const h = Math.floor(s / 3600)
+  const m = Math.round((s % 3600) / 60)
+  return h > 0 ? `${h}小时${m}分` : `${m}分钟`
 }
 
 function reload(force = false) {
@@ -165,7 +187,8 @@ function reload(force = false) {
 }
 
 onMounted(() => {
-  if (token.value) load()
+  // 无条件尝试：后端若已配置账号会自动登录并返回数据，失败才回落到登录框
+  load()
 })
 </script>
 
@@ -214,4 +237,5 @@ onMounted(() => {
 }
 .meta { display: flex; gap: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
 .score { color: #e05b5b; font-weight: 600; }
+.dur { color: var(--el-text-color-regular); }
 </style>

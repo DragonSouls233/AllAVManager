@@ -217,7 +217,14 @@ class ImageProcessor:
                 # 图片下载失败是常见且已被调用方容错（返回 None）的情况：
                 # PH 的 phncdn 签名 URL 会过期、CDN 也会按出口 IP 限流，单张失败
                 # 不应刷满 error.log（会淹没真正的服务级错误）。降到 WARNING。
-                logger.warning(f"Download error: {url} - {e}")
+                #
+                # 🔴 2026-10-14 必须带 type(e).__name__：
+                #   原实现只打 `{e}`，而 `str(asyncio.TimeoutError())` 是**空串**
+                #   （Python 3.11+ 起 asyncio.TimeoutError 就是内置 TimeoutError），
+                #   于是日志只剩一个孤零零的「- 」，把超时/连接错误/DNS 失败
+                #   全部压成同一张没信息的脸 —— 实测据此误判成「CDN 运营噪声」。
+                #   异常类名才是定位根因的唯一依据，任何情况下都不能省。
+                logger.warning(f"下载图片失败 {type(e).__name__}: {url} - {e or '(无异常信息)'}")
                 return None
 
     async def download_first_image(

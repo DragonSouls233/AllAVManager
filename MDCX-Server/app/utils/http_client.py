@@ -58,7 +58,20 @@ logger = logging.getLogger(__name__)
 # 2026-09-29 补入 401：theporndb / missav_api 未配 Token 时源站恒返 401，
 # 此前不在集合内导致每个番号都要跑满 3 次重试 + httpx 降级（约 20s/番号），
 # 占批量刮削总耗时的绝大部分。
-_NO_RETRY_STATUS = {401, 403, 404, 405, 410, 451, 521, 522, 523, 524}
+#
+# 🔴 2026-10-14 补入 **471**（实测证据，PH 图片 CDN）：
+#   pix-egi/pix-fl.phncdn.com 对过期签名的图返回 **HTTP 471** + `content-type: text/html`
+#   正文 `<title>Unauthorized!</title>`（仅 173 字节）。471 是 PH 自定义的
+#   "签名校验失败"，同一个 URL 重试多少次都是 471 —— 属于确定性失败。
+#   此前不在集合内 ⇒ 每张签名过期的图白白跑 3 次重试 + 1 次 httpx 降级
+#   = **4 次全废的网络往返**（实测单个 app.log 轮转周期 6565 次「降级 httpx 再试」，
+#   远超其余所有站点之和），是 PORNHUB 补刮迟迟跑不完的主要拖累之一。
+#   同理，那批 471 响应落到 images.py 会被判「下载内容不是有效图片」（173B HTML），
+#   两个症状同源，加入本集合可一次性消除。
+#
+# ⚠️ 471 **不要**加进 _ROTATABLE_NO_RETRY_STATUS：它是签名/时效问题，
+#    轮换 TLS 指纹换不来有效签名（实测 471 连续 3 次指纹轮换仍是 471）。
+_NO_RETRY_STATUS = {401, 403, 404, 405, 410, 451, 471, 521, 522, 523, 524}
 
 # 「不重试集合」里**可能是 WAF / TLS 指纹封禁**的那几个（amane #364）。
 # 背景：403 当初进 _NO_RETRY_STATUS 是为了省时间——theporndb/missav_api 未配 Token
@@ -634,7 +647,6 @@ class AsyncHttpClient:
             # 降级路径也反馈状态码（429/5xx 升压，其余降压），与 curl 路径一致
             _observe_response(url, getattr(resp, "status_code", None))
             _record_exchange_if_active("GET", url, headers, kwargs.get("params"), resp)
-            return resp
         except Exception as e:
             # 连接池可能因代理断开等原因损坏 / 半开连接，重建客户端再试一次
             logger.warning(
@@ -661,8 +673,39 @@ class AsyncHttpClient:
                     url, headers=headers, cookies=cookies or {}, params=params,
                 )
             await resp.aread()
+            _observe_response(url, getattr(resp, "status_code", None))
             _record_exchange_if_active(method, url, headers, params, resp)
-            return resp
+
+        # 🔴 状态码判定放在 try 之外：放在 try 内抛出的异常会被上面的
+        #    「重建连接池重试」except 吞掉，反而把确定性失败变成又一次网络请求。
+        self._raise_on_deterministic_status(resp)
+        return resp
+
+    @staticmethod
+    def _raise_on_deterministic_status(resp: Any) -> None:
+        """确定性失败状态码 → 抛异常（404/410 抛 ResourceUnavailable）。
+
+        🔴 2026-10-14：此前 httpx 降级路径**完全不检查状态码**，把 4xx/5xx 响应
+        原样当成功返回。实测后果（PH 图片 CDN）：
+          过期签名 URL 返回 `HTTP 471` + `text/html`（173B `<title>Unauthorized!</title>`）
+          → 降级路径 return resp → 调用方 `images.download_image` 只看到「不是图片」，
+            **根因（签名过期）在日志里彻底消失**，471 这个码永远打不出来。
+          同理源站 404 也会被当成「有响应的成功」，破坏 ResourceUnavailable 的
+            死片判定（熔断器又会被无谓触发，PH 刮削整体停摆）。
+        做法：与 curl 路径共用同一套语义 —— 404/410 → ResourceUnavailable，
+        其余确定性失败 → Exception("HTTP N")，让调用方能区分「源坏了」与「资源没了」。
+        429 / 5xx 不在此转换：交给调用方按既有逻辑处理。
+        """
+        code = getattr(resp, "status_code", None)
+        if not code or code < 400:
+            return
+        if code in (404, 410):
+            raise ResourceUnavailable(
+                f"HTTP {code}",
+                kind="gone" if code == 410 else "not_found",
+            )
+        if code in _NO_RETRY_STATUS:
+            raise Exception(f"HTTP {code}")
     
     async def _wait_for_rate_limit(self, url: str = "") -> None:
         """等待以遵守速率限制（全局 + 域名级，状态均为【进程级共享】）
