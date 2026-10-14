@@ -130,10 +130,16 @@ async def scrape_actor_profile(actor_name: str, nationality: Optional[str] = Non
             profile.country = nationality
         return profile
 
-    avatar_url = await _scrape_avatar_from_javdb(actor_name)
-    if avatar_url:
-        return EnhancedActorProfile(name=actor_name, avatar_url=avatar_url, country=nationality)
-
+    # 🔴 2026-10-14 按用户要求移除 JavDB 头像回退："PORNHUB 只有 PORNHUB 的，
+    # 没有其他 JAV 的任何事情"。原实现（2026-10-05 加）在 pornhub 四条路径
+    # （selectolax / 去尾数字重试 / regex / cn.model）全失败后，去 javdb.com
+    # 搜同名演员借头像，实测两个硬伤：
+    #   ① 跨源张冠李戴——javdb 是 JAV 站，搜到的"同名演员"多半不是同一个人；
+    #      实测借回来的 URL 是 ei.phncdn.com/pics/users/default/ 占位图，
+    #      直接落盘成 actor_{id}.jpg 污染 PORNHUB 演员数据（Wow Girls 案例）。
+    #   ② routes 版正则不校验域名/扩展名，实测把 mc.yandex.ru 统计像素
+    #      （43 字节）当头像 URL 拉回来（Met Art X 案例）。
+    # 现在拿不到就返回 None，按"留空不猜"处理，由自愈任务下轮自然重试。
     return None
 
 
@@ -316,7 +322,7 @@ async def _fetch_with_impersonate_fallback(url: str, cookies: dict, timeout: int
                 url,
                 cookies=cookies,
                 headers=headers,
-                fingerprint={"impersonate": impersonate},
+                impersonate=impersonate,
                 timeout=timeout,
             )
             if resp and resp.status_code == 200 and len(resp.text) > 1000:
@@ -545,22 +551,11 @@ async def _scrape_from_cn_model(actor_name: str) -> Optional[EnhancedActorProfil
         return None
 
 
-async def _scrape_avatar_from_javdb(actor_name: str) -> Optional[str]:
-    try:
-        from urllib.parse import quote
-        search_url = f"https://javdb.com/search?q={quote(actor_name)}&f=actor"
-        client = AsyncHttpClient()
-        resp = await client.get(search_url, timeout=15)
-        if not resp or resp.status_code != 200:
-            return None
-        html = resp.text
-        avatar_match = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="(https://[^"]+\.(?:jpg|jpeg|png))"', html, re.DOTALL)
-        if avatar_match:
-            return avatar_match.group(1)
-        return None
-    except Exception as e:
-        logger.debug("JavDB 头像搜索失败 [%s]: %s", actor_name, e)
-        return None
+# 🔴 2026-10-14 移除 _scrape_avatar_from_javdb（原 548-563 行）：
+# 用户明确要求"PORNHUB 只有 PORNHUB 的，没有其他 JAV 的任何事情"。
+# 该函数在 pornhub 路径全失败时去 javdb.com/search?q=<演员名>&f=actor
+# 借头像，实测污染数据（占位图/统计像素/跨源错配），详见
+# scrape_actor_profile 末尾的禁用注释。PORNHUB 演员拿不到头像就留空。
 
 
 def _parse_number(text: str) -> int:

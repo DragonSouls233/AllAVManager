@@ -27,6 +27,19 @@
           </el-tag>
         </el-button>
       </el-tooltip>
+      <!--
+        🔴 2026-10-14 补：影片库此前**没有补封面入口**，而库里 76% 影片三字段全空
+        （扫描器 pornhub_resumable 只建记录、从不下图）⇒ 首页（最新入库那批）
+        整片都是占位图。后端 `POST /movies/batch/refetch-covers` 早已实现且质量不错
+        （按本地文件判缺 + 带代理 + 魔数校验 + 详情页长效图址回退），
+        只是 api/store 封装齐了而 views 零调用。这里补一个独立按钮，
+        不动原有入口。放在 PORNHUB 模块自己的影片库页面里。
+      -->
+      <el-tooltip content="为缺封面的影片下载封面到本地（后台执行，走代理；进度看服务日志「PORNHub 批量补封 进度」）" placement="top">
+        <el-button type="primary" plain @click="refetchCovers" :loading="refetching">
+          <el-icon><Picture /></el-icon> 批量补封面
+        </el-button>
+      </el-tooltip>
       <el-tooltip content="SHA1 内容指纹去重，识别重复文件并可选择删除" placement="top">
         <el-button type="danger" @click="openDedup">
           <el-icon><Delete /></el-icon> 内容去重
@@ -149,6 +162,7 @@ import {
   pornhubDedupStatus,
 } from '@/api/pornhub'
 import { Link, Delete, MagicStick } from '@element-plus/icons-vue'
+import { Picture } from '@element-plus/icons-vue'
 
 // 🔴 2026-10-13：补每页条数选择器（对齐 JAV 有码）。
 // 换每页条数时必须回到第 1 页，否则可能停在一个不存在的页码上。
@@ -185,6 +199,38 @@ function onPageSizeChange() {
   store.page = 1
   loadMovies()
 }
+
+// 批量补封面（2026-10-14 新增 UI 入口，调用早已存在的后端接口）
+// 后端是 BackgroundTasks 异步跑，接口立即返回 started ⇒ 只能提示"已启动"，
+// 进度看服务日志：搜「PORNHub 批量补封 进度」/「PORNHub 批量补封 完成」。
+async function refetchCovers() {
+  let go = true
+  try {
+    await ElMessageBox.confirm(
+      '将为**缺少本地封面图**的影片下载封面（优先用库里已存的图址，' +
+      '失败则从详情页取长效图址重试；走服务端代理 + 魔数校验）。\n\n' +
+      '任务在后台分批执行，全部跑完需要较长时间，可在服务日志查看进度。\n是否现在开始？',
+      '批量补封面',
+      { confirmButtonText: '开始补封面', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch {
+    go = false
+  }
+  if (!go) return
+
+  refetching.value = true
+  try {
+    // limit 给大值：后端会分批循环推进直到没有更多候选
+    const res = await store.batchRefetchCovers({ only_missing: true, limit: 100000 })
+    ElMessage.success(res?.message || '批量补封面已启动（后台进行）')
+    // 后台任务要跑很久，延迟后刷一次列表让已下好的封面尽快显示
+    setTimeout(() => loadMovies(), 8000)
+  } catch (e) {
+    ElMessage.error('启动失败：' + (e?.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    refetching.value = false
+  }
+}
 const router = useRouter()
 const route = useRoute()
 const store = usePornhubStore()
@@ -192,6 +238,7 @@ const keyword = ref('')
 const scanning = ref(false)
 const scrapingAll = ref(false)
 const syncing = ref(false)
+const refetching = ref(false)
 const showDedupDialog = ref(false)
 const dedupScanning = ref(false)
 const dedupProgress = ref(0)

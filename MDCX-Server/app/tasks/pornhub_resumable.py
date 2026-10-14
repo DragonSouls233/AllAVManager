@@ -368,6 +368,29 @@ class ResumablePornhubScanner(PornhubScanner):
                 )
             except Exception as ce:
                 logger.error(f"[pornhub-resume] {media_dir} 提交失败: {ce}", exc_info=True)
+                # 🔴 2026-10-14：失败后**必须 rollback**。
+                #   本任务用 `db.get_session()`（不像 `session_scope()` 那样异常时
+                #   自动回滚）。SQLite 并发写时偶发 `database is locked`
+                #   ⇒ flush 失败 ⇒ session 进入 PendingRollbackError 状态，
+                #   **之后每次 commit 都必然失败**，整个扫描任务后续盘的
+                #   数据全部丢失（实测 11:59 扫 U:\ 时报此错，111 部没入库）。
+                #   另外：已 commit 的部分不该因单个盘失败而丢，故 rollback 后
+                #   重试一次仍失败才放弃该盘，保住前面已落库的盘。
+                try:
+                    await session.rollback()
+                except Exception as re:  # noqa: F841
+                    logger.warning(f"[pornhub-resume] {media_dir} rollback 失败: {re}")
+                try:
+                    await session.commit()
+                    self._save_checkpoint(results["movies_added"])
+                    logger.info(
+                        f"[pornhub-resume] {media_dir} rollback 后重试提交成功 "
+                        f"(累计新增 {results['movies_added']} 部)"
+                    )
+                except Exception as ce2:
+                    logger.error(
+                        f"[pornhub-resume] {media_dir} 重试提交仍失败: {ce2}"
+                    )
         return skipped
 
     def _mark_processed(self, media_dir: Path, rel: str, file_count: int) -> None:

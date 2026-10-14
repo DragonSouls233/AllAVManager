@@ -637,7 +637,11 @@ export const routes = [
       {
         path: 'pornhub/actors/:id',
         name: 'PornhubActorDetail',
-        component: () => import('@/views/ActorDetail.vue')
+        // 🔴 必须用 pornhub 专属详情页：通用 ActorDetail.vue 在 onMounted 里会调
+        // getActorTags(id)（不带 module=pornhub）→ GET /actors/{id}/tags 落到 JAV 库
+        // → 404 "演员不存在"。专属页只用 /pornhub/actors/{id} 与 /pornhub/actors/{id}/movies，
+        // 不会跨模块误查，也符合"PORNHUB 工具只放 PORNHUB 模块"的约定。
+        component: () => import('@/views/pornhub/ActorDetail.vue')
       },
       {
         path: 'pornhub/scrape',

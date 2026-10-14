@@ -55,6 +55,13 @@ async def _store_pornhub_actor_avatar(actor, profile_avatar_url: "str | None", a
     """
     if not profile_avatar_url or not str(profile_avatar_url).startswith("http"):
         return None
+    # 🔴 2026-10-14：pornhub 官方默认占位图（该演员没有自己的头像时返回），
+    # URL 形如 https://ei.phncdn.com/pics/users/default/pornhub/...male.jpg。
+    # 实测它会通过尺寸校验（是张 >24px 的通用照片）被当真实头像落盘，
+    # 造成"演员头像全是同一张默认图"的污染。属 pornhub 域内判断，不涉跨源。
+    if "/pics/users/default/" in str(profile_avatar_url):
+        logger.debug(f"跳过 pornhub 默认占位图 [{actor_name}]: {profile_avatar_url}")
+        return None
     try:
         from app.scraper.pornhub_actor_scraper import download_actor_avatar
         from app.config.manager import DATA_DIR
@@ -961,11 +968,12 @@ async def scrape_pornhub_actor_profile(actor_id: int):
         profile = await scrape_actor_profile(actor.name, actor.nationality)
 
         if not profile:
-            # 通过 JavDB 搜索获取头像并落盘
-            avatar_url = await _scrape_avatar_from_javdb(actor.name)
-            await _store_pornhub_actor_avatar(actor, avatar_url, actor.name)
+            # 🔴 2026-10-14 移除 JavDB 借头像回退：用户要求"PORNHUB 只有 PORNHUB
+            # 的，没有其他 JAV 的任何事情"。实测借来的头像跨源张冠李戴、抓到统计
+            # 像素/占位图（证据见 pornhub_actor_scraper.py::scrape_actor_profile 注释）。
+            # 拿不到 pornhub 资料就留空，不猜。
             await session.commit()
-            return {"status": "partial", "message": f"未找到演员 {actor.name} 的详细资料，已尝试获取头像"}
+            return {"status": "partial", "message": f"未找到演员 {actor.name} 的 Pornhub 资料页（留空不猜）"}
 
         # 检查是否只有占位头像，没有真实资料
         is_placeholder = profile.avatar_url and ("unknown" in (profile.avatar_url or "") or "unknow" in (profile.avatar_url or "") or "jdbstatic" in (profile.avatar_url or ""))
@@ -973,11 +981,11 @@ async def scrape_pornhub_actor_profile(actor_id: int):
                              or profile.height or profile.measurements or profile.birthplace
                              or profile.ethnicity or (profile.avatar_url and not is_placeholder))
         if not has_real_data:
-            # 只有占位头像，尝试从JavDB获取
-            avatar_url = await _scrape_avatar_from_javdb(actor.name)
-            await _store_pornhub_actor_avatar(actor, avatar_url, actor.name)
+            # 🔴 2026-10-14 移除 JavDB 借头像（用户要求 PORNHUB 只用 PORNHUB 源，
+            # 不碰任何 JAV 站；实测借头像污染数据，见 scraper 内禁用注释）。
+            # 占位头像不入库，由前端显示默认占位图。
             await session.commit()
-            return {"status": "partial", "source": "pornhub_web", "message": f"未找到演员 {actor.name} 的详细资料（Pornhub无Pornstar页面），已尝试获取头像"}
+            return {"status": "partial", "source": "pornhub_web", "message": f"未找到演员 {actor.name} 的详细资料（Pornhub无Pornstar页面）"}
 
         actor.alias = profile.alias or actor.alias
         # 头像：下载到本地并落盘 actor_{id}.jpg（与模块端点读取一致）
@@ -1073,9 +1081,8 @@ async def scrape_all_pornhub_actor_profiles(background_tasks: BackgroundTasks):
                                 await _store_pornhub_actor_avatar(act, profile.avatar_url, act.name)
                                 if profile.country and not act.nationality:
                                     act.nationality = profile.country
-                            else:
-                                avatar_url = await _scrape_avatar_from_javdb(act.name)
-                                await _store_pornhub_actor_avatar(act, avatar_url, act.name)
+                            # 🔴 2026-10-14 移除 JavDB 借头像（用户要求 PORNHUB 只用
+                            # PORNHUB 源，不碰任何 JAV 站；实测污染数据见 scraper 注释）
                             await s.commit()
                             from_web += 1
                             success += 1
@@ -1096,35 +1103,12 @@ async def scrape_all_pornhub_actor_profiles(background_tasks: BackgroundTasks):
     }
 
 
-async def _scrape_avatar_from_javdb(actor_name: str) -> str | None:
-    """从 JavDB 搜索演员头像"""
-    try:
-        from app.utils.http_client import AsyncHttpClient
-        from urllib.parse import quote
-        import re
-
-        search_url = f"https://javdb.com/search?q={quote(actor_name)}&f=actor"
-        async with AsyncHttpClient(timeout=15) as client:
-            html = await client.get_text(search_url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Referer": "https://javdb.com/",
-            })
-            if not html:
-                return None
-
-            # 查找演员头像链接
-            m = re.search(r'<img[^>]*class="[^"]*avatar[^"]*"[^>]*src="([^"]+)"', html, re.I)
-            if m:
-                return m.group(1)
-            # 兜底：找第一个演员卡片里的图片
-            m2 = re.search(r'<div[^>]*class="[^"]*actor[^"]*"[^>]*>.*?<img[^>]*src="([^"]+)"', html, re.I | re.DOTALL)
-            if m2:
-                return m2.group(1)
-            return None
-    except Exception as e:
-        logger.debug(f"JavDB 头像搜索失败 [{actor_name}]: {e}")
-        return None
+# 🔴 2026-10-14 移除 _scrape_avatar_from_javdb（原定义在本行下方）：
+# 用户明确要求"PORNHUB 只有 PORNHUB 的，没有其他 JAV 的任何事情"。
+# 该函数去 javdb.com/search?q=<演员名>&f=actor 抓 class 含 avatar 的 img
+# src 当头像——正则不校验域名/扩展名，实测把 mc.yandex.ru 统计像素
+# （43 字节）当头像 URL；且 javdb 是 JAV 站，借来的头像跨源张冠李戴
+# （含 ei.phncdn.com/pics/users/default/ 占位图）。PORNHUB 拿不到就留空。
 
 
 # ========== 视频截图生成封面 ==========
@@ -1651,9 +1635,8 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
                         await _store_pornhub_actor_avatar(actor_row, profile.avatar_url, actor_row.name)
                         if profile.country and not actor_row.nationality:
                             actor_row.nationality = profile.country
-                    else:
-                        avatar_url = await _scrape_avatar_from_javdb(actor_row.name)
-                        await _store_pornhub_actor_avatar(actor_row, avatar_url, actor_row.name)
+                    # 🔴 2026-10-14 移除 JavDB 借头像（用户要求 PORNHUB 只用 PORNHUB 源，
+                    # 不碰任何 JAV 站；实测污染数据见 scraper 内禁用注释）
                     await s.commit()
                     logger.info(f"PORNHub 工作流：演员资料已获取 {actor_row.name}")
                 except Exception as e:
@@ -1710,7 +1693,8 @@ async def run_pornhub_full_workflow(background_tasks: BackgroundTasks):
 async def batch_refetch_covers(
     background_tasks: BackgroundTasks,
     only_missing: bool = Query(True, description="仅补缺失封面"),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=100000),
+    batch_size: int = Query(500, ge=50, le=5000, description="每批处理部数"),
 ):
     """批量补 PORNHUB 封面到本地 `data/movies/pornhub/<code>/poster.jpg`。
 
@@ -1724,6 +1708,13 @@ async def batch_refetch_covers(
 
     现在：按**本地文件是否存在**判缺 → 走 ImageProcessor（自动带代理 + 魔数校验）
     → 主图址失败时用 `app/utils/ph_cover.py` 从详情页取长效图址重试 → 回写 DB。
+
+    🔴 2026-10-14 修复「一次只能补最新 N 部」：
+      旧实现 `select(...).order_by(id.desc()).limit(limit)`，而 limit 上限 1000
+      ⇒ 87,000 部的库要手工点 87 次；且永远只补**最新入库**那批，
+      老片永远排不上。现在改为**分批循环**（batch_size 每批，直到处理满 limit
+      部或没有更多候选），并把 `limit` 上限提到 100000。
+      另外补一个进度日志，便于用户在服务日志里看进度。
     """
     async def _run():
         from app.output.images import ImageProcessor
@@ -1739,56 +1730,86 @@ async def batch_refetch_covers(
             from app.db.pornhub_models import PornhubMovie
             from sqlalchemy import select
 
-            stmt = select(PornhubMovie).order_by(PornhubMovie.id.desc()).limit(limit)
-            movies = (await session.execute(stmt)).scalars().all()
-
-            targets = []
-            for mv in movies:
-                if not mv.code:
-                    continue
-                if only_missing:
-                    has = any(
-                        fast_file_exists(str(getter("pornhub", mv.code)))
-                        for getter in (get_movie_cover_path, get_movie_fanart_path,
-                                       get_movie_thumb_path)
-                    )
-                    if has:
-                        continue
-                targets.append(mv)
-            logger.info("PORNHub 批量补封 待处理: %d 部", len(targets))
-            if not targets:
-                return
-
             success = failed = 0
+            processed = 0
+            last_id = None  # 游标：按 id 升序推进，避免每批都从头扫
+
             async with ImageProcessor(output_dir="") as proc:
-                for mv in targets:
-                    out_path = str(get_movie_cover_path("pornhub", mv.code))
-                    cands = [mv.cover_url] if mv.cover_url else []
-                    # 先按已有地址试；失败再从详情页取长效候选
-                    if cands:
+                while processed < limit:
+                    stmt = select(PornhubMovie).order_by(PornhubMovie.id.asc())
+                    if last_id is not None:
+                        stmt = stmt.where(PornhubMovie.id > last_id)
+                    stmt = stmt.limit(batch_size)
+                    movies = (await session.execute(stmt)).scalars().all()
+                    if not movies:
+                        break
+                    last_id = movies[-1].id
+
+                    targets = []
+                    for mv in movies:
+                        if not mv.code:
+                            continue
+                        if only_missing:
+                            has = any(
+                                fast_file_exists(str(getter("pornhub", mv.code)))
+                                for getter in (get_movie_cover_path, get_movie_fanart_path,
+                                               get_movie_thumb_path)
+                            )
+                            if has:
+                                continue
+                        targets.append(mv)
+
+                    if not targets:
+                        # 本批全都有图；若已处理数远小于 limit 说明快扫完了，继续推进
+                        processed += len(movies)
+                        if len(movies) < batch_size:
+                            break
+                        continue
+
+                    for mv in targets:
+                        if processed >= limit:
+                            break
+                        out_path = str(get_movie_cover_path("pornhub", mv.code))
+                        cands = [mv.cover_url] if mv.cover_url else []
+                        # 先按已有地址试；失败再从详情页取长效候选
+                        if cands:
+                            saved = await proc.download_first_image(
+                                cands, out_path,
+                                referer=f"https://www.pornhub.com/view_video.php?viewkey={mv.code[2:]}")
+                            if saved:
+                                success += 1
+                                processed += 1
+                                continue
+                        try:
+                            extra = await fetch_cover_candidates(mv.code)
+                        except Exception as fe:
+                            logger.debug("fetch_cover_candidates %s 失败: %s", mv.code, fe)
+                            extra = []
                         saved = await proc.download_first_image(
-                            cands, out_path,
+                            extra, out_path,
                             referer=f"https://www.pornhub.com/view_video.php?viewkey={mv.code[2:]}")
                         if saved:
+                            # 回写库里那条 24h 就过期的地址，避免它继续被当作封面来源
+                            fresh = next((u for u in extra if u), None)
+                            if fresh:
+                                mv.cover_url = fresh
+                                mv.thumb_url = fresh
                             success += 1
-                            continue
-                    extra = await fetch_cover_candidates(mv.code)
-                    saved = await proc.download_first_image(
-                        extra, out_path,
-                        referer=f"https://www.pornhub.com/view_video.php?viewkey={mv.code[2:]}")
-                    if saved:
-                        # 回写库里那条 24h 就过期的地址，避免它继续被当作封面来源
-                        fresh = next((u for u in extra if u), None)
-                        if fresh:
-                            mv.cover_url = fresh
-                            mv.thumb_url = fresh
-                        success += 1
-                    else:
-                        failed += 1
-                    await asyncio.sleep(0.5)
+                        else:
+                            failed += 1
+                        processed += 1
+                        await asyncio.sleep(0.5)
 
-            await session.commit()
-            logger.info("PORNHub 批量补封 完成: success=%d failed=%d", success, failed)
+                    await session.commit()
+                    logger.info(
+                        "PORNHub 批量补封 进度: 已处理 %d 部（成功 %d / 失败 %d）",
+                        processed, success, failed,
+                    )
+                    if len(movies) < batch_size:
+                        break
+
+            logger.info("PORNHub 批量补封 完成: 处理 %d 部, success=%d failed=%d",
+                        processed, success, failed)
         except Exception:
             logger.exception("PORNHub 批量补封 失败")
         finally:
@@ -1861,7 +1882,7 @@ async def batch_download_avatars(
     only_missing: bool = Query(True),
     limit: int = Query(200, ge=1, le=2000),
 ):
-    """批量下载缺失头像：1) 先从已抓取的 profile.avatar_url；2) 失败再回退到 javdb"""
+    """批量下载缺失头像：只从 PORNHUB 源刮（2026-10-14 起不再回退 javdb）"""
     async def _run():
         db = get_pornhub_db()
         session = await db.get_session()
@@ -1885,8 +1906,8 @@ async def batch_download_avatars(
                         profile = None
                     if profile and profile.avatar_url:
                         avatar_url = profile.avatar_url
-                    if not avatar_url:
-                        avatar_url = await _scrape_avatar_from_javdb(act.name)
+                    # 🔴 2026-10-14 移除 JavDB 借头像回退（用户要求 PORNHUB 只用
+                    # PORNHUB 源，不碰任何 JAV 站；实测污染数据见 scraper 内禁用注释）
                     local_path = await _store_pornhub_actor_avatar(act, avatar_url, act.name)
                     if local_path:
                         success += 1
@@ -1903,6 +1924,31 @@ async def batch_download_avatars(
 
     background_tasks.add_task(_run)
     return {"status": "started", "message": "PORNHub 批量头像下载已启动"}
+
+
+@router.post("/actors/avatar-fill")
+async def start_avatar_fill(write: bool = Query(True)):
+    """启动 PORNHUB 演员头像补全（服务端内置后台任务）。
+
+    覆盖**全部**演员、按本地文件判缺、幂等续跑、每 50 位批量提交；
+    单实例（已在跑则返回 already_running）。进度见 GET /actors/avatar-fill/status。
+    取代原 schtasks 独立脚本，不再单独跑进程。
+    """
+    from app.tasks.pornhub_avatar_fill import (
+        get_avatar_fill_status,
+        start_avatar_fill_task,
+    )
+    status = start_avatar_fill_task(write=write)
+    if status == "already_running":
+        return {"status": "already_running", "state": get_avatar_fill_status()}
+    return {"status": "started", "message": "PORNHUB 演员头像补全已启动（服务端后台任务）"}
+
+
+@router.get("/actors/avatar-fill/status")
+async def avatar_fill_status():
+    """查询 PORNHUB 演员头像补全进度（服务端内置任务）。"""
+    from app.tasks.pornhub_avatar_fill import get_avatar_fill_status
+    return get_avatar_fill_status()
 
 
 @router.get("/actors/{actor_id}/avatar/file")
