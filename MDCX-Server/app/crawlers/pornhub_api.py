@@ -40,6 +40,7 @@ from app.crawlers.base import (
 from app.crawlers.provider import register_crawler
 from app.utils.logger import get_logger
 from app.utils.release_date import parse_ph_publish_date
+from app.scraper.errors import ResourceUnavailable
 
 
 def _as_int(val) -> Optional[int]:
@@ -85,9 +86,17 @@ class PornhubApiCrawler(BaseCrawler):
             return None
 
         meta = await fetch_video_metadata(viewkey)
-        if not meta or not meta.title:
-            logger.debug(f"[pornhub_api] 元数据为空: {viewkey}")
+        if not meta:
+            # 请求根本没成功（网络/HTTP 错误）⇒ 这是**源的故障**，按普通失败处理
+            logger.debug(f"[pornhub_api] 请求未返回结果: {viewkey}")
             return None
+        if not meta.title:
+            # 🔴 2026-10-14：端点**正常应答但无该视频数据** = 源确认没有这部片。
+            #    必须抛 ResourceUnavailable 与普通失败区分开 —— 否则 engine
+            #    会把它记成源失败并喂给熔断器，PH 那 52% 的死片会把两个 PH 源
+            #    一起熔断（每失败一次冷却 45s），导致批量刮削几乎全批空转。
+            #    降级风险由批量层的「成功率崩塌急停」兜底。
+            raise ResourceUnavailable("graphql:empty_metadata", kind="not_found")
 
         # 实测 pornstars 常为空列表（PH 的 webmasters 接口不返回演员明细），
         # 演员仍留空交给 HTML 主源补，不臆造。

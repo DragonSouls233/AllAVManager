@@ -163,3 +163,12 @@ export async function cancelJavGapFill() {
 export async function getSourceOrder(code = 'ABC-123') {
   return api.get('/source-order', { params: { code } })
 }
+
+// ===== JavDB App TOP250（需登录；对照本地 jav 库）=====
+export async function loginJavdbTop250(username, password) {
+  return api.post('/jav/top250/login', { username, password })
+}
+
+export async function getJavTop250(params = {}) {
+  return api.get('/jav/top250', { params })
+}

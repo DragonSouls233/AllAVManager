@@ -347,3 +347,223 @@ async def check_javbus_cookie(data: dict[str, Any]):
                 return {"valid": False, "message": f"Cookie 无效 (HTTP {resp.status_code})"}
     except Exception as e:
         return {"valid": False, "message": f"请求失败: {str(e)[:80]}"}
+
+
+# ===== 按站点代理覆盖（amane #365）=====
+
+@router.get("/site-proxy")
+async def get_site_proxy(_admin: dict = Depends(require_admin)):
+    """读取「按站点覆盖代理」配置。
+
+    用途：某些站点封代理出口 IP（走代理必失败），或某些地域站需要另一条出口
+    （如 DMM/FANZA 走日本节点）。在全局代理之外给它单独指定代理或强制直连。
+    """
+    from app.services import site_proxy
+
+    return site_proxy.describe()
+
+
+@router.put("/site-proxy")
+async def put_site_proxy(
+    payload: dict[str, Any],
+    _admin: dict = Depends(require_admin),
+):
+    """写入「按站点覆盖代理」配置。
+
+    请求体：
+        {"enabled": true, "sites": {"javdb": "socks5://127.0.0.1:10808",
+                                    "javbus.com": "direct"}}
+
+    - key 可以是**爬虫名**（javdb / dmm_web ...）或**域名**（javbus.com）。
+      域名支持后缀匹配，且取最长匹配，避免 javdb 误覆盖 javdb_new。
+    - value 为 direct / none / off / 空 → 该站强制直连。
+    """
+    from app.services import site_proxy
+
+    try:
+        saved = site_proxy.save_config(payload or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("保存站点代理配置失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"保存失败: {str(e)[:120]}")
+
+    logger.info("按站点代理配置已更新：%d 条", len(saved.get("sites") or {}))
+    return site_proxy.describe()
+
+
+@router.post("/site-proxy/test")
+async def test_site_proxy(
+    payload: dict[str, Any],
+    _admin: dict = Depends(require_admin),
+):
+    """解析一次：给定站点名/URL，报告实际会走哪条代理（不发起请求）。
+
+    用于在保存前确认匹配是否符合预期（尤其是域名后缀匹配有没有误伤）。
+    """
+    from app.services import site_proxy
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    site = str(payload.get("site") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    hit = site_proxy.resolve(site=site, url=url)
+    effective = get_effective_proxy_url(site=site, url=url)
+    return {
+        "site": site,
+        "url": url,
+        "override": None if hit is None else ("direct" if hit[1] is None else hit[1]),
+        "matched": hit is not None,
+        "effective_proxy": effective,
+        "mode": "direct" if effective is None else "proxy",
+    }
+
+
+# ===== 跨机路径对照表（openaver 0.17.7）=====
+
+@router.get("/path-map")
+async def get_path_map(_admin: dict = Depends(require_admin)):
+    """读取「跨机路径对照表」配置。"""
+    from app.services import path_map
+
+    return path_map.describe()
+
+
+@router.put("/path-map")
+async def put_path_map(
+    payload: dict[str, Any],
+    _admin: dict = Depends(require_admin),
+):
+    """写入「跨机路径对照表」配置。
+
+    请求体：
+        {"enabled": true,
+         "rules": [{"remote": "/volume1/av", "local": "\\\\NAS\\av", "enabled": true}]}
+
+    - remote / local 互为镜像：map_to_local 用 remote→local，map_to_remote 反之。
+    - 仅当两者都非空才保留该条规则。
+    """
+    from app.services import path_map
+
+    try:
+        saved = path_map.save_config(payload or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info("路径对照表已更新：%d 条规则", len(saved.get("rules") or []))
+    return path_map.describe()
+
+
+@router.post("/path-map/test")
+async def test_path_map(
+    payload: dict[str, Any],
+    _admin: dict = Depends(require_admin),
+):
+    """解析一次：给定路径，报告经对照表后的结果（不改动配置）。
+
+    请求体：{"path": "/volume1/av/ABC-123/ABC-123.mp4", "direction": "to_local"}
+    direction 缺省 to_local；可传 to_remote。
+    """
+    from app.services import path_map
+
+    p = str(payload.get("path") or "").strip()
+    direction = str(payload.get("direction") or "to_local").strip().lower()
+    if direction == "to_remote":
+        result = path_map.map_to_remote(p)
+        applied = result != p
+        return {"input": p, "direction": "to_remote", "output": result, "changed": applied}
+    result = path_map.map_to_local(p)
+    applied = result != p
+    return {"input": p, "direction": "to_local", "output": result, "changed": applied}
+
+
+# ===== 自定义来源 YAML 规则档（openaver 0.17.7）=====
+
+@router.get("/custom-sources")
+async def list_custom_sources(_admin: dict = Depends(require_admin)):
+    """列出 data/custom_sources 下全部规则档及其校验状态。"""
+    from app.services.custom_source import registry
+
+    items = []
+    for spec, errors in registry.load_all():
+        raw_yaml = ""
+        try:
+            p = registry.sources_dir() / f"{spec.name}.yaml"
+            if p.exists():
+                raw_yaml = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            raw_yaml = ""
+        items.append({
+            "name": spec.name,
+            "display_name": spec.display_name,
+            "enabled": spec.enabled,
+            "base_url": spec.base_url,
+            "has_search": spec.has_search,
+            "has_detail": spec.has_detail,
+            "test_case_count": len(spec.test_cases),
+            "valid": not errors,
+            "errors": errors,
+            "yaml": raw_yaml,
+        })
+    return {"items": items}
+
+
+@router.post("/custom-sources/validate")
+async def validate_custom_source(
+    payload: dict[str, Any],
+    _admin: dict = Depends(require_admin),
+):
+    """校验一段 YAML（不落盘），并离线跑通其 test_cases。
+
+    验收硬条件：test_cases 必须至少一例 expect: not_found，且能真正判定为 not_found。
+    请求体：{"yaml": "<YAML 文本>"}
+    """
+    from app.services.custom_source import registry, schema
+
+    text = str(payload.get("yaml") or "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="yaml 不能为空")
+    try:
+        spec_dict = schema.load_spec_from_yaml(text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    errors = schema.validate_spec(spec_dict)
+    test_results = []
+    if not errors:
+        try:
+            test_results = registry.run_test_cases(spec_dict)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"test_cases 运行异常: {e}")
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "test_results": test_results,
+    }
+
+
+@router.put("/custom-sources/{name}")
+async def put_custom_source(
+    name: str,
+    payload: dict[str, Any],
+    _admin: dict = Depends(require_admin),
+):
+    """保存（新增/覆盖）一个规则档。校验失败返回 400 且不落盘。"""
+    from app.services.custom_source import registry
+
+    text = str(payload.get("yaml") or "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="yaml 不能为空")
+    spec, errors = registry.save_spec(name, text)
+    if errors:
+        raise HTTPException(status_code=400, detail="；".join(errors))
+    return {"name": spec.name, "display_name": spec.display_name, "saved": True}
+
+
+@router.delete("/custom-sources/{name}")
+async def delete_custom_source(
+    name: str,
+    _admin: dict = Depends(require_admin),
+):
+    """删除一个规则档。"""
+    from app.services.custom_source import registry
+
+    ok = registry.delete_spec(name)
+    return {"name": name, "deleted": ok}

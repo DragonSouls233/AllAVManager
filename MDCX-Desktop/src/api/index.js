@@ -124,6 +124,7 @@ export const scrapeByCode = (code, sources = null) =>
   api.post('/movies/scrape-by-code', { code, sources }, { timeout: 180000 })
 export const playMovie = (id) => api.get(`/movies/${id}/play`)
 export const getMoviePlayUrl = (id, protocol = 'http') => api.get(`/movies/${id}/play/external`, { params: { protocol } })
+export const getPlayerRemuxInfo = (id, module = 'jav') => api.get(`/player/${id}/remux-info`, { params: { module } })
 export const getMovieCodecInfo = (id) => api.get(`/movies/${id}/codec-info`)
 export const getRelatedMovies = (id) => api.get(`/movies/${id}/related`)
 export const scanMovies = (directory) => api.get('/movies/scan', { params: { directory } })

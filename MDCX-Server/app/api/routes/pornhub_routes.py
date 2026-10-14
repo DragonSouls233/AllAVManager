@@ -799,15 +799,30 @@ async def scrape_pornhub_movie(movie_id: int):
 
 
 @router.post("/movies/scrape-all-pending")
-async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
+async def scrape_all_pending_pornhub(
+    background_tasks: BackgroundTasks,
+    concurrency: int = Query(
+        3, ge=1, le=8,
+        description="并发 worker 数。PH 约 8.6 万部 pending，串行需 10 天量级；"
+                    "并发 3~4 配合多出口可压到 1 天量级。",
+    ),
+    use_proxy_pool: bool = Query(
+        True,
+        description="启用多出口代理池：每个 worker 绑定节点池里一个不同出口 IP，"
+                    "避免全部流量挤在同一 IP 上触发 PH 按 IP 限流。",
+    ),
+):
     """后台批量刮削所有 status=pending 的 PORNHub 影片
 
     🔴 2026-10-05 重写：此前这里手写了一段与单曲刮削**重复且同样有 bug**的
     落盘循环（source_views=votes、fanart_url 不存在、release_date/rating 不写）。
     现在复用 app/scraper/batch_scrape.py::scrape_module_pending（与 fc2 /
     uncensored 同一条流水线）+ refill_module_gaps 二次补齐。
-    ⚠️ PH 详情页 1.5MB/次且限流远严于 JSON 端点，连续请求会整批 SSLError
-    ⇒ 这里**串行**处理（不并发）。
+
+    🔴 2026-10-14 并发化：原先因担心 PH 限流而**刻意串行**，结果 8.6 万部
+    拖到 10 天量级，用户体感就是"点了没效果"。但 PH 的限流是**按出口 IP**
+    计的 —— 串行并不能规避限流，只是白白变慢。正确做法是并发 + 多出口：
+    每个 worker 走不同的出口 IP，请求量被摊到 N 份。
     """
     db = get_pornhub_db()
     session = await db.get_session()
@@ -828,7 +843,11 @@ async def scrape_all_pending_pornhub(background_tasks: BackgroundTasks):
         from app.scraper.batch_scrape import scrape_module_pending, refill_module_gaps
 
         try:
-            ok, fail = await scrape_module_pending("pornhub", db, _Movie)
+            ok, fail = await scrape_module_pending(
+                "pornhub", db, _Movie,
+                concurrency=concurrency,
+                use_proxy_pool=use_proxy_pool,
+            )
             logger.info("pornhub 批量刮削完成: 成功 %s 失败 %s", ok, fail)
         except Exception as e:
             logger.warning("pornhub 批量刮削异常: %s", e)

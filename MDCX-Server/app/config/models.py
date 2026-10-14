@@ -60,6 +60,10 @@ class CrawlerConfig(BaseModel):
     javdb_cookie: str | None = Field(default=None, title="JavDB Cookie")
     javbus_cookie: str | None = Field(default=None, title="JavBus Cookie")
     fc2ppvdb_cookie: str | None = Field(default=None, title="FC2PPVDB Cookie")
+    # JavDB App TOP250 登录态（网站/匿名 App API 均无 TOP250，仅 App 登录态有）
+    javdb_app_username: str | None = Field(default=None, title="JavDB App 用户名")
+    javdb_app_password: str | None = Field(default=None, title="JavDB App 密码")
+    javdb_app_token: str | None = Field(default=None, title="JavDB App Token（登录 JWT，可预置免登录）")
 
 
 class CookieCloudConfig(BaseModel):

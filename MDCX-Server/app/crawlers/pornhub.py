@@ -26,6 +26,7 @@ from app.utils.http_client import AsyncHttpClient
 from app.utils.logger import get_logger
 from app.utils.release_date import parse_ph_publish_date, parse_release_date
 from app.scraper.number import is_valid_ph_viewkey, ph_viewkey_to_code
+from app.scraper.errors import ResourceUnavailable
 
 logger = get_logger(__name__)
 
@@ -459,7 +460,10 @@ class PornhubCrawler(BaseCrawler):
             #    同时它的 categoriesWrapper 仍有 29 个分类，会污染 genre 列。
             if _is_unavailable_page(html_text):
                 logger.info(f"视频不可用: {viewkey}")
-                return None
+                # 🔴 2026-10-14：原为 ``return None``，engine 无法区分「源坏了」和
+                #    「片子下架了」，于是把死片记成源失败 → 累计 5 次即熔断 PH 两个源
+                #    30 分钟，活片也被一起短路。改抛 ResourceUnavailable 让上层分开处理。
+                raise ResourceUnavailable("video disabled/removed", kind="disabled")
 
             # === 解析顺序：先 HTML 全量（唯一能拿到演员/uploader 的路径），
             #     再用 flashvars / __NEXT_DATA__ **补缺**。
@@ -490,6 +494,11 @@ class PornhubCrawler(BaseCrawler):
             self.mark_error()
             return None
 
+        except ResourceUnavailable:
+            # 🔴 必须**放行**：死片信号要原样交给 engine 区分处理。
+            #    若被下面的 except Exception 吞掉转成 None，engine 就会把它
+            #    当成源失败 → 熔断器照样被死片打跳闸（本修复要解决的问题）。
+            raise
         except Exception as e:
             logger.error(f"PornHub 刮削失败 [{viewkey}]: {e}")
             self.mark_error()
@@ -743,7 +752,8 @@ class PornhubCrawler(BaseCrawler):
         #    genre 塞满推荐分类的垃圾记录。
         if _is_unavailable_page(html_text):
             logger.info(f"[pornhub] 下架页，跳过解析: {viewkey}")
-            return None
+            # 🔴 同上：死片必须是可识别信号，不能混在普通「无结果」里
+            raise ResourceUnavailable("video disabled/removed", kind="disabled")
 
         title = self._extract_title_html(html_text)
         if not title:

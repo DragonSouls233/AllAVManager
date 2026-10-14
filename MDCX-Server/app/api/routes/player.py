@@ -16,7 +16,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -367,8 +367,18 @@ async def get_player_config(
         "gifs": gifs,
         "audio_tracks": audio_tracks,
         "duration": movie.duration,
-        "file_path": movie.file_path,
+        # 跨机路径对照：远端路径 → 本机路径（openaver 0.17.7）
+        "file_path": _map_if_needed(movie.file_path),
     }
+
+
+def _map_if_needed(path: str) -> str:
+    try:
+        from app.services import path_map
+
+        return path_map.map_to_local(path)
+    except Exception:  # noqa: BLE001
+        return path
 
 
 # ===== 音轨切换（v3.5 新增） =====
@@ -500,3 +510,165 @@ async def switch_audio_track(
         "track": track,
         "hint": "前端请通过 hls.audioTrack 或 video.audioTracks[track_index].enabled 切换",
     }
+
+
+# ===== 网页播放兼容层（avm v1.13.1 移植）=====
+
+def _stream_file_with_range(
+    request: Request, file_path: Path, *, media_type: str, force_inline: bool = False
+):
+    """带 Range 支持的文件流式输出（复用 movies.play_video_file 的逻辑）。"""
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    file_size = file_path.stat().st_size
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    range_start, range_end = 0, file_size - 1
+    status_code = 200
+    content_range = None
+
+    if range_header:
+        try:
+            units, _, spec = range_header.partition("=")
+            if units.strip() == "bytes" and spec:
+                start_str, _, end_str = spec.partition("-")
+                if start_str == "":
+                    suffix = int(end_str) if end_str else 0
+                    range_start = max(0, file_size - suffix)
+                else:
+                    range_start = int(start_str)
+                    range_end = int(end_str) if end_str else file_size - 1
+                    range_end = min(range_end, file_size - 1)
+                if range_start > range_end or range_start >= file_size:
+                    raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+                status_code = 206
+                content_range = f"bytes {range_start}-{range_end}/{file_size}"
+        except HTTPException:
+            raise
+        except Exception:
+            range_start, range_end, status_code = 0, file_size - 1, 200
+
+    chunk_size = 1024 * 1024
+
+    def iter_range():
+        with open(file_path, "rb") as f:
+            f.seek(range_start)
+            remaining = range_end - range_start + 1
+            while remaining > 0:
+                data = f.read(min(chunk_size, remaining))
+                if not data:
+                    break
+                yield data
+                remaining -= len(data)
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(range_end - range_start + 1),
+        "Cache-Control": "no-cache",
+    }
+    if content_range:
+        headers["Content-Range"] = content_range
+
+    return StreamingResponse(iter_range(), status_code=status_code,
+                             media_type=media_type, headers=headers)
+
+
+@router.get("/{movie_id}/remux-info")
+async def get_remux_info(
+    movie_id: int,
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
+):
+    """分析影片是否可在网页直接播放，并给出兼容层入口。
+
+    Returns:
+        {
+          "movie_id": ...,
+          "mode": "native"|"remux"|"system",
+          "playable": bool,
+          "reason": null|"hevc"|"10bit"|"video_codec"|"audio_codec"|...,
+          "native_url": "/api/v1/movies/{id}/play/file",
+          "remux_url": "/api/v1/player/{id}/remux-file?force=1" (仅 remux/system 时),
+          "system_play_url": "/api/v1/movies/{id}/play/external" (仅 system 时),
+          "video_codec"/"audio_codec"/"bit_depth": ...
+        }
+    """
+    from app.services import remux
+
+    movie = await _get_movie(module, movie_id)
+    if not movie.file_path:
+        raise HTTPException(status_code=400, detail="影片无关联文件")
+
+    src = Path(movie.file_path)
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+
+    if not remux.find_ffmpeg():
+        # 没有 ffmpeg：只能判定，无法转封装；HEVC/10bit 直接系统播放器
+        streams = remux.probe_streams(str(src)) if remux.find_ffprobe() else None
+        analysis = remux.analyze_playability(streams)
+        analysis["playable"] = analysis["mode"] == "native"
+    else:
+        streams = remux.probe_streams(str(src))
+        analysis = remux.analyze_playability(streams)
+
+    info = {
+        "movie_id": movie_id,
+        "mode": analysis["mode"],
+        "playable": analysis["playable"],
+        "reason": analysis["reason"],
+        "video_codec": analysis["video_codec"],
+        "audio_codec": analysis["audio_codec"],
+        "bit_depth": analysis["bit_depth"],
+        "native_url": f"/api/v1/movies/{movie_id}/play/file",
+    }
+    if analysis["mode"] in ("remux", "system"):
+        info["remux_url"] = f"/api/v1/player/{movie_id}/remux-file?force=1"
+    if analysis["mode"] == "system":
+        info["system_play_url"] = f"/api/v1/movies/{movie_id}/play/external"
+        info["message"] = "该影片编码（HEVC/10bit）浏览器无法直接播放，请用系统播放器"
+    return info
+
+
+@router.get("/{movie_id}/remux-file")
+async def serve_remux_file(
+    movie_id: int,
+    request: Request,
+    force: bool = Query(False, description="强制转封装（即便原生可播）"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub"),
+):
+    """输出浏览器可播放的视频文件。
+
+    - 原生可播且未 force → 直接流式输出原文件（原封装）。
+    - 需要转封装 → 输出 data/remux 下的 MP4。
+    - HEVC/10bit 且未 force → 返回 415 + JSON，提示用系统播放器。
+    - 转封装仍失败 → 降级 415 + JSON。
+    """
+    from app.services import remux
+
+    movie = await _get_movie(module, movie_id)
+    if not movie.file_path:
+        raise HTTPException(status_code=400, detail="影片无关联文件")
+
+    if not remux.find_ffmpeg():
+        raise HTTPException(status_code=503, detail="未安装 ffmpeg，无法转封装；请用系统播放器")
+
+    try:
+        result = remux.request_remux(movie.file_path, force=force)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if result["mode"] == "system":
+        # HEVC/10bit：浏览器放不了，交给系统播放器
+        return JSONResponse(
+            status_code=415,
+            content={
+                "mode": "system",
+                "reason": result["reason"],
+                "message": "该影片编码浏览器无法播放，请用系统播放器打开",
+                "system_play_url": f"/api/v1/movies/{movie_id}/play/external",
+            },
+        )
+
+    out = Path(result["path"])
+    media_type = "video/mp4" if out.suffix.lower() == ".mp4" else "video/x-matroska"
+    return _stream_file_with_range(request, out, media_type=media_type)

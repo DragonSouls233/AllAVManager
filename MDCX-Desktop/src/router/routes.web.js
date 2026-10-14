@@ -563,6 +563,12 @@ export const routes = [
         meta: { title: 'JAV 有码 · AV联盟榜单' }
       },
       {
+        path: 'jav/top250',
+        name: 'JavTop250',
+        component: () => import('@/views/jav/Top250.vue'),
+        meta: { title: 'JAV 有码 · TOP 250' }
+      },
+      {
         path: 'jav/wikipedia',
         name: 'JavWikipediaActresses',
         component: () => import('@/views/jav/WikipediaActresses.vue'),

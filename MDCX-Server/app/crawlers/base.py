@@ -268,10 +268,15 @@ class BaseCrawler(ABC):
         self._error_count = 0
         self._success_count = 0
         # 初始化代理配置，供 requires_proxy=True 的子类在 scrape 中使用 self._proxy
+        # 传 site/base_url 是为了让「按站点覆盖代理」生效（amane #365）；
+        # 未配置覆盖时 get_effective_proxy_url 行为与以前完全一致。
         self._proxy = None
         try:
             from app.services.proxy_manager import get_effective_proxy_url
-            self._proxy = get_effective_proxy_url()
+            self._proxy = get_effective_proxy_url(
+                site=getattr(self, "name", "") or "",
+                url=getattr(self, "base_url", "") or "",
+            )
         except Exception:
             self._proxy = None
     

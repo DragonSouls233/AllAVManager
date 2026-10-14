@@ -97,10 +97,8 @@
             <el-icon><Search /></el-icon>
             <template #title>番号提取测试</template>
           </el-menu-item>
-          <el-menu-item index="/jav/leaderboard">
-            <el-icon><DataAnalysis /></el-icon>
-            <template #title>AV联盟榜单</template>
-          </el-menu-item>
+          <el-menu-item index="/jav/leaderboard">AV联盟榜</el-menu-item>
+          <el-menu-item index="/jav/top250">TOP 250</el-menu-item>
           <el-menu-item index="/jav/wikipedia">
             <el-icon><Reading /></el-icon>
             <template #title>维基女优</template>

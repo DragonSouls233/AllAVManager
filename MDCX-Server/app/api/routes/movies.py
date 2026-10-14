@@ -1131,7 +1131,10 @@ async def play_video_file(
     if not movie or not movie.file_path:
         raise HTTPException(status_code=404, detail="视频不存在")
 
-    file_path = Path(movie.file_path)
+    # 跨机路径对照：远端路径 → 本机路径（openaver 0.17.7）
+    from app.services import path_map
+
+    file_path = Path(path_map.map_to_local(movie.file_path))
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="视频文件不存在")
 
@@ -1665,7 +1668,10 @@ async def get_external_player_url(
     if not movie.file_path:
         raise HTTPException(status_code=404, detail="影片没有关联文件")
 
-    file_path = Path(movie.file_path)
+    # 跨机路径对照：远端路径 → 本机路径（openaver 0.17.7）
+    from app.services import path_map
+
+    file_path = Path(path_map.map_to_local(movie.file_path))
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="视频文件不存在")
 

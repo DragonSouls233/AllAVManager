@@ -563,34 +563,49 @@ class ScraperWorkflow:
             except Exception as _mc_err:
                 logger.debug(f"提取模块专属列失败 [{module}] {result.code}: {_mc_err}")
 
-            if movie:
-                # 更新现有记录
-                # 🔴 2026-10-06 修复「补上的简介又被清掉」：
-                # 主力源 javdb/javmenu/javbus/dmm_web **全都不返回 plot**（实测），
-                # 而 `plot=result.plot` 是无条件写入的 common_fields ⇒
-                # 用 thejavdb 千辛万苦补上的 plot，会被下一次「只补 studio/series」
-                # 的刮削（走 javdb，plot=None）**无声清空**。
-                # 实测 MIDE-834：00:23 补上 plot → 00:29 一次补 series 的刮削后 plot 归零。
-                # 这是「完成 200 部、缺口只少 3 个」的另一半原因。
-                # 规则同 is_uncensored/is_mosaic：**None (= 源站没说) 不该覆盖已知值**。
-                # 仅对「内容型」字段生效；source/source_url/scraped_at/status 这类
-                # 过程元数据仍无条件刷新（它们本来就该反映最近一次刮削）。
-                _KEEP_IF_NONE = {
-                    "title", "original_title", "plot", "cover_url", "poster_url",
-                    "thumb_url", "sample_images", "release_date", "duration",
-                    "rating", "genre", "tag", "director", "trailer_url",
-                    "file_path", "file_size", "output_dir",
-                }
+            # 🔴 2026-10-06 修复「补上的简介又被清掉」：
+            # 主力源 javdb/javmenu/javbus/dmm_web **全都不返回 plot**（实测），
+            # 而 `plot=result.plot` 是无条件写入的 common_fields ⇒
+            # 用 thejavdb 千辛万苦补上的 plot，会被下一次「只补 studio/series」
+            # 的刮削（走 javdb，plot=None）**无声清空**。
+            # 实测 MIDE-834：00:23 补上 plot → 00:29 一次补 series 的刮削后 plot 归零。
+            # 这是「完成 200 部、缺口只少 3 个」的另一半原因。
+            # 规则同 is_uncensored/is_mosaic：**None (= 源站没说) 不该覆盖已知值**。
+            # 仅对「内容型」字段生效；source/source_url/scraped_at/status 这类
+            # 过程元数据仍无条件刷新（它们本来就该反映最近一次刮削）。
+            _KEEP_IF_NONE = {
+                "title", "original_title", "plot", "cover_url", "poster_url",
+                "thumb_url", "sample_images", "release_date", "duration",
+                "rating", "genre", "tag", "director", "trailer_url",
+                "file_path", "file_size", "output_dir",
+            }
+
+            def _apply_fields(_movie, *, merge: bool = False) -> None:
+                """把本次刮削结果写进已有的记录行（新建撞 UNIQUE 后复用）。
+
+                merge=True 表示这是**并发冲突后的合并**（不是常规补刮）：此时
+                已有非空的 file_path/file_size/output_dir 不被另一个同名文件抢走
+                —— 否则两个 worker 各刮到一份文件，最后谁后提交谁就改写了记录指向，
+                前端会跳到另一个视频。反过来，已有值为空（如历史上落下的空壳）时
+                照常写入，正好顺手把路径补上。
+                """
                 for key, value in common_fields.items():
                     if value is None and key in _KEEP_IF_NONE:
                         continue
-                    setattr(movie, key, value)
+                    if merge and key in ("file_path", "file_size", "output_dir"):
+                        if getattr(_movie, key, None):
+                            continue
+                    setattr(_movie, key, value)
                 # 模块专属列：只有非 None 才写（None = 源站没说，不该清掉旧值）
                 for key, value in _module_cols.items():
-                    setattr(movie, key, value)
+                    setattr(_movie, key, value)
                 # 额外字段只更新非空值
                 if result.maker:
-                    movie.studio = result.maker
+                    _movie.studio = result.maker
+
+            if movie:
+                # 更新现有记录
+                _apply_fields(movie)
             else:
                 # 创建新记录
                 movie = MovieCls(
@@ -600,7 +615,53 @@ class ScraperWorkflow:
                 )
                 session.add(movie)
 
-            await session.flush()
+            from sqlalchemy.exc import IntegrityError
+
+            # 🔴 amane #412「同番号并发刮削冲突」（2026-10-14 实测复现）：
+            # 「判定(SELECT 查重)」与「写入(INSERT)」是两步，中间有竞态窗口。
+            # batch_scrape 多 worker `asyncio.gather` 并发调 persist，
+            # 两个 worker 同时刮到同一番号时都会查到"不存在"、都 INSERT，
+            # 后 flush 的那个撞 `UNIQUE constraint failed: movies.code`，
+            # 异常一路抛出 ⇒ **整条事务回滚，这一部的刮削结果被静默丢弃**
+            # （NFO/封面已写盘，库里却没数据 —— 典型的"刮了但查不到"）。
+            # 实测证据：scripts/_test_concurrent_persist.py 修复前必抛 IntegrityError。
+            # 修法同 amane：判定与写入并入同一事务 —— 撞冲突就回滚后重查一次，
+            # 把本次结果**并入**赢家那行（绝不丢数据），而不是让整次落盘失败。
+            try:
+                await session.flush()
+            except IntegrityError:
+                from sqlalchemy import select as _select
+
+                merged = False
+                for _attempt in range(2):
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        movie = (
+                            await session.execute(
+                                _select(MovieCls).where(MovieCls.code == result.code)
+                            )
+                        ).scalar_one_or_none()
+                    except Exception:
+                        movie = None
+                    if movie is None:
+                        break
+                    try:
+                        _apply_fields(movie, merge=True)
+                        await session.flush()
+                        merged = True
+                        break
+                    except IntegrityError:
+                        continue
+                if not merged:
+                    logger.error(
+                        f"[{module}] 并发落盘冲突且重查不到记录，放弃本次保存: {result.code}"
+                    )
+                    return
+                logger.info(f"[{module}] 并发合并: {result.code}（已有并发任务先建行，本次结果并入）")
+
             _movie_id = movie.id
 
             # ---- 维护 actors / movie_actors 关联 ----

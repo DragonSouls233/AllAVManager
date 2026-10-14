@@ -95,6 +95,28 @@ BACKOFF_FACTOR = 2.0
 #: 视为「有成功过」的最小成功率。严格大于 0 即不熔断。
 _SUCCESS_RATE_EXEMPT = 0.0
 
+#: 🔴 2026-10-14：**不触发熔断**的原因集合。
+#:
+#: 熔断器的语义是「这个源坏了，别再打它了」。但下面两类失败**不是源的锅**：
+#:
+#:   LOCAL（client_error / parse_error …）—— 本地问题，源可能完全正常。
+#:
+#:   not_found / no_resource / gone —— **源站确认没有这个资源**。
+#:     这恰恰是源在**正常工作**：它正确回答了"我没这部片"。
+#:     把它算作源失败是本项目在 PH 上踩过的最大的坑：
+#:
+#:       PH 库 pending 里约 52% 是死片（实测抽样 60 部：活 48.3% /
+#:       404 46.7% / "Video Disabled" 5.0%）。每刮到一部死片就记一次
+#:       not_found(PERMANENT, 30 分钟) → 刮 5 部即跳闸 →
+#:       之后**所有** PH 请求（含本可成功的活片）都被瞬间短路返回 None。
+#:       表现为"点了批量刮削但一直没效果"，耗时被拖到 10 天量级。
+#:
+#: 注意 ``unsupported`` **仍在**触发列表里：它表示"这个源根本不支持该番号类型"
+#: （如拿 javdb 刮 FC2），是**源级别**的不匹配，确实该熔断。
+_NON_TRIPPING_REASONS = frozenset(
+    set(LOCAL_REASONS) | (set(PERMANENT_REASONS) - {"unsupported"})
+)
+
 
 # ----------------------------------------------------------------------
 # 失败分级 → 基础冷却
@@ -376,6 +398,9 @@ class SourceBreaker:
         半开失败时由 strike 计数在下次 ``check_persisted`` 时指数放大。
         """
         if not self.enabled:
+            return
+        # 资源不存在 / 本地问题 ⇒ 源没坏，不熔断（判据见 _NON_TRIPPING_REASONS）
+        if reason in _NON_TRIPPING_REASONS:
             return
         cooldown = _cooldown_for_reason(reason)
         if cooldown is None:

@@ -664,7 +664,7 @@ import {
 import ArtplayerVideo from '@/components/ArtplayerVideo.vue'
 import {
   getMovie, getMoviePlayUrl, playWithMpv as mpvPlay, updateMovie,
-  getPlayerConfig, listChapters, addChapter, updateChapter, deleteChapter,
+  getPlayerConfig, getPlayerRemuxInfo, listChapters, addChapter, updateChapter, deleteChapter,
   autoDetectChapters, generateChapterThumbnails,
   listGifs, generateGif, deleteGif,
   listSubtitles,
@@ -1231,6 +1231,7 @@ const loadVideo = async () => {
     ElMessage.warning('该影片没有关联文件')
     return
   }
+  remuxTried = false
 
   try {
     let url
@@ -1261,8 +1262,29 @@ const onPlayerReady = (a) => {
   startRecording()
 }
 
-// 组件 @error：播放失败（含 HLS 致命错误）→ 触发连接胶囊重连态
-const onPlayerError = () => {
+// 组件 @error：播放失败（含 HLS 致命错误）→ 先尝试 avm 转封装兼容层，再走重连态
+let remuxTried = false
+const onPlayerError = async () => {
+  const id = route.params.id
+  // 转封装兼容层：播放失败自动 ffmpeg 转封装 MP4 或改用系统播放器（avm v1.13.1）
+  if (!remuxTried && id) {
+    remuxTried = true
+    try {
+      const info = await getPlayerRemuxInfo(id, currentModule.value || 'jav')
+      if (info.mode === 'remux' && info.remux_url) {
+        ElMessage.info('当前编码浏览器无法直接播放，正在转封装后重试…')
+        videoUrl.value = info.remux_url
+        return
+      }
+      if (info.mode === 'system' && info.system_play_url) {
+        ElMessage.warning(info.message || '该编码浏览器无法播放，请用系统播放器打开')
+        window.open(info.system_play_url, '_blank')
+        return
+      }
+    } catch (e) {
+      console.warn('remux-info 查询失败，回退重连态', e)
+    }
+  }
   window.dispatchEvent(new Event('mdcx:network-error'))
 }
 

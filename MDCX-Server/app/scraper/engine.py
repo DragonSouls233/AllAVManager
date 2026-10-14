@@ -17,6 +17,7 @@ from app.scraper.breaker import get_breaker
 from app.scraper.failure_reason import FailureAggregator
 from app.scraper.number import extract_number, NumberResult
 from app.scraper.recorder import get_recorder
+from app.scraper.errors import ResourceUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -205,30 +206,68 @@ class ScraperEngine:
         # 创建单次刮削共享上下文（复用 HTTP session / cookies / proxy / 指纹）
         from app.scraper.context import ScrapeContext
         async with ScrapeContext.create() as ctx:
-            valid_results = []
+            return await self.scrape_number_ctx(number, ctx, sources=sources, module=module)
 
-            # 第 0 层：主力源池轮换 —— 按番号错开首选源，命中即返回。
-            # 多数番号只需 1 个请求 → 各主站请求量摊薄到约 1/N，避免被限流。
-            # 依次补试其余主力：不牺牲成功率，只是把「主力全未命中」留给备用池。
-            primary, rest = self._split_primary(crawlers)
-            if primary:
-                for crawler in self._rotate_primary(primary, number):
-                    valid_results += await self._gather_all([crawler], number, ctx, module)
-                    merged = self._merge_results(valid_results, crawlers, number)
-                    if merged is not None and self._is_complete(merged):
-                        return merged
+    async def scrape_number_ctx(
+        self,
+        number: str,
+        ctx,
+        sources: Optional[list[str]] = None,
+        module: Optional[str] = None,
+    ) -> Optional[ScrapeResult]:
+        """刮削单个番号（使用**外部传入**的 ScrapeContext）。
 
-            # 第 1 层：备用源池 —— 主力全部未命中时才启用
-            fallback, tier2 = self._split_fallback(rest)
-            if fallback:
-                valid_results += await self._gather_all(fallback, number, ctx, module)
-                merged_fb = self._merge_results(valid_results, crawlers, number)
-                if merged_fb is not None and self._is_complete(merged_fb):
-                    return merged_fb
+        🔴 存在的理由（2026-10-14）：批量刮削要做「多出口代理池并发」，
+        而 ``ScrapeContext.create()`` 内部固定调 ``get_effective_proxy_url()``
+        拿**全局唯一**代理——所有并发 worker 会共用同一个出口 IP，
+        既拿不到并发收益，又会把 PH 的每 IP 限流一次性打满（历史实测：
+        连续请求会整批 SSLError）。
 
-            # 第 2 层：其余源兜底
-            if tier2:
-                valid_results += await self._gather_all(tier2, number, ctx, module)
+        因此把 scrape_number 的上下文体原样抽到这里，由调用方决定 ctx
+        （每个 worker 持有一个绑定了不同 socks5 出口的 AsyncHttpClient）。
+        单发路径 ``scrape_number`` 行为完全不变，仍自建 ctx。
+        """
+        # 获取适用的爬虫（延迟导入避免循环引用）
+        from app.crawlers.provider import get_crawlers_for_number, get_crawlers_for_module
+
+        if module:
+            crawlers = get_crawlers_for_module(module)
+            if sources:
+                allowed = set(sources)
+                crawlers = [c for c in crawlers if c.name in allowed]
+        else:
+            crawlers = get_crawlers_for_number(number)
+            if sources:
+                crawlers = [c for c in crawlers if c.name in sources]
+
+        if not crawlers:
+            logger.warning(f"未找到适用于番号 {number} 的爬虫（module={module}, sources={sources}）")
+            return None
+
+        valid_results = []
+
+        # 第 0 层：主力源池轮换 —— 按番号错开首选源，命中即返回。
+        # 多数番号只需 1 个请求 → 各主站请求量摊薄到约 1/N，避免被限流。
+        # 依次补试其余主力：不牺牲成功率，只是把「主力全未命中」留给备用池。
+        primary, rest = self._split_primary(crawlers)
+        if primary:
+            for crawler in self._rotate_primary(primary, number):
+                valid_results += await self._gather_all([crawler], number, ctx, module)
+                merged = self._merge_results(valid_results, crawlers, number)
+                if merged is not None and self._is_complete(merged):
+                    return merged
+
+        # 第 1 层：备用源池 —— 主力全部未命中时才启用
+        fallback, tier2 = self._split_fallback(rest)
+        if fallback:
+            valid_results += await self._gather_all(fallback, number, ctx, module)
+            merged_fb = self._merge_results(valid_results, crawlers, number)
+            if merged_fb is not None and self._is_complete(merged_fb):
+                return merged_fb
+
+        # 第 2 层：其余源兜底
+        if tier2:
+            valid_results += await self._gather_all(tier2, number, ctx, module)
 
         # 过滤有效结果
         # 🔴 2026-10-04：原来只判 `isinstance(r, ScrapeResult)` —— 任何**非 None 的
@@ -570,6 +609,30 @@ class ScraperEngine:
                 )
                 # 超时属瞬时故障 ⇒ 短冷却，避免一次网络抖动就下线好源
                 breaker.record_failure(crawler.name, tinfo.reason.value)
+                return None
+
+            except ResourceUnavailable as e:
+                # 🔴 2026-10-14：「站点确认没有这个资源」≠「源坏了」。
+                #    记日志 + 记统计（便于看清死片占比），但**绝不**喂给熔断器和
+                #    降权逻辑 —— 源站明明正常应答了。否则 PH 那 52% 的死片会把
+                #    pornhub / pornhub_api 整个熔断，连活片也一起刮不到。
+                logger.info(
+                    f"爬虫 {crawler.name} 对 {number} 判定为资源不可用（{e.kind}）"
+                )
+                self.recorder.record_failure(
+                    e, source=crawler.name, number=number, module=module,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                self.failures.record_any(
+                    e, source=crawler.name, number=number
+                )
+                # 向上层传递「这是死片，别再重试」的信号
+                if ctx is not None:
+                    try:
+                        setattr(ctx, "resource_unavailable", True)
+                        setattr(ctx, "unavailable_kind", e.kind)
+                    except Exception:  # pragma: no cover
+                        pass
                 return None
 
             except Exception as e:

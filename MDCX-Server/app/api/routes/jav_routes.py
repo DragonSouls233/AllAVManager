@@ -3372,3 +3372,57 @@ async def _pick_video_dir_async(db, mid: int) -> Path | None:
     if m is None:
         return None
     return _pick_video_dir(m)
+
+
+# ===== JavDB App TOP250（需登录 JWT；数据对照本地 jav 库）=====
+# 网站 /rankings/top 与匿名 App API 均无 TOP250，只有登录态 App 才有。
+# 流程：POST /jav/top250/login（用户名密码→JWT）→ GET /jav/top250（带 token 抓榜+对照）。
+
+class JavdbTop250LoginReq(BaseModel):
+    username: str = Field(..., description="JavDB App 用户名/邮箱")
+    password: str = Field(..., description="JavDB App 密码")
+
+
+@router.post("/top250/login")
+async def javdb_top250_login(req: JavdbTop250LoginReq):
+    """登录 JavDB App，返回 JWT（写入进程内缓存，供后续 GET 复用）。"""
+    from app.services.javdb_top250 import login as jdb_login
+
+    try:
+        token = await jdb_login(req.username, req.password)
+    except RuntimeError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    return {"token": token}
+
+
+@router.get("/top250")
+async def javdb_top250(
+    zone: str = Query("censored", description="censored|uncensored|western|fc2"),
+    only_missing: bool = Query(False, description="只看本地未收录"),
+    refresh: bool = Query(False, description="忽略缓存强制刷新"),
+    token: Optional[str] = Query(None, description="登录返回的 JWT（缺省读配置/进程缓存）"),
+):
+    """抓取 JavDB App TOP250 并对照本地 jav 库，返回每部的 in_library 状态。"""
+    from app.services.javdb_top250 import get_top250
+
+    try:
+        items = await get_top250(
+            zone=zone, token=token, only_missing=only_missing, refresh=refresh
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if "NO_TOKEN" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail="需要 JavDB App Token：先在 TOP250 页登录，或在配置 crawler.javdb_app_token 预置",
+            )
+        raise HTTPException(status_code=502, detail=msg)
+    total = len(items)
+    have = sum(1 for i in items if i.get("in_library"))
+    return {
+        "items": items,
+        "total": total,
+        "have": have,
+        "missing": total - have,
+        "zone": zone,
+    }

@@ -406,10 +406,14 @@ def _check_socks_port(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def get_effective_proxy_url() -> str | None:
+def get_effective_proxy_url(site: str = "", url: str = "") -> str | None:
     """返回当前生效的代理 URL —— 全项目统一的代理端口唯一来源。
 
     优先级：
+      0. **按站点覆盖**（可选，见 app/services/site_proxy.py）：
+         传了 site（爬虫名）或 url（目标地址）且命中覆盖 → 直接返回覆盖值。
+         ``direct`` → 返回 None（该站强制直连）。这是 amane #365 的移植，
+         用于「某站封代理出口」或「某站要另一条出口」的场景。
       1. 内置 xray 正在运行 → 返回其真实 socks5 地址
          （端口由 ProxyManager 动态探测，约 18920，不再是写死的 10808）
       2. 否则回退到旧版 config.proxy（用户在 config.yaml 手填的 http/socks5/address:port）
@@ -418,12 +422,27 @@ def get_effective_proxy_url() -> str | None:
     历史坑：cookiecloud / javdb / face_crop / 各路由此前只用 config.proxy.proxy_url，
     一旦用户改用内置 xray（端口 18920/18921）而旧版 10808 代理停掉，就会硬失败。
     统一走本函数即可自动跟上“当前代理端口”。
+
+    🔴 覆盖层只在**命中时**生效：没配置的站点行为与以前完全一致，
+       即本函数仍是代理的唯一定义源，不存在第二套口径。
     """
+    # 0) 按站点覆盖（未配置时 resolve 返回 None，零开销、零行为变化）
+    if site or url:
+        try:
+            from app.services import site_proxy
+
+            hit = site_proxy.resolve(site=site, url=url)
+            if hit is not None:
+                _, override = hit
+                return override
+        except Exception:
+            logger.debug("site_proxy.resolve failed, 走默认代理口径", exc_info=True)
+
     # 1) 内置 xray 实际端口优先
     try:
-        url = get_proxy_manager().get_current_socks5_url()
-        if url:
-            return url
+        url_ = get_proxy_manager().get_current_socks5_url()
+        if url_:
+            return url_
     except Exception:
         logger.debug("get_current_socks5_url failed, fallback to config.proxy", exc_info=True)
 

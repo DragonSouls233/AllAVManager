@@ -25,11 +25,26 @@ from curl_cffi.requests import Response
 from app.services.jp_proxy import get_jp_proxy_url, needs_jp_proxy
 from app.config.manager import get_config
 from app.scraper.http_record import get_active_http_recorder
+# 🔴 循环导入防护：app.scraper.errors 只有异常类、无第三方依赖，
+#    但它若将来反过来 import 本模块就会成环。这里做降级：导入失败时
+#    就地定义一个等价类，保证 http_client 永不因它而 import 失败。
+try:  # pragma: no cover - 仅为防御性降级
+    from app.scraper.errors import ResourceUnavailable
+except Exception:  # pragma: no cover
+
+    class ResourceUnavailable(Exception):  # type: ignore[no-redef]
+        kind: str = "unavailable"
+
+        def __init__(self, message: str = "", *, kind: str = "unavailable") -> None:
+            super().__init__(message or "资源不可用")
+            self.kind = kind
 from app.utils.browser_fingerprint import (
     BrowserFingerprint,
     RequestPurpose,
     build_fingerprint_headers,
     infer_request_purpose,
+    should_rotate_fingerprint,
+    mark_fingerprint_blocked,
     merge_headers,
     select_fingerprint,
     should_apply_fingerprint,
@@ -44,6 +59,16 @@ logger = logging.getLogger(__name__)
 # 此前不在集合内导致每个番号都要跑满 3 次重试 + httpx 降级（约 20s/番号），
 # 占批量刮削总耗时的绝大部分。
 _NO_RETRY_STATUS = {401, 403, 404, 405, 410, 451, 521, 522, 523, 524}
+
+# 「不重试集合」里**可能是 WAF / TLS 指纹封禁**的那几个（amane #364）。
+# 背景：403 当初进 _NO_RETRY_STATUS 是为了省时间——theporndb/missav_api 未配 Token
+# 时源站恒返 403，重试 3 次纯浪费。但 403 同时也是 Cloudflare/站点拦 TLS 指纹的
+# **标准返回码**，一刀切不重试 ⇒ 指纹被封时永远没有翻身机会。
+# 折中：这些状态码**只有正文命中挑战页特征**时才判为「被拦」并轮换指纹重试；
+# 普通业务 403（正文无挑战特征）保持原样立即失败，不额外花钱。
+# 521-524 是 Cloudflare 边缘错误（源站不可达/WAF 拦截），同样值得换指纹再试。
+# 401（缺 Token）/404/410/451 与指纹无关，永不轮换。
+_ROTATABLE_NO_RETRY_STATUS = {403, 405, 521, 522, 523, 524}
 
 # 会话级默认指纹（最现代的 Chrome 136 Windows）
 # 每个请求可通过 impersonate 参数覆盖
@@ -118,7 +143,7 @@ def mark_curl_unavailable(reason: str = "") -> None:
             return
         _CURL_DISABLED = True
         _CURL_DISABLED_REASON = str(reason)[:300]
-    logger.error(
+    logger.warning(
         f"[curl_cffi] 原生扩展已被标记为进程级不可用，全部请求降级 httpx。原因: "
         f"{_CURL_DISABLED_REASON}"
     )
@@ -429,8 +454,14 @@ class AsyncHttpClient:
         json_data: object = None,
         stream: bool = False,
         purpose: Optional[RequestPurpose] = None,
+        exclude_ids: Optional[set] = None,
+        use_cache: bool = True,
     ) -> Optional[BrowserFingerprint]:
         """为单次请求选择浏览器指纹。
+
+        Args:
+            exclude_ids: 额外排除的指纹 ID（TLS 被拦后重试轮换时，把本轮已试过的全排掉）
+            use_cache: 是否复用 host 缓存。轮换请求必须传 False，否则会拿回刚被封的那个。
 
         Returns:
             BrowserFingerprint 实例，若应跳过指纹注入则返回 None
@@ -458,9 +489,64 @@ class AsyncHttpClient:
             host,
             purpose=purpose,
             exclude_fingerprint_id=self._last_fingerprint_id,
+            exclude_ids=exclude_ids,
+            use_cache=use_cache,
         )
         self._last_fingerprint_id = fp.fingerprint_id
         return fp
+
+    def _rotate_fingerprint_after_block(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: Optional[dict] = None,
+        purpose: RequestPurpose = "document",
+        tried_ids: set,
+        blocked_id: str = "",
+        host: str = "",
+    ) -> Optional[BrowserFingerprint]:
+        """TLS 指纹被判定封禁后的轮换（amane #364）。
+
+        1) 把刚失败的指纹记入 host 级封禁表（后续请求自动避开）
+        2) 立刻换一个「本轮没试过」的指纹
+
+        Returns:
+            新指纹；若该 URL 不适用指纹（本地地址等）或无从轮换则返回 None。
+        """
+        if blocked_id:
+            mark_fingerprint_blocked(host, blocked_id)
+        if not should_apply_fingerprint(url):
+            return None
+        fp = self._select_fingerprint_for_request(
+            url,
+            method=method,
+            headers=headers,
+            purpose=purpose,
+            exclude_ids=set(tried_ids),
+            use_cache=False,  # 🔴 轮换必须绕开 host 缓存，否则拿回同一个指纹
+        )
+        if fp is not None:
+            self._last_fingerprint_id = fp.fingerprint_id
+        return fp
+
+    @staticmethod
+    def _body_snippet(body: object, limit: int = 4096) -> str:
+        """取响应正文前 N 字节的可比对文本（用于识别 WAF 挑战页）。
+
+        只扫开头：挑战页特征（Just a moment / __cf_chl 等）都在 <head> 附近，
+        没必要为几十 MB 的页面做全量 decode。任一环节出错都返回空串——判不出来
+        就当作「不是挑战页」，走原有逻辑，绝不因此改变既有行为。
+        """
+        if body is None:
+            return ""
+        try:
+            raw = body[:limit] if isinstance(body, (bytes, bytearray)) else str(body)[:limit]
+            if isinstance(raw, (bytes, bytearray)):
+                return raw.decode("utf-8", "replace")
+            return str(raw)
+        except Exception:
+            return ""
 
     def _build_request_headers(
         self,
@@ -695,6 +781,16 @@ class AsyncHttpClient:
         )
         req_headers = self._build_request_headers(url, fingerprint, headers, req_purpose)
 
+        # TLS 指纹轮换状态（amane #364）
+        host = ""
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            pass
+        tried_ids: set[str] = set()
+        if fingerprint is not None:
+            tried_ids.add(fingerprint.fingerprint_id)
+
         # 重试逻辑
         no_retry_status: Optional[int] = None
         if not self._curl_failed and self._session is not None:
@@ -718,11 +814,37 @@ class AsyncHttpClient:
                     # get_html 内、已离开本 try —— 导致降级逻辑永不触发、
                     # _curl_failed 永远不置位，批量刮削整批失败。提前读体能确保该
                     # 错误被本 try 捕获并切到 httpx 降级。
-                    _ = response.content
+                    body = response.content
+                    snippet = self._body_snippet(body)
                     # 检查响应状态码
                     if response.status_code and response.status_code in _NO_RETRY_STATUS:
                         # 确定性失败：跳过剩余重试与 httpx 降级，直接失败。
                         # 站点**正常响应**（如 404），不算限流 → 降压。
+                        #
+                        # 🔴 例外（amane #364）：403/405/521-524 也可能是 WAF/TLS 指纹封禁。
+                        # 仅当**正文命中挑战页特征**时才判为被拦 → 轮换指纹重试；
+                        # 普通业务 403（如 theporndb 缺 Token）不改动既有行为，仍立即失败。
+                        if (
+                            response.status_code in _ROTATABLE_NO_RETRY_STATUS
+                            and should_rotate_fingerprint(response.status_code, snippet, response.headers)
+                            and fingerprint is not None
+                        ):
+                            _observe_response(url, response.status_code)
+                            new_fp = self._rotate_fingerprint_after_block(
+                                url, method="GET", headers=headers,
+                                purpose=req_purpose, tried_ids=tried_ids,
+                                blocked_id=fingerprint.fingerprint_id, host=host,
+                            )
+                            if new_fp is not None:
+                                tried_ids.add(new_fp.fingerprint_id)
+                                fingerprint = new_fp
+                                req_headers = self._build_request_headers(
+                                    url, fingerprint, headers, req_purpose
+                                )
+                                self._last_fingerprint_id = fingerprint.fingerprint_id
+                            raise Exception(
+                                f"HTTP {response.status_code}（疑似 TLS 指纹被拦，已轮换指纹重试）"
+                            )
                         _observe_response(url, response.status_code)
                         no_retry_status = response.status_code
                         logger.warning(
@@ -732,6 +854,20 @@ class AsyncHttpClient:
                     if response.status_code and 400 <= response.status_code < 600:
                         # 429 限流 / 5xx 服务端错误 → 升压（自适应降压）
                         _observe_response(url, response.status_code)
+                        # 429/503 且是挑战页 → 同样轮换指纹（纯限流不受益，但不会变差）
+                        if should_rotate_fingerprint(response.status_code, snippet, response.headers) and fingerprint is not None:
+                            new_fp = self._rotate_fingerprint_after_block(
+                                url, method="GET", headers=headers,
+                                purpose=req_purpose, tried_ids=tried_ids,
+                                blocked_id=fingerprint.fingerprint_id, host=host,
+                            )
+                            if new_fp is not None:
+                                tried_ids.add(new_fp.fingerprint_id)
+                                fingerprint = new_fp
+                                req_headers = self._build_request_headers(
+                                    url, fingerprint, headers, req_purpose
+                                )
+                                self._last_fingerprint_id = fingerprint.fingerprint_id
                         raise Exception(f"HTTP {response.status_code}")
                     # 2xx / 3xx 成功 → 降压
                     _observe_response(url, response.status_code or 200)
@@ -757,6 +893,17 @@ class AsyncHttpClient:
 
         # 确定性失败：直接抛给调用方，不再降级 httpx（降级结果相同，纯浪费时间）
         if no_retry_status is not None:
+            # 🔴 2026-10-14：404/410 = 站点**确认没有这个资源**，源本身是健康的。
+            #    此前这里抛的是裸 ``Exception("HTTP 404")``，与 5xx/429/403 完全无法
+            #    区分 ⇒ engine 把它记成源失败并喂给熔断器。PH 约 52% 的 pending 是
+            #    死片，刮几部就把 pornhub / pornhub_api 两个源一起熔断 30 分钟，
+            #    此后**所有** PH 刮削（含本可成功的活片）瞬间短路返回 None。
+            #    抛 ResourceUnavailable 让 engine 能把两者分开处置。
+            if no_retry_status in (404, 410):
+                raise ResourceUnavailable(
+                    f"HTTP {no_retry_status}",
+                    kind="gone" if no_retry_status == 410 else "not_found",
+                )
             raise Exception(f"HTTP {no_retry_status}")
 
         # curl_cffi 不可用或本次失败 → 降级到 httpx（接口兼容 Response）
@@ -916,6 +1063,16 @@ class AsyncHttpClient:
         )
         req_headers = self._build_request_headers(url, fingerprint, headers, inferred_purpose)
 
+        # TLS 指纹轮换状态（amane #364，与 GET 同款）
+        host = ""
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            pass
+        tried_ids: set[str] = set()
+        if fingerprint is not None:
+            tried_ids.add(fingerprint.fingerprint_id)
+
         no_retry_status: Optional[int] = None
         if not self._curl_failed and self._session is not None:
             for attempt in range(self.max_retries):
@@ -934,10 +1091,33 @@ class AsyncHttpClient:
                     )
                     # 与 get() 同理：在受保护块内提前读取响应体，确保 curl_cffi
                     # C 层错误能被捕获并降级到 httpx。
-                    _ = response.content
+                    body = response.content
                     # 2026-09-29 补：与 get() 对齐。此前 POST 完全不检查状态码，
                     # 401/403/404 这类确定性失败也会跑满 3 次重试 + httpx 降级。
                     if response.status_code and response.status_code in _NO_RETRY_STATUS:
+                        # 与 GET 同款例外：命中挑战页特征时判为 TLS 指纹被拦 → 轮换重试
+                        if (
+                            response.status_code in _ROTATABLE_NO_RETRY_STATUS
+                            and should_rotate_fingerprint(
+                                response.status_code, self._body_snippet(body), response.headers
+                            )
+                            and fingerprint is not None
+                        ):
+                            new_fp = self._rotate_fingerprint_after_block(
+                                url, method="POST", headers=headers,
+                                purpose=inferred_purpose, tried_ids=tried_ids,
+                                blocked_id=fingerprint.fingerprint_id, host=host,
+                            )
+                            if new_fp is not None:
+                                tried_ids.add(new_fp.fingerprint_id)
+                                fingerprint = new_fp
+                                req_headers = self._build_request_headers(
+                                    url, fingerprint, headers, inferred_purpose
+                                )
+                                self._last_fingerprint_id = fingerprint.fingerprint_id
+                            raise Exception(
+                                f"HTTP {response.status_code}（疑似 TLS 指纹被拦，已轮换指纹重试）"
+                            )
                         no_retry_status = response.status_code
                         logger.warning(
                             f"POST {url} 确定性失败 HTTP {no_retry_status}，跳过重试"
@@ -964,6 +1144,17 @@ class AsyncHttpClient:
 
         # 确定性失败：直接抛给调用方，不再降级 httpx（降级结果相同，纯浪费时间）
         if no_retry_status is not None:
+            # 🔴 2026-10-14：404/410 = 站点**确认没有这个资源**，源本身是健康的。
+            #    此前这里抛的是裸 ``Exception("HTTP 404")``，与 5xx/429/403 完全无法
+            #    区分 ⇒ engine 把它记成源失败并喂给熔断器。PH 约 52% 的 pending 是
+            #    死片，刮几部就把 pornhub / pornhub_api 两个源一起熔断 30 分钟，
+            #    此后**所有** PH 刮削（含本可成功的活片）瞬间短路返回 None。
+            #    抛 ResourceUnavailable 让 engine 能把两者分开处置。
+            if no_retry_status in (404, 410):
+                raise ResourceUnavailable(
+                    f"HTTP {no_retry_status}",
+                    kind="gone" if no_retry_status == 410 else "not_found",
+                )
             raise Exception(f"HTTP {no_retry_status}")
 
         # curl_cffi 不可用或本次失败 → 降级到 httpx

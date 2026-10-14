@@ -214,7 +214,10 @@ class ImageProcessor:
                 return str(save_path)
             
             except Exception as e:
-                logger.error(f"Download error: {url} - {e}")
+                # 图片下载失败是常见且已被调用方容错（返回 None）的情况：
+                # PH 的 phncdn 签名 URL 会过期、CDN 也会按出口 IP 限流，单张失败
+                # 不应刷满 error.log（会淹没真正的服务级错误）。降到 WARNING。
+                logger.warning(f"Download error: {url} - {e}")
                 return None
 
     async def download_first_image(
