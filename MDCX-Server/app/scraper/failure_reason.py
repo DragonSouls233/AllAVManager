@@ -113,8 +113,9 @@ _RESOURCE_UNAVAILABLE_REASON: dict[str, FailureReason] = {
     #   `unsupported` 仍在熔断触发列表里（注释见 breaker._NON_TRIPPING_REASONS），
     #   而 `not_listed` 的真实含义是「这个爬虫没配这个站点」——
     #   源本身完全健康，只是对这类输入一律回答"我没有"。
-    #   实测 stash_generic（supported_types 含 pornhub）对 PH 番号恒返回 not_listed，
-    #   若记成 unsupported ⇒ successes 恒 0 ⇒ 被 _evaluate 判"全败"熔断 11475s。
+    #   实测 stash_generic 对 PH 番号恒返回 not_listed（2026-10-15 已将其从
+    #   supported_types 移除 pornhub，pornhub 只走 pornhub_api/pornhub 专属爬虫，
+    #   不再被这个"没配该站点"的通用爬虫污染源序）。
     "not_listed": FailureReason.NOT_COVERED,
     "not_a_url": FailureReason.NOT_COVERED,
     "bad_config": FailureReason.CLIENT_ERROR,
