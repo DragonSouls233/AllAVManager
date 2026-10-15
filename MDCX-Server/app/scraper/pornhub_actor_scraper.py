@@ -102,7 +102,67 @@ def _slugify(name: str) -> str:
     return s
 
 
-async def scrape_actor_profile(actor_name: str, nationality: Optional[str] = None) -> Optional[EnhancedActorProfile]:
+def _url_variants(known_url: Optional[str], actor_name: str) -> list[str]:
+    """由"已知 profile_url" + 演员名，推导按优先级排列的候选 URL 列表。
+
+    🔴 2026-10-15：以前刮削完全靠 `slugify(演员名)` 猜 URL，而库里的
+    profile_url（来自 PornSimilarityPlatform models.db 的权威映射）压根没被读，
+    导致「资料页能点开、但点进去刮削不走这个地址」。现在把已知 URL 放到最前面。
+
+    对已知 URL 做两件事：
+      1. 空格等非法字符转义（外部库 49 条是 `/model/Abby Lovee7/videos` 形态）；
+      2. 去掉 `/videos` 后缀并派生 `pornstar` / `model` 双路由 —— 与
+         _slugify 的既有结论一致（连字符 slug，部分模特只在其中一条路由有页面）。
+    去重保序，最终再接上按名字猜的 URL 作为兜底。
+    """
+    out: list[str] = []
+
+    def add(u: str) -> None:
+        u = (u or "").strip()
+        if u and u not in out:
+            out.append(u)
+
+    if known_url and "pornhub.com" in known_url.lower():
+        try:
+            from urllib.parse import urlsplit, urlunsplit, quote
+            p = urlsplit(known_url.strip())
+            path = quote(p.path, safe="/%-_.")
+            base = urlunsplit((p.scheme, p.netloc, path, "", ""))
+            add(base)
+            # 派生去 /videos 的裸主页
+            m = re.match(r"^(https?://[^/]+/(?:model|pornstar|channels|users)/[^/]+)/?$",
+                         path)
+            if m:
+                root = urlunsplit((p.scheme, p.netloc, m.group(1), "", ""))
+                add(root)
+        except Exception as e:
+            logger.debug("已知 profile_url 规范化失败 [%s]: %s", known_url, e)
+
+    # 兜底：按名字猜（保持既有行为，连字符 slug）
+    slug = _slugify(actor_name)
+    # 🔴 守卫：slug 信息量不足时不猜。实测踩坑 `短V` → _slugify 丢掉全部中文只剩
+    # "v" → /model/v/videos 是真实路由(200)，会把"短V"错认成名叫 v 的模特。
+    if slug and len(slug) >= 3 and not re.search(
+            r"onlyfans|chaturbate|fansly|myfans|twitter|tiktok|instagram|patreon",
+            actor_name or "", re.I):
+        add(f"https://www.pornhub.com/pornstar/{slug}")
+        add(f"https://www.pornhub.com/model/{slug}")
+        add(f"https://cn.pornhub.com/model/{slug}/videos")
+    return out
+
+
+async def scrape_actor_profile(actor_name: str,
+                               nationality: Optional[str] = None,
+                               profile_url: Optional[str] = None) -> Optional[EnhancedActorProfile]:
+    # 🔴 2026-10-15：先用库里已知的 profile_url 直连，再退回按名字猜。
+    if profile_url and "pornhub.com" in profile_url.lower():
+        for u in _url_variants(profile_url, actor_name):
+            direct = await _scrape_from_known_url(actor_name, u)
+            if direct:
+                if nationality and not direct.country:
+                    direct.country = nationality
+                return direct
+
     profile = await _scrape_from_pornhub_selectolax(actor_name)
     if profile:
         if nationality and not profile.country:
@@ -549,6 +609,170 @@ async def _scrape_from_cn_model(actor_name: str) -> Optional[EnhancedActorProfil
     except Exception as e:
         logger.debug("cn.model 抓取失败 [%s]: %s", actor_name, e)
         return None
+
+
+async def _scrape_from_known_url(actor_name: str, url: str) -> Optional[EnhancedActorProfile]:
+    """直接抓取给定的 PornHub 模特 URL 并解析资料（2026-10-15 新增）。
+
+    与 _scrape_from_cn_model 的区别：URL 由外部库权威给定（不是按名字猜），
+    且除头像外一并解析资料页上的姓名/国家/生日/三围等字段。
+
+    列表页防呆：`/pornstars`、`/models` 这类聚合页会返回 200，用 _is_list_page() 判定，
+    命中即视为无效。
+
+    🔴 2026-10-15 实测（服务器代理直抓 cn.pornhub.com）：
+      对 10 个"PornHub 上确实存在但 PSP 未收录"的演员（Rich Jay / Meg Vicious /
+      Abella Olsen / Bratty Sis / carrots / DeNata …）：
+        `cn.pornhub.com/model/{slug}/videos` → **10/10 是真实资料页**（title="XXX的全新色情片2026"）
+        `cn.pornhub.com/pornstar/{slug}`     → 多数退化为聚合列表页（title="完整版免费色情片中的顶流色情明星及模特"）
+      且聚合页 title 是中文，`startswith("Top Pornstars")` 那套英文判据根本拦不住，
+      必须在内容层（<h1> + profile 区块）判定。
+    """
+    try:
+        from app.services.proxy_manager import get_effective_proxy_url
+        proxy_url = get_effective_proxy_url()
+        client = AsyncHttpClient(proxy=proxy_url, timeout=30)
+        resp = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=30,
+        )
+        if not resp or resp.status_code != 200:
+            return None
+        html = resp.text or ""
+        if not html:
+            return None
+
+        if _is_list_page(html):
+            logger.debug("已知 URL 命中聚合/列表页，丢弃 [%s]: %s", actor_name, url)
+            return None
+
+        profile = EnhancedActorProfile(name=actor_name, profile_url=url)
+
+        # 头像：优先 #getAvatar，其次 og:image
+        m = re.search(r'<img[^>]*id="getAvatar"[^>]*(?:data-src|src)="([^"]+)"',
+                      html, re.DOTALL)
+        if not m:
+            m = re.search(r'<meta[^>]*property="og:image"[^>]*content="([^"]+)"',
+                          html, re.DOTALL | re.IGNORECASE)
+        if m:
+            profile.avatar_url = m.group(1).strip()
+
+        # 姓名：og:title / h1
+        m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
+        if m:
+            nm = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+            if nm:
+                profile.name = nm
+        else:
+            m = re.search(r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"',
+                          html, re.DOTALL | re.IGNORECASE)
+            if m:
+                profile.name = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+
+        profile.country = _extract_country_from_html(html)
+
+        for label, value in re.findall(r'<span class="meta[^"]*"[^>]*>\s*([^:]{1,20}):?\s*</span>'
+                                       r'\s*<span[^>]*>\s*([^<]{1,60}?)\s*</span>',
+                                       html, re.DOTALL | re.IGNORECASE):
+            key = label.strip().lower()
+            val = value.strip()
+            if not val:
+                continue
+            if key in ("birthday", "birth date", "born"):
+                profile.birth_date = val
+            elif key == "height":
+                profile.height = val
+            elif key in ("measurements", "measurements "):
+                profile.measurements = val
+            elif key in ("birth place", "birthplace"):
+                profile.birthplace = val
+            elif key == "ethnicity":
+                profile.ethnicity = val
+            elif key == "background":
+                profile.background = val
+                if not profile.country:
+                    mapped = _NATIONALITY_TO_COUNTRY.get(val)
+                    if mapped:
+                        profile.country = mapped
+
+        # 🔴 严格校验：必须命中资料页强特征才算数。
+        # 只判"有没有解析到字段"会误收——任何 PornHub 页面（乃至别的模特的页面）
+        # 都可能带 og:image / birthday，导致把 A 的资料当成 B 的。
+        # 实测可靠特征：id="profileImages" / class="profileHeader" / id="profile"。
+        has_profile_marker = any(re.search(p, html, re.IGNORECASE)
+                                 for p in ('id="profileImages"', 'id="profile"',
+                                           r'class="profileHeader"', r'id="profileVideos"'))
+        if not has_profile_marker:
+            logger.debug("页面无资料页特征，丢弃 [%s]: %s", actor_name, url)
+            return None
+
+        # 什么都没有拿到 → 视为失败，走下一个候选 URL
+        if not (profile.avatar_url or profile.birth_date or profile.country
+                or profile.birthplace or profile.measurements):
+            logger.debug("已知 URL 未解析到有效字段 [%s]: %s", actor_name, url)
+            return None
+        return profile
+    except Exception as e:
+        logger.debug("已知 URL 抓取失败 [%s] %s: %s", actor_name, url, e)
+        return None
+
+
+_LIST_TITLE_MARKERS = (
+    # 英文
+    "top pornstars", "pornstars and models", "all pornstars", "browse models",
+    # 🔴 中文聚合页（实测 cn.pornhub.com/pornstar/{不存在slug} 会返回这个）
+    "顶流色情明星", "色情明星和模特", "全部色情明星",
+)
+
+# 资料页的强特征（任一命中即认为是"个人资料页"）
+_PROFILE_MARKERS = (
+    r'id="profileImages"', r'id="profile"', r'class="profileHeader"',
+    r'id="getAvatar"', r'id="profileVideos"', r'class="profileWrapper"',
+)
+
+
+def _is_list_page(html: str) -> bool:
+    """判定 HTML 是否为 PornHub 聚合/列表页而非某演员的资料页。
+
+    🔴 2026-10-15 实测依据：`/pornstar/{不存在的slug}` 与 `/pornstar/{存在但仅
+    有model页的slug}` 都返回 200，title 是中文「完整版免费色情片中的顶流色情明星
+    及模特 | Pornhub」，英文 `startswith("Top Pornstars")` 判据拦不住。
+    正确做法：看**内容特征**——列表页没有个人资料区块(profileImages/profileHeader/
+    getAvatar)，而真资料页一定有。
+    """
+    if not html:
+        return True
+    # 先看强特征：有 ⇒ 是资料页，直接否掉列表页判定
+    for pat in _PROFILE_MARKERS:
+        if re.search(pat, html, re.IGNORECASE):
+            return False
+    # 无任何资料区块 ⇒ 视为列表/404 兜底页
+    tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.IGNORECASE)
+    title = re.sub(r"\s+", " ", tm.group(1)).strip().lower() if tm else ""
+    for m in _LIST_TITLE_MARKERS:
+        if m in title:
+            return True
+    # 无 profile 区块且标题含"明星/模特/列表"字样，也算列表页
+    if any(k in title for k in ("明星", "模特", "列表")):
+        return True
+    return False
+
+
+def _extract_country_from_html(html: str) -> Optional[str]:
+    """从资料页 HTML 粗提国家/地区。取不到返回 None（留空不猜）。"""
+    for pat in (r'<span[^>]*class="[^"]*meta[^"]*"[^>]*>\s*Country\s*:\s*</span>\s*'
+                r'<span[^>]*>\s*([^<]{2,40}?)\s*</span>',
+                r'<span[^>]*>\s*Country\s*:\s*</span>\s*<span[^>]*>\s*([^<]{2,40}?)\s*</span>'):
+        m = re.search(pat, html, re.DOTALL | re.IGNORECASE)
+        if m:
+            val = re.sub(r"\s+", " ", m.group(1)).strip()
+            if val and val.lower() not in ("n/a", "-"):
+                return val
+    return None
 
 
 # 🔴 2026-10-14 移除 _scrape_avatar_from_javdb（原 548-563 行）：

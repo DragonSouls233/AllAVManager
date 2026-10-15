@@ -18,6 +18,17 @@
         :loading="avatarScraping"
         @click="batchDownloadAvatars"
       >批量下载头像</el-button>
+      <!--
+        🔴 2026-10-15 补：从 PornSimilarityPlatform(models.db) 同步演员主页 URL。
+        后端 POST /pornhub/actors/backfill-urls 已就绪，只补 profile_url 为空的演员，
+        幂等：PSP 以后新增模特，点一次即可增量补齐。同样是独立按钮，不动原有入口。
+      -->
+      <el-button
+        type="warning"
+        plain
+        :loading="urlSyncing"
+        @click="syncActorUrls"
+      >同步主页URL</el-button>
     </div>
 
     <!-- 国籍选择 TAB：国籍 = 扫描时记录的媒体根下顶级文件夹名（如 N:\澳大利亚\xxx → 澳大利亚） -->
@@ -86,7 +97,7 @@ import { useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAvatarSrc } from '@/utils/media'
-import { scrapeAllPornhubActorProfilesEnhanced } from '@/api/pornhub'
+import { scrapeAllPornhubActorProfilesEnhanced, pornhubBackfillUrls } from '@/api/pornhub'
 
 const router = useRouter()
 const store = usePornhubStore()
@@ -94,6 +105,7 @@ const keyword = ref('')
 const loading = ref(false)
 const batchScraping = ref(false)
 const avatarScraping = ref(false)
+const urlSyncing = ref(false)
 const actors = ref([])
 
 // 国籍 TAB
@@ -177,10 +189,43 @@ async function batchScrape() {
 // 批量下载头像（2026-10-14 新增 UI 入口，调用早已存在的后端接口）
 // 后端是 BackgroundTasks 异步跑，接口立即返回 started ⇒ 只能提示"已启动"，
 // 进度要看服务日志（logger.info「PORNHub 批量头像下载 完成: success=… failed=…」）。
+async function syncActorUrls() {
+  try {
+    await ElMessageBox.confirm(
+      '将从 PornSimilarityPlatform 的资料库同步每位演员的 PornHub 主页 URL' +
+      '（只补齐缺失的，不会覆盖已有地址）。同步后演员详情页的「主页」链接可直接点击，' +
+      '资料刮削也会直接使用该地址。是否继续？',
+      '同步演员主页URL',
+      { confirmButtonText: '开始同步', cancelButtonText: '取消', type: 'info' },
+    )
+  } catch {
+    return  // 用户点了取消
+  }
+
+  urlSyncing.value = true
+  try {
+    const res = await pornhubBackfillUrls()
+    const matched = res?.matched ?? 0
+    const notFound = res?.not_found ?? 0
+    if (matched > 0) {
+      ElMessage.success(`已同步 ${matched} 位演员的主页URL`)
+      setTimeout(() => loadActors(), 1500)
+    } else if (res?.status === 'error') {
+      ElMessage.error(`同步失败：${res.message || '外部资料库不可读'}`)
+    } else {
+      ElMessage.info(`没有需要同步的演员（未匹配 ${notFound} 位）`)
+    }
+  } catch (e) {
+    ElMessage.error(`同步失败：${e?.message || e}`)
+  } finally {
+    urlSyncing.value = false
+  }
+}
+
 async function batchDownloadAvatars() {
   try {
     await ElMessageBox.confirm(
-      '将为**缺少头像**的演员批量下载头像（先抓 PH 资料页，失败回退 JavDB）。' +
+      '将为**缺少头像**的演员批量下载头像（仅从 PornHub 资料页获取，不使用其他站点）。' +
       '任务在后台进行，数量较多时可能需要较长时间。是否继续？',
       '批量下载演员头像',
       { confirmButtonText: '开始下载', cancelButtonText: '取消', type: 'info' },

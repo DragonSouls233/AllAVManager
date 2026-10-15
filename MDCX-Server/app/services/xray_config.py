@@ -60,6 +60,13 @@ SCRAPE_PROXY_DOMAINS = [
     "amazon.co.jp",
     "pornhub.com",
     "cn.pornhub.com",
+    # 🔴 PH 封面 / 缩略图 / 样图 CDN：刮削拿到的 cover_url / sample_images 全在这个域下
+    #    （ei.phncdn.com、pix-cdn77.phncdn.com、pict.pix-cdn77.phncdn.com …）。
+    #    crawler 的 base_url 只声明 pornhub.com 主站，注册中心派生不出 CDN 子域，
+    #    必须手写。漏掉→ domain 模式下这些请求直连国内出口 → PH CDN 在海外 →
+    #    超时失败（日志里一堆 "ei.phncdn.com ... 重试失败，降级 httpx 再试"）。
+    #    2026-10-15 实测：批量刮削封面下载全 WARNING，加此条后改走代理。
+    "phncdn.com",
     "google.com",  # 用于测速与出口 IP 检查
     "generate_204",
 ]

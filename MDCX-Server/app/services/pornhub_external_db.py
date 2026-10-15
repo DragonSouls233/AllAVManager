@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -30,7 +31,48 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # 默认种子源路径（用户可在 config / 端点中覆盖）
-DEFAULT_DB_PATH = Path(r"L:\data\PORNHUB\models.db")
+# 🔴 2026-10-15：原先硬编码 L:\data\PORNHUB\models.db（该盘不存在，外部 DB 永远
+# 不可用 ⇒ 回填端点恒返回 error）。真实种子源是服务器上 PornSimilarityPlatform
+# 的 E:\PornSimilarityPlatform\data\db\models.db（852 model / 89k video）。
+# 同时保留环境变量与旧路径回退，按序探测第一个可读的。
+_CANDIDATE_DB_PATHS = [
+    Path(r"E:\PornSimilarityPlatform\data\db\models.db"),
+    Path(r"L:\data\PORNHUB\models.db"),
+]
+
+def _resolve_default_db_path() -> Path:
+    """按候选顺序返回第一个真实可读的 models.db，全不可读则回退首个候选。"""
+    env = os.getenv("PORNHUB_EXTERNAL_DB")
+    if env:
+        return Path(env)
+    for p in _CANDIDATE_DB_PATHS:
+        try:
+            if p.exists():
+                return p
+        except OSError:
+            continue
+    return _CANDIDATE_DB_PATHS[0]
+
+DEFAULT_DB_PATH = _resolve_default_db_path()
+
+
+def normalize_pornhub_url(url: str) -> str:
+    """规范化 PornHub 模特主页 URL。
+
+    外部库(PSP models.db)里 49 条 URL 含未编码空格，例如
+    `https://cn.pornhub.com/model/Abby Lovee7/videos` —— 直接请求必 404。
+    这里把路径段里的空格按 RFC 3986 转成 %20，其余部分不动（保留原有大小写，
+    因为 PornHub 的 slug 大小写不敏感但混用不影响路由）。
+
+    非 http(s) / 非 pornhub.com 的输入原样返回，交给调用方决定是否丢弃。
+    """
+    if not url:
+        return ""
+    from urllib.parse import urlsplit, urlunsplit, quote
+    s = url.strip()
+    parts = urlsplit(s)
+    path = quote(parts.path, safe="/%-_.")
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 class PornhubExternalDB:
@@ -90,7 +132,14 @@ class PornhubExternalDB:
                 return False
 
     def _build_index(self) -> None:
-        """一次性把 models 表全部载入倒排索引"""
+        """一次性把 models 表全部载入倒排索引。
+
+        🔴 2026-10-15 两项过滤/规范化（用户要求：只要 PORNHUB 的资料）：
+          1. 只收 pornhub.com 的 URL —— 该库混有 javdb.com 的 JAV 模特，
+             按用户明确要求整体排除（"不要 JAVDB 的资料 只要 PORNHUB 的资料"）。
+          2. URL 里的未编码空格转 %20 —— 外部库 49 条 URL 是
+             `.../model/Abby Lovee7/videos` 这种带空格形态，直接请求必 404。
+        """
         if not self._conn:
             return
         cur = self._conn.execute(
@@ -98,10 +147,31 @@ class PornhubExternalDB:
             "online_count, local_count, missing_count "
             "FROM models"
         )
+        skipped_non_ph = 0
+        skipped_bad_url = 0
         for row in cur.fetchall():
+            url = (row["url"] or "").strip()
+            low = url.lower()
+            # 只保留 PORNHUB（排除 javdb.com 等 JAV 源）
+            if "pornhub.com" not in low:
+                skipped_non_ph += 1
+                continue
+            if not low.startswith(("http://", "https://")):
+                skipped_bad_url += 1
+                continue
             entry = dict(row)
-            self._name_index[row["name"].lower()] = entry
-            self._url_index[row["url"]] = entry
+            entry["url"] = normalize_pornhub_url(url)
+            name = (row["name"] or "").strip()
+            if not name:
+                skipped_bad_url += 1
+                continue
+            self._name_index[name.lower()] = entry
+            self._url_index[entry["url"]] = entry
+        if skipped_non_ph or skipped_bad_url:
+            logger.info(
+                f"[pornhub-ext] 索引完成 models={len(self._name_index)} "
+                f"跳过非PORNHUB={skipped_non_ph} 跳过无效={skipped_bad_url}"
+            )
 
     def reload(self) -> bool:
         """强制重载（外部 DB 被另一个项目更新时使用）"""

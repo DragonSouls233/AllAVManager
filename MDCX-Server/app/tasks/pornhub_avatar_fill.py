@@ -113,7 +113,8 @@ async def run_pornhub_avatar_fill(write: bool = True, batch_size: int = 50) -> d
                 # 刮 profile 拿头像（源内：PORNHUB 自己的页面，不碰 javdb）
                 avatar_url: Optional[str] = None
                 try:
-                    profile = await scrape_actor_profile(act.name, act.nationality)
+                    profile = await scrape_actor_profile(act.name, act.nationality,
+                                                        profile_url=act.profile_url)
                     if profile and profile.avatar_url:
                         avatar_url = profile.avatar_url
                 except Exception as e:

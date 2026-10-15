@@ -970,7 +970,8 @@ async def scrape_pornhub_actor_profile(actor_id: int):
 
         # 外部DB未找到，尝试从Pornhub爬取
         from app.scraper.pornhub_actor_scraper import scrape_actor_profile
-        profile = await scrape_actor_profile(actor.name, actor.nationality)
+        profile = await scrape_actor_profile(actor.name, actor.nationality,
+                                            profile_url=actor.profile_url)
 
         if not profile:
             # 🔴 2026-10-14 移除 JavDB 借头像回退：用户要求"PORNHUB 只有 PORNHUB
@@ -1079,7 +1080,8 @@ async def scrape_all_pornhub_actor_profiles(background_tasks: BackgroundTasks):
                             success += 1
                         else:
                             # 外部DB未找到，尝试从Pornhub爬取
-                            profile = await scrape_actor_profile(a.name, a.nationality)
+                            profile = await scrape_actor_profile(a.name, a.nationality,
+                                                                profile_url=a.profile_url)
                             if profile:
                                 if profile.alias:
                                     act.alias = profile.alias
@@ -1442,7 +1444,8 @@ async def scrape_actor_profile_enhanced(actor_id: int):
             check_profile_completeness,
         )
 
-        profile = await scrape_actor_profile(actor.name, actor.nationality)
+        profile = await scrape_actor_profile(actor.name, actor.nationality,
+                                            profile_url=actor.profile_url)
 
         if not profile:
             return {"status": "error", "message": f"未找到演员 {actor.name} 的任何资料"}
@@ -1906,7 +1909,8 @@ async def batch_download_avatars(
                     profile = None
                     try:
                         from app.scraper.pornhub_actor_scraper import scrape_actor_profile
-                        profile = await scrape_actor_profile(act.name, act.nationality)
+                        profile = await scrape_actor_profile(act.name, act.nationality,
+                                                            profile_url=act.profile_url)
                     except Exception:
                         profile = None
                     if profile and profile.avatar_url:
@@ -2145,6 +2149,31 @@ async def set_actor_profile_url(actor_id: int, payload: dict):
         return {"status": "ok", "id": act.id, "profile_url": url}
     finally:
         await session.close()
+
+
+@router.post("/actors/backfill-urls")
+async def backfill_pornhub_actor_urls(
+    only_missing: bool = Query(True, description="只回填没有 profile_url 的演员"),
+    db_path: Optional[str] = Query(None, description="覆盖外部 models.db 路径"),
+):
+    """从外部库（PornSimilarityPlatform models.db）批量回填演员 profile_url。
+
+    外部库每个 model 都带 `https://cn.pornhub.com/model/<slug>/videos` 形态的 URL，
+    回填后演员详情页的"主页"链接可点击，刮削链路也能直接用该 URL（见
+    pornhub_actor_scraper._url_variants）。
+    """
+    try:
+        from app.services.pornhub_external_db import backfill_actor_urls
+        db = get_pornhub_db()
+        session = await db.get_session()
+        try:
+            return await backfill_actor_urls(session, only_missing=only_missing,
+                                             db_path=db_path)
+        finally:
+            await session.close()
+    except Exception as e:
+        logger.error(f"批量回填 profile_url 失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/movies/{movie_id}/rescrape")
