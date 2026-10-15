@@ -1,10 +1,85 @@
-# 测试相关
+# =============================================================================
+# MDCX .gitignore
+# 注意：本文件已加入版本控制。
+#   - 不要在本文件中添加裸的 ".gitignore" 规则。
+#     Git 会把裸 .gitignore 视为默认忽略目标，会导致所有「未跟踪的」
+#     .gitignore 文件被静默忽略，从而失去对新增嵌套 .gitignore 的可见性。
+#   - .gitignore 文件本身应当被跟踪（用 git check-ignore 验证规则是否生效）。
+# =============================================================================
+
+# ---------- 隐私 / 密钥 / 凭据（最高优先级，防止误传） ----------
+# 环境变量文件（保留示例模板）
+.env*
+!.env.example
+!.env.*.example
+
+# TLS 证书 / 私有密钥 / 加密凭据库
+*.pem
+*.p12
+*.pfx
+*.jks
+*.key
+*.crt
+certs/
+ssl/
+private/
+*.keystore
+
+# 应用凭据（仅匹配明确的凭据文件，勿用 auth*/*token*/*password* 等通配
+# —— 那会误伤 app/api/routes/auth.py、telegram_bot.py 等项目源码）
+credentials*
+*.credentials
+.secret*
+*secrets.json
+secrets/
+private_keys/
+*.pvpk
+
+# 代理 / 节点配置（含真实服务器地址与协议参数，必须留在本机）
+xray_config.json
+nodes.json
+jp_nodes.json
+jp_nodes_probe.json
+jp_config.json
+proxy_config.json
+proxy_config.*.json
+*.sub  # v2ray 订阅文件
+subscription.json
+telegram_bot.json
+webhooks.json
+
+# 备份 / 压缩包 / 数据库（含用户数据的运行时产物）
+*.bak
+*.backup
+*.tmp
+*.temp
+backup_*
+backups/
+
+# 运行时数据（保留 README 与空目录占位）
+data/**
+!data/
+!data/**/
+!data/**/README.md
+!data/**/.gitkeep
+!data/avatars/README.md
+!data/nfo/README.md
+
+# 敏感文档（个人笔记 / 调试记录 / 测试账号）
+sensitive/
+private-notes/
+
+# ---------- 测试相关 ----------
 _archive
+_archive/
+_archive/**
 test_screenshots/
 qa_screenshots/
 qa_screenshots_v2/
 screenshots/
 tmp/
+tmp_dir/
+tmp_data/
 query_tmp/
 tmp_scancheck/
 tmp_sakuramedia/
@@ -15,7 +90,7 @@ _verify_data/
 ms-playwright/
 browser_test.js
 QA-Tests
-reports
+reports/
 # QA 报告与测试日志
 qa_report*.txt
 qa_log*.txt
@@ -26,7 +101,7 @@ MDCX_QA_测试分析.md
 MDCX_QA自动化提示词.md
 _patch_audit
 .tmp_actress_test
-backups
+backups/
 dist/
 dist
 server_manager
@@ -45,7 +120,7 @@ tmp_*.log
 tmp_*.js
 tmp_*.json
 tmp_*.md
-# 一次性调试/诊断脚本（点开头，git 默认不忽略）
+# 一次性调试/诊断脚本（下划线开头，git 默认不忽略）
 .db_*.py
 .diag_*.py
 .srv_*.py
@@ -87,7 +162,7 @@ verify_*.txt
 # 测试目录（不在产品代码内）
 MDCX-Server/tests/
 
-# 调试/日志
+# ---------- 调试/日志 ----------
 debug.log
 debug_*.log
 qa_test_log.txt
@@ -97,24 +172,31 @@ check_*.log
 sync_*.log
 sync_*.txt
 
-# 开发工具
+# ---------- 开发工具 ----------
 .references/
+.references/**
 .vscode/
+.vscode/**
 docs/plans/
+docs/plans/**
 tools/
+tools/**
 scripts/
+scripts/**
 .workbuddy
 
-# 临时文件
+# ---------- 临时文件 ----------
 __pycache__/
+__pycache__/**
 *.pyc
 *.pyo
 *.db
 nul
 NUL
 
-# 构建产物
+# ---------- 构建产物 ----------
 node_modules
+node_modules/**
 MDCX-Desktop/dist/
 MDCX-Desktop/dist-electron/
 MDCX-Desktop/release/
@@ -122,11 +204,21 @@ MDCX-Desktop/webdist/
 MDCX-Desktop/node_modules/
 MDCX-Server/static/assets/
 
-# 杂项
+# ---------- 杂项 ----------
+# 截图/临时图片默认忽略，但允许前端静态资源与文档插图
 *.png
 *.jpg
 *.jpeg
 *.gif
+!MDCX-Desktop/src/assets/
+!MDCX-Desktop/src/assets/**
+!MDCX-Desktop/public/
+!MDCX-Desktop/public/**
+!docs/
+!docs/**/*.png
+!docs/**/*.jpg
+!*.ico
+!*.svg
 deploy-force-scrape.bat
 test_dup.js
 test_play.js
@@ -141,7 +233,6 @@ TEST_FIX_4_MODULES.md
 diag_local_map_bug.py
 diag_base_code.py
 
-.gitignore
 backup_jav.py
 dump_rows.py
 inspect_actors.py

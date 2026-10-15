@@ -282,6 +282,7 @@ class MissingDetector:
         self._cache_studio_names: dict[int, str] | None = None
         self._cache_series_names: dict[int, str] | None = None
         self._cache_loaded = False
+        self.total_scanned = 0
 
     async def _prefetch_caches(self) -> None:
         """一次性预取 movie_actors 计数 / studios / series 名称。
@@ -433,6 +434,7 @@ class MissingDetector:
             columns = result.keys()
 
             total_scanned = len(rows)
+            self.total_scanned = total_scanned
             logger.info(f"数据库扫描完成: 共 {total_scanned} 部影片")
 
             # 🔴 2026-10-13：批量预取 actors/studios/series，把逐部 N+1 查询
@@ -658,7 +660,12 @@ class MissingDetector:
         for image_type in self.CRITICAL_IMAGES:
             expected_path = dir_path / f"{image_type.value}.jpg"
             exists = expected_path.exists()
-            
+            # 2026-10-15: PORNHUB 等模块存的是 cover.jpg 而非 poster.jpg，
+            # 但前端/检测器把 poster 当关键图。若 poster 缺失而 cover 存在，
+            # 视为关键封面已满足，避免已刮削影片被误判为 100% 缺失。
+            if not exists and image_type == ImageType.POSTER:
+                exists = (dir_path / "cover.jpg").exists()
+
             if not exists:
                 missing.append(MissingImage(
                     image_type=image_type,

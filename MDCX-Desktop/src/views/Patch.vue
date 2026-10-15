@@ -82,7 +82,7 @@
           </el-col>
           <el-col :span="8">
             <div class="result-stat">
-              <div class="result-num">{{ detectResult.total || 0 }}</div>
+              <div class="result-num">{{ detectResult.scanned || detectResult.total || 0 }}</div>
               <div class="result-label">总影片数</div>
             </div>
           </el-col>
@@ -414,13 +414,24 @@ const selectSources = (which) => {
   else runForm.value.sources = []
 }
 
+// 2026-10-15: 模块差异化默认检测字段。
+// PORNHUB 等用户上传平台不返回厂商/导演/系列/日题/简介等 JAV 元数据，
+// 默认全选 21 项会导致「刮削完仍显示 100% 缺失」的假象。
+const DEFAULT_FIELDS_BY_MODULE = {
+  // PORNHUB 等用户上传平台基本只有标题/日期/封面，
+  // 按 JAV 标准全选 21 项会永远显示 100% 缺失。
+  // 默认只检测最关键三项：标题、发行日期、封面/海报。
+  pornhub: ['title', 'release_date', 'cover', 'poster'],
+}
+const ALL_FIELDS_DEFAULT = [
+  'title', 'plot', 'actors', 'genre', 'release_date', 'studio', 'maker',
+  'series', 'director', 'tag', 'duration', 'rating', 'title_jp', 'plot_short', 'trailer_url',
+  'cover', 'poster', 'fanart', 'thumb', 'extrafanart', 'actors_image'
+]
+
 const detectForm = ref({
   scope: 'incomplete',
-  fields: [
-    'title', 'plot', 'actors', 'genre', 'release_date', 'studio', 'maker',
-    'series', 'director', 'tag', 'duration', 'rating', 'title_jp', 'plot_short', 'trailer_url',
-    'cover', 'poster', 'fanart', 'thumb', 'extrafanart', 'actors_image'
-  ]
+  fields: [...ALL_FIELDS_DEFAULT]
 })
 
 // fieldGroups：所有可检测字段，分三组
@@ -524,7 +535,8 @@ const loadCrawlers = async () => {
 
 const detectPercent = computed(() => {
   if (!detectResult.value) return 0
-  const total = detectResult.value.total || 0
+  // 2026-10-15: 后端新增 scanned 字段表示扫描总数，total 仍表示缺失数（兼容旧后端）
+  const total = detectResult.value.scanned || detectResult.value.total || 0
   const missing = detectResult.value.items?.length || 0
   if (total === 0) return 0
   return Math.round(missing / total * 100)
@@ -627,6 +639,11 @@ onMounted(async () => {
   loadConfig()
   await loadCrawlers()
   applyDefaultSources()
+  // 按当前模块应用差异化默认字段（PORNHUB 默认去掉不存在的元数据字段）
+  const m = currentModule.value
+  detectForm.value.fields = DEFAULT_FIELDS_BY_MODULE[m]
+    ? [...DEFAULT_FIELDS_BY_MODULE[m]]
+    : [...ALL_FIELDS_DEFAULT]
   loadHistory()
 })
 </script>

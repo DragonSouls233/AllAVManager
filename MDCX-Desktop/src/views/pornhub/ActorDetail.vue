@@ -62,7 +62,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage } from 'element-plus'
@@ -124,16 +124,22 @@ async function downloadPhoto() {
   }
 }
 
-onMounted(async () => {
+async function loadActorData(id) {
+  if (!id) return
+  loading.value = true
   try {
-    const id = Number(route.params.id)
     actor.value = await store.loadActorDetail(id)
     const res = await getPornhubActorMovies(id)
     movies.value = res?.movies || []
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(() => loadActorData(Number(route.params.id)))
+
+// 修复：从演员 A 点进演员 B 时，路由参数变化但组件复用，需重新加载
+watch(() => route.params.id, (newId) => loadActorData(Number(newId)))
 </script>
 
 <style scoped>

@@ -112,6 +112,7 @@ class DetectResponse(BaseModel):
     """检测响应"""
     total: int
     items: list[MissingInfoResponse]
+    scanned: int = Field(default=0, description="扫描的影片总数（用于计算真实缺失比例）")
 
 
 class PatchResultResponse(BaseModel):
@@ -372,38 +373,45 @@ async def detect_missing(
     # 未传 module 时遍历所有模块库聚合检测（不再依赖已废弃的中心数据库 scraper.db）
     ALL_MODULES = ["jav", "fc2", "uncensored", "chinese", "western", "pornhub"]
 
-    async def _detect_across_modules(method: str, **kwargs) -> list:
+    async def _detect_across_modules(method: str, **kwargs) -> tuple[list, int]:
         infos: list = []
+        scanned = 0
         for m in ALL_MODULES:
             try:
                 det = MissingDetector(check_critical_only=check_critical_only, module_name=m)
                 infos.extend(await getattr(det, method)(**kwargs))
+                scanned += det.total_scanned
             except Exception as e:
                 logger.warning(f"补刮检测模块 {m} 失败: {e}")
-        return infos
+        return infos, scanned
 
     detector = MissingDetector(check_critical_only=check_critical_only, module_name=module)
 
     missing_infos = []
+    total_scanned = 0
 
     if movie_id:
         info = await detector.detect_movie(movie_id)
+        total_scanned = 1 if info else 0
         if info:
             missing_infos = [info]
     elif code:
         info = await detector.detect_by_code(code)
+        total_scanned = 1 if info else 0
         if info:
             missing_infos = [info]
     elif status:
         # 按状态过滤：指定模块查该模块，未指定则跨所有模块
         if module:
             missing_infos = await detector.detect_batch(status=status)
+            total_scanned = detector.total_scanned
         else:
-            missing_infos = await _detect_across_modules("detect_batch", status=status)
+            missing_infos, total_scanned = await _detect_across_modules("detect_batch", status=status)
     elif directories:
         if module:
             # 传了 module 时不支持按目录过滤，直接全量检测
             missing_infos = await detector.detect_all()
+            total_scanned = detector.total_scanned
         else:
             # 未传 module：逐模块按目录找 id 后聚合检测
             mod_ids: list[int] = []
@@ -416,13 +424,16 @@ async def detect_missing(
                 except Exception as e:
                     logger.warning(f"补刮目录扫描模块 {m} 失败: {e}")
             if mod_ids:
-                missing_infos = await _detect_across_modules("detect_batch", movie_ids=mod_ids)
+                missing_infos, total_scanned = await _detect_across_modules("detect_batch", movie_ids=mod_ids)
+            else:
+                total_scanned = 0
     else:
         # 全量检测：指定模块查该模块，未指定则跨所有模块
         if module:
             missing_infos = await detector.detect_all()
+            total_scanned = detector.total_scanned
         else:
-            missing_infos = await _detect_across_modules("detect_all")
+            missing_infos, total_scanned = await _detect_across_modules("detect_all")
 
     # 按指定字段类型过滤报告（不影响实际补刮，仅让检测结果与勾选一致）
     if fields:
@@ -432,6 +443,12 @@ async def detect_missing(
         for info in missing_infos:
             info.missing_fields = [f for f in info.missing_fields if f.field_type.value in wanted]
             info.missing_images = [i for i in info.missing_images if i.image_type.value in wanted]
+        # 2026-10-15: fields 过滤后若已无缺失项，则不应再出现在结果里，
+        # 否则「全选 21 项」和「只选 cover」会返回同样数量，造成误判。
+        missing_infos = [
+            info for info in missing_infos
+            if info.missing_fields or info.missing_images or info.actor_images_missing
+        ]
 
     # 转换响应
     items = []
@@ -464,7 +481,7 @@ async def detect_missing(
             output_dir=info.output_dir,
         ))
     
-    return DetectResponse(total=len(items), items=items)
+    return DetectResponse(total=len(items), scanned=total_scanned, items=items)
 
 
 @router.post("/run", response_model=PatchJobResponse)

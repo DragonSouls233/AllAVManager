@@ -129,15 +129,25 @@ def get_bridge() -> StashScraperBridge:
 
 @register_crawler
 class StashGenericCrawler(BaseCrawler):
-    """通用 Stash 兼容刮削器 — 支持所有欧美/PORNHub 站点。"""
+    """通用 Stash 兼容刮削器 — 仅服务欧美站点（theporndb / Stash 实例）。
+
+    🔴 2026-10-15 修正：曾误把 "pornhub" 写进 supported_types。
+       本爬虫按 Stash scraper 名 / URL 匹配，对 PORNHUB viewkey（形如
+       ``ph69a4d19084d2f``）永远走 ``else`` 分支抛 ``ResourceUnavailable(not_listed)``，
+       根本拿不到数据。一旦真正的 ``pornhub_api`` 被熔断禁用，pornhub 模块就只剩它
+       ⇒ 每部都 not_listed ⇒ 补刮/批量刮削 0 成功。PORNHUB 只走 ``pornhub_api`` /
+       ``pornhub`` 专属爬虫，这里坚决不能掺和（用户 2026-10-14 明确要求
+       "PORNHUB 只有 PORNHUB 的"）。
+    """
 
     name = "stash_generic"
     display_name = "Stash Generic"
     base_url = ""
 
     priority = CrawlerPriority.LOW
-    supported_types = ["western", "pornhub"]
-    description = "通用 Stash 格式刮削器（欧美 / PORNHub）"
+    # 🔴 仅 western：stash 按 URL/scraper 名匹配，爬不了 PORNHUB viewkey。
+    supported_types = ["western"]
+    description = "通用 Stash 格式刮削器（欧美）"
     language = "en"
     requires_proxy = True
 
