@@ -477,6 +477,41 @@ def _is_name_in_use(text: str) -> bool:
     )
 
 
+def _remove_dos_device(letter: str) -> bool:
+    """从当前会话 DOS 设备命名空间摘除盘符设备（清除「幽灵盘符」）。
+
+    🔴 2026-10-14 实测（服务器 session 0）：NAS(dragon) 掉线后 LanmanRedirector
+    会在会话里留下**孤儿盘符设备**——``QueryDosDevice`` 可见
+    ``\\Device\\LanmanRedirector\\;Z:0000xxxx\\dragon\\JAV1``，但：
+      - ``net use`` 列表里没有它；
+      - ``net use Z: /delete`` 报「找不到网络连接」（MPR 无记录）；
+      - ``WNetCancelConnection2(force)`` 返回 2250；
+      - ``Get-SmbMapping`` 也为空。
+    于是 ``net use Z: <UNC>`` 永远报错误 85（本地设备名已在使用中），且重启
+    进程也不会好（设备在会话命名空间里，不随进程消亡）。唯一解法就是本函数：
+    ``DefineDosDeviceW(DDD_REMOVE_DEFINITION)`` 直接摘掉符号链接（实测有效）。
+
+    ⚠️ 副作用：该盘符在本会话里的设备符号链接会被摘掉——若同会话另一登录
+    会话正用着这个盘符，其映射会掉线（对方下次访问会自动重连）。因此只在
+    标准删除（net use /delete）无效时才调用。
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        DDD_REMOVE_DEFINITION = 0x00000002
+        k32 = ctypes.windll.kernel32
+        fn = k32.DefineDosDeviceW
+        fn.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        fn.restype = wintypes.BOOL
+        return bool(fn(DDD_REMOVE_DEFINITION, letter.rstrip(":\\/").upper() + ":", None))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[net] DefineDosDeviceW 摘除 %s 失败: %s", letter, e)
+        return False
+
+
 def connect(
     drive: str,
     remote: str,
@@ -511,10 +546,18 @@ def connect(
             return ["net", "use", letter, remote, f"/user:{user}", "/persistent:yes"]
         return ["net", "use", letter, remote, "/persistent:yes"]
 
+    # 🔴 先清掉「同一 UNC 的无盘符旧连接」：给一个已连接的 UNC 映射盘符会报
+    # 错误 85（2026-10-14 实测，mount_unc 留下的无盘符连接是 85 的真凶之一）。
+    _run(["net", "use", remote, "/delete", "/y"], 8.0)
     code, out = _run(_args(), timeout)
     if code != 0 and _is_name_in_use(out):
+        # 盘符被占：先走标准删除；若删完仍占用，说明是「孤儿 DOS 设备」
+        # （幽灵盘符，net use /delete / WNetCancelConnection2 都管不着），
+        # 只能从 DOS 设备命名空间摘除后重试。详见 _remove_dos_device 注释。
         logger.info("[net] %s 盘符残留占用，先删除再重建", letter)
         _run(["net", "use", letter, "/delete", "/y"], 8.0)
+        if _remove_dos_device(letter):
+            logger.info("[net] %s 孤儿 DOS 设备已摘除，重试映射", letter)
         code, out = _run(_args(), timeout)
 
     if code == 0 and is_connected(letter, timeout=4.0):

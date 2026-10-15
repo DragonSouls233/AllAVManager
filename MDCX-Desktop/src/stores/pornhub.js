@@ -39,7 +39,7 @@ export const usePornhubStore = defineStore('pornhub', () => {
   const loading = ref(false)
   const page = ref(1)
   const pageSize = ref(24)
-  const sortBy = ref('created_at')
+  const sortBy = ref('scraped_at')
   const sortDir = ref('desc')
   const filters = ref({
     status: '',

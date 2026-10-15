@@ -384,7 +384,7 @@ async def list_movies(
     session = await db.get_session()
     try:
         from app.db.pornhub_models import PornhubMovie
-        from sqlalchemy import select, func, or_
+        from sqlalchemy import select, func, or_, nullslast
 
         filters = []
         if unscraped_only:
@@ -424,8 +424,13 @@ async def list_movies(
             "source_views": PornhubMovie.source_views,
             "play_count": PornhubMovie.play_count,
             "duration": PornhubMovie.duration,
+            "scraped_at": PornhubMovie.scraped_at,
         }.get(sort_by, PornhubMovie.created_at)
         order = sort_col.asc() if sort_dir == "asc" else sort_col.desc()
+        # 🔴 已刮削优先：pending 的 scraped_at 为 NULL，用 nullslast 沉到末尾，
+        # 让有封面(已刮削)影片占首页，避免默认视图整片占位图（用户实测翻 10 页全无封面）。
+        if sort_by == "scraped_at":
+            order = nullslast(order)
 
         stmt = select(PornhubMovie).order_by(order).offset(skip).limit(limit)
         if filters:

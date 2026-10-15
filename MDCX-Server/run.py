@@ -474,20 +474,50 @@ def main():
     workers = args.workers or (cfg.server.workers if cfg else 1)
 
     # ===== 网络存储：非交互会话下重连持久映射（best-effort，后台线程，不阻塞启动）=====
+    # 2026-10-14：改为「启动时重连 + 常驻巡检」。此前只在启动时连一次，NAS 掉线后
+    # 要等重启或手动点「一键重连」才恢复——duplicate_scanner 等直接读媒体目录的
+    # 功能会静默跳过（日志刷「目录不存在」）。现在每 10 分钟探测一次，仅在**确有
+    # 盘符掉线**时才调 ensure_all 重连（幽灵盘符也会被 net_drives 自动摘除），
+    # 健康时仅 9 次 isdir 探测、零副作用；只在状态变化时打日志，不刷屏。
+    _NET_PATROL_INTERVAL = 600  # 秒
+
     def _restore_network_drives():
         try:
-            from app.utils.net_drives import ensure_all
+            from app.utils import net_drives
 
-            res = ensure_all()
-            if not res:
-                return
-            good = [r["drive"] for r in res if r.get("connected")]
-            bad = [r for r in res if not r.get("connected")]
-            if good:
-                _ok("网络存储已连接: " + ", ".join(good))
-            if bad:
-                _warn("网络存储不可达: " + ", ".join(f"{r['drive']}→{r['remote']}" for r in bad))
-                _info("可在 MDCXServerManager 的「网络存储」页填入共享账号密码，一键重连")
+            mappings = net_drives.list_persistent_mappings()
+            if not mappings:
+                return  # 未配置网络盘，无需巡检
+            letters = [m["drive"] for m in mappings]
+            bad_before: set[str] | None = None  # None=未知（首轮）, set=已知掉线盘符
+            while True:
+                try:
+                    down = [
+                        d for d in letters
+                        if not net_drives.is_connected(d, timeout=4.0)
+                    ]
+                    if down:
+                        res = net_drives.ensure_all(probe_timeout=4.0)
+                        bad = [r for r in res if not r.get("connected")]
+                        bad_now = {r["drive"] for r in bad}
+                        if bad_before != bad_now:
+                            if bad:
+                                _warn("网络存储不可达: " + ", ".join(
+                                    f"{r['drive']}→{r['remote']}" for r in bad))
+                                _info("可在 MDCXServerManager 的「网络存储」页填入共享账号密码，一键重连")
+                            else:
+                                _ok("网络存储已恢复: " + ", ".join(
+                                    r["drive"] for r in res if r.get("connected")))
+                        bad_before = bad_now
+                    else:
+                        if bad_before is None:
+                            _ok("网络存储已连接: " + ", ".join(letters))
+                        elif bad_before:
+                            _ok("网络存储已恢复: " + ", ".join(letters))
+                        bad_before = set()
+                except Exception as e:  # noqa: BLE001
+                    _warn(f"网络存储巡检异常（不影响服务）: {e}")
+                time.sleep(_NET_PATROL_INTERVAL)
         except Exception as e:  # noqa: BLE001
             _warn(f"网络存储重连失败（不影响服务）: {e}")
 

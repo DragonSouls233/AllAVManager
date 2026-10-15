@@ -45,6 +45,13 @@
           <el-icon><Delete /></el-icon> 内容去重
         </el-button>
       </el-tooltip>
+      <el-select v-model="store.sortBy" @change="onSortChange" size="default" style="width:130px">
+        <el-option label="已刮削优先" value="scraped_at" />
+        <el-option label="最新入库" value="created_at" />
+        <el-option label="播放量" value="play_count" />
+        <el-option label="时长" value="duration" />
+        <el-option label="发行日期" value="release_date" />
+      </el-select>
       <el-tag v-if="store.total">共 {{ store.total }} 部</el-tag>
       <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
       <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
@@ -196,6 +203,12 @@ async function startScrapeAll() {
 }
 
 function onPageSizeChange() {
+  store.page = 1
+  loadMovies()
+}
+
+// 切换排序：回到第 1 页重新加载（默认「已刮削优先」让有封面影片占首页）
+function onSortChange() {
   store.page = 1
   loadMovies()
 }
