@@ -297,20 +297,33 @@ async def get_top250(
                 items = await fetch_top250(tok, zone, proxy=proxy)
             else:
                 raise
-        _CACHE.update(items=items, zone=zone, ts=now)
+        # 🔴 存副本而非引用：后续任何「原地改 items」的操作都不会污染缓存
+        # （2026-10-17 的 cover_url 嵌套 bug 就是引用被原地改写造成的）
+        _CACHE.update(items=[dict(i) for i in items], zone=zone, ts=now)
 
     codes = [i["code"] for i in items]
     present = await crossref_library(codes)
+    # 🔴🔴 2026-10-17 修复：必须在【响应出口】构造副本后再改写 cover_url，
+    # 绝不能原地修改 items 里的 dict —— _CACHE["items"] 存的就是这批 dict 对象
+    # （第 300 行直接 update 了引用），原地改写会把缓存污染成代理 URL，
+    # 下次缓存命中再 quote 包装一层 ⇒ cover_url 无限嵌套
+    # （/top250/cover?url=%2Fapi%2Fv1%2Fjav%2Ftop250%2Fcover%3Furl%3D...）⇒
+    # 白名单校验必挂、502 ⇒ 前端全部「无封面」。副本构造保证缓存永远干净。
+    # startswith 判断是幂等双保险（万一将来又有路径原地改）。
+    out = []
     for i in items:
-        i["in_library"] = i["code"].lower() in present
+        item = dict(i)
+        item["in_library"] = item["code"].lower() in present
         # 🔴 2026-10-14：把 spfcas 原始 URL 改写成本服务的封面代理路径。
         #    原因：该 CDN 对 JPEG 做了 XOR 混淆，浏览器直连拿到的是乱码二进制，
         #    <img> 解码失败 ⇒ 页面显示「无封面」；且 spfcas 在墙内未必直连得到。
         #    代理端点会服务端下载 → XOR 解密 → 回传合法 JPEG。
         #    前端 el-image 直接用这个字段，无需改任何 Vue 代码。
-        if i.get("cover_url"):
-            i["cover_url"] = f"/api/v1/jav/top250/cover?url={quote(i['cover_url'], safe='')}"
+        cu = item.get("cover_url")
+        if cu and not cu.startswith("/api/v1/jav/top250/cover"):
+            item["cover_url"] = f"/api/v1/jav/top250/cover?url={quote(cu, safe='')}"
+        out.append(item)
 
     if only_missing:
-        items = [i for i in items if not i["in_library"]]
-    return items
+        out = [i for i in out if not i["in_library"]]
+    return out

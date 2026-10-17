@@ -76,6 +76,16 @@
           <div class="info">
             <div class="code-row">
               <span class="code">{{ m.code || '未识别番号' }}</span>
+              <a
+                v-if="m.code"
+                class="javdb-link"
+                :href="javdbUrl(m.code)"
+                target="_blank"
+                rel="noopener"
+                title="在 JavDB 网页查看该番号（磁力/演员/简介，判断要不要下载）"
+              >
+                <el-icon><Link /></el-icon>
+              </a>
               <el-tag size="small" :type="m.in_library ? 'success' : 'warning'">
                 {{ m.in_library ? '已有' : '未收录' }}
               </el-tag>
@@ -98,7 +108,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Trophy, Key, Refresh } from '@element-plus/icons-vue'
+import { Trophy, Key, Refresh, Link } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { loginJavdbTop250, getJavTop250 } from '@/api/jav'
 
@@ -182,6 +192,13 @@ function fmtDur(sec) {
   return h > 0 ? `${h}小时${m}分` : `${m}分钟`
 }
 
+// 跳到 JavDB 网页搜索该番号（不依赖详情页 video ID，搜索页必达）。
+// f=all 全部分区；has_cnsub 之类筛选不带，避免用户机器网络环境差异。
+function javdbUrl(code) {
+  if (!code) return 'https://javdb.com'
+  return `https://javdb.com/search?q=${encodeURIComponent(code)}&f=all`
+}
+
 function reload(force = false) {
   load()
 }
@@ -231,6 +248,8 @@ onMounted(() => {
 .info { padding: 8px; }
 .code-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .code { font-family: monospace; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.javdb-link { display: inline-flex; align-items: center; color: var(--el-color-primary); flex-shrink: 0; }
+.javdb-link:hover { opacity: 0.75; }
 .title {
   font-size: 13px; line-height: 1.4; height: 36px; margin: 4px 0;
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
