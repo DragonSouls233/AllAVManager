@@ -302,8 +302,17 @@ async def get_system_health(
     ) or 0
     
     error_rate = failed_tasks / recent_tasks if recent_tasks > 0 else 0
-    
+
+    # Home/AdminLayout badges read `status` (ok / warn / error)
+    if not db_healthy:
+        status = "error"
+    elif error_rate > 0.5:
+        status = "warn"
+    else:
+        status = "ok"
+
     return {
+        "status": status,
         "database": {
             "healthy": db_healthy,
         },
