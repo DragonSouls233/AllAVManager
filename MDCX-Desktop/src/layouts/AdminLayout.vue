@@ -101,10 +101,6 @@
             <el-icon><DataAnalysis /></el-icon>
             <template #title>AV联盟榜单</template>
           </el-menu-item>
-          <el-menu-item index="/jav/top250">
-            <el-icon><DataAnalysis /></el-icon>
-            <template #title>TOP 250</template>
-          </el-menu-item>
           <el-menu-item index="/jav/wikipedia">
             <el-icon><Reading /></el-icon>
             <template #title>维基女优</template>
@@ -296,6 +292,23 @@
           <el-menu-item index="/anime/favorites">
             <el-icon><Star /></el-icon>
             <template #title>★ 喜好</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <!--
+          🔴 2026-10-20：TOP 250 从「JAV 有码」剥离为独立分组。
+          原因：它已不再只统计有码，而是 JavDB 4 个分区（有码/无码/欧美/FC2）
+          的**跨模块收录体检**，挂在任何一个模块下都会误导。
+          路由路径刻意保持 /jav/top250 不变 —— 只改菜单归属，不破坏旧书签。
+        -->
+        <el-sub-menu index="ranking-module">
+          <template #title>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>📊 榜单</span>
+          </template>
+          <el-menu-item index="/jav/top250">
+            <el-icon><Trophy /></el-icon>
+            <template #title>TOP 250 收录体检</template>
           </el-menu-item>
         </el-sub-menu>
 
@@ -1375,7 +1388,7 @@ const pageTitle = computed(() => {
     '/jav/code-test': 'JAV 有码 - 番号提取测试',
     '/jav/categories': 'JAV 有码 - 类别',
     '/jav/gap-fill': 'JAV 有码 - 缺口体检与补全',
-    '/jav/top250': 'JAV 有码 - TOP 250',
+    '/jav/top250': '榜单 - TOP 250 收录体检',
     // JAV 无码
     '/uncensored/movies': 'JAV 无码 - 影片库',
     '/uncensored/categories': 'JAV 无码 - 类别',

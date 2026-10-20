@@ -811,10 +811,14 @@ export const getSourceMergeMeta = () => api.get('/source-merge/fields-meta')
 // 本地头像资料库状态（探测 O:\MDCX\GitHub-ZIP\P1-High\gfriends-master）
 export const getAvatarLibraryStatus = () => api.get('/actors/avatar-scrape/library')
 // 启动后台刮削，支持本地资料库优先模式
+// 🔴 2026-10-20：新增 module 参数（jav/fc2/uncensored/...）。后端按 module
+//   选演员模型与库，头像文件落到 DATA/avatars/{module}/actor_{id}.jpg，
+//   各模块 actors 表 id 独立自增 ⇒ 头像编号天然隔离，不会互相覆盖。
+//   不传 module 时保持旧行为（jav），不影响已有页面。
 export const startAvatarScrape = (opts = {}) => {
-  const { minMovies = 2, useLocalLibrary = false } = opts
+  const { minMovies = 2, useLocalLibrary = false, module = 'jav' } = opts
   return api.post('/actors/avatar-scrape/start', null, {
-    params: { min_movies: minMovies, use_local_library: useLocalLibrary }
+    params: { min_movies: minMovies, use_local_library: useLocalLibrary, module }
   })
 }
 export const getAvatarScrapeStatus = (jobId) =>
@@ -822,9 +826,9 @@ export const getAvatarScrapeStatus = (jobId) =>
 export const cancelAvatarScrape = (jobId) =>
   api.post(`/actors/avatar-scrape/cancel/${jobId}`)
 export const previewAvatarScrape = (opts = {}) => {
-  const { minMovies = 2, useLocalLibrary = false } = opts
+  const { minMovies = 2, useLocalLibrary = false, module = 'jav' } = opts
   return api.get('/actors/avatar-scrape/preview', {
-    params: { min_movies: minMovies, use_local_library: useLocalLibrary }
+    params: { min_movies: minMovies, use_local_library: useLocalLibrary, module }
   })
 }
 

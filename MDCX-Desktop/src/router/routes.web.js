@@ -563,10 +563,13 @@ export const routes = [
         meta: { title: 'JAV 有码 · AV联盟榜单' }
       },
       {
+        // 🔴 2026-10-20：TOP250 已是跨 4 模块（JAV有码/无码/欧美/FC2）的收录体检，
+        //    菜单归属移到独立「榜单」分组（见 AdminLayout.vue），但**路由路径刻意不变**，
+        //    以免旧书签/外部链接 404。
         path: 'jav/top250',
         name: 'JavTop250',
         component: () => import('@/views/jav/Top250.vue'),
-        meta: { title: 'JAV 有码 · TOP 250' }
+        meta: { title: '榜单 · TOP 250 收录体检' }
       },
       {
         path: 'jav/wikipedia',

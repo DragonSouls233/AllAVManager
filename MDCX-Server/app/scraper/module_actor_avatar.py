@@ -80,9 +80,12 @@ class ModuleActorAvatarScraper:
 
         config = get_config()
         self._proxy = None
+        # 🔴 2026-10-20：config.proxy 是 ProxyConfig(pydantic)，没有 .get() 方法。
+        # 原先 proxy_config.get("enabled") 直接抛 AttributeError，
+        # 导致 /modules/{module}/actors/avatar-scrape/* 全部 500。
         proxy_config = config.proxy
-        if proxy_config and proxy_config.get("enabled"):
-            self._proxy = proxy_config.get("http")
+        if proxy_config is not None and getattr(proxy_config, "enabled", False):
+            self._proxy = getattr(proxy_config, "http", None)
 
         # 按模块隔离: DATA/avatars/{module_name}/actor_{id}.jpg
         # 与 movies/{module} 目录结构一致，避免跨模块 id 串图

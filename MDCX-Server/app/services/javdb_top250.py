@@ -35,6 +35,42 @@ _USER_AGENT = "Dart/3.4 (dart:io)"
 # 分区掩码（与 javdb-cli model.Zones 一致）
 ZONES = {"censored": 0, "uncensored": 1, "western": 2, "fc2": 3}
 
+# 🔴 2026-10-20：TOP250 不再只是「JAV 有码」的事，改为跨 4 个模块的收录体检。
+# JavDB 榜单本身就有这 4 个分区（见 ZONES），所以数据源无需新增抓取，
+# 要改的是**本地库对照**：原来只查 jav.db，现在每个分区查各自模块库。
+#
+# 分区 → 本地模块名（模块库 code 字段存番号）
+ZONE_MODULE = {
+    "censored": "jav",
+    "uncensored": "uncensored",
+    "western": "western",
+    "fc2": "fc2",
+}
+
+# 分区 → 展示名 / 菜单归属（前端用）
+ZONE_LABEL = {
+    "censored": "JAV 有码",
+    "uncensored": "JAV 无码",
+    "western": "欧美",
+    "fc2": "FC2",
+}
+
+
+def normalize_code(code: str) -> str:
+    """番号归一化：用于跨库匹配，抹平大小写/分隔符/常见前缀差异。
+
+    实测需要归一化的场景：
+      - 大小写：``FC2-PPV-1234567`` vs ``fc2-ppv-1234567``
+      - 空格/分隔符：``ABP-123`` vs ``ABP 123``
+      - 尾部连字符差异
+    ⚠️ 只做「大小写 + 去掉所有分隔符」的保守归一化，**不删除有语义的字符**，
+    避免把不同番号误判成同一部。
+    """
+    if not code:
+        return ""
+    import re
+    return re.sub(r"[^a-z0-9]+", "", str(code).strip().lower())
+
 # 封面代理端点（/jav/top250/cover）的**域名白名单**。
 # 🔴 该端点会按调用方传入的 URL 发起服务端请求 ⇒ 必须白名单，否则等于给
 #    登录用户提供一个任意 URL 抓取器（SSRF，可打内网 / 云元数据 169.254.169.254）。
@@ -226,25 +262,90 @@ async def fetch_top250(
     return items[:max_items]
 
 
-async def crossref_library(codes: list[str]) -> set:
-    """返回 codes 中本地 jav.db 已收录（code 命中）的集合（大小写不敏感）。"""
-    from app.db.jav_models import JAV_BASE, JavMovie
-    from app.db.module_db import ModuleDatabase
+async def crossref_library(codes: list[str], zone: str = "censored") -> tuple[set, dict]:
+    """返回 (codes 中本地库已收录的集合, 该模块库规模信息)。
+
+    🔴 2026-10-20 改为**按分区查对应模块库**（原实现硬编码只查 jav.db）：
+        censored→jav / uncensored→uncensored / western→western / fc2→fc2
+
+    匹配用归一化 key（见 normalize_code）而不是直接 lower() 比对，
+    避免 FC2 的 ``FC2-PPV-1234567`` 因分隔符/大小写差异被判成"未收录"。
+    """
     from sqlalchemy import func, select
 
-    norm = {c.lower() for c in codes if c}
+    from app.db.module_db import ModuleDatabase
+
+    module = ZONE_MODULE.get(zone, "jav")
+    # 各模块的 base/影片模型类名不统一，统一从表里取
+    base_cls, movie_cls = _get_module_movie_model(module)
+
+    info = {
+        "module": module,
+        "label": ZONE_LABEL.get(zone, zone),
+        "library_total": 0,
+        "available": False,
+    }
+
+    norm = {normalize_code(c): c for c in codes if c}
     if not norm:
-        return set()
-    db = ModuleDatabase.get_instance("jav", base_class=JAV_BASE)
-    present: set = set()
+        return set(), info
+
+    db = ModuleDatabase.get_instance(module, base_class=base_cls)
     async with db.session_scope() as session:
-        stmt = select(func.lower(JavMovie.code)).where(
-            func.lower(JavMovie.code).in_(norm)
-        )
-        res = await session.execute(stmt)
-        for (c,) in res.all():
-            present.add(c)
-    return present
+        # 模块库规模
+        try:
+            info["library_total"] = (await session.execute(
+                select(func.count()).select_from(movie_cls))).scalar_one()
+            info["available"] = True
+        except Exception as e:  # 库为空/表不存在时也返回统计，不让对照整体失败
+            log.warning("[top250] 读取 %s 库规模失败: %s", module, e)
+
+        present: set = set()
+        # 归一化后 IN 查（把库里 code 也归一化在 Python 侧做，SQL 侧只做粗筛）
+        # 库可能很大，先用原始 code 粗筛（直接等值/IN），再对候选做归一化确认。
+        try:
+            raw_rows = (await session.execute(
+                select(movie_cls.code).where(movie_cls.code.in_(list(norm.values())))
+            )).all()
+            for (c,) in raw_rows:
+                present.add(c.lower())
+        except Exception as e:
+            log.warning("[top250] 粗筛 %s 失败: %s", module, e)
+
+        if len(present) < len(norm):
+            # 粗筛没覆盖全 → 拉全库 code 归一化比对（模块库量级 1 万级，可接受）
+            try:
+                all_codes = (await session.execute(
+                    select(movie_cls.code))).all()
+                have = {normalize_code(c) for (c,) in all_codes if c}
+                for nk, orig in norm.items():
+                    if nk in have:
+                        present.add(orig.lower())
+            except Exception as e:
+                log.warning("[top250] 全库归一化比对 %s 失败: %s", module, e)
+
+    # 只保留真正在 codes 里的
+    result = {c.lower() for c in present if c.lower() in {x.lower() for x in codes}}
+    return result, info
+
+
+def _get_module_movie_model(module: str):
+    """取某模块的 (DeclarativeBase, 影片模型) —— 各模块模型类名不统一。"""
+    import importlib
+    table = {
+        "jav": ("app.db.jav_models", "JAV_BASE", "JavMovie"),
+        "uncensored": ("app.db.uncensored_models", "UNCENSORED_BASE", "UncensoredMovie"),
+        "western": ("app.db.western_models", "WESTERN_BASE", "WesternMovie"),
+        "fc2": ("app.db.fc2_models", "FC2_BASE", "Fc2Movie"),
+        "chinese": ("app.db.chinese_models", "CHINESE_BASE", "ChineseMovie"),
+        "pornhub": ("app.db.pornhub_models", "PORNHUB_BASE", "PornhubMovie"),
+        "anime": ("app.db.anime_models", "ANIME_BASE", "AnimeMovie"),
+    }
+    if module not in table:
+        raise ValueError(f"未知模块: {module}")
+    mod_name, base_name, cls_name = table[module]
+    mod = importlib.import_module(mod_name)
+    return getattr(mod, base_name), getattr(mod, cls_name)
 
 
 async def get_top250(
@@ -302,7 +403,8 @@ async def get_top250(
         _CACHE.update(items=[dict(i) for i in items], zone=zone, ts=now)
 
     codes = [i["code"] for i in items]
-    present = await crossref_library(codes)
+    # 🔴 2026-10-20：按当前分区对照**对应模块库**（原实现固定查 jav.db）
+    present, lib_info = await crossref_library(codes, zone=zone)
     # 🔴🔴 2026-10-17 修复：必须在【响应出口】构造副本后再改写 cover_url，
     # 绝不能原地修改 items 里的 dict —— _CACHE["items"] 存的就是这批 dict 对象
     # （第 300 行直接 update 了引用），原地改写会把缓存污染成代理 URL，
@@ -313,7 +415,9 @@ async def get_top250(
     out = []
     for i in items:
         item = dict(i)
-        item["in_library"] = item["code"].lower() in present
+        # present 存的是库里的原始 code；用归一化双向比对，避免大小写/分隔符差异
+        item["in_library"] = normalize_code(item["code"]) in {
+            normalize_code(p) for p in present}
         # 🔴 2026-10-14：把 spfcas 原始 URL 改写成本服务的封面代理路径。
         #    原因：该 CDN 对 JPEG 做了 XOR 混淆，浏览器直连拿到的是乱码二进制，
         #    <img> 解码失败 ⇒ 页面显示「无封面」；且 spfcas 在墙内未必直连得到。
@@ -326,4 +430,43 @@ async def get_top250(
 
     if only_missing:
         out = [i for i in out if not i["in_library"]]
+
+    # 🔴 2026-10-20：附带本地库规模，供前端显示"库里共 N 部"和"收录率 0%"的区分
+    lib_info["collected"] = sum(1 for i in out if i["in_library"]) if not only_missing else 0
+    lib_info["total_in_rank"] = len(out) if not only_missing else len(out)
+    _LAST_LIBRARY_INFO.update(lib_info)
     return out
+
+
+# 最近一次对照的本地库信息（供路由层汇总返回，避免改 get_top250 的返回类型）
+_LAST_LIBRARY_INFO: dict = {}
+
+
+async def get_zones_overview(token: Optional[str] = None,
+                             refresh: bool = False) -> list[dict]:
+    """一次性取 4 个分区的 TOP250 收录体检总览。
+
+    🔴 2026-10-20 新增：用户要求"TOP250 变成 4 个模块的收录统计"。
+    单个分区抓取失败**不拖垮整体**（例如某分区无权限），该分区返回 error 字段，
+    其余分区照常返回 —— 否则 0 库存的欧美/FC2 会让整页不可用。
+    """
+    result = []
+    for zone, label in ZONE_LABEL.items():
+        entry = {"zone": zone, "label": label,
+                 "module": ZONE_MODULE.get(zone), "items": []}
+        try:
+            items = await get_top250(zone=zone, token=token, refresh=refresh)
+            entry["items"] = items
+            entry["total"] = len(items)
+            entry["collected"] = sum(1 for i in items if i.get("in_library"))
+            entry["library_total"] = _LAST_LIBRARY_INFO.get("library_total", 0)
+            entry["module_available"] = _LAST_LIBRARY_INFO.get("available", True)
+            entry["rate"] = (entry["collected"] / entry["total"] * 100
+                             if entry["total"] else 0.0)
+            entry["status"] = "ok"
+        except Exception as e:
+            log.warning("[top250] 分区 %s 抓取失败: %s", zone, e)
+            entry.update(total=0, collected=0, library_total=0, rate=0.0,
+                         status="error", error=str(e)[:200])
+        result.append(entry)
+    return result

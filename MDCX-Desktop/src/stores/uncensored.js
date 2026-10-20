@@ -43,17 +43,20 @@ export const useUncensoredStore = defineStore('uncensored', {
       this.sortOrder = order
     },
 
-    async loadMovies() {
+    // 🔴 2026-10-20：原 loadMovies() 不接收任何参数，而视图层
+    //   store.loadMovies({ keyword, ...routeFilterParams() }) 传的参数被静默丢弃
+    //   ⇒ 搜索框与详情页跳转筛选（系列/片商/类别/番号前缀）全部失效。
+    //   现在接收 extra 并透传；后端 /uncensored/movies 已同时支持 page/page_size。
+    async loadMovies(extra = {}) {
       this.loading = true
       try {
         const params = {
           page: this.page,
           page_size: this.pageSize,
-          sort: this.sortField,
-          order: this.sortOrder
+          ...extra
         }
-        if (this.searchKeyword) params.search = this.searchKeyword
-        if (this.statusFilter) params.status = this.statusFilter
+        // store 状态里的 searchKeyword 兜底（视图层用本地 keyword ref，走 extra 传入）
+        if (!params.keyword && this.searchKeyword) params.keyword = this.searchKeyword
         const res = await api.getMovies(params)
         this.movies = res.items || res.data || []
         this.total = res.total || 0

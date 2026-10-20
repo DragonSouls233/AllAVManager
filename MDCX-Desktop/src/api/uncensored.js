@@ -3,6 +3,10 @@ import { api } from './index'
 const API = '/uncensored'
 
 // Movies
+// 🔴 2026-10-20：默认 page_size 必须是 24 吗？—— 不是。这里的默认值会被
+//   Object.assign 覆盖 params，所以只要调用方显式传了 page_size 就没问题；
+//   但此前 store 传的是 page/page_size、后端只认 skip/limit，才导致分页失效。
+//   现在后端两套命名都支持，保持 page/page_size 即可。
 export function getMovies(params = {}) {
   const p = Object.assign({ page: 1, page_size: 24 }, params)
   return api.get(`${API}/movies`, { params: p })

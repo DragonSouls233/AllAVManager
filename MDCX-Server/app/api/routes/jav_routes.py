@@ -3419,12 +3419,48 @@ async def javdb_top250(
         raise HTTPException(status_code=502, detail=msg)
     total = len(items)
     have = sum(1 for i in items if i.get("in_library"))
+    # 🔴 2026-10-20：附带本地库规模与分区展示名，前端用来区分
+    #    "收录率低" vs "这个模块压根没收（库里 0 部）" —— 两种都显示 0% 但含义完全不同
+    from app.services.javdb_top250 import ZONE_LABEL, _LAST_LIBRARY_INFO
     return {
         "items": items,
         "total": total,
         "have": have,
         "missing": total - have,
         "zone": zone,
+        "label": ZONE_LABEL.get(zone, zone),
+        "library_total": _LAST_LIBRARY_INFO.get("library_total", 0),
+        "rate": (have / total * 100) if total else 0.0,
+    }
+
+
+@router.get("/top250/overview")
+async def javdb_top250_overview(
+    refresh: bool = Query(False, description="忽略缓存强制刷新"),
+    token: Optional[str] = Query(None, description="登录返回的 JWT"),
+):
+    """🔴 2026-10-20 新增：一次返回 4 个分区（JAV有码/无码/欧美/FC2）的 TOP250 收录体检。
+
+    单个分区失败不影响其余分区（该分区 status=error），避免空库存的模块拖垮整页。
+    """
+    from app.services.javdb_top250 import get_zones_overview
+
+    try:
+        zones = await get_zones_overview(token=token, refresh=refresh)
+    except RuntimeError as e:
+        msg = str(e)
+        if "NO_TOKEN" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail="需要 JavDB App Token：先在 TOP250 页登录，或在配置 crawler.javdb_app_token 预置",
+            )
+        raise HTTPException(status_code=502, detail=msg)
+    return {
+        "zones": zones,
+        "totals": {
+            "rank_total": sum(z.get("total", 0) for z in zones),
+            "collected": sum(z.get("collected", 0) for z in zones),
+        },
     }
 
 

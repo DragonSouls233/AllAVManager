@@ -368,6 +368,13 @@ async def get_actor(actor_id: int):
 async def list_movies(
     skip: int = 0,
     limit: int = 20,
+    # 🔴 2026-10-20：前端无码影片库发的是 page/page_size（store 的 loadMovies
+    # 与其它模块 store 一致），而后端此前只认 skip/limit ⇒ FastAPI 静默忽略
+    # page/page_size，永远按默认 skip=0&limit=20 返回 20 条 ⇒ 「每页显示条数」
+    # 改动无效、翻页也无效。这里同时接受两套命名：给出 page 时按 page 换算
+    # offset/limit；只给 skip/limit 时保持原行为（桌面端 Library.vue 两种都发）。
+    page: Optional[int] = Query(None, ge=1, description="页码（与 page_size 配合使用）"),
+    page_size: Optional[int] = Query(None, ge=1, le=500, description="每页数量（与 page 配合使用）"),
     keyword: Optional[str] = Query(None, description="搜索标题/番号"),
     actor: Optional[str] = Query(None, description="按演员名过滤"),
     # 2026-08-08 新增: 详情页跳转筛选参数
@@ -382,6 +389,17 @@ async def list_movies(
     try:
         from app.db.uncensored_models import UncensoredMovie
         from sqlalchemy import select, func, or_
+
+        # page/page_size → offset/limit 换算（两套命名并存，见上方注释）
+        offset = skip
+        row_limit = limit
+        if page is not None:
+            _size = page_size or limit
+            offset = (page - 1) * _size
+            row_limit = _size
+        elif page_size is not None:
+            # 只给了 page_size：按首页起始偏移处理
+            row_limit = page_size
 
         filters = []
         if keyword:
@@ -407,7 +425,7 @@ async def list_movies(
         stmt = select(UncensoredMovie)
         if filters:
             stmt = stmt.where(*filters)
-        stmt = stmt.order_by(UncensoredMovie.created_at.desc()).offset(skip).limit(limit)
+        stmt = stmt.order_by(UncensoredMovie.created_at.desc()).offset(offset).limit(row_limit)
         result = await session.execute(stmt)
         movies = result.scalars().all()
 

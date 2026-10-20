@@ -23,6 +23,11 @@ export const useAvatarScrapeStore = defineStore('avatarScrape', () => {
   const status = ref({})          // 后端 /avatar-scrape/status/{id} 的快照
   const library = ref({})         // 本地资料库状态 { available, path, count }
   const useLocalLibrary = ref(false)
+  // 🔴 2026-10-20：当前任务所属模块（jav/fc2/uncensored/...）。
+  //   后端按 module 选演员库与模型，头像落到 DATA/avatars/{module}/actor_{id}.jpg，
+  //   各模块 actors 表 id 独立自增 ⇒ 头像编号按模块隔离，不会互相覆盖。
+  //   默认 'jav'，保持既有页面（有码演员库）行为不变。
+  const currentModule = ref('jav')
   let pollingTimer = null
 
   // ============== Getters ==============
@@ -126,12 +131,16 @@ export const useAvatarScrapeStore = defineStore('avatarScrape', () => {
     }
     const params = {
       minMovies: opts.minMovies ?? 2,
-      useLocalLibrary: opts.useLocalLibrary ?? useLocalLibrary.value
+      useLocalLibrary: opts.useLocalLibrary ?? useLocalLibrary.value,
+      // 🔴 2026-10-20：指定模块（默认 jav）。后端据此选演员库/模型，
+      //   头像写入 DATA/avatars/{module}/actor_{id}.jpg，编号按模块隔离。
+      module: opts.module ?? currentModule.value
     }
     try {
       const res = await startAvatarScrape(params)
       jobId.value = res.job_id
       active.value = true
+      currentModule.value = params.module
       status.value = { status: 'running', total: 0, completed: 0 }
       ElNotification({
         title: '头像刮削已启动',
@@ -170,6 +179,7 @@ export const useAvatarScrapeStore = defineStore('avatarScrape', () => {
     active,
     status,
     library,
+    currentModule,
     useLocalLibrary,
     progressPercent,
     isFinished,

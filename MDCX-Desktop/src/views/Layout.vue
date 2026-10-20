@@ -98,7 +98,6 @@
             <template #title>番号提取测试</template>
           </el-menu-item>
           <el-menu-item index="/jav/leaderboard">AV联盟榜</el-menu-item>
-          <el-menu-item index="/jav/top250">TOP 250</el-menu-item>
           <el-menu-item index="/jav/wikipedia">
             <el-icon><Reading /></el-icon>
             <template #title>维基女优</template>
@@ -291,6 +290,15 @@
             <el-icon><Star /></el-icon>
             <template #title>★ 喜好</template>
           </el-menu-item>
+        </el-sub-menu>
+
+        <!-- 🔴 2026-10-20：TOP250 已改为 4 模块收录体检，从 JAV 有码剥离为独立分组 -->
+        <el-sub-menu index="ranking-module">
+          <template #title>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>📊 榜单</span>
+          </template>
+          <el-menu-item index="/jav/top250">TOP 250 收录体检</el-menu-item>
         </el-sub-menu>
 
         <!-- ===== 全局功能分隔线 ===== -->

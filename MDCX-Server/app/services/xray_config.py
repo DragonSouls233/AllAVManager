@@ -8,6 +8,14 @@ Xray 配置生成器
 - outbounds: 每个节点一个 + direct + block
 - routing: 目标域名匹配 → 走对应节点 balancer
 - 分流规则内置刮削常用站点，用户零配置
+
+2026-10-20 增强（自动更换节点 + 日本节点分流）：
+- 节点按 ``country`` 分为「日本节点池」与「全局池」：
+  * 日本地域源（dmm/javdb/javbus/fc2/各日本片商/亚马逊日本…）→ ``jp_balancer``（仅日本出口节点，池内 leastPing 自动切换）
+  * 其余刮削源 → ``global_balancer``（全部节点，池内 leastPing 自动切换）
+- 每个节点额外生成一个**探测专用 socks inbound**，供 ProxyManager 经该节点出口访问
+  ip-api 自动探测出口国家（见 app/services/proxy_manager._country_probe_loop）。
+- observatory 探测间隔缩短到 1m，死节点更快被 balancer 剔除（自动更换节点）。
 """
 
 from __future__ import annotations
@@ -69,6 +77,47 @@ SCRAPE_PROXY_DOMAINS = [
     "phncdn.com",
     "google.com",  # 用于测速与出口 IP 检查
     "generate_204",
+]
+
+# ============================================================
+# 日本地域源：这些站点优先走「日本出口节点」（见 build_xray_config 的 jp_balancer）。
+# 判据：域名本身即日本站点 / 日本片商 / 日本 CDN。覆盖不到的日本源仍走 global_balancer
+# （全局池含全部节点，日本源走非日本节点只是更慢/更易被封，不至于失败）。
+# ============================================================
+JP_PROXY_DOMAINS = [
+    "javdb.com",
+    "javbus.com",
+    "javlibrary.com",
+    "avsox.com",
+    "avsox.host",
+    "missav.com",
+    "missav.ai",
+    "avbase.net",
+    "prestige-av.com",
+    "mgstage.com",
+    "1pondo.tv",
+    "10musume.com",
+    "caribbeancom.com",
+    "heyzo.com",
+    "dmm.co.jp",
+    "dmm.com",
+    "r18.com",
+    "fc2.com",
+    "fc2cmadb.com",
+    "iqqtv.cloud",
+    "iqqtv.co",
+    "airav.wiki",
+    "airav.io",
+    "javday.tv",
+    "madouqu.com",
+    "hdouban.com",
+    "cableav.tv",
+    "njav.tv",
+    "getchu.com",
+    "xcity.jp",
+    "kin8tengoku.com",
+    "tokyo-hot.com",
+    "amazon.co.jp",
 ]
 
 # 全局代理域名扩展（如果 mode = global，走这些域名 + 上面全部）
@@ -137,7 +186,7 @@ def _registered_crawler_domains() -> set[str]:
 
 
 def _as_rule(d: str) -> str:
-    """把裸域名补成 Xray 规则串；已是规则串（geosite:/domain:/keyword:/…）则原样返回。
+    """把裸域名补成 Xray 规则串；已是规则串（geosite:/domain:/regexp:/keyword:/…）则原样返回。
 
     🔴 不能简单地给所有条目都加 ``domain:`` 前缀：ref201 的补充规则里有
     ``keyword:jav`` 这类子串规则，被改成 ``domain:jav`` 就退化成"匹配名为 jav
@@ -197,19 +246,47 @@ def build_xray_config(
     log_level: str = "warning",
     mode: str = "domain",  # domain / global / direct
     preferred_node_id: str | None = None,  # 手动选节点：锁定该节点走代理
+    jp_country: str = "JP",  # 视为「日本出口」的 country 码（ISO-3166 alpha-2）
+    probe_ports: dict[str, int] | None = None,  # node.id -> 探测专用 socks 端口
 ) -> dict[str, Any]:
     """
     根据节点池生成 Xray 完整配置。
 
     mode:
-      domain (默认): 只有 SCRAPE_PROXY_DOMAINS 走代理，其余走直连（推荐）
+      domain (默认): 只对刮削域名走代理，其余走直连（推荐）
       global:       非 geosite:cn 全走代理（等同全局代理）
       direct:       完全直连，代理只作为出站备选（一般不用）
+
+    国家分流（2026-10-20 新增）：
+      - 节点按 ``country``（ISO-3166 alpha-2，如 "JP"）自动分为「日本节点」与「非日本节点」。
+      - 未手动锁节点时：
+        * 若存在日本节点 → 生成 ``jp_balancer``（仅日本节点，leastPing）+ ``global_balancer``（全部节点）；
+          日本地域源 → jp_balancer，其余刮削源 → global_balancer。
+        * 若无日本节点 → 退化为单一 ``global_balancer``（全部节点），行为与旧版一致。
+      - 手动锁节点（preferred_node_id）→ 锁定单 outbound，不走 balancer（手动优先）。
     """
-    # 🔴 必须预先初始化：无节点时下面的 else 分支不会赋值它，
-    #    而 domain 模式末尾要读 `elif node_outbounds:` —— 未初始化会抛
-    #    UnboundLocalError，导致「没配节点时启动代理直接崩溃」
-    #    （proxy_manager._build_config() 无条件调用本函数）。
+    jp_country = (jp_country or "JP").upper()
+    probe_ports = probe_ports or {}
+
+    # 全部节点 outbound（去重 tag）+ node.id -> tag 映射
+    all_obs: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    node_id_to_tag: dict[str, str] = {}
+    tag_to_node: dict[str, NodeConfig] = {}
+    for n in nodes:
+        ob = dict(n.outbound)  # 浅拷贝，避免改原对象
+        base = ob.get("tag", "node")
+        if base in seen:
+            seen[base] += 1
+            ob["tag"] = f"{base}#{seen[base]}"
+        else:
+            seen[base] = 0
+        all_obs.append(ob)
+        node_id_to_tag[n.id] = ob["tag"]
+        tag_to_node[ob["tag"]] = n
+
+    jp_balancer_tag: str | None = None
+    global_balancer_tag: str | None = None
     node_outbounds: list[dict[str, Any]] = []
 
     if not nodes:
@@ -218,7 +295,6 @@ def build_xray_config(
             {"tag": "direct", "protocol": "freedom"},
             {"tag": "block", "protocol": "blackhole"},
         ]
-        balancer_tag = None
     else:
         # 手动选节点：锁定单一 outbound，不走 balancer
         if preferred_node_id:
@@ -227,20 +303,24 @@ def build_xray_config(
             pref = None
 
         if pref is not None:
-            node_outbounds = [pref.outbound]
-            balancer_tag = None
+            pref_ob = dict(pref.outbound)
+            pref_ob["tag"] = f"{pref_ob.get('tag', 'node')}#sel"
+            node_id_to_tag[pref.id] = pref_ob["tag"]
+            node_outbounds = [pref_ob]
         else:
-            node_outbounds = [n.outbound for n in nodes]
-            # 保证每个 outbound 有唯一 tag
-            seen: dict[str, int] = {}
-            for ob in node_outbounds:
-                base = ob.get("tag", "node")
-                if base in seen:
-                    seen[base] += 1
-                    ob["tag"] = f"{base}#{seen[base]}"
-                else:
-                    seen[base] = 0
-            balancer_tag = "proxy_balancer"
+            jp_tags = [
+                ob["tag"] for ob in all_obs
+                if (tag_to_node[ob["tag"]].country or "").upper() == jp_country
+            ]
+            if jp_tags:
+                # 有日本节点：双 balancer（jp 仅日本节点，global 全部节点）
+                jp_balancer_tag = "jp_balancer"
+                global_balancer_tag = "global_balancer"
+                node_outbounds = all_obs
+            else:
+                # 无日本节点：退化为单一全局 balancer（与旧版一致）
+                global_balancer_tag = "global_balancer"
+                node_outbounds = all_obs
 
         outbounds = [
             *node_outbounds,
@@ -266,11 +346,21 @@ def build_xray_config(
         },
     ]
 
+    # 探测专用 inbound：每个节点一个，供 ProxyManager 经该节点出口探测出口国家
+    for n in nodes:
+        p = probe_ports.get(n.id)
+        if not p:
+            continue
+        inbounds.append({
+            "tag": f"probe-{n.id}",
+            "port": p,
+            "listen": "127.0.0.1",
+            "protocol": "socks",
+            "settings": {"auth": "noauth", "udp": True, "ip": "127.0.0.1"},
+        })
+
     # ============ Routing ============
     rules: list[dict[str, Any]] = []
-
-    # 代理规则：手写 ∪ crawler 注册中心派生 ∪ ref201 NSFW 补充（已带前缀）
-    proxy_domains = resolve_proxy_rules()
 
     # 私有地址、本地始终直连
     rules.append({
@@ -278,6 +368,25 @@ def build_xray_config(
         "outboundTag": "direct",
         "ip": ["geoip:private"],
     })
+
+    # 探测路由：每个探测 inbound 强制走对应节点 outbound（必须放在最前，优先级最高）
+    for n in nodes:
+        p = probe_ports.get(n.id)
+        if not p:
+            continue
+        tag = node_id_to_tag.get(n.id)
+        if not tag:
+            continue
+        rules.append({
+            "type": "field",
+            "inboundTag": f"probe-{n.id}",
+            "outboundTag": tag,
+        })
+
+    proxy_domains_all = resolve_proxy_rules()
+    jp_rule_domains = [_as_rule(d) for d in JP_PROXY_DOMAINS if d not in DIRECT_EXCEPTIONS]
+    jp_set = set(jp_rule_domains)
+    global_rule_domains = [d for d in proxy_domains_all if d not in jp_set]
 
     if mode == "direct":
         # 全直连
@@ -295,38 +404,71 @@ def build_xray_config(
             "ip": ["geoip:cn"],
         })
         # 其余走代理
-        if balancer_tag:
+        if global_balancer_tag:
             rules.append({
                 "type": "field",
-                "balancerTag": balancer_tag,
+                "balancerTag": global_balancer_tag,
+                "network": "tcp,udp",
+            })
+        elif node_outbounds:
+            rules.append({
+                "type": "field",
+                "outboundTag": node_outbounds[0]["tag"],
                 "network": "tcp,udp",
             })
     else:
         # domain 模式：只对刮削域名走代理
-        if balancer_tag:
-            rules.append({
-                "type": "field",
-                "balancerTag": balancer_tag,
-                "domain": proxy_domains,
-            })
-        elif node_outbounds:
-            # 手动选了单节点：直接走该 outbound
+        if preferred_node_id and node_outbounds:
+            # 手动锁单节点：直接走该 outbound
             rules.append({
                 "type": "field",
                 "outboundTag": node_outbounds[0]["tag"],
-                "domain": proxy_domains,
+                "domain": proxy_domains_all,
+            })
+        elif jp_balancer_tag and global_balancer_tag:
+            # 双 balancer：日本源 → 日本节点池；其余刮削源 → 全局池
+            rules.append({
+                "type": "field",
+                "balancerTag": jp_balancer_tag,
+                "domain": jp_rule_domains,
+            })
+            rules.append({
+                "type": "field",
+                "balancerTag": global_balancer_tag,
+                "domain": global_rule_domains,
+            })
+        elif global_balancer_tag and node_outbounds:
+            # 单一全局 balancer（无日本节点，退化为旧版）
+            rules.append({
+                "type": "field",
+                "balancerTag": global_balancer_tag,
+                "domain": proxy_domains_all,
             })
 
     routing: dict[str, Any] = {
         "domainStrategy": "IPIfNonMatch",
         "rules": rules,
     }
-    if balancer_tag:
-        routing["balancers"] = [{
-            "tag": balancer_tag,
-            "selector": [ob["tag"] for ob in node_outbounds],
+
+    balancers: list[dict[str, Any]] = []
+    if jp_balancer_tag:
+        jp_tags = [
+            ob["tag"] for ob in all_obs
+            if (tag_to_node[ob["tag"]].country or "").upper() == jp_country
+        ]
+        balancers.append({
+            "tag": jp_balancer_tag,
+            "selector": jp_tags,
             "strategy": {"type": "leastPing"},
-        }]
+        })
+    if global_balancer_tag:
+        balancers.append({
+            "tag": global_balancer_tag,
+            "selector": [ob["tag"] for ob in all_obs],
+            "strategy": {"type": "leastPing"},
+        })
+    if balancers:
+        routing["balancers"] = balancers
 
     config: dict[str, Any] = {
         "log": {"loglevel": log_level},
@@ -335,12 +477,14 @@ def build_xray_config(
         "routing": routing,
     }
 
-    # 若有节点，加 observatory 用于 leastPing 策略测速
-    if balancer_tag and node_outbounds:
+    # 若有 balancer，加 observatory 用于 leastPing 策略测速 + 死节点自动剔除
+    if balancers:
         config["observatory"] = {
-            "subjectSelector": [ob["tag"] for ob in node_outbounds],
+            "subjectSelector": [ob["tag"] for ob in all_obs],
             "probeUrl": "https://www.google.com/generate_204",
-            "probeInterval": "5m",
+            # 🔴 2026-10-20：从 5m 缩短到 1m，让 balancer 更快感知节点死亡/恢复
+            # （节点挂了自动切换到健康节点 = 「自动更换节点」的核心机制）。
+            "probeInterval": "1m",
         }
 
     return config

@@ -3,7 +3,7 @@
     <el-card shadow="never">
       <template #header>
         <span class="card-title">
-          <el-icon><Trophy /></el-icon> 🏆 JavDB TOP 250（有码）
+          <el-icon><Trophy /></el-icon> 🏆 JavDB TOP 250 · 多模块收录体检
         </span>
       </template>
 
@@ -30,6 +30,48 @@
           </el-button>
         </el-form-item>
       </el-form>
+
+      <!-- 🔴 2026-10-20：跨模块收录总览看板（4 模块统计，TOP250 已不只属于 JAV 有码） -->
+      <div v-if="token || autoOk" v-loading="overviewLoading" class="overview">
+        <div class="overview-head">
+          <span class="overview-title">
+            <el-icon><DataAnalysis /></el-icon> 收录总览 · 4 个模块
+          </span>
+          <el-button size="small" :loading="overviewLoading" @click="loadOverview(true)">
+            <el-icon><Refresh /></el-icon> 刷新总览
+          </el-button>
+        </div>
+        <div class="ov-grid">
+          <div
+            v-for="z in overview"
+            :key="z.zone"
+            class="ov-card"
+            :class="{ active: z.zone === zone, empty: z.library_total === 0 }"
+            @click="switchZone(z.zone)"
+          >
+            <div class="ov-label">{{ z.label }}</div>
+            <div class="ov-rate" :class="rateClass(z)">{{ z.rate.toFixed(1) }}%</div>
+            <div class="ov-detail">
+              榜单 {{ z.total }} · 已收 <b>{{ z.collected }}</b> · 待补 {{ z.total - z.collected }}
+            </div>
+            <!-- 库为 0 与"收录率低"是两回事，明确区分 -->
+            <el-tag v-if="z.status === 'error'" type="danger" size="mini" effect="plain">
+              抓取失败
+            </el-tag>
+            <el-tag v-else-if="z.library_total === 0" type="info" size="mini" effect="plain">
+              本地库 0 部（未收集）
+            </el-tag>
+            <el-tag v-else type="success" size="mini" effect="plain">
+              本地库 {{ z.library_total }} 部
+            </el-tag>
+          </div>
+        </div>
+        <div class="ov-sum">
+          合计：榜单 {{ overviewSum.rank_total }} 部 · 已收录
+          <b>{{ overviewSum.collected }}</b> 部 · 整体覆盖率
+          {{ overviewSum.rank_total ? (overviewSum.collected / overviewSum.rank_total * 100).toFixed(1) : '0.0' }}%
+        </div>
+      </div>
 
       <!-- 已登录 / 后端自动登录：筛选条 -->
       <div v-else class="filter-bar">
@@ -86,6 +128,8 @@
               >
                 <el-icon><Link /></el-icon>
               </a>
+            </div>
+            <div class="tag-row">
               <el-tag size="small" :type="m.in_library ? 'success' : 'warning'">
                 {{ m.in_library ? '已有' : '未收录' }}
               </el-tag>
@@ -108,9 +152,9 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Trophy, Key, Refresh, Link } from '@element-plus/icons-vue'
+import { Trophy, Key, Refresh, Link, DataAnalysis } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { loginJavdbTop250, getJavTop250 } from '@/api/jav'
+import { loginJavdbTop250, getJavTop250, getJavTop250Overview } from '@/api/jav'
 
 const TOKEN_KEY = 'javdb_top250_token'
 
@@ -128,6 +172,45 @@ const have = ref(0)
 const missing = ref(0)
 // 后端已用配置账号自动登录成功（无需本地手工登录）
 const autoOk = ref(false)
+
+// ---- 跨模块收录总览（4 模块） ----
+const overviewLoading = ref(false)
+const overview = ref([])
+const overviewSum = ref({ rank_total: 0, collected: 0 })
+
+/** 收录率配色：高绿/中橙/低红；本地库为空用灰色（含义是"没收集"而非"没收全"） */
+function rateClass(z) {
+  if (z.status === 'error' || z.library_total === 0) return 'gray'
+  if (z.rate >= 60) return 'good'
+  if (z.rate >= 25) return 'mid'
+  return 'bad'
+}
+
+function switchZone(z) {
+  if (zone.value === z) return
+  zone.value = z
+  load()
+}
+
+async function loadOverview(refresh = false) {
+  overviewLoading.value = true
+  try {
+    const res = await getJavTop250Overview({
+      refresh,
+      token: token.value || undefined,
+    })
+    overview.value = res.zones || []
+    overviewSum.value = res.totals || { rank_total: 0, collected: 0 }
+  } catch (e) {
+    // 总览是增强功能，失败不阻断主流程
+    overview.value = []
+    if (e?.response?.status !== 404) {
+      ElMessage.warning(e?.response?.data?.detail || '总览加载失败')
+    }
+  } finally {
+    overviewLoading.value = false
+  }
+}
 
 async function doLogin() {
   if (!username.value || !password.value) {
@@ -169,6 +252,8 @@ async function load() {
     have.value = res.have || 0
     missing.value = res.missing || 0
     autoOk.value = true
+    // 登录/自动登录成功后顺带拉一次 4 模块总览
+    loadOverview()
   } catch (e) {
     const detail = e?.response?.data?.detail || ''
     // NO_TOKEN / 需要 Token ⇒ 后端也没配置账号，才要求手工登录
@@ -210,16 +295,71 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.top250 { max-width: 1200px; margin: 0 auto; }
+/* 🔴 2026-10-20：页面加宽（原 1200px → 1560px），配合更大的卡片 */
+.top250 { max-width: 1560px; margin: 0 auto; }
 .card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 15px; }
 .login-bar { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 .filter-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .spacer { flex: 1; }
 
+/* ---- 跨模块收录总览看板 ---- */
+.overview {
+  margin: 14px 0 4px;
+  padding: 14px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+.overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.overview-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.ov-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.ov-card {
+  padding: 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.ov-card:hover { border-color: #409eff; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+.ov-card.active { border-color: #409eff; box-shadow: 0 0 0 2px rgba(64,158,255,0.18); }
+.ov-card.empty { background: #f5f7fa; }
+.ov-label { font-size: 14px; color: #606266; margin-bottom: 6px; }
+.ov-rate { font-size: 30px; font-weight: 700; line-height: 1.1; }
+.ov-rate.good { color: #67c23a; }
+.ov-rate.mid { color: #e6a23c; }
+.ov-rate.bad { color: #f56c6c; }
+.ov-rate.gray { color: #909399; }
+.ov-detail { font-size: 13px; color: #909399; margin: 6px 0 8px; }
+.ov-sum {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #ebeef5;
+  font-size: 13px;
+  color: #606266;
+}
+.ov-sum b { color: #67c23a; }
+
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 14px;
+  /* 🔴 2026-10-20：卡片加宽（150→210px），配合放大的番号字号 */
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 16px;
   margin-top: 4px;
 }
 .card {
@@ -243,18 +383,36 @@ onMounted(() => {
   text-align: center;
 }
 .rank.top { background: #f0a020; color: #4a2c00; }
-.cover { width: 100%; height: 200px; display: block; background: var(--el-fill-color-light); }
-.cover-ph { width: 100%; height: 200px; display: flex; align-items: center; justify-content: center; color: var(--el-text-color-secondary); font-size: 13px; }
-.info { padding: 8px; }
-.code-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.code { font-family: monospace; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.javdb-link { display: inline-flex; align-items: center; color: var(--el-color-primary); flex-shrink: 0; }
+.cover { width: 100%; height: 280px; display: block; background: var(--el-fill-color-light); }
+.cover-ph { width: 100%; height: 280px; display: flex; align-items: center; justify-content: center; color: var(--el-text-color-secondary); font-size: 13px; }
+.info { padding: 10px; }
+/* 🔴 2026-10-20：番号放大。原先 12px 且与「收录标签+图标」挤在同一行，
+   150px 宽的卡片里几乎看不清。改为：番号独占一行、字号 17px、等宽加粗。 */
+.code-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.code {
+  font-family: monospace;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.javdb-link { display: inline-flex; align-items: center; color: var(--el-color-primary); flex-shrink: 0; font-size: 17px; }
 .javdb-link:hover { opacity: 0.75; }
+.tag-row { margin-bottom: 4px; }
 .title {
-  font-size: 13px; line-height: 1.4; height: 36px; margin: 4px 0;
+  font-size: 13px; line-height: 1.45; height: 38px; margin: 4px 0;
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.meta { display: flex; gap: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
+.meta { display: flex; gap: 10px; font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
 .score { color: #e05b5b; font-weight: 600; }
 .dur { color: var(--el-text-color-regular); }
 </style>

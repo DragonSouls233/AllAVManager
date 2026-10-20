@@ -66,6 +66,7 @@ class ProxyState:
     subscription_url: str | None = None
     last_error: str | None = None
     nodes_count: int = 0
+    probe_ports: dict[str, int] = field(default_factory=dict)  # node.id -> 探测专用 socks 端口
 
 
 def _pick_free_port(start: int, exclude: set[int] | None = None, tries: int = 40) -> int:
@@ -89,6 +90,7 @@ class ProxyManager:
         self._state = ProxyState()
         self._lock = asyncio.Lock()
         self._health_task: asyncio.Task | None = None
+        self._country_task: asyncio.Task | None = None
         self._log_thread: threading.Thread | None = None
 
     # ============ 持久化 ============
@@ -229,12 +231,23 @@ class ProxyManager:
             http_port = _pick_free_port(socks_port + 1, exclude={socks_port})
         self._state.socks_port = socks_port
         self._state.http_port = http_port
+        # 为每个节点分配探测专用 socks 端口（基址 18930，避开 socks/http），
+        # 供 _country_probe_loop 经该节点出口探测出口国家。
+        probe_ports: dict[str, int] = {}
+        if self._nodes:
+            base = 18930
+            for i, n in enumerate(self._nodes.values()):
+                probe_ports[n.id] = _pick_free_port(
+                    base + i, exclude={socks_port, http_port}
+                )
+        self._state.probe_ports = probe_ports
         return build_xray_config(
             list(self._nodes.values()),
             socks_port=socks_port,
             http_port=http_port,
             mode=self._state.mode,
             preferred_node_id=self._state.current_node_id,
+            probe_ports=probe_ports,
         )
 
     async def start(self) -> None:
@@ -313,6 +326,10 @@ class ProxyManager:
             if not self._health_task or self._health_task.done():
                 self._health_task = asyncio.create_task(self._health_loop())
 
+            # 启动节点出口国家探测（后台异步，不阻塞启动；探测结果决定日本节点分流）
+            if not self._country_task or self._country_task.done():
+                self._country_task = asyncio.create_task(self._country_probe_loop())
+
     async def stop(self) -> None:
         async with self._lock:
             if self._health_task and not self._health_task.done():
@@ -361,6 +378,50 @@ class ProxyManager:
             except Exception as e:
                 logger.exception("health loop error: %s", e)
 
+    # ============ 出口国家探测（自动更换日本节点） ============
+    async def _country_probe_loop(self) -> None:
+        """后台探测各节点出口国家，写入 country 并持久化；若集合变化则重建配置启用分流。
+
+        设计要点：
+        - 仅在节点 country 为空时探测，已标记的节点（手动覆盖）不重复探测。
+        - 探测经各节点探测 socks 端口（见 build_xray_config 的 probe inbound）。
+        - 探测完成若发现日本节点，restart() 重建 xray 配置以启用 jp_balancer / global_balancer 分流。
+        """
+        try:
+            await asyncio.sleep(5)  # 等 xray 真正就绪（探测 inbound 可连）
+            if self._proc is None or self._proc.poll() is not None:
+                logger.debug("country probe: xray 未运行，跳过")
+                return
+            ports = dict(self._state.probe_ports)
+            changed = False
+            for node_id, port in ports.items():
+                node = self._nodes.get(node_id)
+                if node is None or node.country:
+                    continue  # 已有 country（手动覆盖或上次探测），跳过
+                try:
+                    cc = await asyncio.to_thread(_detect_country_via_proxy, port)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("探测节点 %s 出口国家异常: %s", node_id, e)
+                    cc = None
+                if cc:
+                    node.country = cc
+                    changed = True
+                    logger.info("节点 %s 出口国家探测为 %s", node.name, cc)
+            if changed:
+                self.save_nodes()
+                jp = sum(
+                    1 for n in self._nodes.values()
+                    if (n.country or "").upper() == "JP"
+                )
+                logger.info(
+                    "出口国家探测完成，日本节点数=%s，重建 xray 配置启用分流", jp
+                )
+                await self.restart()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("country probe loop error: %s", e)
+
     # ============ 对外查询 ============
     def get_current_socks5_url(self) -> str | None:
         """给 http_client 用：优先使用内嵌代理。
@@ -404,6 +465,42 @@ def _check_socks_port(host: str, port: int, timeout: float = 1.0) -> bool:
             return True
     except (OSError, socket.timeout):
         return False
+
+
+def _detect_country_via_proxy(port: int, timeout: float = 12) -> str | None:
+    """经指定 socks 端口（=某节点的探测出口）访问 ip-api.com，返回出口 IP 的 ISO 国家码。
+
+    用于自动探测每个节点的出口国家（如 "JP"），从而支持「日本源走日本节点」分流。
+    失败（节点不可用 / ip-api 被墙）返回 None，由调用方下次重试。
+    """
+    try:
+        import httpx
+    except ImportError:
+        logger.debug("httpx 不可用，跳过出口国家探测")
+        return None
+    url = "http://ip-api.com/json"
+    last_err: Exception | None = None
+    # httpx 旧版用 proxies=，新版(>=0.26)用 proxy=；两种都试，TypeError 切换。
+    for kw in ("proxy", "proxies"):
+        try:
+            if kw == "proxy":
+                client = httpx.Client(proxy=f"socks5://127.0.0.1:{port}", timeout=timeout)
+            else:
+                client = httpx.Client(proxies=f"socks5://127.0.0.1:{port}", timeout=timeout)
+            with client:
+                r = client.get(url)
+                if r.status_code == 200:
+                    data = r.json()
+                    cc = (data.get("countryCode") or "").upper()
+                    return cc or None
+        except TypeError:
+            continue  # 该 httpx 版本不接受此参数名
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    if last_err:
+        logger.debug("出口国家探测失败 (port=%s): %s", port, last_err)
+    return None
 
 
 def get_effective_proxy_url(site: str = "", url: str = "") -> str | None:

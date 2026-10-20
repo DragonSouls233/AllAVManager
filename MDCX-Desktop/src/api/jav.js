@@ -172,3 +172,11 @@ export async function loginJavdbTop250(username, password) {
 export async function getJavTop250(params = {}) {
   return api.get('/jav/top250', { params })
 }
+
+/**
+ * 🔴 2026-10-20 新增：4 个模块（JAV有码/无码/欧美/FC2）的 TOP250 收录体检总览。
+ * 单个分区失败不影响其余分区（该分区 status=error）。
+ */
+export async function getJavTop250Overview(params = {}) {
+  return api.get('/jav/top250/overview', { params })
+}

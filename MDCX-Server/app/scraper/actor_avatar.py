@@ -9,6 +9,7 @@ import asyncio
 import logging
 import re
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,7 +19,7 @@ from lxml import etree
 
 from app.config.manager import get_config_manager
 from app.db.database import Database
-from app.db.models import Actor
+from app.db.models import Actor, MovieActor
 # Module-specific models now accessed via get_module_model()
 from app.utils.module_helper import get_module_model, get_module_session
 from app.utils.http_client import AsyncHttpClient
@@ -47,6 +48,55 @@ def _avatar_backing_path(actor_id: int, module: str = None) -> Path:
     if module:
         return base / module / f"actor_{actor_id}.jpg"
     return base / f"actor_{actor_id}.jpg"
+
+
+# 🔴 2026-10-20：占位头像识别。
+#   JavDB 在库里没有该演员时，搜索结果页仍会给出一个「未知演员」占位图
+#   https://c0.jdbstatic.com/images/actor_unknow.jpg（灰色人形剪影）。
+#   原逻辑只判断"有没有 URL"，于是把占位图当真头像下载落盘，
+#   多个演员会拿到**字节完全相同**的占位图（实测 13 张里 6 张重复），
+#   页面看起来"刮削成功"实际是假图。
+#   这些 URL 特征明确、可安全排除；命中即视为"没找到"，让链路继续往下走
+#   （JavBus 往往有该演员的真头像）。
+_PLACEHOLDER_AVATAR_URL_MARKERS = (
+    "actor_unknow",      # JavDB 未知演员占位图
+    "actor_unknown",
+    "no_avatar",
+    "noavatar",
+    "default_avatar",
+    "blank_avatar",
+)
+
+
+def _is_placeholder_avatar_url(url: Optional[str]) -> bool:
+    """判断头像 URL 是否为占位图（灰色剪影/未知演员）。"""
+    if not url:
+        return True
+    low = str(url).lower()
+    return any(marker in low for marker in _PLACEHOLDER_AVATAR_URL_MARKERS)
+
+
+def _names_match(sname: str, name: str, name_jp: Optional[str] = None) -> bool:
+    """判断候选演员名与目标名是否算同一人。
+
+    🔴 2026-10-20：原先"取第一个候选结果"的兜底逻辑**完全不看名字**，
+    直接拿搜索结果第一位的图。JavDB 对库里没有的女优会做模糊匹配，
+    例如查「吉岡蓮美」会返回「吉川蓮」⇒ 两个不同的人拿到同一张脸
+    （实测 uncensored 模块 actor_35/actor_36 字节完全相同）。
+    现统一用本函数把关：兜底候选也必须名字对得上，否则宁可留空
+    （与项目既定原则一致：拿不到就留空，不猜）。
+    """
+    if not sname or not name:
+        return False
+    if sname == name or sname == name_jp:
+        return True
+    if name and sname.startswith(name[:2]):
+        return True
+    if name_jp and sname.startswith(name_jp[:2]):
+        return True
+    if name and name.startswith(sname[:2]):
+        return True
+    return False
 
 
 def actor_needs_avatar(actor: "Actor", module: str = None) -> bool:
@@ -109,6 +159,9 @@ class ActorAvatarScraper:
         self.min_movies = min_movies
         self.use_local_library = use_local_library
         self.module = module
+        # 🔴 2026-10-20：按模块取演员模型。各模块 actors 表 id 独立自增，
+        # 混用主库 Actor 会查错表（甚至 500）。module=None 时才用主库模型。
+        self.actor_model = get_module_model(module, "actor") if module else Actor
         self._progress = {
             "total": 0,
             "completed": 0,
@@ -122,6 +175,25 @@ class ActorAvatarScraper:
 
     def get_progress(self) -> dict:
         return dict(self._progress)
+
+    @asynccontextmanager
+    async def _actor_session(self):
+        """按模块打开演员表所在的数据库会话。
+
+        🔴 2026-10-20：此前固定用 `self.db.session()`，但 run_avatar_scrape_job
+        传入的是 ModuleDatabase（没有 .session() 方法）⇒ 所有模块的头像刮削
+        一启动就抛 'ModuleDatabase' object has no attribute 'session'。
+        这里按 module 分流：模块库走 get_module_session(module)，主库保留原逻辑。
+        """
+        if self.module:
+            sess = await get_module_session(self.module)
+            try:
+                yield sess
+            finally:
+                await sess.close()
+        else:
+            async with self.db.session() as sess:
+                yield sess
 
     async def scrape_all(self) -> dict:
         """
@@ -174,30 +246,47 @@ class ActorAvatarScraper:
 
     async def _find_actors_without_avatar(self) -> list[Actor]:
         """查找 >= min_movies 部、名字有效、且无有效本地头像的演员"""
-        async with self.db.session() as session:
-            # 子查询：每个演员的作品数
-            movie_count_subq = (
-                select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("mc"))
-                .group_by(MovieActor.actor_id)
-                .subquery()
-            )
-
-            # 查询：>= min_movies 部 + 名字有效(排除佚名/空名)
-            # 注: 不再用 avatar_url 是否为空来过滤 —— 远程 URL / 失效路径
-            # 也属于"无有效本地头像", 需在 Python 层用 actor_needs_avatar 二次筛选
-            query = (
-                select(Actor)
-                .outerjoin(movie_count_subq, Actor.id == movie_count_subq.c.actor_id)
-                .where(
-                    # 2部以上
-                    func.coalesce(movie_count_subq.c.mc, 0) >= self.min_movies,
-                    # 排除佚名
-                    Actor.name != "佚名",
-                    Actor.name.isnot(None),
-                    Actor.name != "",
+        actor_model = self.actor_model
+        async with self._actor_session() as session:
+            if self.module:
+                # 🔴 2026-10-20：模块库的 movie_actors 关联表恒为空（作品关系以
+                # movies.actor 逗号文本存储），沿用主库的 MovieActor 计数会永远
+                # 查出 0 个演员。模块库直接读 actors.movie_count 列
+                # （与 /actors/avatar-scrape/preview 的筛选口径一致）。
+                query = (
+                    select(actor_model)
+                    .where(
+                        func.coalesce(actor_model.movie_count, 0) >= self.min_movies,
+                        actor_model.name != "佚名",
+                        actor_model.name.isnot(None),
+                        actor_model.name != "",
+                    )
+                    .order_by(func.coalesce(actor_model.movie_count, 0).desc())
                 )
-                .order_by(func.coalesce(movie_count_subq.c.mc, 0).desc())
-            )
+            else:
+                # 子查询：每个演员的作品数
+                movie_count_subq = (
+                    select(MovieActor.actor_id, func.count(MovieActor.movie_id).label("mc"))
+                    .group_by(MovieActor.actor_id)
+                    .subquery()
+                )
+
+                # 查询：>= min_movies 部 + 名字有效(排除佚名/空名)
+                # 注: 不再用 avatar_url 是否为空来过滤 —— 远程 URL / 失效路径
+                # 也属于"无有效本地头像", 需在 Python 层用 actor_needs_avatar 二次筛选
+                query = (
+                    select(actor_model)
+                    .outerjoin(movie_count_subq, actor_model.id == movie_count_subq.c.actor_id)
+                    .where(
+                        # 2部以上
+                        func.coalesce(movie_count_subq.c.mc, 0) >= self.min_movies,
+                        # 排除佚名
+                        actor_model.name != "佚名",
+                        actor_model.name.isnot(None),
+                        actor_model.name != "",
+                    )
+                    .order_by(func.coalesce(movie_count_subq.c.mc, 0).desc())
+                )
 
             result = await session.execute(query)
             actors = list(result.scalars().all())
@@ -251,8 +340,8 @@ class ActorAvatarScraper:
             return False
 
         # 3. 更新数据库
-        async with self.db.session() as session:
-            db_actor = await session.get(Actor, actor.id)
+        async with self._actor_session() as session:
+            db_actor = await session.get(self.actor_model, actor.id)
             if db_actor:
                 db_actor.avatar_url = str(local_path)
                 await session.commit()
@@ -289,6 +378,11 @@ class ActorAvatarScraper:
                 avatar_url = "https:" + avatar_url
             elif avatar_url.startswith("/"):
                 avatar_url = BASE_URL + avatar_url
+
+            # 🔴 2026-10-20：占位图不算命中，交给后续源继续找
+            if _is_placeholder_avatar_url(avatar_url):
+                logger.debug(f"AV联盟返回占位图, 跳过: {avatar_url}")
+                continue
 
             logger.info(f"AV联盟找到匹配演员 {hit['name']}: {avatar_url}")
             return avatar_url
@@ -373,6 +467,11 @@ class ActorAvatarScraper:
                                     target_avatar = domain + img_src
                                 else:
                                     target_avatar = img_src
+                                # 🔴 2026-10-20：占位图（actor_unknow）不算命中，
+                                # 继续找后面的源（JavBus 常有真头像）
+                                if _is_placeholder_avatar_url(target_avatar):
+                                    logger.debug(f"JavDB 返回占位图, 跳过: {target_avatar}")
+                                    continue
                                 logger.info(f"JavDB 找到匹配演员 {sname}: {target_avatar}")
                                 return target_avatar
 
@@ -381,7 +480,13 @@ class ActorAvatarScraper:
                             imgs = first_item.xpath('.//img[@class="avatar"]/@src')
                             if not imgs:
                                 imgs = first_item.xpath('.//img/@src')
-                            if imgs:
+                            # 🔴 2026-10-20：兜底取第一个候选时，名字必须对得上，
+                            # 否则会拿到「另一个人」的脸（如查吉岡蓮美返回吉川蓮）。
+                            first_names = first_item.xpath('.//strong/text()')
+                            if not first_names:
+                                first_names = first_item.xpath('.//img/@alt')
+                            first_name = first_names[0].strip() if first_names else ""
+                            if imgs and _names_match(first_name, name, name_jp):
                                 img_src = imgs[0]
                                 if img_src.startswith("//"):
                                     target_avatar = "https:" + img_src
@@ -389,8 +494,16 @@ class ActorAvatarScraper:
                                     target_avatar = domain + img_src
                                 else:
                                     target_avatar = img_src
+                                # 🔴 2026-10-20：兜底取第一个候选时同样排除占位图
+                                if _is_placeholder_avatar_url(target_avatar):
+                                    logger.debug(f"JavDB 第一个候选是占位图, 跳过: {target_avatar}")
+                                    continue
                                 logger.info(f"JavDB 取第一个候选结果: {target_avatar}")
                                 return target_avatar
+                            else:
+                                logger.debug(
+                                    f"JavDB 第一个候选名字不匹配({first_name} vs {name}), 放弃该源"
+                                )
                     except Exception as e:
                         logger.debug(f"JavDB 请求失败 {search_url}: {e}")
                         continue
@@ -501,13 +614,24 @@ class ActorAvatarScraper:
                                     target_avatar = domain + img_src
                                 else:
                                     target_avatar = img_src
+                                # 🔴 2026-10-20：占位图不算命中
+                                if _is_placeholder_avatar_url(target_avatar):
+                                    logger.debug(f"JavBus 返回占位图, 跳过: {target_avatar}")
+                                    continue
                                 logger.info(f"JavBus 找到匹配演员 {sname}: {target_avatar}")
                                 return target_avatar
 
                         if star_items:
                             first_item = star_items[0]
                             imgs = first_item.xpath('.//img/@src')
-                            if imgs:
+                            # 🔴 2026-10-20：兜底取第一个候选时，名字必须对得上
+                            first_names = first_item.xpath('.//span[@class="star-name"]/text()')
+                            if not first_names:
+                                first_names = first_item.xpath('.//div[@class="photo-info"]//span/text()')
+                            if not first_names:
+                                first_names = first_item.xpath('.//img/@alt')
+                            first_name = first_names[0].strip() if first_names else ""
+                            if imgs and _names_match(first_name, name, name_jp):
                                 img_src = imgs[0]
                                 if img_src.startswith("//"):
                                     target_avatar = "https:" + img_src
@@ -515,8 +639,16 @@ class ActorAvatarScraper:
                                     target_avatar = domain + img_src
                                 else:
                                     target_avatar = img_src
+                                # 🔴 2026-10-20：兜底取第一个候选时同样排除占位图
+                                if _is_placeholder_avatar_url(target_avatar):
+                                    logger.debug(f"JavBus 第一个候选是占位图, 跳过: {target_avatar}")
+                                    continue
                                 logger.info(f"JavBus 取第一个候选结果: {target_avatar}")
                                 return target_avatar
+                            else:
+                                logger.debug(
+                                    f"JavBus 第一个候选名字不匹配({first_name} vs {name}), 放弃该源"
+                                )
 
                 logger.debug(f"演员 {name}({name_jp}) 在所有 JavBus 域名上都未找到头像")
                 return None
@@ -631,8 +763,8 @@ class ActorAvatarScraper:
             output_path = avatar_dir / f"actor_{actor.id}.jpg"
             shutil.copy2(src_path, output_path)
 
-            async with self.db.session() as session:
-                db_actor = await session.get(Actor, actor.id)
+            async with self._actor_session() as session:
+                db_actor = await session.get(self.actor_model, actor.id)
                 if db_actor:
                     # 存绝对路径, 避免相对 "data/avatars/..." 依赖 server 启动目录,
                     # 也确保 actor_needs_avatar 的 is_absolute() 分支能正确判定"已有头像"
@@ -671,6 +803,11 @@ async def run_avatar_scrape_job(job_id: str, db: Database, min_movies: int = 2, 
         logger.error(f"头像刮削任务 {job_id} 失败: {e}")
         _active_avatar_jobs[job_id]["error"] = str(e)
         _active_avatar_jobs[job_id]["finished_at"] = datetime.now()
+        # 🔴 2026-10-20：异常时必须把 status 置为 failed。原先保持 "running"，
+        # 前端 isFinished 只认 completed/cancelled/failed ⇒ 轮询永远不结束，
+        # 全局浮层一直转圈且任务实际早已崩溃。
+        scraper._progress["status"] = "failed"
+        scraper._progress["error"] = str(e)
 
 
 def get_avatar_job_status(job_id: str) -> Optional[dict]:
