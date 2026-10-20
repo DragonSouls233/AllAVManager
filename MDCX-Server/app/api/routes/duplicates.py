@@ -20,18 +20,26 @@ async def scan_duplicates_endpoint(
         default=["jav"],
         description="要扫描的模块名列表，可重复传参（如 ?module=jav&module=chinese）",
     ),
+    content: bool = Query(
+        default=False,
+        description="全量 oshash 内容指纹 pass：额外找出文件名/番号不同但内容相同的副本"
+        "（改名、错贴番号、分卷误判）。代价是每个视频文件多读约 128KB，大库建议按需开启",
+    ),
 ):
     """扫描指定模块的 media_dirs，找出同番号重复视频文件。
 
     返回每组重复的：
     - base_code: 基础番号（去除 -C/-UC/-U）
-    - files: 每个文件路径、大小、后缀标记
+    - files: 每个文件路径、大小、后缀标记、oshash 内容指纹
     - keep_index: 推荐保留的文件索引（优先中字版，其次大体积）
     - wasted_bytes: 可释放的磁盘空间
+    - content_match: 组内是否存在字节级相同的副本（oshash 相等）
+    - content=1 时附加 content_groups: 跨文件名的内容重复组
 
     示例请求：
         GET /api/v1/duplicates/scan?module=jav
         GET /api/v1/duplicates/scan?module=jav&module=chinese
+        GET /api/v1/duplicates/scan?module=jav&content=1
     """
     # 使用服务注册表，以防模块未初始化
     from app.config.manager import get_config
@@ -56,7 +64,7 @@ async def scan_duplicates_endpoint(
             logger.info(f"[duplicates_scan] 模块 {mod_name} 未配置 media_dirs，跳过")
             continue
 
-        result = await scan_duplicates(mod_name, media_dirs)
+        result = await scan_duplicates(mod_name, media_dirs, content_check=content)
         all_results.append(result)
 
     # 合并多个模块的结果
@@ -88,9 +96,13 @@ async def preview_duplicates(
         default=["jav"],
         description="要扫描的模块名",
     ),
+    content: bool = Query(
+        default=False,
+        description="全量 oshash 内容指纹 pass（同 /scan 的 content 参数）",
+    ),
 ):
     """preview 别名，与 /scan 行为一致"""
-    return await scan_duplicates_endpoint(module=module)
+    return await scan_duplicates_endpoint(module=module, content=content)
 
 
 def _format_size_sum(size_bytes: int) -> str:

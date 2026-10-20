@@ -174,6 +174,11 @@ class ActorMovieResponse(BaseModel):
     release_date: Optional[str] = None
     cover_url: Optional[str] = None
     module_type: Optional[str] = None
+    #: 主演片（标题含演员名）标记 —— 前端据此渲染「主演/共演」角标。
+    #: 🔴 2026-10-20：原先此字段不存在，前端 `v-else` 兜底把所有作品都渲染成
+    #:    「主演/共演」中的后者 ⇒ 全部错显「共演」。判定规则与
+    #:    jav_routes.get_actor_movies 一致（标题含演员任一名变体）。
+    is_starring: bool = False
 
     class Config:
         from_attributes = True
@@ -600,8 +605,17 @@ async def get_actor_movies(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
+    starring_first: bool = Query(True, description="主演片（标题含演员名）优先"),
 ):
-    """获取演员作品列表"""
+    """获取演员作品列表
+
+    主演/出演区分（2026-10-20 与 jav_routes 对齐）：
+    - 主演片：标题（title/original_title）含演员任一名变体
+    - 共演片：仅 actor 字段含该演员（多演员作品里她只是配角）
+
+    🔴 此前本端点既不返回 is_starring 也不返回统计，前端 `v-else` 兜底
+    把每部作品都渲染成「共演」——这是「为什么还是共演」的根因。
+    """
     actor_cls = get_module_model(module, "actor")
     movie_cls = get_module_model(module, "movie")
     MovieActor = _get_mod_cls(module, "MovieActor")
@@ -613,6 +627,7 @@ async def get_actor_movies(
             raise HTTPException(status_code=404, detail="演员不存在")
 
         # 优先用关联表，回退到 actor 文本字段 LIKE 查询
+        using_relation = True
         query = (
             select(movie_cls)
             .join(MovieActor, movie_cls.id == MovieActor.movie_id)
@@ -624,14 +639,64 @@ async def get_actor_movies(
         if total == 0:
             # 回退到 actor 文本字段 LIKE（含 alias 全部变体，使合并后的作品聚合在一起；
             # folder_based_actors 仅 chinese 模块存在，helper 内部已做防御）
+            using_relation = False
             cond = actor_movie_condition_for(movie_cls, actor)
             count_query = select(func.count(movie_cls.id)).where(cond)
             total = await sess.scalar(count_query) or 0
-            query = select(movie_cls).where(cond).order_by(movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc())
+            query = select(movie_cls).where(cond)
+
+        # ---- 主演判定：标题（title/original_title）含演员任一名变体 ----
+        from app.utils.actor_alias import actor_name_variants
+
+        variants = [v for v in actor_name_variants(actor) if v]
+        title_cols = [movie_cls.title]
+        if hasattr(movie_cls, "original_title"):
+            title_cols.append(movie_cls.original_title)
+        starring_clauses = [
+            col.like(f"%{v}%") for v in variants for col in title_cols
+        ]
+        starring_cond = or_(*starring_clauses) if starring_clauses else None
+
+        if starring_cond is not None:
+            # 🔴 2026-10-20：统计必须**带 JOIN**。原先只把 query.whereclause
+            #    塞进 count() 而没带 FROM 的 join 条件 ⇒ SQLAlchemy 生成
+            #    `FROM movies, movie_actors` 笛卡尔积 ⇒ 42 部的演员算出
+            #    starring_total=1218（42×29），页面统计直接爆掉。
+            if using_relation:
+                starring_total = await sess.scalar(
+                    select(func.count(movie_cls.id))
+                    .select_from(movie_cls)
+                    .join(MovieActor, movie_cls.id == MovieActor.movie_id)
+                    .where(MovieActor.actor_id == actor_id, starring_cond)
+                ) or 0
+            else:
+                starring_total = await sess.scalar(
+                    select(func.count(movie_cls.id)).where(cond, starring_cond)
+                ) or 0
+        else:
+            starring_total = 0
+
+        def _is_starring(m) -> bool:
+            texts = [m.title or ""]
+            if hasattr(m, "original_title") and m.original_title:
+                texts.append(m.original_title or "")
+            return any(v and any(v in t for t in texts) for v in variants)
+
+        # 主演片排前，其余按日期倒序（与 jav_routes 一致）
+        if starring_first and starring_cond is not None:
+            from sqlalchemy import case
+
+            query = query.order_by(
+                case((starring_cond, 0), else_=1),
+                movie_cls.release_date.desc().nulls_last(),
+                movie_cls.id.desc(),
+            )
+        else:
+            query = query.order_by(
+                movie_cls.release_date.desc().nulls_last(), movie_cls.id.desc()
+            )
 
         query = query.offset((page - 1) * page_size).limit(page_size)
-        if total > 0 and not str(query.whereclause).startswith("movies.actor"):
-            query = query.order_by(movie_cls.release_date.desc().nulls_last())
 
         result = await sess.execute(query)
         movies = result.scalars().all()
@@ -643,13 +708,17 @@ async def get_actor_movies(
                 release_date=str(m.release_date) if getattr(m, "release_date", None) else None,
                 cover_url=getattr(m, "cover_url", None),
                 module_type=module,
+                is_starring=_is_starring(m),
             ))
 
+        total = int(total or 0)
         return {
             "actor_id": actor_id,
             "actor_name": actor.name,
             "merged_from": merged_from_names(actor),
-            "total": total or 0,
+            "total": total,
+            "starring_total": int(starring_total),
+            "co_star_total": total - int(starring_total),
             "items": movie_items,
         }
 

@@ -177,43 +177,123 @@ class SubscriptionDownloaderService:
                 logger.warning(f"无可用下载器，跳过 {code}")
                 return
 
-            # 使用 qBittorrent search（如果下载器实现了 search 方法）
+            # 优先用下载器自带 search（若将来有下载器实现）；否则走聚合搜索。
+            # 🔴 2026-10-20：qb/tr/aria2 三个下载器都没实现 search（基类也没定义），
+            #    旧代码到此 always 落「不支持搜索」分支 ⇒ 订阅自动下载是死功能。
+            #    改走 AggregateSearcher（内置 sukebei 源，代理走唯一入口
+            #    get_effective_proxy_url），让链路真正活过来。
             if hasattr(downloader, "search"):
                 results = await downloader.search(code)
-                if not results:
-                    logger.info(f"搜索无结果: {code}")
-                    return
-                best = self._select_best_torrent(results, quality)
-                if not best:
-                    logger.info(f"未找到合适资源: {code}")
-                    return
-                magnet = best.get("magnet") or best.get("url") or best.get("torrent_url")
-                if not magnet:
-                    logger.warning(f"搜索结果缺少磁力链/URL: {code}")
-                    return
-                await downloader.add_torrent(magnet, name=code)
-                logger.info(f"已添加下载: {code} (来源: {best.get('name', '?')})")
             else:
-                logger.warning(
-                    f"下载器 {downloader.type} 不支持搜索，跳过 {code}（请配置 qBittorrent 或扩展搜索源）"
-                )
+                from app.services.aggregate_searcher import create_default_searcher
+
+                searcher = create_default_searcher()
+                agg = await searcher.search(code)
+                results = [
+                    {
+                        "name": r.name,
+                        "magnet": r.magnet,
+                        "size": r.size,
+                        "seeders": r.seeders,
+                        "source": r.source,
+                    }
+                    for r in agg.results
+                ]
+                if agg.errors:
+                    logger.debug(f"聚合搜索部分源失败 {code}: {agg.errors}")
+            if not results:
+                logger.info(f"搜索无结果: {code}")
+                return
+            # 排除已试：下载器现有任务的 hash 集合（qb 的 id=hash、tr 的 id=hashString）
+            tried_hashes: set[str] = set()
+            try:
+                for t in await downloader.list_tasks():
+                    h = str(t.get("id") or "").lower()
+                    if h:
+                        tried_hashes.add(h)
+            except Exception as e:
+                logger.debug(f"读取下载器任务列表失败（不影响选优）: {e}")
+            best = self._select_best_torrent(results, quality, tried_hashes=tried_hashes)
+            if not best:
+                logger.info(f"未找到合适资源: {code}")
+                return
+            magnet = best.get("magnet") or best.get("url") or best.get("torrent_url")
+            if not magnet:
+                logger.warning(f"搜索结果缺少磁力链/URL: {code}")
+                return
+            await downloader.add_torrent(magnet, name=code)
+            logger.info(f"已添加下载: {code} (来源: {best.get('name', '?')})")
         except Exception as e:
             logger.error(f"搜索下载失败 {code}: {e}", exc_info=True)
 
-    def _select_best_torrent(self, results: list, quality: str) -> Optional[dict]:
-        """选择最佳种子：优先匹配偏好画质，其次按 seeder 数排序"""
+    def _select_best_torrent(
+        self,
+        results: list,
+        quality: str,
+        tried_hashes: Optional[set[str]] = None,
+    ) -> Optional[dict]:
+        """选择最佳种子：infohash 去重 + 排除已试 + magnet_score 五维打分。
+
+        🔴 2026-10-20 修：旧实现是「首个画质关键词命中即返回」——
+        搜索结果顺序不等于质量顺序，且同一 infohash 的重复条目、下载器里
+        已存在的任务会被反复选中。现改为：
+        1. infohash 去重（无 magnet 的退化为 name 前 60 字符）
+        2. 排除已试（tried_hashes，通常来自下载器现有任务的 hash 集合）
+        3. 存在偏好画质候选时只在候选内打分，否则全量打分（旧逻辑的
+           「偏好画质优先」保留为软偏好，不再一命中就返回）
+        4. magnet_score 五维打分（seeders/分辨率/字幕/新鲜度/完整性），
+           同分按 size 降序
+        """
+        from app.services.magnet_checker import extract_info_hash, magnet_score
+
         if not results:
             return None
-        quality_keywords = [quality, "1080p", "720p"]
-        for kw in quality_keywords:
-            if not kw:
+
+        def _infohash(r: dict) -> str:
+            magnet = r.get("magnet") or r.get("url") or r.get("torrent_url") or ""
+            try:
+                return extract_info_hash(magnet)
+            except (ValueError, TypeError):
+                return ""
+
+        # 1) infohash 去重
+        seen: set[str] = set()
+        deduped: list[tuple[dict, str]] = []
+        for r in results:
+            h = _infohash(r)
+            key = h or (r.get("name") or "")[:60]
+            if key and key in seen:
                 continue
-            for r in results:
-                name = (r.get("name") or "").lower()
-                if kw.lower() in name:
-                    return r
-        # 退而求其次：按 seeder 数排序
-        return max(results, key=lambda x: x.get("seeders", 0) or 0)
+            seen.add(key)
+            deduped.append((r, h))
+
+        # 2) 排除已试
+        tried = tried_hashes or set()
+        if tried:
+            fresh = [(r, h) for r, h in deduped if not (h and h in tried)]
+            if fresh:
+                deduped = fresh
+
+        pool = [r for r, _ in deduped]
+
+        # 3) 偏好画质软过滤（有候选才用）
+        quality_keywords = [kw for kw in (quality, "1080p", "720p") if kw]
+        preferred = [
+            r for r in pool
+            if any(kw.lower() in (r.get("name") or "").lower() for kw in quality_keywords)
+        ]
+        if preferred:
+            pool = preferred
+
+        # 4) 五维打分，同分比大小
+        def _score(r: dict) -> tuple:
+            s = magnet_score(
+                title=r.get("name") or "",
+                seeders=int(r.get("seeders") or 0),
+            )
+            return (s.total, int(r.get("size") or 0))
+
+        return max(pool, key=_score)
 
     async def manual_download(self, code: str, quality: str = "1080p") -> dict:
         """手动触发下载（不更新订阅状态）"""

@@ -244,3 +244,4 @@ _tmp_anime_test.db-wal
 _e2e_pw.tmp
 docs/参考库能力盘点报告_2026-10-05.html
 docs/PORNHUB演员主页URL同步统计.xlsx
+.github/workflows/ci.yml

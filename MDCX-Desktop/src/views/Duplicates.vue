@@ -14,6 +14,9 @@
           <el-checkbox-button label="western">欧美</el-checkbox-button>
           <el-checkbox-button label="fc2">FC2</el-checkbox-button>
         </el-checkbox-group>
+        <el-tooltip content="对每个视频文件读取首尾各 64KB 计算内容指纹，额外找出「改名/错贴番号/分卷误判」导致文件名匹配不到的重复副本。大库会明显拉长扫描时间，按需开启。" placement="top">
+          <el-checkbox v-model="contentCheck" style="margin-left:12px">内容指纹（找改名副本）</el-checkbox>
+        </el-tooltip>
       </div>
       <div class="toolbar-right">
         <el-button type="primary" :loading="scanning" :icon="Search" @click="startScan">
@@ -60,38 +63,82 @@
           <!-- 第二级：番号 -->
           <el-collapse v-for="group in groups" :key="group.base_code" class="code-block">
             <el-collapse-item :name="cat + '/' + group.base_code">
-              <template #title>
-                <div class="code-title">
-                  <el-tag type="danger" size="small">{{ group.file_count }} 个重复</el-tag>
-                  <span class="code-name">{{ group.base_code }}</span>
-                  <span class="code-waste">→ {{ group.wasted_display }}</span>
-                </div>
+          <template #title>
+            <div class="code-title">
+              <el-tag type="danger" size="small">{{ group.file_count }} 个重复</el-tag>
+              <el-tooltip v-if="group.content_match" content="组内有文件内容指纹（oshash）完全相同，是字节级副本，删除冗余副本零风险" placement="top">
+                <el-tag type="success" size="small">含字节相同副本</el-tag>
+              </el-tooltip>
+              <el-tooltip v-else content="组内文件内容指纹不同，属于版本差异（如中字版/无字幕版/不同片源），删哪个需要判断" placement="top">
+                <el-tag type="info" size="small">版本差异</el-tag>
+              </el-tooltip>
+              <span class="code-name">{{ group.base_code }}</span>
+              <span class="code-waste">→ {{ group.wasted_display }}</span>
+            </div>
+          </template>
+          <!-- 第三级：文件表 -->
+          <el-table :data="group.files" stripe size="small">
+            <el-table-column label="推荐" width="70">
+              <template #default="{ $index }">
+                <el-tag v-if="$index === group.keep_index" type="success" size="small">保留</el-tag>
+                <el-tag v-else type="info" size="small">可删</el-tag>
               </template>
-              <!-- 第三级：文件表 -->
-              <el-table :data="group.files" stripe size="small">
-                <el-table-column label="推荐" width="70">
-                  <template #default="{ $index }">
-                    <el-tag v-if="$index === group.keep_index" type="success" size="small">保留</el-tag>
-                    <el-tag v-else type="info" size="small">可删</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="文件路径" prop="path" min-width="400" show-overflow-tooltip />
-                <el-table-column label="后缀" prop="suffix" width="100" />
-                <el-table-column label="中字" width="70" align="center">
-                  <template #default="{ row }">
-                    <el-icon v-if="row.is_chinese" color="#67c23a"><Check /></el-icon>
-                    <span v-else style="color:#c0c4cc">-</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="文件大小" prop="size_display" width="110" />
-              </el-table>
+            </el-table-column>
+            <el-table-column label="文件路径" prop="path" min-width="400" show-overflow-tooltip />
+            <el-table-column label="后缀" prop="suffix" width="100" />
+            <el-table-column label="中字" width="70" align="center">
+              <template #default="{ row }">
+                <el-icon v-if="row.is_chinese" color="#67c23a"><Check /></el-icon>
+                <span v-else style="color:#c0c4cc">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="文件大小" prop="size_display" width="110" />
+            <el-table-column label="内容指纹" width="120">
+              <template #default="{ row }">
+                <span v-if="row.oshash" style="font-family:monospace;font-size:11px" :title="row.oshash">{{ row.oshash.slice(0, 10) }}…</span>
+                <span v-else style="color:#c0c4cc">-</span>
+              </template>
+            </el-table-column>
+          </el-table>
             </el-collapse-item>
           </el-collapse>
         </el-collapse-item>
       </el-collapse>
     </div>
 
-    <div v-if="result && result.total_groups === 0 && !scanning" class="empty">
+    <div v-if="contentGroups.length > 0" class="content-groups">
+      <h3>跨名内容重复 <el-tag type="warning" size="small">{{ contentGroups.length }} 组</el-tag></h3>
+      <p class="desc">以下文件的内容指纹（oshash）完全相同，但文件名/番号不同或提取不出番号——纯文件名匹配永远找不到它们。大文件推荐保留。</p>
+      <el-collapse v-for="(cg, i) in contentGroups" :key="cg.oshash + i" class="cat-block">
+        <el-collapse-item :name="'cg-' + i">
+          <template #title>
+            <div class="cat-title">
+              <el-tag type="danger" size="small">{{ cg.file_count }} 个副本</el-tag>
+              <span class="code-name">{{ cg.oshash }}</span>
+              <span class="cat-waste">可释放 {{ cg.wasted_display }}</span>
+            </div>
+          </template>
+          <el-table :data="cg.files" stripe size="small">
+            <el-table-column label="推荐" width="70">
+              <template #default="{ $index }">
+                <el-tag v-if="$index === 0" type="success" size="small">保留</el-tag>
+                <el-tag v-else type="info" size="small">可删</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="文件路径" prop="path" min-width="400" show-overflow-tooltip />
+            <el-table-column label="识别番号" width="120">
+              <template #default="{ row }">
+                <span v-if="row.code" style="font-family:monospace">{{ row.code }}{{ row.part ? '-CD' + row.part : '' }}</span>
+                <span v-else style="color:#c0c4cc">未识别</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="文件大小" prop="size_display" width="110" />
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+
+    <div v-if="result && result.total_groups === 0 && contentGroups.length === 0 && !scanning" class="empty">
       <el-empty description="未发现重复番号，所有番号均为唯一" />
     </div>
 
@@ -112,6 +159,7 @@ import { ElMessage } from 'element-plus'
 import api from '@/api'
 
 const selectedModules = ref(['jav'])
+const contentCheck = ref(false)
 const scanning = ref(false)
 const result = ref(null)
 const errorMsg = ref('')
@@ -140,19 +188,31 @@ const categoryGroups = computed(() => {
   return entries
 })
 
+// 跨名内容重复组（content_check=True 时才有），合并多模块结果
+const contentGroups = computed(() => {
+  const raw = []
+  if (result.value?.content_groups) raw.push(...result.value.content_groups)
+  if (result.value?.modules) {
+    result.value.modules.forEach(m => { if (m.content_groups) raw.push(...m.content_groups) })
+  }
+  return raw.sort((a, b) => (b.wasted_bytes || 0) - (a.wasted_bytes || 0))
+})
+
 async function startScan() {
   scanning.value = true
   result.value = null
   errorMsg.value = ''
   try {
     const moduleParams = selectedModules.value.map(m => `module=${m}`).join('&')
-    const data = await api.get(`/duplicates/scan?${moduleParams}`, { timeout: 300000 })
+    const contentParam = contentCheck.value ? '&content=1' : ''
+    const data = await api.get(`/duplicates/scan?${moduleParams}${contentParam}`, { timeout: 600000 })
     console.log('重复扫描结果:', data)
     result.value = data
-    if (!data || data.total_groups === 0) {
+    const extra = contentGroups.value.length > 0 ? `，另发现 ${contentGroups.value.length} 组跨名内容重复` : ''
+    if (!data || (data.total_groups === 0 && contentGroups.value.length === 0)) {
       ElMessage.success('扫描完成，未发现重复番号')
     } else {
-      ElMessage.success(`发现 ${data.total_groups} 组重复，共 ${data.duplicate_files} 个文件，可释放 ${data.space_wasted_display}`)
+      ElMessage.success(`发现 ${data.total_groups} 组重复，共 ${data.duplicate_files} 个文件，可释放 ${data.space_wasted_display}${extra}`)
     }
   } catch (e) {
     const msg = e?.response?.data?.detail || e?.message || '扫描失败'
@@ -204,6 +264,25 @@ async function startScan() {
 
 .groups {
   margin-bottom: 20px;
+}
+
+.content-groups {
+  margin-bottom: 20px;
+}
+
+.content-groups h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.content-groups .desc {
+  color: #909399;
+  font-size: 13px;
+  margin-bottom: 16px;
 }
 
 .cat-block {

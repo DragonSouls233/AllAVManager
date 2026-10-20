@@ -95,6 +95,32 @@ def _amateur_bare_code(number: str) -> Optional[str]:
     return "%s-%s" % (head, tail)
 
 
+def _normalize_result_genres(result) -> None:
+    """就地归一刮削结果的 categories：拆逗号串 + 英文中文化 + 去重。
+
+    🔴 2026-10-20：入库前必须做，否则库里 565 种英文类别词直接进详情页。
+    见 :mod:`app.utils.genre_i18n` 的模块说明（含实测数据规模）。
+
+    同时归一 ``tags``：javmost 把同一份类别同时写进 genres 和 tags
+    （``app/crawlers/javmost.py:213-214``），只处理 genres 会让标签区仍是英文。
+    任何异常都吞掉 —— 类别显示问题绝不能拖垮刮削主流程。
+    """
+    if result is None:
+        return
+    try:
+        from app.utils.genre_i18n import normalize_genres
+
+        if getattr(result, "genres", None):
+            result.genres = normalize_genres(result.genres)
+        tags = getattr(result, "tags", None)
+        if tags:
+            normalized_tags = normalize_genres(tags)
+            # tags 与 genres 同源时，保持两者一致；tags 另有内容则只做去重中文化
+            result.tags = normalized_tags or tags
+    except Exception as e:  # noqa: BLE001
+        logger.debug("类别归一失败，按原文保留: %s", e)
+
+
 class ScraperEngine:
     """
     刮削引擎
@@ -602,6 +628,12 @@ class ScraperEngine:
                     breaker.record_success(crawler.name)
                     # 🔴 2026-10-19 审计 #9：爬虫请求成功计数。
                     record_crawler_request(crawler.name, "success")
+                    # 🔴 2026-10-20：类别中文化 + 逗号串拆分。
+                    #    javbus/javmenu/javmost 的 /category/ 返回英文原文
+                    #    （Married Woman / Huge Butt / Solowork…），直接落库会让
+                    #    详情页「类别」和按类别筛选全是英文；javmenu 还会把整个
+                    #    列表塞进一个元素（"Censor,Uncensor,…"）。入库前统一处理。
+                    _normalize_result_genres(result)
                 return result
 
             except asyncio.TimeoutError:

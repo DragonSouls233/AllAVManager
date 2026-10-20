@@ -5,6 +5,14 @@
 
 与 `dedup.py`（内容指纹去重）不同：本模块基于**文件名中的番号**做去重，
 专用于发现同一番号的多个变体文件（如 ABC-123.mp4 + ABC-123-C.mp4 + ABC-123-UC.mp4）。
+
+2026-10-20 增补：**oshash 内容指纹**（`app/utils/filehash.py`，首尾各 64KB +
+文件大小，纯 Python 无 ffmpeg）：
+- 组内：多文件组计算 oshash，标记组内是否存在**字节级相同**的副本
+  （`content_match`）——「真副本」与「版本差异」对用户是两种决策；
+- 跨名：`content_check=True` 时对全部视频文件算 oshash，找出**文件名/
+  番号不同但内容相同**的副本（改名、错贴番号、分卷误判——纯文件名匹配
+  永远找不到这类）。代价是每个视频文件多读约 128KB。
 """
 
 import asyncio
@@ -15,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.tasks.base_scanner import iter_media_entries
+from app.utils.filehash import oshash as compute_oshash
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -79,6 +88,10 @@ class DuplicateFile:
     is_uncensored: bool   # 含无码标记
     # P2-2：分卷序号（"1"/"2"/"a"...），None = 非分卷（整片/中字版/无码版）
     part: Optional[str] = None
+    # 2026-10-20：oshash 内容指纹（首尾128KB+大小）。空串 = 未计算/计算失败。
+    # 组内两个文件 oshash 相同 ⇒ 字节级相同（真副本）；
+    # 不同 ⇒ 版本差异（如中字版 vs 无字幕版），删哪个是用户的判断题。
+    oshash: str = ""
 
 
 @dataclass
@@ -93,6 +106,10 @@ class DuplicateGroup:
     # True 表示本组只是整套分卷中的一卷 —— 用于界面提示「删掉会丢内容」。
     # 注意：本组内部仍然是**同一卷**的副本，删副本依然安全。
     multi_part: bool = False
+    # 2026-10-20：组内是否存在 oshash 相同的文件（字节级真副本）。
+    # True ⇒ 至少两份是完全相同的内容，删冗余副本零风险；
+    # False ⇒ 组内是版本差异（中字/无码/不同片源），需用户判断。
+    content_match: bool = False
 
     @property
     def wasted_bytes(self) -> int:
@@ -118,11 +135,14 @@ class DuplicateGroup:
                     "is_uncensored": f.is_uncensored,
                     "part": f.part,          # P2-2：分卷序号（None = 整片）
                     "part_display": (f"CD{f.part}" if f.part else "(整片)"),
+                    "oshash": f.oshash,      # 2026-10-20：内容指纹（空=未计算）
                 }
                 for f in self.files
             ],
             # P2-2：该番号是否还存在**其它分卷**（有 ⇒ 本组是分卷之一，删它=丢内容）
             "multi_part": self.multi_part,
+            # 2026-10-20：组内是否有字节级相同的副本（oshash 相等）
+            "content_match": self.content_match,
         }
 
 
@@ -260,12 +280,16 @@ def _extract_category(file_paths: list[str]) -> str:
 async def scan_duplicates(
     module_name: str,
     media_dirs: list[str],
+    content_check: bool = False,
 ) -> dict:
     """扫描指定模块的 media_dirs，找出同番号重复的视频文件。
 
     Args:
         module_name: 模块名（如 "jav", "chinese", "western"）
         media_dirs: 媒体目录列表（绝对路径）
+        content_check: 是否做全量 oshash 内容指纹 pass（默认 False）。
+            True 时会额外找出「文件名/番号不同但内容相同」的副本
+            （改名、错贴番号、分卷误判），代价是每个视频文件多读约 128KB。
 
     Returns:
         {
@@ -280,10 +304,15 @@ async def scan_duplicates(
             "companion_display": str,
             "companion_paths": [str],     # 最多 100 条，供审计
             "groups": [ DuplicateGroup.to_dict(), ... ],
+            "content_check": bool,        # 本次是否跑了全量内容指纹 pass
+            "content_groups": [ ... ],    # content_check=True 时的跨名内容重复组
         }
 
     🔴 伴随片护栏（2026-10-14）：预告/样本/广告片不参与分组，见
     :func:`is_companion_file`。它们既不算重复，也不会被选为保留项。
+
+    2026-10-20：组内 oshash（多文件组才算，廉价）标记字节级真副本；
+    content_check=True 时全量算 oshash 找跨名副本。
     """
     if not media_dirs:
         return {
@@ -298,11 +327,15 @@ async def scan_duplicates(
             "companion_display": "0 B",
             "companion_paths": [],
             "groups": [],
+            "content_check": content_check,
+            "content_groups": [],
         }
 
     code_to_files: dict[str, list[DuplicateFile]] = {}
     total_files = 0
     matched_files = 0
+    # content_check=True 时收集全部视频文件（含提不出番号的），用于跨名内容去重
+    content_candidates: list[tuple[str, int, Optional[str], Optional[str]]] = []
 
     for media_dir in media_dirs:
         media_path = Path(media_dir)
@@ -325,6 +358,12 @@ async def scan_duplicates(
 
                 # P2-2：同时取分卷序号 —— 分卷文件以前在这里被静默跳过
                 code, part = extract_code_and_part(file_name, dir_path)
+                if content_check:
+                    try:
+                        sz = file_path.stat().st_size
+                    except OSError:
+                        sz = 0
+                    content_candidates.append((str(file_path), sz, code, part))
                 if not code:
                     continue
                 matched_files += 1
@@ -358,6 +397,22 @@ async def scan_duplicates(
         f"{unique_codes} 个唯一番号（含分卷 {len(code_to_files)} 个番号×分卷组合）"
     )
 
+    # ---- oshash 组内指纹（2026-10-20）：只算多文件组的成员（廉价）----
+    # 单文件组没人看；多文件组要区分「字节级真副本」与「版本差异」两种决策。
+    multi_members = [f for fs in code_to_files.values() if len(fs) > 1 for f in fs]
+    if multi_members:
+        sem = asyncio.Semaphore(8)
+
+        async def _fill_one(f: DuplicateFile) -> None:
+            async with sem:
+                try:
+                    f.oshash = await asyncio.to_thread(compute_oshash, f.path)
+                except OSError as e:
+                    logger.debug(f"[duplicate_scanner] oshash 计算失败 {f.path}: {e}")
+
+        await asyncio.gather(*(_fill_one(f) for f in multi_members))
+        logger.info(f"[duplicate_scanner] 组内 oshash 已计算 {len(multi_members)} 个文件")
+
     # P2-2：哪些基础番号存在**多个不同分卷**（CD1+CD2 ⇒ 合法多文件，删一卷就丢内容）
     parts_by_code: dict[str, set[str]] = {}
     for code, part in code_to_files:
@@ -389,6 +444,14 @@ async def scan_duplicates(
         if len(files) <= 1:
             continue
 
+        # oshash（2026-10-20）：组内是否存在字节级相同的副本。
+        # 相同 ⇒ 真副本（删冗余零风险）；全不同 ⇒ 版本差异（用户判断题）。
+        hash_counts: dict[str, int] = {}
+        for f in files:
+            if f.oshash:
+                hash_counts[f.oshash] = hash_counts.get(f.oshash, 0) + 1
+        content_match = any(c >= 2 for c in hash_counts.values())
+
         # 排序策略：优先保留中字版（-C / -UC），其次保留较大体积的文件
         # -C 后缀权重最高（有字幕优先保留），-UC 其次
         # 然后按文件大小降序（大文件通常是更高画质版本）
@@ -409,6 +472,7 @@ async def scan_duplicates(
             keep_index=0,
             category=_extract_category([f.path for f in files]),
             multi_part=code in multi_part_codes,
+            content_match=content_match,
         )
         groups.append(group)
         duplicate_files += len(files) - 1
@@ -426,6 +490,57 @@ async def scan_duplicates(
         f"可释放 {_format_size(total_wasted)}"
     )
 
+    # ---- 跨名内容重复（content_check=True）：全量 oshash ----
+    # 纯文件名匹配找不到的副本：改名、错贴番号、分卷误判、提不出番号的文件。
+    # 同 (番号,分卷) 键的已被上面的文件名分组覆盖，这里只报跨键的，避免重复报。
+    content_groups: list[dict] = []
+    if content_check and content_candidates:
+        by_hash: dict[str, list[tuple[str, int, Optional[str], Optional[str]]]] = {}
+        sem_c = asyncio.Semaphore(8)
+
+        async def _hash_one(item: tuple[str, int, Optional[str], Optional[str]]) -> None:
+            path = item[0]
+            async with sem_c:
+                try:
+                    h = await asyncio.to_thread(compute_oshash, path)
+                except OSError as e:
+                    logger.debug(f"[duplicate_scanner] oshash 计算失败 {path}: {e}")
+                    return
+                by_hash.setdefault(h, []).append(item)
+
+        await asyncio.gather(*(_hash_one(it) for it in content_candidates))
+
+        for h, items in by_hash.items():
+            if len(items) < 2:
+                continue
+            keys = {(c, p) for _p, _s, c, p in items}
+            has_unmatched = any(c is None for _p, _s, c, _pt in items)
+            if len(keys) < 2 and not has_unmatched:
+                continue  # 同键 ⇒ 文件名分组已报过
+            items.sort(key=lambda it: -it[1])  # 大文件在前（推荐保留）
+            wasted = sum(sz for _p, sz, _c, _pt in items[1:])
+            content_groups.append({
+                "oshash": h,
+                "file_count": len(items),
+                "wasted_bytes": wasted,
+                "wasted_display": _format_size(wasted),
+                "files": [
+                    {
+                        "path": p,
+                        "size": sz,
+                        "size_display": _format_size(sz),
+                        "code": c,
+                        "part": pt,
+                    }
+                    for p, sz, c, pt in items
+                ],
+            })
+        content_groups.sort(key=lambda g: -g["wasted_bytes"])
+        logger.info(
+            f"[duplicate_scanner] 全量内容指纹: {len(content_candidates)} 个文件, "
+            f"发现 {len(content_groups)} 组跨名内容重复"
+        )
+
     return {
         "module": module_name,
         "total_files": total_files,
@@ -440,4 +555,7 @@ async def scan_duplicates(
         "companion_display": _format_size(companion_bytes),
         "companion_paths": [f.path for f in companion_files[:100]],
         "groups": [g.to_dict() for g in groups],
+        # 2026-10-20：oshash 内容指纹
+        "content_check": content_check,
+        "content_groups": content_groups,
     }
