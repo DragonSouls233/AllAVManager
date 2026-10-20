@@ -233,13 +233,18 @@ class ProxyManager:
         self._state.http_port = http_port
         # 为每个节点分配探测专用 socks 端口（基址 18930，避开 socks/http），
         # 供 _country_probe_loop 经该节点出口探测出口国家。
+        # 🔴 必须把「已分配的端口」累进 exclude 再分配下一个：_pick_free_port 是
+        #    「试绑→立刻放回」，同一个端口在后续调用里又是空闲的 ⇒ 多个节点会拿到
+        #    同一端口 ⇒ 生成重复 inbound ⇒ xray 第二个绑定失败 ⇒ 整个代理起不来
+        #    （2026-10-20 服务器实测：3 个探测端口全撞到 18934，xray exited early）。
         probe_ports: dict[str, int] = {}
         if self._nodes:
+            used = {socks_port, http_port}
             base = 18930
             for i, n in enumerate(self._nodes.values()):
-                probe_ports[n.id] = _pick_free_port(
-                    base + i, exclude={socks_port, http_port}
-                )
+                p = _pick_free_port(base + i, exclude=used)
+                probe_ports[n.id] = p
+                used.add(p)  # 关键：占用标记，防止后续分配重复
         self._state.probe_ports = probe_ports
         return build_xray_config(
             list(self._nodes.values()),

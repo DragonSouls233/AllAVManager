@@ -334,6 +334,10 @@ async function loadApi () {
       update: m.updateUncensoredMovie,
       scrape: m.scrapeUncensoredMovie,
       reloadNfo: m.reloadUncensoredMovieNfo,
+      // 🔴 2026-10-20：只接 refresh-images，**不接 generatePoster** ——
+      //   后端 uncensored_routes.py:1308 明确写着「已移除: /movies/{id}/poster（AI海报开发中）」，
+      //   接上会变成 404。留空 → 详情页按钮按现有判空逻辑提示"当前模块不支持"。
+      refillImages: m.refreshMovieImages,
     }
   } else if (name === 'western') {
     const m = await import('@/api/western')

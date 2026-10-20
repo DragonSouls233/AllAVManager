@@ -16,6 +16,38 @@ export function getMovie(id) {
   return api.get(`${API}/movies/${id}`)
 }
 
+// 🔴 2026-10-20 修复影片详情页「影片数据加载失败」：
+//   views/MovieDetail.vue 按模块动态加载 api/{module}.js，并统一按「模块前缀」命名取函数
+//   （getUncensoredMovie / updateUncensoredMovie / scrapeUncensoredMovie /
+//     reloadUncensoredMovieNfo）—— 见 MovieDetail.vue::loadApi()。
+//   但本文件原本只有无前缀的通用名（getMovie / updateMovie / scrapeMovie /
+//     reloadMovieNfo）⇒ loadApi 拿到的全是 undefined ⇒ api.get() 抛 TypeError
+//   ⇒ catch 里 movie=null ⇒ 页面显示「影片数据加载失败 / 服务器繁忙或请求超时」。
+//   （jav/fc2/western/pornhub/chinese 五个模块都有带前缀的函数，只有无码这组缺失。）
+//
+//   这里补齐**别名**而不是去改 MovieDetail.vue：别名是纯新增、不影响既有调用方
+//   （无码库/演员库页面仍在用 getMovie/updateMovie 等通用名）。
+//
+//   注意 scrape 的参数语义差异：
+//   - 本文件原有 scrapeMovie(code) 收的是「番号」，打 POST /uncensored/scrape/movie；
+//   - 详情页统一调 api.scrape(movieId, force) 传的是「影片 id」，
+//     所以别名要打按 id 的 POST /uncensored/movies/{id}/scrape（后端已存在该端点）。
+export async function getUncensoredMovie(id) {
+  return api.get(`${API}/movies/${id}`)
+}
+
+export async function updateUncensoredMovie(id, data) {
+  return api.put(`${API}/movies/${id}`, data)
+}
+
+export async function scrapeUncensoredMovie(id, force = false) {
+  return api.post(`${API}/movies/${id}/scrape`, null, { params: { force }, timeout: 180000 })
+}
+
+export async function reloadUncensoredMovieNfo(id) {
+  return api.post(`${API}/movies/${id}/reload-nfo`)
+}
+
 export function addMovie(data) {
   return api.post(`${API}/movies`, data)
 }
@@ -37,7 +69,9 @@ export function reloadMovieNfo(movieId) {
 }
 
 export function refreshMovieImages(movieId) {
-  return api.post(`${API}/movies/${movieId}/refresh-images`)
+  // 后端该端点内部会同步调 engine.scrape_number（要联网抓资源），
+  // 可能耗时几十秒 ⇒ 给足超时，避免前端先超时报"失败"。
+  return api.post(`${API}/movies/${movieId}/refresh-images`, null, { timeout: 180000 })
 }
 
 export function generatePoster(movieId, data) {
