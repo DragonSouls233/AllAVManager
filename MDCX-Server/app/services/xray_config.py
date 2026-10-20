@@ -10,9 +10,10 @@ Xray 配置生成器
 - 分流规则内置刮削常用站点，用户零配置
 
 2026-10-20 增强（自动更换节点 + 日本节点分流）：
-- 节点按 ``country`` 分为「日本节点池」与「全局池」：
-  * 日本地域源（dmm/javdb/javbus/fc2/各日本片商/亚马逊日本…）→ ``jp_balancer``（仅日本出口节点，池内 leastPing 自动切换）
-  * 其余刮削源 → ``global_balancer``（全部节点，池内 leastPing 自动切换）
+- 节点按 ``country`` 分池（用户 2026-10-20 要求「所有非中国节点都用上，不要局限美/日」）：
+  * DMM 系等**日本地域硬锁**站点 → ``jp_balancer``（仅日本出口节点，池内 leastPing 自动切换）
+  * 其余全部刮削源 → ``global_balancer``（**所有非中国节点**，含日本节点，池内 leastPing 自动切换）
+  * 中国（CN）节点被 ``EXCLUDED_COUNTRIES`` 显式排除，不进任何 balancer。
 - 每个节点额外生成一个**探测专用 socks inbound**，供 ProxyManager 经该节点出口访问
   ip-api 自动探测出口国家（见 app/services/proxy_manager._country_probe_loop）。
 - observatory 探测间隔缩短到 1m，死节点更快被 balancer 剔除（自动更换节点）。
@@ -80,45 +81,30 @@ SCRAPE_PROXY_DOMAINS = [
 ]
 
 # ============================================================
-# 日本地域源：这些站点优先走「日本出口节点」（见 build_xray_config 的 jp_balancer）。
-# 判据：域名本身即日本站点 / 日本片商 / 日本 CDN。覆盖不到的日本源仍走 global_balancer
-# （全局池含全部节点，日本源走非日本节点只是更慢/更易被封，不至于失败）。
+# 必须走「日本出口」的站点（见 build_xray_config 的 jp_balancer）。
+# 判据：这些站点按地域硬封锁，只有日本 IP 能访问，非日本出口一律 403/地区重定向。
+#   - DMM 系（dmm.co.jp / dmm.com / r18.com）是硬性地城锁；用户 2026-10-20 明确
+#     「之前专门提取日本节点只是为了 DMM」，所以只列 DMM 系。
+# 🔴 不要把 javdb / javbus / javlibrary / 1pondo / heyzo / mgstage 等普通日本源放进来：
+#    它们从任意非中国出口都能访问（用户要求「所有节点只要能访问刮削都用上，不要局限
+#    美/日」）。把它们塞进 jp_balancer 会把这些源限制成只有日本节点能刮，白白浪费其它
+#    可用节点。若实测某个源确实按日本 IP 封锁，再把它加进本列表（并在注释写实测证据）。
 # ============================================================
-JP_PROXY_DOMAINS = [
-    "javdb.com",
-    "javbus.com",
-    "javlibrary.com",
-    "avsox.com",
-    "avsox.host",
-    "missav.com",
-    "missav.ai",
-    "avbase.net",
-    "prestige-av.com",
-    "mgstage.com",
-    "1pondo.tv",
-    "10musume.com",
-    "caribbeancom.com",
-    "heyzo.com",
+JP_ONLY_DOMAINS = [
     "dmm.co.jp",
     "dmm.com",
     "r18.com",
-    "fc2.com",
-    "fc2cmadb.com",
-    "iqqtv.cloud",
-    "iqqtv.co",
-    "airav.wiki",
-    "airav.io",
-    "javday.tv",
-    "madouqu.com",
-    "hdouban.com",
-    "cableav.tv",
-    "njav.tv",
-    "getchu.com",
-    "xcity.jp",
-    "kin8tengoku.com",
-    "tokyo-hot.com",
-    "amazon.co.jp",
 ]
+
+# ============================================================
+# 排除国家：来自这些国家的节点不进任何 balancer（连不上海外刮削源，选中也白选）。
+# 判据：中国大陆出口 IP 访问 DMM/javbus/pornhub 等会被目标站按地区拦截，leastPing
+#     探 google 也大概率超时 → 会被 observatory 健康检查自然剔除；这里显式排除是
+#     双保险，也避免「国家还没探测出来」的窗口期误选中国节点。
+# country 为 None（尚未探测）的节点一律视为可用，探测完成后由
+# proxy_manager._country_probe_loop 重建配置再决定去留。
+# ============================================================
+EXCLUDED_COUNTRIES = frozenset({"CN"})
 
 # 全局代理域名扩展（如果 mode = global，走这些域名 + 上面全部）
 GLOBAL_PROXY_HINTS = ["geosite:geolocation-!cn"]
@@ -257,12 +243,14 @@ def build_xray_config(
       global:       非 geosite:cn 全走代理（等同全局代理）
       direct:       完全直连，代理只作为出站备选（一般不用）
 
-    国家分流（2026-10-20 新增）：
-      - 节点按 ``country``（ISO-3166 alpha-2，如 "JP"）自动分为「日本节点」与「非日本节点」。
+    国家分流（2026-10-20 新增，用户要求「所有非中国节点都用上」）：
+      - 节点按 ``country``（ISO-3166 alpha-2）分池；``EXCLUDED_COUNTRIES``（默认 CN）的节点
+        不进任何 balancer（连不上海外刮削源）。country 为 None（未探测）暂视为可用。
       - 未手动锁节点时：
-        * 若存在日本节点 → 生成 ``jp_balancer``（仅日本节点，leastPing）+ ``global_balancer``（全部节点）；
-          日本地域源 → jp_balancer，其余刮削源 → global_balancer。
-        * 若无日本节点 → 退化为单一 ``global_balancer``（全部节点），行为与旧版一致。
+        * 若存在日本节点 → 生成 ``jp_balancer``（仅日本节点）+ ``global_balancer``（所有非中国节点）；
+          DMM 系（JP_ONLY_DOMAINS，日本地域硬锁）→ jp_balancer，其余全部刮削源 → global_balancer。
+        * 若无日本节点 → 退化为单一 ``global_balancer``（所有非中国节点），行为与旧版一致。
+        * 若所有节点都被排除（如全是中国节点）→ 不起 balancer，刮削域直连（避免引用不存在的 balancer）。
       - 手动锁节点（preferred_node_id）→ 锁定单 outbound，不走 balancer（手动优先）。
     """
     jp_country = (jp_country or "JP").upper()
@@ -308,19 +296,26 @@ def build_xray_config(
             node_id_to_tag[pref.id] = pref_ob["tag"]
             node_outbounds = [pref_ob]
         else:
+            # 可用节点 = 非排除国家（country 为 None 视为可用，探测后再定夺）
+            usable_obs = [
+                ob for ob in all_obs
+                if (tag_to_node[ob["tag"]].country or "").upper() not in EXCLUDED_COUNTRIES
+            ]
             jp_tags = [
-                ob["tag"] for ob in all_obs
+                ob["tag"] for ob in usable_obs
                 if (tag_to_node[ob["tag"]].country or "").upper() == jp_country
             ]
             if jp_tags:
-                # 有日本节点：双 balancer（jp 仅日本节点，global 全部节点）
+                # 有日本节点：双 balancer —— jp 仅日本节点（DMM 系地域硬锁）；
+                # global = 所有非中国节点（含日本节点，用户要求节点最大化利用）。
+                # jp_tags ⊆ usable_obs，故日本节点存在时可用集必非空，global_balancer 必然启用。
                 jp_balancer_tag = "jp_balancer"
                 global_balancer_tag = "global_balancer"
-                node_outbounds = all_obs
-            else:
-                # 无日本节点：退化为单一全局 balancer（与旧版一致）
+            elif usable_obs:
+                # 无日本节点：退化为单一全局 balancer（所有非中国节点，与旧版一致）
                 global_balancer_tag = "global_balancer"
-                node_outbounds = all_obs
+            # else: 全部节点被排除（如全是中国节点）→ 不起 balancer，刮削域直连（见 routing）
+            node_outbounds = all_obs
 
         outbounds = [
             *node_outbounds,
@@ -384,7 +379,7 @@ def build_xray_config(
         })
 
     proxy_domains_all = resolve_proxy_rules()
-    jp_rule_domains = [_as_rule(d) for d in JP_PROXY_DOMAINS if d not in DIRECT_EXCEPTIONS]
+    jp_rule_domains = [_as_rule(d) for d in JP_ONLY_DOMAINS if d not in DIRECT_EXCEPTIONS]
     jp_set = set(jp_rule_domains)
     global_rule_domains = [d for d in proxy_domains_all if d not in jp_set]
 
@@ -410,10 +405,12 @@ def build_xray_config(
                 "balancerTag": global_balancer_tag,
                 "network": "tcp,udp",
             })
-        elif node_outbounds:
+        else:
+            # 无可用节点（全被排除/空池）→ 其余全部直连，不引用可能不存在的 balancer，
+            # 也不用 node_outbounds[0] 兜底（全是中国节点时那正是连不上海外的出口）。
             rules.append({
                 "type": "field",
-                "outboundTag": node_outbounds[0]["tag"],
+                "outboundTag": "direct",
                 "network": "tcp,udp",
             })
     else:
@@ -425,8 +422,10 @@ def build_xray_config(
                 "outboundTag": node_outbounds[0]["tag"],
                 "domain": proxy_domains_all,
             })
-        elif jp_balancer_tag and global_balancer_tag:
-            # 双 balancer：日本源 → 日本节点池；其余刮削源 → 全局池
+        elif jp_balancer_tag:
+            # DMM 系（日本地域硬锁）→ 仅日本节点；其余全部刮削源 → 全局池（所有非中国节点）。
+            # 注：jp_balancer_tag 存在 ⟹ 可用集非空（日本节点本身可用）⟹ global_balancer_tag 必存在，
+            # 所以这里无需处理「只有日本池」的分支。
             rules.append({
                 "type": "field",
                 "balancerTag": jp_balancer_tag,
@@ -437,11 +436,18 @@ def build_xray_config(
                 "balancerTag": global_balancer_tag,
                 "domain": global_rule_domains,
             })
-        elif global_balancer_tag and node_outbounds:
+        elif global_balancer_tag:
             # 单一全局 balancer（无日本节点，退化为旧版）
             rules.append({
                 "type": "field",
                 "balancerTag": global_balancer_tag,
+                "domain": proxy_domains_all,
+            })
+        else:
+            # 无任何可用节点（全被排除/空池）→ 刮削域直连，避免引用不存在的 balancer 致 xray 起不来
+            rules.append({
+                "type": "field",
+                "outboundTag": "direct",
                 "domain": proxy_domains_all,
             })
 
@@ -452,19 +458,24 @@ def build_xray_config(
 
     balancers: list[dict[str, Any]] = []
     if jp_balancer_tag:
-        jp_tags = [
+        jp_sel = [
             ob["tag"] for ob in all_obs
             if (tag_to_node[ob["tag"]].country or "").upper() == jp_country
         ]
         balancers.append({
             "tag": jp_balancer_tag,
-            "selector": jp_tags,
+            "selector": jp_sel,
             "strategy": {"type": "leastPing"},
         })
     if global_balancer_tag:
+        # 全局池 = 所有非排除国家节点（含日本节点；排除 CN 等连不上海外源的出口）
+        usable_sel = [
+            ob["tag"] for ob in all_obs
+            if (tag_to_node[ob["tag"]].country or "").upper() not in EXCLUDED_COUNTRIES
+        ]
         balancers.append({
             "tag": global_balancer_tag,
-            "selector": [ob["tag"] for ob in all_obs],
+            "selector": usable_sel,
             "strategy": {"type": "leastPing"},
         })
     if balancers:

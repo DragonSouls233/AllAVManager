@@ -378,49 +378,60 @@ class ProxyManager:
             except Exception as e:
                 logger.exception("health loop error: %s", e)
 
-    # ============ 出口国家探测（自动更换日本节点） ============
+    # ============ 出口国家探测（自动换节点 + DMM 走日本 + 排除中国节点） ============
     async def _country_probe_loop(self) -> None:
-        """后台探测各节点出口国家，写入 country 并持久化；若集合变化则重建配置启用分流。
+        """后台周期性探测各节点出口国家，写入 country 并持久化；池组成变化即重建配置。
 
         设计要点：
-        - 仅在节点 country 为空时探测，已标记的节点（手动覆盖）不重复探测。
+        - 仅在节点 country 为空时探测，已标记的节点（手动覆盖或上次探测）不重复探测。
         - 探测经各节点探测 socks 端口（见 build_xray_config 的 probe inbound）。
-        - 探测完成若发现日本节点，restart() 重建 xray 配置以启用 jp_balancer / global_balancer 分流。
+        - 一旦有新国家探出即 restart() 重建 xray 配置（用户 2026-10-20 要求）：
+            * 探到日本节点 → 启用 jp_balancer（DMM 系走日本出口）；
+            * 探到中国节点 → 从 global_balancer 剔除（连不上海外刮削源）；
+            * 探到其它国家 → 该节点进入全局池（所有非中国节点都参与刮削）。
+        - 周期轮询（稳态 5 分钟）兜底运行期新加入的节点（如订阅刷新），无需手动重启。
+        - 每轮都从 self._state / self._nodes 现读，restart 后端口/节点变化都能跟上。
         """
-        try:
-            await asyncio.sleep(5)  # 等 xray 真正就绪（探测 inbound 可连）
-            if self._proc is None or self._proc.poll() is not None:
-                logger.debug("country probe: xray 未运行，跳过")
+        first = True
+        while True:
+            try:
+                await asyncio.sleep(5 if first else 300)
+                first = False
+                if self._proc is None or self._proc.poll() is not None:
+                    logger.debug("country probe: xray 未运行，退出探测")
+                    return
+                ports = dict(self._state.probe_ports)
+                changed = False
+                for node_id, port in ports.items():
+                    node = self._nodes.get(node_id)
+                    if node is None or node.country:
+                        continue  # 已有 country（手动覆盖或上次探测），跳过
+                    try:
+                        cc = await asyncio.to_thread(_detect_country_via_proxy, port)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("探测节点 %s 出口国家异常: %s", node_id, e)
+                        cc = None
+                    if cc:
+                        node.country = cc
+                        changed = True
+                        logger.info("节点 %s 出口国家探测为 %s", node.name, cc)
+                if changed:
+                    self.save_nodes()
+                    jp = sum(1 for n in self._nodes.values()
+                             if (n.country or "").upper() == "JP")
+                    cn = sum(1 for n in self._nodes.values()
+                             if (n.country or "").upper() == "CN")
+                    logger.info(
+                        "出口国家探测完成：日本节点=%s 中国节点=%s，重建 xray 配置刷新分流", jp, cn
+                    )
+                    await self.restart()
+                    # restart 不会重复创建本任务（当前任务仍在运行）；下一轮没有
+                    # country=None 的节点，自然空转，运行期新节点下轮被探测。
+            except asyncio.CancelledError:
                 return
-            ports = dict(self._state.probe_ports)
-            changed = False
-            for node_id, port in ports.items():
-                node = self._nodes.get(node_id)
-                if node is None or node.country:
-                    continue  # 已有 country（手动覆盖或上次探测），跳过
-                try:
-                    cc = await asyncio.to_thread(_detect_country_via_proxy, port)
-                except Exception as e:  # noqa: BLE001
-                    logger.debug("探测节点 %s 出口国家异常: %s", node_id, e)
-                    cc = None
-                if cc:
-                    node.country = cc
-                    changed = True
-                    logger.info("节点 %s 出口国家探测为 %s", node.name, cc)
-            if changed:
-                self.save_nodes()
-                jp = sum(
-                    1 for n in self._nodes.values()
-                    if (n.country or "").upper() == "JP"
-                )
-                logger.info(
-                    "出口国家探测完成，日本节点数=%s，重建 xray 配置启用分流", jp
-                )
-                await self.restart()
-        except asyncio.CancelledError:
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.exception("country probe loop error: %s", e)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("country probe loop error: %s", e)
+                await asyncio.sleep(60)
 
     # ============ 对外查询 ============
     def get_current_socks5_url(self) -> str | None:
