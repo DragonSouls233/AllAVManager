@@ -255,6 +255,11 @@ const scanning = ref(false)
 const scanStatus = ref(null)
 const records = ref([])
 const total = ref(0)
+// 🔴 2026-10-19 审计 #10：状态汇总来自服务端聚合（与 total 同口径），翻页/筛选下稳定
+const successCount = ref(0)
+const failedCount = ref(0)
+const runningCount = ref(0)
+const timeoutCount = ref(0)
 const page = ref(1)
 const pageSize = 20
 const filters = reactive({ type: '', status: '' })
@@ -300,11 +305,13 @@ let autoRefreshTimer = null
 
 // 统计信息
 const stats = computed(() => {
-  const list = records.value || []
   return {
     total_records: total.value,
-    success_count: list.filter(r => r.status === 'completed').length,
-    failed_count: list.filter(r => r.status === 'failed').length
+    // 🔴 2026-10-19 审计 #10：改用服务端聚合值，与 total 同口径、翻页不跳变
+    success_count: successCount.value,
+    failed_count: failedCount.value,
+    running_count: runningCount.value,
+    timeout_count: timeoutCount.value,
   }
 })
 
@@ -370,6 +377,11 @@ const loadRecords = async () => {
     const res = await getScanRecords(params)
     records.value = res.records || res.items || []
     total.value = res.total || res.total_count || 0
+    // 🔴 2026-10-19 审计 #10：用服务端聚合汇总替代「当前页计数」，避免翻页跳变
+    successCount.value = res.success_count || 0
+    failedCount.value = res.failed_count || 0
+    runningCount.value = res.running_count || 0
+    timeoutCount.value = res.timeout_count || 0
   } catch {
     records.value = []
     total.value = 0

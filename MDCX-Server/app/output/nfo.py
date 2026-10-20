@@ -223,6 +223,9 @@ class NFOGenerator:
                 sample_images=sample_images if isinstance(sample_images, list) else [],
                 extrafanart=[],
                 rating=getattr(movie, "rating", None),
+                # 🔴 2026-10-19 审计 #6：透传本地视频路径，否则 NFO 的 streamdetails
+                # （分辨率/编码/音轨/字幕轨）在网页回写路径下恒为空。
+                file_path=getattr(movie, "file_path", None),
             )
             # plot_short 用 setattr 注入(NFO 生成器内部用 getattr 读)
             try:

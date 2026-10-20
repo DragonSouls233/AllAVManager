@@ -135,6 +135,13 @@ class ScrapeResult:
     # 元信息
     confidence: float = 1.0             # 结果置信度 (0-1)
     is_exact_match: bool = True         # 是否精确匹配
+
+    # 本地视频文件路径（🔴 2026-10-19：审计 #6）。NFO 的 <fileinfo><streamdetails>
+    # 需要 ffprobe 解析真实文件才能生成；ORM 路径（网页改字段保存回写 NFO）下
+    # generate_from_movie 之前没把 movie.file_path 透传进来 ⇒ 解析结果恒为 None ⇒
+    # 用户在网页改完字段保存后，NFO 里的分辨率/编码/音轨/字幕轨被静默清空。
+    # 这里显式声明为可选字段，由 generate_from_movie 在构造时透传 movie.file_path。
+    file_path: Optional[str] = None     # 本地视频文件绝对路径（用于生成 streamdetails）
     
     def is_valid(self) -> bool:
         """检查结果是否有效

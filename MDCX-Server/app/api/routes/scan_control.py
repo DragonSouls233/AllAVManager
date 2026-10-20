@@ -76,7 +76,17 @@ async def get_scan_records(
 ):
     """获取扫描记录列表"""
     service = ScanControlService.get_instance()
-    records, total = await service.get_scan_records(
+    records, total, summary = await service.get_scan_records(
         limit=limit, offset=offset, scan_type=scan_type, status=status
     )
-    return {"records": records, "total": total, "limit": limit, "offset": offset}
+    # 🔴 2026-10-19 审计 #10：透传服务端聚合的状态汇总，前端展示稳定总览
+    return {
+        "records": records,
+        "total": total,
+        "success_count": summary["success_count"],
+        "failed_count": summary["failed_count"],
+        "running_count": summary["running_count"],
+        "timeout_count": summary["timeout_count"],
+        "limit": limit,
+        "offset": offset,
+    }

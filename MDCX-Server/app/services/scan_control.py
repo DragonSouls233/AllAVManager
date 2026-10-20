@@ -249,7 +249,7 @@ class ScanControlService:
         offset: int = 0,
         scan_type: str | None = None,
         status: str | None = None,
-    ) -> tuple[list[dict], int]:
+    ) -> tuple[list[dict], int, dict]:
         """获取扫描记录列表
 
         Args:
@@ -259,7 +259,10 @@ class ScanControlService:
             status: 筛选状态
 
         Returns:
-            (记录列表, 总条数)
+            (记录列表, 总条数, 状态汇总)
+            🔴 2026-10-19 审计 #10：状态汇总（completed/failed 计数）在服务端按**同一筛选条件**
+            聚合后返回，供前端展示稳定的总览数字；否则前端只能用「当前页 20 行」计数，
+            翻页时 success/failed 数字会跳变，与 total 口径也不一致。
         """
         db = get_database()
         async with db.session() as session:
@@ -275,6 +278,16 @@ class ScanControlService:
             for cond in conditions:
                 count_stmt = count_stmt.where(cond)
             total = await session.scalar(count_stmt) or 0
+
+            # 🔴 状态汇总：与 total 同口径（同一组 conditions）聚合，翻页/筛选均稳定
+            summary_stmt = (
+                select(ScanRecord.status, func.count(ScanRecord.id))
+                .group_by(ScanRecord.status)
+            )
+            for cond in conditions:
+                summary_stmt = summary_stmt.where(cond)
+            summary_rows = (await session.execute(summary_stmt)).all()
+            summary = {row[0]: row[1] for row in summary_rows}
 
             # 查询列表
             stmt = select(ScanRecord).order_by(desc(ScanRecord.started_at))
@@ -298,7 +311,12 @@ class ScanControlService:
                     "created_at": r.created_at.isoformat() if r.created_at else None,
                 }
                 for r in records
-            ], total
+            ], total, {
+                "success_count": summary.get("completed", 0),
+                "failed_count": summary.get("failed", 0),
+                "running_count": summary.get("running", 0),
+                "timeout_count": summary.get("timeout", 0),
+            }
 
     # ============================================
     # 手动扫描（不受冷却限制）

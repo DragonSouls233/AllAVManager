@@ -74,11 +74,14 @@ class RecommendationEngine:
             # 无偏好数据:返回热门影片
             return await self._get_popular_movies(limit, module_session, module)
 
-        # 2. 查询候选影片(排除已看过的)
+        # 2. 查询候选影片(排除已看过的 + 已「不感兴趣」的)
         watched_ids = await self._get_watched_ids(user_id, module_session, module)
+        # 🔴 2026-10-19 审计 #7：dismiss_recommendation 写入的是 UserRecommendation.dismissed，
+        #    但候选查询从不读它 ⇒ 点了不感兴趣的影片下次刷新照样出现。这里补上排除。
+        dismissed_ids = await self._get_dismissed_ids(user_id, module_session, module)
 
         # 3. 计算每部候选影片的推荐分数
-        candidates = await self._get_candidates(watched_ids, module_session, module)
+        candidates = await self._get_candidates(watched_ids | dismissed_ids, module_session, module)
 
         # 批量加载候选影片的 actors/tags,避免在循环中 await
         candidate_ids = [m.id for m in candidates]
@@ -245,8 +248,29 @@ class RecommendationEngine:
             result = await session.execute(select(PlayHistory.movie_id))
         return set(result.scalars().all())
 
+    async def _get_dismissed_ids(self, user_id: Optional[int], session: AsyncSession, module: str = "jav") -> set[int]:
+        """获取用户已「不感兴趣」(dismissed) 的影片 ID。
+
+        🔴 2026-10-19 审计 #7：dismiss_recommendation() 把状态写进
+        ``UserRecommendation.dismissed``（按 user_id + movie_id 维度），而候选查询
+        ``_get_candidates`` 原先只排除 watched_ids，从不读 dismissed ⇒ 用户在网页点过
+        「不感兴趣」的影片，下次刷新照样出现在推荐里。这里把 dismissed 的 movie_id
+        一并排除。
+        """
+        if not user_id:
+            return set()
+        from app.utils.module_helper import get_module_model
+        UserRecommendation = get_module_model(module or "jav", "UserRecommendation")
+        result = await session.execute(
+            select(UserRecommendation.movie_id).where(
+                UserRecommendation.user_id == user_id,
+                UserRecommendation.dismissed.is_(True),
+            )
+        )
+        return set(result.scalars().all())
+
     async def _get_candidates(self, exclude_ids: set[int], session: AsyncSession, module: str = "jav") -> list:
-        """获取候选影片(排除已看)"""
+        """获取候选影片(排除已看 + 已忽略)"""
         Movie = self._get_models(module)["Movie"]
         stmt = select(Movie).where(
             Movie.id.notin_(exclude_ids) if exclude_ids else True,

@@ -18,6 +18,7 @@ from app.scraper.failure_reason import FailureAggregator
 from app.scraper.number import extract_number, NumberResult
 from app.scraper.recorder import get_recorder
 from app.scraper.errors import ResourceUnavailable
+from app.services.metrics import record_scrape, record_crawler_request
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,7 @@ class ScraperEngine:
             return None
 
         valid_results = []
+        _started = time.monotonic()  # 🔴 2026-10-19 审计 #9：用于 record_scrape 时长
 
         # 第 0 层：主力源池轮换 —— 按番号错开首选源，命中即返回。
         # 多数番号只需 1 个请求 → 各主站请求量摊薄到约 1/N，避免被限流。
@@ -255,6 +257,7 @@ class ScraperEngine:
                 valid_results += await self._gather_all([crawler], number, ctx, module)
                 merged = self._merge_results(valid_results, crawlers, number)
                 if merged is not None and self._is_complete(merged):
+                    record_scrape("success", time.monotonic() - _started)
                     return merged
 
         # 第 1 层：备用源池 —— 主力全部未命中时才启用
@@ -263,6 +266,7 @@ class ScraperEngine:
             valid_results += await self._gather_all(fallback, number, ctx, module)
             merged_fb = self._merge_results(valid_results, crawlers, number)
             if merged_fb is not None and self._is_complete(merged_fb):
+                record_scrape("success", time.monotonic() - _started)
                 return merged_fb
 
         # 第 2 层：其余源兜底
@@ -283,14 +287,17 @@ class ScraperEngine:
         ]
 
         if not valid_results:
+            record_scrape("failure", time.monotonic() - _started)
             return None
 
         # 多站点结果合并（使用 merger 模块）
         if len(valid_results) > 1:
             merged = self._merge_results(valid_results, crawlers, number)
             if merged is not None:
+                record_scrape("success", time.monotonic() - _started)
                 return merged
 
+        record_scrape("success", time.monotonic() - _started)
         return valid_results[0]
 
     # ── 源池分层（2026-09-30 依据【真实数据实测】选定，非拍脑袋）──────────────
@@ -581,6 +588,9 @@ class ScraperEngine:
                     breaker.record_failure(
                         crawler.name, info.reason.value
                     )
+                    # 🔴 2026-10-19 审计 #9：把爬虫请求结果喂给 Prometheus 指标，
+                    # 否则 /metrics 上 mdcx_crawler_* 永远是 0。
+                    record_crawler_request(crawler.name, "failure")
                 else:
                     # 🔴 成功也必须记：只有失败数就算不出成功率，
                     # 「试了10次成1次」与「试了1000次成900次」在统计上无法区分。
@@ -590,6 +600,8 @@ class ScraperEngine:
                     )
                     # 半开闭合：源确认恢复，清零退避
                     breaker.record_success(crawler.name)
+                    # 🔴 2026-10-19 审计 #9：爬虫请求成功计数。
+                    record_crawler_request(crawler.name, "success")
                 return result
 
             except asyncio.TimeoutError:
@@ -609,6 +621,8 @@ class ScraperEngine:
                 )
                 # 超时属瞬时故障 ⇒ 短冷却，避免一次网络抖动就下线好源
                 breaker.record_failure(crawler.name, tinfo.reason.value)
+                # 🔴 2026-10-19 审计 #9：爬虫请求失败计数（超时）。
+                record_crawler_request(crawler.name, "failure")
                 return None
 
             except ResourceUnavailable as e:
@@ -648,6 +662,8 @@ class ScraperEngine:
                     e, source=crawler.name, number=number
                 )
                 breaker.record_failure(crawler.name, info.reason.value)
+                # 🔴 2026-10-19 审计 #9：爬虫请求失败计数（异常）。
+                record_crawler_request(crawler.name, "failure")
                 # 拦截类与永久失败要显式提示：这类重试同一源无意义，应换源
                 if info.is_blocking or info.is_permanent:
                     logger.warning(

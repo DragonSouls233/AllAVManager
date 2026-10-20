@@ -98,7 +98,20 @@ def _normalize_amateur(token: str) -> str:
 # 而这恰恰是站点/文件名里最常见的紧凑写法。实测原式对 fc2ppv1234567 返回 None。
 # 现在 PPV 自身也允许可选分隔符，覆盖
 #   FC2-1234567 / FC2_1234567 / FC2PPV-1234567 / fc2ppv1234567 / FC2PPV1234567
-FC2_PATTERN = re.compile(r"FC2[-_]?(?:PPV[-_]?)?\d{5,}", re.IGNORECASE)
+# FC2/HEYZO 的番号与数字之间允许的分隔符。
+# 🔴 2026-10-19：原式只认 [-_]，实测漏两类**真实存在**的写法：
+#     "FC2 PPV 1084614 【生中出し】…"（空格分隔）
+#         → 落到 JAV 模式被截成 PPV-1084614，FC2 前缀丢失、类型判成 jav
+#     "(FC2)(424646)芸能人レベルの容姿…" / "(Heyzo)(1009)…"（站点名+括号包裹）
+#         → 完全匹配不上 → 提取为空
+#   而 number.py:1138 的注释早就写明「FC2 判据必须最先跑…否则 FC2 前缀丢失」——
+#   **注释描述的设计意图和正则实现对不上**，本次把实现补齐到注释的水准。
+# 上限 {0,2} 是有界的：不会把 FC2 和远处不相关的数字连起来。
+_FC2_SEP = r"[-_ .()]{0,2}"
+
+FC2_PATTERN = re.compile(
+    rf"FC2{_FC2_SEP}(?:PPV{_FC2_SEP})?\d{{5,}}", re.IGNORECASE
+)
 
 
 def extract_fc2_id(raw: str) -> Optional[str]:
@@ -129,7 +142,11 @@ def extract_fc2_id(raw: str) -> Optional[str]:
     return digits if 5 <= len(digits) <= 7 else None
 
 # HEYZO: HEYZO-1234
-HEYZO_PATTERN = re.compile(r"HEYZO[-_]?\d{3,}", re.IGNORECASE)
+# 🔴 2026-10-19：分隔符与 FC2 对齐（原式只认 [-_]）。
+#    实测 "(Heyzo)(1009)ロリで巨乳なバスケ部マネージャー…" 匹配不上 → 提取为空。
+#    ⚠️ 仍未覆盖："[thz.la]heyzo_lt_1380_full" —— HEYZO 与数字之间夹了站点自己的
+#       `lt_` 标签，要支持得再加一条可选的站点 tag 分支，本次不做（无本地样本佐证必要性）。
+HEYZO_PATTERN = re.compile(rf"HEYZO{_FC2_SEP}\d{{3,}}", re.IGNORECASE)
 
 # 无码数字番号: 111111-111, 111111_111
 UNCENSORED_DIGIT_PATTERN = re.compile(
@@ -217,7 +234,7 @@ H_FANZA_PATTERN = re.compile(r"H_\d{3,}([A-Z]{2,})(\d{2,})", re.IGNORECASE)
 # 无码车牌前缀列表（来自 Hazard804 MDCX，约 40 个前缀）
 UNCENSORED_PREFIXES = [
     "BT-", "CT-", "EMP-", "CCDV-", "CWP-", "CWPBD-", "DSAM-", "DRC-",
-    "DRG-", "GACHI-", "heydouga", "JAV-", "LAF-", "LAFBD-", "HEYZO-",
+    "DRG-", "GACHI-", "GACHIG-", "heydouga", "JAV-", "LAF-", "LAFBD-", "HEYZO-",
     "FC2-", "KTG-", "KP-", "KG-", "LLDV-", "MCDV-", "MKD-", "MKBD-",
     "MMDV-", "NIP-", "PB-", "PT-", "QE-", "RED-", "RHJ-", "S2M-",
     "SKY-", "SKYHD-", "SMD-", "SSDV-", "SSKP-", "TRG-", "TS-",
@@ -227,15 +244,80 @@ UNCENSORED_PREFIXES = [
     # 🔴 2026-10-04 补：G:\TEST\无码 实测样本 [CZ-012]（八潮会/TMA 系）
     #    形如 JAV（CZ=2字母+3数字）但实测归属 uncensored，
     #    旧代码靠 UNCENSORED_PREFIXES 判定，此处漏了 ⇒ 被判 jav ⇒ 无码源不接手。
-    "CZ-", "CRB-", "ATID-", "SIRO-", "MUKC-", "SSNI-", "MIAA-",
-    "GOGO-", "PPPE-", "MMMK-", "MIMK-",
+    # 🔴 2026-10-20 移除 "SSNI-"/"MIAA-"/"PPPE-"（S1/MOODYZ/Oppai，日本有码大厂）：
+    #    2026-10-19 已把这 3 个从 UNCENSORED_SHORT_STUDIOS 移除并留了证据，
+    #    但本表漏改 ⇒ is_uncensored() 仍返回 True ⇒ infer_module 的 unknown
+    #    兜底把 MIAA-291 / SSNI-866 路由到 uncensored 模块（实测），
+    #    有码源永不接手。两张表必须同进同退——判定漂移比漏收更糟。
+    # ⚠️ 同时去掉重复的 "SIRO-"（242 行已有一个）。
+    "CZ-", "CRB-", "ATID-", "SIRO-", "MUKC-",
+    "GOGO-", "MMMK-", "MIMK-",
+    # 🔴 2026-10-18 补：SMBD- / DRGBD- / SMDV-（参考库 ref114-amane commit
+    #    b7404bc5 / e4bef99b 同日两笔：SMBD/GACHIG 与東京熱 k 系、DRGBD/SMDV）。
+    #    实测漏收后果：DRGBD-045 / SMDV-028 / SMBD-005 被 JAV_PATTERN 吞成 JAV
+    #    ⇒ 走有码源、无码源不接手，必然刮不到。
+    #    ⚠️ GACHIG- 不在这里补：GACHIG-256 已由下方聚合站白名单规则命中
+    #      （GACHIG? 分支），且表里的 "GACHI-" 覆盖不到 "GACHIG-256"
+    #      （startswith("GACHI-") 为 False），单独加条目会与那条规则重复。
+    "SMBD-", "DRGBD-", "SMDV-",
 ]
 
 # 无码短片商号（2~4 字母 + 3 位数字，形态与 JAV 完全同形，只能靠白名单区分）
-# 来源：G:\TEST\无码 真实样本。key 为番号前缀。
+# 来源：G:\TEST\无码 真实样本（15 个文件：倉本真理/児島奈央）。
+# 🔴 2026-10-19 复核结论 —— 样本实际只支持 3 项：
+#      gachi549/gachig116(GACHI/GACHIG) · 031811-647/062511-734(CRB) ·
+#      HEYZO-0407/0410(HEYZO) · CZ-012(CZ) · HEYDOUGA-4169-024
+#    ⇒ 本表中只有 "CZ" / "CRB" / "HEYZO" 有本地实测背书。
+# 🔴 2026-10-19 移除 "SSNI"（S1 NO.1 STYLE，日本有码大厂，全目录无样本）与
+#    "MIAA"（MOODYZ）/ "PPPE"（Oppai，同属日本有码）：
+#    留着会让这些片走无码源、永远刮不到（实测 MIAA-291 原判 UNCENSORED）。
+# ⚠️ 证据缺口（需用户按自己片库复核，我先不动）："ATID"(Attackers 像有码)、
+#    "SIRO"/"LUXU"(素人，SOD 无码臂，判无码大概率对)、"MUKC"(無垢)、
+#    "MIMK"/"GOGO"/"MMMK"/"T28"/"T38" —— 这 8 项目前**没有任何本地样本或
+#    文档来源**，仅靠历史经验。若发现误判，按同样方式移除并在注释留证据。
 UNCENSORED_SHORT_STUDIOS = (
-    "CZ", "CRB", "ATID", "SIRO", "MUKC", "MIMK", "SSNI", "MIAA",
-    "GOGO", "PPPE", "MMMK", "T28", "T38", "HEYZO", "LUXU", "SIRO",
+    "CZ", "CRB", "ATID", "SIRO", "MUKC", "MIMK",
+    "GOGO", "MMMK", "T28", "T38", "HEYZO", "LUXU",
+)
+
+# 长字母型无码片商（4~5 字母 + 3 位数字，形态同样与 JAV 完全同形）
+# 来源：参考库 ref114-amane commit b7404bc5 / e4bef99b（2026-10-15 同日两笔）。
+# 🔴 实测漏收后果：DRGBD-045 / SMDV-028 / SMBD-005 被 _classify_token 的
+#    「⑧ 标准 JAV」分支吞成 JAV ⇒ 按有码源去刮、无码源不接手，必然刮不到。
+#    只补 UNCENSORED_PREFIXES 不够——_classify_token 走的是 SHORT/LONG 白名单，
+#    不读前缀表（这是两套并存判定的历史原因，见 is_uncensored 注释）。
+# ⚠️ GACHIG 不在本表：GACHIG-256 已由 _classify_token 的 ③b 聚合站白名单命中。
+UNCENSORED_LONG_STUDIOS = (
+    "SMBD", "DRGBD", "SMDV",
+)
+
+# 无码聚合站独立番号片商（1pondo/pacopacomama 系 + SIRO/GACHI 等素人站）。
+# 🔴 2026-10-20 从 _classify_token ③b 的**内联正则**抽成命名表：
+#    旧实现只有 ③b 认这些片商，get_number_type 完全不认 ⇒
+#    GACHIG-256 提取出 UNCENSORED 但 get_number_type 判 JAV（实测漂移）。
+#    provider.py 按 get_number_type 选爬虫 ⇒ 聚合站片走错源。
+# ⚠️ SIRO/LUXU 与 UNCENSORED_SHORT_STUDIOS 重叠（两条路径结论一致，无冲突）。
+UNCENSORED_AGGREGATE_STUDIOS = (
+    "PACOPACOMAMA", "PACOMA", "SIRO", "GACHI", "GACHIG", "GOCHI",
+    "LUXU", "SIROSIMA", "H4610", "C0930", "H0930",
+)
+
+# 里番/同人动画片商号（SEFI-039 / KIN-001 …）。
+# 🔴 2026-10-20 同上：从 _classify_token ③c 内联正则抽出，供 get_number_type 共用，
+#    修 SEFI-039「提取=ANIME vs 类型=JAV」漂移。
+# ⚠️ 与下方 ANIME_HINTS（目录名/社团名）是两回事：这里是**片商编号前缀**。
+ANIME_STUDIOS = (
+    "SEFI", "KIN", "BOMB", "CUCU", "ANIMATION", "HOTPOINT", "NUR",
+)
+
+#: ③b / ③c 的预编译形态（按长度降序，防止 PACOMA 抢先于 PACOPACOMAMA 匹配）
+_AGGREGATE_STUDIO_RE = re.compile(
+    r"(" + "|".join(sorted(UNCENSORED_AGGREGATE_STUDIOS, key=len, reverse=True))
+    + r")[-_]?(\d{2,6})"
+)
+_ANIME_STUDIO_RE = re.compile(
+    r"(" + "|".join(sorted(ANIME_STUDIOS, key=len, reverse=True))
+    + r")[-_]?(\d{2,4})"
 )
 
 
@@ -248,20 +330,56 @@ UNCENSORED_SHORT_STUDIOS = (
 # 全部被判成 JAV ⇒ 进 chinese 模块时按 JAV 源去搜，必然刮不到。
 # 国产的真实判据只有两条：**已知片商前缀** 或 **目录/文件名含中文片商名**。
 #
-# 前缀表来源：G:\TEST\国产 真实样本（麻豆 MD/MDCM/MDL、偶蜜 OM）
-# + 站点源实际支持的番号空间（madou/haijiao/modelmediaasia/cnmdb）。
+# 🔴 2026-10-19 大清洗：原表里混进了 25 个**日本片商**前缀，后果是灾难性的——
+#    infer_module() 按 NumberType 路由模块，而这些片被判 CHINESE ⇒ 走 chinese 模块，
+#    日本有码/无码源**永不接手**，整厂片子刮不到。
+#    实测证据（本地真机）：
+#      · G:\TEST\国产 全目录只有 OM-001 / MD-0263 / MDCM-0006（麻豆系 + 偶蜜）；
+#      · G:\TEST\有码\RARA\[2024-03-12][IPZZ-219]  ⇒ IPX 系属**有码**（IdeaPocket）；
+#      · G:\TEST\无码 全目录无 SSNI ⇒ SSNI 也不该在无码表（已同步移除）；
+#      · 国产源真实番号空间见 app/crawlers/chinese/aggregate.py:42-53 STUDIO_KEYWORDS
+#        （麻豆/天美/果冻/精东/糖心/蜜桃/星空/SWAG/大象/爱豆），**无任何日本片商**。
+#    已移除（均为日本片商，按厂牌归属各走其类）：
+#      IPX/MIDV/ABP 系 IdeaPocket、MIAA(MOODYZ)、FSDSS(FALENO)、DLD/DLDSS、
+#      ATID(Attackers)、SIRO/LUXU(素人)、CARIB(Caribbeancom)、GOGO/MIMK/MUKC、
+#      SDJS/SDMM(SOD)、MIGD/CBZ/CACHET/MSZ/TRE/DOM/KISS/BCR/BOND/NHDT/NHDTA…
+#    ⚠️ 只做「移除」不做「补齐」：STUDIO_KEYWORDS 里的 TM/GD/JD/TX/MT/XK/DX/AD
+#       是 2 字母短前缀，与日本番号空间重叠面大，盲目补会引入新的误分类，
+#       需按 G:\TEST\国产 的实测样本逐条验证后再加。
 CHINESE_STUDIO_PREFIXES = (
     # 麻豆传媒系（实测样本：MD-0263 / MDCM-0006 / MDL-0009-1）
     "MDCM", "MDLM", "MDL", "MD",
     # 偶蜜国际（实测样本：OM-001）
     "OM",
-    # 其它常见国产片商（源侧可检索的番号空间）
-    "GOGO", "MIAA", "MIMK", "MUKC", "SDJS", "SDMM", "SIRO",
-    "MIGD", "ATID", "CBZ", "CACHET", "MSZ", "TRE", "DOM",
-    "KISS", "BCR", "BOND", "CARIB", "IPX", "HJMO", "HJ",
-    "NHDT", "NHDTA", "MIMK", "MSZ", "LUXU", "DLD", "DLDSS",
-    "FSDSS", "ABF", "ATID", "MIDV", "MIGD", "MIMK",
 )
+
+
+def check_studio_whitelist_exclusivity() -> list[str]:
+    """自检：三张片商白名单两两交集必须为空。
+
+    2026-10-19 实测：原 CHINESE 表与 UNCENSORED_SHORT 表有 **7 个交集**
+    （ATID/GOGO/LUXU/MIAA/MIMK/MUKC/SIRO），谁赢只取决于 _classify_token 里
+    ⑦ 在 ⑧a 之前 —— 纯属运气，不是设计。交集非空时同一番号会被两张表争抢，
+    后续任一侧改动都可能翻转判定。
+
+    由测试调用（tests/test_number_parsing_2026-10-19.py），**不在 import 期 raise**：
+    生产环境不应因为一张表的配置问题起不来。
+    """
+    problems: list[str] = []
+    tables = {
+        "CHINESE_STUDIO_PREFIXES": set(CHINESE_STUDIO_PREFIXES),
+        "UNCENSORED_SHORT_STUDIOS": set(UNCENSORED_SHORT_STUDIOS),
+        "UNCENSORED_LONG_STUDIOS": set(UNCENSORED_LONG_STUDIOS),
+    }
+    names = list(tables)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            common = tables[names[i]] & tables[names[j]]
+            if common:
+                problems.append(
+                    f"{names[i]} ∩ {names[j]} = {sorted(common)}"
+                )
+    return problems
 
 # 国产番号：已知片商前缀 + 数字（允许 -1 分集后缀）
 CHINESE_PATTERN = re.compile(
@@ -458,7 +576,10 @@ def is_suren(number: str) -> bool:
 def is_uncensored(number: str) -> bool:
     """判断是否为无码番号"""
     # 模式匹配
-    if re.match(r"n\d{4}", number, re.IGNORECASE):
+    # 🔴 2026-10-18：n 系 → n/k 两系（來源 ref114-amane b7404bc5）。
+    #    東京熱 k 系（K1363/k1393）此前漏认 ⇒ 判非无码。
+    #    re.match 从头匹配，天然满足「字母前不是字母」约束（MK1234 不会命中）。
+    if re.match(r"[nk]\d{4}", number, re.IGNORECASE):
         return True
     if re.search(r"[^.]+\.\d{2}\.\d{2}\.\d{2}", number):
         return True
@@ -743,6 +864,40 @@ _PART_RES = [
 #:    `ABC-123.mp4` 归入同组 ⇒ 破坏既有的「整片 vs 中字版」去重能力（真回归）。
 _ATTR_LETTERS = frozenset({"C", "U"})
 
+#: 画质 / 编码 / 属性标记（不含分卷）。番号**之后**的尾巴若**只**由这些标记组成，
+#: 视为「无分卷」合法尾巴（返回 ``""``），而不是「不认识」⇒ 否则
+#: ``ABC-123-HD`` / ``ABC-123-1080p`` / ``ABC-123-AI`` / ``ABC-123-4K`` 会返回
+#: ``(None, None)``，导致整片被当成「跳过」（审计 #11，2026-10-19 实测）。
+#: ⚠️ 只用 `^...$` 整尾匹配：真分卷（`-CD1` / `-1` / `-a`）含非画质 token，不会命中。
+#: ⚠️ 不含裸 `C`/`U`——那俩是 `_ATTR_LETTERS` 属性标记，由 `_ATTR_FULL_RE` 单独处理，
+#:    这里若把裸 C 收进来会破坏 `-C` 中字版去重。
+#: 🔴 2026-10-20 扩充（来源 ref141-javinizer remaster.go 的词表与分隔符类）：
+#:   1. 开头可选 `E`/`Z` 目录后缀标记（IPX-535Z-HD / IPX-535-ZHD / IPX-535-Z-HD）；
+#:      javinizer 把 E/Z 与 marker 之间「任一侧有分隔符」都视为合法。
+#:      ⚠️ 裸 `-E`/`-Z` 不会被这里吃掉——分卷正则先跑，单字母仍是分卷（见 _parse_tail）。
+#:   2. 编码词独立成组：AAC / DTS / AC3 / EAC3 / FLAC / TRUEHD / ATMOS / OPUS / MP3
+#:      （DTS-HD / AAC-LC / TRUEHD-ATMOS 由「token + 分隔符 + token」天然覆盖）。
+#:   3. 中字多字符标记 CHS / CHT / CH（number.py:578 的后缀正则早已认这三种，
+#:      但 split_code_and_part 漏了 ⇒ ABC-123-CHS 曾被判「跳过」）。
+#:   4. 分隔符类加入花括号/方括号：ABC-123-HD{1080p}。
+_TAIL_QUALITY_RE = re.compile(
+    r"^[-_.\s{}\[\]]*(?:[EeZz][-_.\s{}\[\]]*)?"
+    r"(?:(?:1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD|AI|HDR"
+    r"|x264|x265|HEVC|H\.264|H\.265|AVC"
+    r"|AAC|DTS|AC3|EAC3|FLAC|TRUEHD|ATMOS|OPUS|MP3"
+    r"|UNCENSORED|LEAKED|CHINESE|CN|CHS|CHT|CH|中字|字幕)"
+    r"[-_.\s{}\[\]]*)*$",
+    re.IGNORECASE,
+)
+
+#: 无横线番号主干（ABC1234HD 的兜底候选）。
+#: 🔴 2026-10-20 新增：旧 `_CODE_HEAD_RE` 要求 `字母-数字`，无横线写法
+#:    （ABC1234HD / RCT156HDvol2）连主句都匹配不上 ⇒ 直接 (None, None)。
+#:    与 `_classify_token` ⑨（无横线 JAV）对齐，但**加了两道保守闸**：
+#:    ① 只在有横线候选全部失败后才用；② 尾巴必须非空且 _parse_tail 可解析
+#:    （纯 "ABC1234" 不过——避免把 HEVC265 这类编码词+数字误当番号）。
+_CODE_HEAD_NOHYPHEN_RE = re.compile(r"([A-Za-z]{2,10})(\d{2,5})")
+
 
 def _norm_part(num: str) -> str:
     """分卷序号归一化：`01`→`1`、`B`→`b`，便于 CD1 / cd01 / -1 归为同一卷。"""
@@ -769,11 +924,22 @@ def _parse_tail(rem: str) -> Optional[str]:
         if token.isalpha() and token.upper() in _ATTR_LETTERS:
             continue
         head = rem[: pm.start()]
-        if head == "" or _ATTR_FULL_RE.fullmatch(head):
+        # 🔴 2026-10-20：分卷标记前允许画质/编码标记（RCT156HDvol2 → part 2）。
+        #    来源 javinizer remaster.go：vol 归入 part 标签组，且 marker 可在其前。
+        #    ⚠️ 裸 C/U 仍走 _ATTR_LETTERS 排除（上方 continue），不受影响。
+        if (head == "" or _ATTR_FULL_RE.fullmatch(head)
+                or _TAIL_QUALITY_RE.fullmatch(head)):
             return _norm_part(token)
 
     if rem == "" or _ATTR_FULL_RE.fullmatch(rem):
         return ""
+
+    # 🔴 2026-10-19：番号之后若**只剩**画质/编码/属性标记（HD/1080p/AI/4K/…），
+    # 一律视为「无分卷」合法尾巴，不能返回 None。否则 `ABC-123-HD` 这类常见命名
+    # 会被判成「跳过」（审计 #11）。
+    if _TAIL_QUALITY_RE.fullmatch(rem):
+        return ""
+
     return None
 
 
@@ -823,6 +989,19 @@ def split_code_and_part(stem: str) -> tuple[Optional[str], Optional[str]]:
     if bm:
         return bm.group(1).upper(), None
 
+    # 🔴 2026-10-20：无横线写法兜底（ABC1234HD / RCT156HDvol2）。
+    #    保守闸：尾巴必须**非空**且 _parse_tail 可解析——纯 "ABC1234" 不过，
+    #    避免把 "HEVC265" 这类编码词+数字的随机串误当番号（_parse_tail 的
+    #    「不认识的绝不猜」原则对无横线候选同样生效）。
+    for m in _CODE_HEAD_NOHYPHEN_RE.finditer(stem):
+        rem = stem[m.end():]
+        if not rem:
+            continue
+        part = _parse_tail(rem)
+        if part is None:
+            continue
+        return f"{m.group(1)}-{m.group(2)}".upper(), part or None
+
     return None, None
 
 
@@ -861,11 +1040,70 @@ def clean_filename(filename: str, escape_strings: Optional[list[str]] = None) ->
 
     # 去除广告域名 / 水印前缀（hhd800.com@XXX-123、www.xxx.com@XXX-123）
     # 必须放在分辨率清洗之前，否则 "hhd800" 里的 "HD" 会先被吃掉（见下方词边界说明）
+    # 🔴 2026-10-19 主机段去掉 `-`（`[A-Za-z0-9_-]+` → `[A-Za-z0-9]+`）。
+    #    来源：ref167-sakuramediabe/src/common/movie_numbers.py:111-121，其注释写明
+    #    「主机名只允许字母数字（不含 -），避免把 n1335-kan224.com 的番号前缀一起吃掉」。
+    #    实测带 `-` 的后果（语料 extracts/2026-10-19 实测，21 条提取为空）：
+    #      "HEYZO-2254-nyap2p.com" 主机段贪婪吃到 nyap2p，接 .com 后到串尾 ⇒ 整串被删 → ''
+    #      "SSNI-866-CS-fbfb.me"   同理 → ''
+    #      "UUS75.COM"             同理 → ''（本应是 UUS-75）
+    #    FC2/IPX 原先侥幸不受影响，只因 FC2_PATTERN/CHINESE_PATTERN 在 clean_filename 之前跑。
     name = re.sub(
-        r"(?i)(?:www\.)?[A-Za-z0-9_-]+\.(?:com|net|org|xyz|club|asia|vip|cc|cn|co|me"
-        r"|tw|to|live|work|info|icu|online|shop)@?",
+        r"(?i)(?:www\.)?[A-Za-z0-9]+\.(?:com|net|org|xyz|club|asia|vip|cc|cn|co|me"
+        r"|tw|to|live|work|info|icu|online|shop)@?"
+        # 🔴 2026-10-18 补「TLD 后必须是真边界」断言。
+        #    来源：参考库 ref167-sakuramediabe commit 154c3b2f（番号解析剥离直接粘连的站点水印）。
+        #    原式在 TLD 后无条件剥 ⇒ 实测两个错样本：
+        #      "4k2.meyd424.mp4"   被剥成 "yd424"      → 提成 YD-424（错，应 MEYD-424）
+        #      "x.memories123.mp4" 被剥成 "mories123"  → 提成 MORIES-123（错，应 MEMORIES-123）
+        #    现在要求 TLD（含可选 @）之后是：非字母数字 / 紧跟带分隔符的番号 / 到字符串末尾。
+        #    ⚠️ 不能省 [A-Za-z]{2,10}[-_]\d{2,5} 这个分支——水印与番号直接粘连
+        #      （4k2.meabf-391）时必须剥；也不能去掉 ^$ 分支。
+        # 🔴 2026-10-19 补 `\d{6}[-_]\d{2,4}` 分支：无码日期式番号（062620-001）紧跟
+        #    水印时要能剥。实测 "big2048.com@062620-001-carib-1080p" 原式在这里匹配不上
+        #    （TLD 后是数字开头），导致域名留在串里、6 位数字 fullmatch 失败。
+        #    📊 A/B 实测：extracts/2026-10-19/_probe_maker_strip.py
+        r"(?=[^A-Za-z0-9]|[A-Za-z]{2,10}[-_]\d{2,5}|\d{6}[-_]\d{2,4}|$)",
         "", name,
     )
+
+    # 🔴 2026-10-19 无码片商词剥离（位置独立：番号前后都可能出现，只保留数字段）。
+    #    来源：ref37-metatube-sdk-go/common/number/number.go:25-26
+    #      "(^|[-_\s]+)(carib(b?ean)?(com)?(pr)?|1?Pond?o?|10mu(sume)?|
+    #       paco(paco)?(mama)?|mura(mura)?|Tokyo[-_\s]?Hot)([-_\s]+(?P<pattern>…)|$)"
+    #    实测漏收后果（语料 29 条）：
+    #      "062620-001-carib.mp4"   → 原提成 062620-001-CARIB（应 062620-001）
+    #      "Carib-062620-001-nyap2p.com" → 原提成 CARIB-062620（应 062620-001）
+    #    ⚠️ 两侧都有边界要求（^或分隔符 / 分隔符或$），所以 "muramura" 整体匹配而
+    #       不会把标题里的 "mura" 单词误剥；"paco" 同理。
+    #    ⚠️ 后缀边界用**前瞻** `(?=$|[-_ .])` 而不是消耗式 `(?:[-_ .]+|$)`：
+    #       实测消耗式会把下一个 token 的分隔符一起吃掉 ——
+    #       "062620-001-carib-1080p" 被剥成 "062620-0011080p"（1080p 的 `-` 没了，
+    #       分辨率清洗随之失效），这是本次第一版的实测回归。
+    #    ⚠️ 分隔符不可互换：一本道用 `_`、加勒比用 `-`，是同一天两部片的区分依据，
+    #       这里只做"整词移除"，不动数字段内部的分隔符。
+    name = re.sub(
+        r"(?i)(?:^|[-_ .])(?:carib(?:beancom(?:pr)?)?|1?pon(?:do)?|10mu(?:sume)?|"
+        r"paco(?:paco)?(?:mama)?|mura(?:mura)?|tokyo[-_ .]?hot)(?=$|[-_ .])",
+        "", name,
+    )
+
+    # 🔴 2026-10-19 前导数字水印剥离（站点把 `水印数字` 直接粘在番号字母前）。
+    #    来源：ref167-sakuramediabe 语料（956 条跨项目用例）**一致要求剥掉**——
+    #    全表检索「期望值以 3-4 位数字开头且含字母」的条目数为 **0**。
+    #    实测漏收后果（语料 10+ 条）：
+    #      "229SCUTE-1014" → 原提成 229SCUTE-1014（应 SCUTE-1014）
+    #      "001HMNF-063"   → 原提成 001HMNF-063  （应 HMNF-063）
+    #      "0504xvsr060"   → 原提成 0504XVSR-060 （应 XVSR-060）
+    #      "hjd2048.com-0119abp821-h264" → 域名剥掉后剩 -0119abp821-h264，
+    #                              原提成 0119ABP-821（应 ABP-821）
+    #    ⚠️ 纯数字番号**不受影响**：`\d{3,}` 贪婪匹配后要求紧跟 2+ 字母，
+    #       012213_831 / 031811-647 / 111111-111 / 062620-001 全部匹配不上
+    #       （数字后是分隔符或数字），实测已逐条验过。
+    #    ⚠️ 已知行为变化：259LUXU-1456 → LUXU-1456（LUXU 才是真片商，
+    #       259 是站点水印）。语料支持这个方向，但若库里已有按 259LUXU-1456
+    #       入库的记录，需要一次 code 重算（已在落地记录里列为待办）。
+    name = re.sub(r"^[-_ .]*\d{3,}(?=[A-Za-z]{2,})", "", name)
 
     # 去除分集标记 (CD1, CD2, Part1, EP.1)
     name = re.sub(r"[-_ .]?CD\d{1,2}", "", name, flags=re.IGNORECASE)
@@ -884,8 +1122,18 @@ def clean_filename(filename: str, escape_strings: Optional[list[str]] = None) ->
     #    写法要点：[-_ .]? 先吃掉左侧分隔符，再用后顾断言确认标记左边不是字母数字。
 
     # 去除分辨率标记（补 8k / 2160p / UHD）
+    # 🔴 2026-10-19：HD/SD/FHD/UHD 四个字母型标记补 `(?![.-]\d)` 负向前瞻。
+    #    来源：ref114-amane/src/amane/parsing/file_info.py:240-241
+    #      ("HD", re.compile(r"\bHD\b(?![.-]\d)"))   # HD/SD 不得是番号前缀
+    #    实测（2026-10-19）：`clean_filename('HD-123')` 原返回 `'123'` ——
+    #    HD 被当分辨率剥掉，番号被毁，只剩裸数字 123。HD-123 / HD_123 是真实存在的
+    #    番号形态（下划线归一成点后同形），amane 的 tests/parsing/test_file_info.py:132-137
+    #    专门为它写了负例。
+    #    ⚠️ 只对字母型标记加，不对 1080p/720p 等数字型加——后者本身就是画质词，
+    #       且 `(?![.-]\d)` 会把 `ABC-123-1080p-1`（分卷 1）里的 1080p 放过，反而漏剥。
     name = re.sub(
-        r"[-_ .]?(?<![A-Za-z0-9])(1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD)(?![A-Za-z0-9])",
+        r"[-_ .]?(?<![A-Za-z0-9])(1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD)(?![A-Za-z0-9])"
+        r"(?![.-]\d)",
         "", name, flags=re.IGNORECASE,
     )
 
@@ -905,12 +1153,24 @@ def clean_filename(filename: str, escape_strings: Optional[list[str]] = None) ->
     name = re.sub(r"\[[A-Fa-f0-9]{8}\]", "", name)
 
     # 去除网站标记
-    name = re.sub(r"\[[^\]]+\]", "", name)  # [xxx]
-    name = re.sub(r"\([^\)]+\)", "", name)  # (xxx)
+    # 🔴 2026-10-19 `[^\]]+` → `[^\]]*`：允许**空**括号 `[]`。
+    #    实测 "[ThZu.Cc]062620-001-carib-1080p.mp4"：域名正则先把 `ThZu.Cc`
+    #    （cc 在 TLD 表里）剥掉，剩下 `[]062620-001…`，而 `+` 要求括号内至少一字符
+    #    ⇒ `[]` 清不掉，最后提成 `[]062620-001…`。
+    name = re.sub(r"\[[^\]]*\]", "", name)  # [xxx]
+    name = re.sub(r"\([^\)]*\)", "", name)  # (xxx)
 
     # 清理多余字符
     name = re.sub(r"[-_. ]{2,}", " ", name)
     name = name.strip("-_. ")
+
+    # 🔴 2026-10-19 兜底：清洗后为空 ⇒ 回退原文（去掉域名前的 name）。
+    #    场景 "UUS75.COM"：域名本身就是番号载体，剥完什么都不剩。
+    #    sakuramediabe 的同一策略见 movie_numbers.py:148-152（剥离后解析不出则回退原文）。
+    #    ⚠️ 只在「全空」时回退，不做「变短就回退」——那会把 hhd800.com@ABC-123
+    #       这类正常水印样本也退回带水印的原文。
+    if not name:
+        return os.path.splitext(filename)[0].strip()
 
     return name
 
@@ -1045,12 +1305,35 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
     #   FC2-1234567 / FC2_1234567 / FC2PPV-1234567 / fc2ppv1234567 四种写法。
     # 统一归一为 `FC2-{id}`（与站点 URL 及 fc2ppvdb 源一致，见 normalize_number）。
     if match := FC2_PATTERN.search(filename):
-        number = re.sub(r"^FC2[-_]?(?:PPV[-_]?)?", "FC2-", match.group(), flags=re.IGNORECASE)
+        number = re.sub(
+            rf"^FC2{_FC2_SEP}(?:PPV{_FC2_SEP})?", "FC2-", match.group(), flags=re.IGNORECASE
+        )
         return _apply_suffix(
             NumberResult(
                 number=number.upper(),
                 original=original,
                 number_type=NumberType.FC2,
+                confidence=0.95,
+            ),
+            bracket_chinese,
+        )
+
+    # 🔴 2026-10-19：HEYZO 判据同样必须**最先**跑（与上面 FC2 同理）。
+    # 实测 `(Heyzo)(1009)ロリで巨乳なバスケ部マネージャー…` 提取为空 —— 根因是
+    # clean_filename 的「去网站标记」`\([^\)]+\)` 先把 `(Heyzo)` 和 `(1009)` 当成
+    # 网站标记删掉，等走到第 4 步 HEYZO_PATTERN.search(cleaned) 时已无痕迹。
+    # 下方第 4 步的 cleaned 版本保留不动（覆盖非括号包裹的常规写法）。
+    if match := HEYZO_PATTERN.search(filename):
+        number = match.group().upper()
+        number = number.replace("_", "-")
+        if not number.startswith("HEYZO-"):
+            number = "HEYZO-" + number.replace("HEYZO", "").strip("-_()")
+        return _apply_suffix(
+            NumberResult(
+                number=number,
+                original=original,
+                number_type=NumberType.UNCENSORED,
+                prefix="HEYZO",
                 confidence=0.95,
             ),
             bracket_chinese,
@@ -1095,6 +1378,32 @@ def extract_number(filename: str, escape_strings: Optional[list[str]] = None) ->
         return _apply_suffix(NumberResult(number=number, original=original, number_type=NumberType.ANIME, prefix="ANI", confidence=0.90), bracket_chinese)
 
     cleaned = clean_filename(filename, escape_strings)
+
+    # 1a. 東京熱 n / k 两系（n1234 / k1363，都是无码）
+    # 🔴 2026-10-19 补：此前该规则只存在于 _classify_token 的 ③d（方括号 token 路径），
+    #    **extract_number 主链里没有** ⇒ 语料 73 条全挂。实测样本：
+    #      "k0111_kana_matsuura_oo.avi"  原提成 K0111_KANA_MATSUURA（应 K0111）
+    #      "Tokyo Hot N0001 ~ Mai Kuramoto.avi" 原提成 N0001 ~ MAI KURAMOTO（应 N0001）
+    #      "n1234.mp4" 虽能提出 N1234，但类型靠 _classify_token 才判 UNCENSORED，
+    #      而 is_uncensored("N1234") 又是 True —— 三条链路判定不一致。
+    #    来源：ref114-amane/src/amane/parsing/file_info.py:553
+    #      if m := re.search(r"([^A-Z]|^)([NK]\d{4})(\D|$)", c):
+    #          return m.group(2).lower(), ContentType.UNCENSORED
+    #    🔴 前后边界断言**不能省**：
+    #      - 前导 `([^A-Z]|)` 防 MK1234 / AN1234 / SNK1234 被切成 K1234
+    #        （amane tests/parsing/test_file_info.py:252-255 有专门负例）
+    #      - 后缀 `(\D|$)` 防把 K0111 后面的 _KANA_MATSUURA 一起吞进来
+    if m := re.search(r"([^A-Za-z]|^)([NK]\d{4})(\D|$)", cleaned):
+        return _apply_suffix(
+            NumberResult(
+                number=m.group(2).upper(),
+                original=original,
+                number_type=NumberType.UNCENSORED,
+                prefix=m.group(2)[0].upper(),
+                confidence=0.92,
+            ),
+            bracket_chinese,
+        )
 
     # 1. 无码数字番号: 111111-111
     if number := normalize_uncensored_digit_number(cleaned):
@@ -1349,19 +1658,30 @@ def _classify_token(token: str) -> Optional[NumberResult]:
     #    字面上就是 `[A-Za-z]+-数字`，被判成 jav ⇒ 无码模块永不接手。
     #    但**不能**把所有长前缀都当无码（如 SEFI-039 是里番片商号），
     #    故用无码站白名单精确判定。
-    if m := re.fullmatch(r"(PACOPACOMAMA|PACOMA|SIRO|GACHI|GACHIG|GOCHI|"
-                         r"LUXU|SIROSIMA|H4610|C0930|H0930)"
-                         r"[-_]?(\d{2,6})", upper):
+    # 🔴 2026-10-20：内联正则改为共享 UNCENSORED_AGGREGATE_STUDIOS 表
+    #    （get_number_type 也读它，消除两套判定漂移，见该表注释）。
+    if m := _AGGREGATE_STUDIO_RE.fullmatch(upper):
         return NumberResult(f"{m.group(1)}-{m.group(2)}", "",
                             NumberType.UNCENSORED, prefix=m.group(1), confidence=0.90)
 
     # ③c. 里番片商号（SEFI-039 / KIN-001 / BOMB-012 …）
     # 实测 G:\TEST\动漫 样本 `[SEFI-039]`。这些是**同人动画**的片商编号，
     # 形似 JAV 但语义上是里番 ⇒ 必须归 anime，否则进 jav 模块查无此片。
-    if m := re.fullmatch(r"(SEFI|KIN|BOMB|CUCU|ANIMATION|HOTPOINT|NUR)"
-                         r"[-_]?(\d{2,4})", upper):
+    # 🔴 2026-10-20：内联正则改为共享 ANIME_STUDIOS 表（get_number_type 也读它）。
+    if m := _ANIME_STUDIO_RE.fullmatch(upper):
         return NumberResult(f"{m.group(1)}-{m.group(2)}", "",
                             NumberType.ANIME, prefix=m.group(1), confidence=0.88)
+
+    # ③d. 東京熱 n / k 两系（n1234 / K1363）——都是无码
+    # 🔴 2026-10-18 补：来源参考库 ref114-amane commit b7404bc5（#439）。
+    #    实测漏收：`K1363.mp4` 提取出 K1363 但 number_type=UNKNOWN ⇒ 永不刮削；
+    #    `n1234.mp4` 更糟——提取出 N1234 但类型也是 UNKNOWN，而 is_uncensored("N1234")
+    #    却返回 True，**提取链路与 is_uncensored 两套判定漂移**。
+    # ⚠️ 前导约束 `(?<![A-Z])` 不能省：否则 "MK1234" 会被切成 K1234 误判无码
+    #    （amane 的测试用例明确 MK1234 仍是有码番号）。
+    if m := re.fullmatch(r"(?<![A-Z])[NK]\d{4}", upper):
+        return NumberResult(m.group().upper(), "", NumberType.UNCENSORED,
+                            prefix=m.group()[0].upper(), confidence=0.90)
 
     # ④ HEYZO
     if m := HEYZO_PATTERN.fullmatch(upper):
@@ -1382,10 +1702,13 @@ def _classify_token(token: str) -> Optional[NumberResult]:
 
     # ⑧ 标准 JAV：字母{2,}-数字{2,}[字母?][-数字?]（含 -1 分集）
     if m := re.fullmatch(r"([A-Za-z]{2,})-(\d{2,6})([A-Za-z]?)(?:-(\d{1,2}))?", upper):
-        # ⑧a. 无码短片商白名单（CZ-012 / CRB-48 …）
+        # ⑧a. 无码短片商白名单（CZ-012 / CRB-48 …）与长字母无码片商（SMBD-005 …）
         # 🔴 形态与 JAV 完全同形，只能靠白名单区分。实测 G:\TEST\无码 样本
         #    `[2014-08-01][CZ-012]…` 被判成 jav ⇒ 无码模块永不接手。
-        if m.group(1) in UNCENSORED_SHORT_STUDIOS:
+        # 🔴 2026-10-18：补 UNCENSORED_LONG_STUDIOS（SMBD/DRGBD/SMDV），
+        #    来源 ref114-amane b7404bc5 / e4bef99b，漏收时同样被判 jav。
+        if (m.group(1) in UNCENSORED_SHORT_STUDIOS
+                or m.group(1) in UNCENSORED_LONG_STUDIOS):
             num = f"{m.group(1)}-{m.group(2)}" + (f"-{m.group(4)}" if m.group(4) else "")
             return NumberResult(num, "", NumberType.UNCENSORED, prefix=m.group(1), confidence=0.90)
         num = f"{m.group(1)}-{m.group(2)}{m.group(3)}" + (f"-{m.group(4)}" if m.group(4) else "")
@@ -1393,6 +1716,11 @@ def _classify_token(token: str) -> Optional[NumberResult]:
 
     # ⑨ 无横线 JAV：ABP123 / SEFI039
     if m := re.fullmatch(r"([A-Za-z]{2,})(\d{3,6})", upper):
+        # ⑨a. 无横线的长字母无码片商（drgbd046 / smdv029）
+        # 🔴 2026-10-18 补：与 ⑧a 同理，漏了会被判 JAV ⇒ 无码源不接手。
+        if m.group(1) in UNCENSORED_LONG_STUDIOS:
+            return NumberResult(f"{m.group(1)}-{m.group(2)}", "",
+                                NumberType.UNCENSORED, prefix=m.group(1), confidence=0.90)
         return NumberResult(f"{m.group(1)}-{m.group(2)}", "", NumberType.JAV, prefix=m.group(1).upper(), confidence=0.85)
 
     return None
@@ -1537,6 +1865,33 @@ def get_number_type(number: str) -> NumberType:
     if re.match(r"\d{6}-\d{2,4}$", number):
         return NumberType.UNCENSORED
 
+    # 東京熱 n / k 两系（n1234 / K1363）——无码
+    # 🔴 2026-10-18 补（來源 ref114-amane b7404bc5）：此前漏认 ⇒ UNKNOWN，
+    #    与 is_uncensored 的判定漂移。放在「标准 JAV」之前，虽然 JAV 规则
+    #    要求横线本来吃不掉它们，但显式声明避免将来规则变动时被误吃。
+    if re.match(r"[nk]\d{4}", number, re.IGNORECASE):
+        return NumberType.UNCENSORED
+
+    # 🔴 2026-10-20 修：国产/无码片商白名单必须在「标准 JAV」**之前**判。
+    #    旧实现是反的：白名单放在 JAV 规则之后（注释却写着"先查白名单再落 JAV"，
+    #    实现与注释相反）。而 MD-0263 / OM-001 / DRGBD-045 / SIRO-1234 字面全部
+    #    命中 `[A-Z]{2,}-\d{2,}` ⇒ 旧国产分支对主形态是**死代码**，
+    #    get_number_type 从未返回过 CHINESE；旧实现也完全不读
+    #    UNCENSORED_SHORT/LONG_STUDIOS（DRGBD-045 实测判 JAV）。
+    #    与 _classify_token 的 ⑦/⑧a 对齐，消除「提取链路 vs 类型链路」漂移。
+    #    实测影响面：provider.py:223 按 get_number_type 选爬虫 ⇒ 判错即选错源。
+    #    ⚠️ 尾巴允许可选分集号（MDLM-0009-1），与 CHINESE_PATTERN 的
+    #       `(?:[-_](\d{1,2}))?` 一致——否则国产分集会重新漂移回 JAV。
+    if m := re.match(r"([A-Za-z]{2,})[-_]?(\d{2,6})(?:[-_]?\d{1,2})?$", upper):
+        head = m.group(1)
+        if (head in UNCENSORED_SHORT_STUDIOS or head in UNCENSORED_LONG_STUDIOS
+                or head in UNCENSORED_AGGREGATE_STUDIOS):
+            return NumberType.UNCENSORED
+        if head in ANIME_STUDIOS:
+            return NumberType.ANIME
+        if head in CHINESE_STUDIO_PREFIXES:
+            return NumberType.CHINESE
+
     # 标准 JAV
     if re.match(r"[A-Z]{2,}-\d{2,}", upper):
         return NumberType.JAV
@@ -1553,15 +1908,6 @@ def get_number_type(number: str) -> NumberType:
     # Mywife
     if upper.startswith("MYWIFE"):
         return NumberType.MYWIFE
-
-    # 🔴 2026-10-04：国产必须在「标准 JAV」**之后但仍要先行判** ——
-    # 顺序上放到这里是因为国产号形如 MD-0263，与 JAV 完全同形，
-    # 靠 CHINESE_STUDIO_PREFIXES 白名单区分；先查白名单再落 JAV。
-    if re.match(
-        r"(" + "|".join(sorted(CHINESE_STUDIO_PREFIXES, key=len, reverse=True))
-        + r")[-_]?\d{2,6}$", upper,
-    ):
-        return NumberType.CHINESE
 
     # 里番 ANI-2024-001
     if ANIME_PATTERN.fullmatch(upper) or upper.startswith("ANI-"):

@@ -92,6 +92,11 @@ DEFAULT_MIN_SAMPLES = 5
 #: 每熔断一次冷却翻倍的倍数（用于半开失败后的退避）
 BACKOFF_FACTOR = 2.0
 
+#: 🔴 2026-10-19 审计 #8：半开探针租约。冷却期满瞬间只放**一个**请求过去试探，
+#: 其余请求继续被挡；若探针在 PROBE_LEASE 内未回报（请求中途崩溃/卡死），
+#: 则允许一个新探针接管，避免永久卡死。参考 crawlerx HostCircuit::probe_until 的租约思路。
+PROBE_LEASE = 30.0
+
 #: 视为「有成功过」的最小成功率。严格大于 0 即不熔断。
 _SUCCESS_RATE_EXEMPT = 0.0
 
@@ -177,8 +182,10 @@ class BreakerState:
     open_until: float = 0.0
     #: 连续熔断次数，用于指数退避
     strike: int = 0
-    #: 是否处于「半开」状态（冷却已过，放行 1 个探测请求）
+    #: 是否处于「半开」状态（冷却已过，已放出一个探测请求，其余请求继续被挡）
     half_open: bool = False
+    #: 半开探针放出的时间戳（time.monotonic 基准），用于 PROBE_LEASE 租约判定
+    half_open_at: float = 0.0
     #: 统计信息，仅用于日志与 /crawlers/health 展示
     last_reason: str = ""
     last_opened_at: float = 0.0
@@ -278,26 +285,57 @@ class SourceBreaker:
 
         查库是为了让熔断**跨进程重启生效** —— 服务器上服务重启频繁，
         只靠内存计数等于每次重启都要重新试错一轮死源。
-        """
-        local = self.check(name, now=now)
-        if local.should_skip or not self.enabled:
-            return local
 
+        🔴 2026-10-19 审计 #8（半开探针）：冷却期满瞬间**只允许一个**请求过去试探，
+        其余请求继续被挡，避免并发 24 个请求一起砸向刚恢复的源
+        （惊群会把刚恢复的源再次打挂，表现为"熔断没生效"）。
+        探针在 PROBE_LEASE 内独占；若探针租约过期（请求可能中途崩溃未回报），
+        放一个新探针接管，避免永久卡死。
+        """
+        now = now if now is not None else time.monotonic()
+        st = self.get_state(name)
+        if not self.enabled:
+            return BreakerDecision(False)
+
+        # 1) 仍在熔断窗口内 → 直接短路（零开销）
+        if st.open_until > now:
+            return BreakerDecision(
+                True,
+                reason=f"circuit_open:{st.last_reason or 'unknown'}",
+                cooldown=st.open_until - now,
+            )
+
+        # 2) 冷却已过期（open_until <= now）。半开探针：若已有探针在飞且租约未过期，
+        #    继续挡住其余请求；租约过期则允许新探针接管（落到下面的允许分支）。
+        if st.half_open and (now - st.half_open_at) <= PROBE_LEASE:
+            return BreakerDecision(
+                True,
+                reason="half_open_probe_pending",
+                cooldown=max(0.0, st.half_open_at + PROBE_LEASE - now),
+            )
+
+        # 3) 查库判定（跨进程重启也生效）
         stats = await self._load_window_stats(name)
         verdict = self._evaluate(stats)
         if not verdict.should_skip:
+            # 允许本次请求。若源**刚从熔断窗口恢复**（open_until 曾被置为未来值，>0），
+            # 则把它当作半开探针放行 → 置 half_open，挡住其余请求直到探针回报。
+            if st.open_until > 0:
+                st.half_open = True
+                st.half_open_at = now
             return verdict
 
-        # 持久数据判定要熔断 → 写入本地状态，让后续调用零开销短路
-        st = self.get_state(name)
+        # 4) 持久数据判定要熔断 → 写回本地状态，让后续调用零开销短路
         cooldown = verdict.cooldown
         # 已处于退避中则用指数退避，但受 MAX_COOLDOWN 封顶
         if st.strike > 0:
             cooldown = min(cooldown * (BACKOFF_FACTOR ** st.strike), MAX_COOLDOWN)
-        st.open_until = (now if now is not None else time.monotonic()) + cooldown
+        st.open_until = now + cooldown
         st.last_reason = verdict.stats.get("top_reason", "")
         st.strike += 1
-        st.last_opened_at = now if now is not None else time.monotonic()
+        st.last_opened_at = now
+        # 进入熔断 → 清掉半开标记（窗口内由 open_until 提前短路，不会读到 half_open）
+        st.half_open = False
         return verdict
 
     def _evaluate(self, stats: dict) -> BreakerDecision:
@@ -400,11 +438,16 @@ class SourceBreaker:
     # -- 反馈 ----------------------------------------------------------
 
     def record_success(self, name: str) -> None:
-        """源成功一次 → 清零退避（含半开闭合）。"""
+        """源成功一次 → 清零退避（含半开闭合）。
+
+        🔴 2026-10-19：探针成功 ⇒ 完全闭合（open_until 清零、strike 归零、
+        half_open 清掉），后续请求恢复正常放行。
+        """
         st = self.get_state(name)
         st.open_until = 0.0
         st.strike = 0
         st.half_open = False
+        st.half_open_at = 0.0
 
     def record_failure(self, name: str, reason: str) -> None:
         """源失败一次 → 立即按该原因开一次熔断。
@@ -429,6 +472,8 @@ class SourceBreaker:
         st.last_reason = reason
         st.strike += 1
         st.last_opened_at = now
+        # 🔴 2026-10-19：半开探针失败 ⇒ 清掉半开标记（窗口内由 open_until 提前短路）
+        st.half_open = False
 
 
 # ----------------------------------------------------------------------

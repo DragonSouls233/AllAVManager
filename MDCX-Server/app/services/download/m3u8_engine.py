@@ -20,6 +20,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin
 
 from app.services.download.download_models import DownloadConfig, DownloadResult
 from app.services.proxy_manager import get_effective_proxy_url

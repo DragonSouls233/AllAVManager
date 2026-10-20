@@ -27,11 +27,21 @@ UNCENSORED_PREFIXES: set[str] = {
     "HEYZO", "KIN8TENGOKU", "GACHI", "GACHINET",
     "MKD", "BT", "CT", "EMP", "CCDV", "CWP",
     "JAV", "KTG", "S2M", "SKY", "SKYHD", "RED",
-    "MGR", "DQ", "MKY", "MMR", "MD", "H4610",
+    "MGR", "DQ", "MKY", "MMR", "H4610",
+    # 🔴 2026-10-20 移除 "MD"：与 app/scraper/number.py 的
+    #    CHINESE_STUDIO_PREFIXES（麻豆传媒系，实测样本 MD-0263/MDCM-0006）冲突。
+    #    本表的消费者是 uncensored_aggregate.py:80（无码源选择）⇒ 留着会让
+    #    国产片被当无码番号走无码源，必然刮不到。两表冲突时以本地实测样本为准。
     "H0930", "C0930", "LAF", "IK", "SMD", "T28",
     "TH101", "XCITY", "OKUW", "NAGO", "NAC",
     "SGA", "STAR", "GQ", "FHD", "MXB", "MX2",
     "PPS", "ONE", "DVAJ", "XVSR", "BRO",
+    # 🔴 2026-10-18 补：SMBD / DRGBD / SMDV。
+    #    来源参考库 ref114-amane commit b7404bc5 / e4bef99b。
+    #    与 app/scraper/number.py 的 UNCENSORED_PREFIXES 是**两份并存**的表
+    #    （本文件移植自 mdcx-diy），历史上已多次漂移；本次两边同步补。
+    #    漏收后果：这三个片商被判非无码 ⇒ 无码专用链路（AVSOX 封面补填等）不接手。
+    "SMBD", "DRGBD", "SMDV",
 }
 
 # 无码数字番号模式
@@ -44,7 +54,9 @@ _PATTERN_PREFIX_UNCENSORED = re.compile(
     r")[-_ ]?(\d{2,6}[A-Za-z]?\d{0,4})\b",
     re.I,
 )
-_PATTERN_N_DIGIT = re.compile(r"\b(n\d{4})\b", re.I)
+# 🔴 2026-10-18：n 系 → n/k 两系（來源 ref114-amane b7404bc5，東京熱 k 系）。
+#    \b 边界天然满足「字母前不是字母」：MK1234 的 K 前是 M（词字符）⇒ 不匹配。
+_PATTERN_N_DIGIT = re.compile(r"\b([nk]\d{4})\b", re.I)
 
 
 @dataclass
