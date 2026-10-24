@@ -43,6 +43,9 @@ class NumberResult:
     confidence: float = 1.0        # 置信度
     is_chinese: Optional[bool] = None   # 是否中文字幕（从 -C 后缀推断）
     is_mosaic: Optional[bool] = None    # 是否有码（从 -U 后缀推断，False=无码）
+    # 🔴 2026-10-22 新增：高清无码（-LTX 后缀，新技术去码，画质高于普通 -U 破解版）
+    #   与 is_mosaic=False 并存：LTX 既算无码（is_mosaic=False），又单独标记为高清无码。
+    is_hd_uncensored: Optional[bool] = None
     formatted: str = ""            # 标准刮削格式：爬虫可直接使用的格式
                                    # JAV: ABC-123, FC2: FC2-4786921,
                                    # HEYZO: 0407, 麻豆: MD0263,
@@ -65,12 +68,17 @@ JAV_PATTERN = re.compile(r"[A-Z]{2,}-\d{2,}[Z]?", re.IGNORECASE)
 # 而送源站搜 "GANA-3414" 搜不到/搜错（实测刮到另一部片，演员都对不上），
 # 这正是「素人番号不带数字就刮不出来」的根因。
 # 现在：数字段与字母段之间的分隔符改为**可选**。
-# ⚠️ 尾号只允许**已知的版本/中字标记**（C/U/CU/UC/CHS/CHT/CH）：
+# ⚠️ 尾号只允许**已知的版本/中字标记**（C/U/CU/UC/CHS/CHT/CH/LTX）：
 #   早先写成 `(?:-[A-Z])?` 会把画质/版本标记当成尾号吞掉 ——
 #   实测 `200GANA-3414-HD` 被截成 `200GANA-3414-H`（HD 只剩 H）。
-#   这些后缀随后由 `_apply_suffix`→`parse_suffix` 解析出中字/无码标记。
+#   这些后缀随后由 `_apply_suffix`→`parse_suffix_full` 解析出中字/无码/高清无码标记。
+# 🔴 2026-10-22：补 LTX（高清无码）。`200GANA-3414-LTX` 现在能正确识别，
+#   尾号不再把 LTX 当成未知字母吞掉。
+# 🔴 2026-10-23 QA 修复：后缀段由 `?`（至多一个）改为 `*`（可多个）。
+#   原写法只吃一层后缀 ⇒ `200GANA-3414-C-LTX` 匹配成 `200GANA-3414-C`，
+#   后面的 `-LTX` 被丢在匹配之外 ⇒ 高清无码标记丢失（QA 实测 hd=None）。
 AMATEUR_PATTERN = re.compile(
-    r"\d{2,}[A-Z]{2,}-?\d{2,}(?:-(?:CU|UC|CHS|CHT|CH|C|U))?",  # 200GANA-3414 / 200GANA3414 / 200GANA-3414-C
+    r"\d{2,}[A-Z]{2,}-?\d{2,}(?:-(?:CU|UC|CHS|CHT|CH|LTX|C|U))*",
     re.IGNORECASE,
 )
 
@@ -80,12 +88,19 @@ def _normalize_amateur(token: str) -> str:
 
     站点/库里的标准写法都带横杠（`200GANA-3414`），而文件名常见
     `200GANA3414`（无横杠）。不补横杠就会以错误番号去搜源站。
-    尾号后缀（`-C` 中字 / `-U` 无码）由 `_apply_suffix`→`parse_suffix` 负责剥离，
-    这里必须先摘掉它，否则会把后缀误当成尾号数字段。
+    尾号后缀（`-C` 中字 / `-U` 无码 / `-LTX` 高清无码）由 `_apply_suffix`→
+    `parse_suffix_full` 负责剥离，这里必须先摘掉它，否则会把后缀误当成尾号数字段。
     """
     t = token.strip().upper()
-    # 先摘掉尾部的 -C / -U / -CU / -CHS 等版本后缀（与 AMATEUR_PATTERN 保持一致）
-    t = re.sub(r"-(?:CU|UC|CHS|CHT|CH|C|U)$", "", t)
+    # 先摘掉尾部的 -C / -U / -CU / -CHS / -LTX 等版本后缀（与 AMATEUR_PATTERN 保持一致）
+    # 🔴 2026-10-23 QA 修复：改**循环剥离**。AMATEUR_PATTERN 已允许多个后缀段
+    #   （`-C-LTX`），而这里只剥一层 ⇒ `200GANA-3414-C-LTX` 剩 `200GANA-3414-C`，
+    #   fullmatch 失败后原样返回，番号带着 `-C` 去搜源站。
+    while True:
+        new_t = re.sub(r"-(?:CU|UC|CHS|CHT|CH|LTX|C|U)$", "", t)
+        if new_t == t:
+            break
+        t = new_t
     # 数字段与字母段之间补横杠；字母段与数字段之间若缺也补上
     m = re.fullmatch(r"(\d{2,})([A-Z]{2,})-?(\d{2,})", t)
     if m:
@@ -607,70 +622,177 @@ def normalize_uncensored_digit_number(number: str) -> Optional[str]:
 
 
 # ============================================
-# 番号后缀解析（C/U/UC/CHS/CHT/CH）
+# 番号后缀解析（C/U/UC/CHS/CHT/CH/LTX）
 # ============================================
 
-# 后缀正则: ABC-123-C, ABC-123C, ABC-123-U, ABC-123U, ABC-123-UC, ABC-123UC
-# v3.0 扩展: ABC-123-CHS, ABC-123-CHT, ABC-123-CH (中字多字符后缀)
-# 优先级：CHS/CHT/CH (3字符) > UC/CU (2字符) > U/C (1字符)
-# 单字符后缀需要确保 base 末尾的字母不是 U/C（防止 ABC-123U 中的 U 被 base 吞掉）
-SUFFIX_PATTERN_TRIPLE = re.compile(r"^(.+?)[-_.\s]?(CHS|CHT|CH)$", re.IGNORECASE)
-SUFFIX_PATTERN_DUAL = re.compile(r"^(.+?)[-_.\s]?(UC|CU)$", re.IGNORECASE)
-SUFFIX_PATTERN_SINGLE = re.compile(r"^(.+?)[-_.\s]?([UC])$", re.IGNORECASE)
+# 🔴 2026-10-22 重构：后缀解析改由 `_split_suffix`（迭代剥离，支持组合后缀
+#   `-C-LTX` / `-UC-LTX` 与后缀后再跟 `-1080p` 的画质尾巴）+ `_classify_suffix_full`
+#   （按"包含哪些标记"判定）完成，下面三个正则已无处引用，仅作历史口径注释保留说明：
+#   优先级：CHS/CHT/CH (3字符) > LTX (3字符) > UC/CU (2字符) > U/C (1字符)
+#   单字符后缀需要确保 base 末尾的字母不是 U/C（防止 ABC-123U 中的 U 被 base 吞掉）
+
+
+def _classify_suffix_full(suffix: str, bracket_chinese: bool) -> tuple:
+    """解析后缀标记（含 LTX 高清无码与组合后缀）。
+
+    🔴 2026-10-22 新增。返回 `(is_chinese, is_mosaic, is_hd_uncensored)`：
+
+        -C       → (True,  None,  None)   中文字幕
+        -U       → (None,  False,  None)  无码破解
+        -LTX     → (None,  False,  True)  **高清无码**（新技术去码）
+        -C-LTX   → (True,  False,  True)  **中文 + 高清无码**
+        -UC      → (True,  False,  None)  中字 + 无码破解
+        -UC-LTX  → (True,  False,  True)  中字 + 高清无码
+
+    为什么单独一个字段而不是复用 is_mosaic=False：
+    用户明确要求「LTX 是高清无码，使用新技术去码，**要区别出来**」——
+    它和无码破解版（-U）在画质/来源上都不同，混在一起就没法筛选与统计。
+
+    `suffix` 可能是**组合串**（`_split_suffix` 迭代剥离后拼接而成，
+    如 "CLTX" / "UCLTX" / "C-LTX"），所以这里按"包含哪些标记"判定，
+    而非精确相等；先把非字母字符剔掉再判。
+    """
+    su = re.sub(r"[^A-Z]", "", (suffix or "").upper())
+
+    # 纯中字三字符（不含 LTX/U）
+    if su in ("CHS", "CHT", "CH"):
+        return True, None, None
+
+    # 含 LTX ⇒ 高清无码（is_mosaic 同时置 False，让"只看无码"的既有筛选也生效）
+    if "LTX" in su:
+        rest = su.replace("LTX", "")
+        is_chinese = True if ("C" in rest or "CH" in rest) else None
+        if is_chinese is None and bracket_chinese:
+            is_chinese = True
+        return is_chinese, False, True
+
+    is_chinese = True if "C" in su else None
+    is_mosaic = False if "U" in su else None
+    if is_chinese is None and bracket_chinese:
+        is_chinese = True
+    return is_chinese, is_mosaic, None
+
+
+#: 已知后缀全集（用于组合后缀的迭代剥离）
+_KNOWN_SUFFIXES = frozenset({"CHS", "CHT", "CH", "LTX", "UC", "CU", "U", "C"})
+
+#: 画质/编码类尾巴（出现在后缀之后，如 ABC-123-C-LTX-1080p）
+_QUALITY_TAIL_RE = re.compile(
+    r"^(?:1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD|AI|HDR"
+    r"|x264|x265|HEVC|H\.264|H\.265|AVC"
+    r"|AAC|DTS|AC3|EAC3|FLAC|TRUEHD|ATMOS|OPUS|MP3)$",
+    re.IGNORECASE,
+)
+
+
+def _split_suffix(number: str) -> tuple[Optional[str], Optional[str]]:
+    """剥离已知后缀，返回 (base, suffix)。无后缀返回 (None, None)。
+
+    🔴 2026-10-22 增强（两项）：
+    1. **组合后缀**：支持 `-C-LTX` / `-LTX-C` / `-UC-LTX` 等。
+       旧实现只剥一层，`ABC-123-C-LTX` 会剩下 `ABC-123-C` 当 base，
+       既漏掉中字标记，又让番号本身带着 `-C` 去搜源站。
+       现在从尾部**迭代剥离**所有已知后缀，拼成组合串交给
+       `_classify_suffix_full` 解释（如 "CLTX" → 中字 + 高清无码）。
+    2. **画质尾巴**：允许后缀之后再接 `-1080p` / `-HD` 等画质词
+      （`ABC-123-C-LTX-1080p`）。旧正则应后缀必须在串尾 ⇒ 带画质词的
+      真实文件名全部丢后缀（改造前 `ABC-123-C-1080p` 也一样丢，属既有缺陷）。
+    """
+    stripped = (number or "").strip()
+    if not stripped:
+        return None, None
+
+    suffixes: list[str] = []
+    work = stripped
+    while True:
+        m = re.match(r"^(.*?)[-_.\s]?([A-Za-z]{1,3})$", work)
+        if not m:
+            break
+        cand = m.group(2).upper()
+        if cand not in _KNOWN_SUFFIXES:
+            break
+        head = m.group(1)
+        # 单字符后缀（U/C）要求剩余部分仍是合法番号，避免把
+        # 任意以 U/C 结尾的串（如 "ABAB"）误判成带后缀番号
+        if len(cand) == 1 and not re.search(r"[A-Za-z]{2,}.*\d", head):
+            break
+        suffixes.insert(0, cand)
+        work = head
+
+    if not suffixes:
+        return None, None
+
+    # 剥掉后缀后，尾巴可能还剩画质词（-1080p 等），一并摘除
+    while True:
+        m = re.match(r"^(.*?)[-_.\s]?([A-Za-z0-9.]{1,6})$", work)
+        if not m:
+            break
+        cand = m.group(2)
+        if not _QUALITY_TAIL_RE.match(cand):
+            break
+        work = m.group(1)
+        if not work:
+            break
+
+    if not work:
+        return None, None
+    return work, "".join(suffixes)
 
 
 def parse_suffix(number: str) -> tuple[str, Optional[bool], Optional[bool]]:
     """
-    解析番号后缀，提取中文字幕和无码信息
+    解析番号后缀，提取中文字幕和无码信息（**兼容版：不含 LTX 新字段**）。
 
     规则:
     - ABC-123-C 或 ABC-123C  → 中文字幕 (is_chinese=True)
     - ABC-123-U 或 ABC-123U  → 无码破解 (is_mosaic=False)
     - ABC-123-UC 或 ABC-123UC → 中文字幕 + 无码破解 (is_chinese=True, is_mosaic=False)
+    - ABC-123-LTX 或 ABC-123LTX → 高清无码 (is_mosaic=False)
+    - ABC-123-C-LTX → 中文字幕 + 高清无码 (is_chinese=True, is_mosaic=False)
+
+    🔴 2026-10-22：本函数**刻意保持返回 3 元组**。
+    全项目有 10+ 处 `base, is_chinese, is_mosaic = parse_suffix(...)` 解包，
+    改成 4 元组会让它们全部 ValueError。需要 LTX 字段的调用方请用
+    `parse_suffix_full()`（返回 4 元组）。
 
     Args:
-        number: 原始���号
+        number: 原始番号
 
     Returns:
         (base_number, is_chinese, is_mosaic) 元组
     """
-    stripped = number.strip()
+    base, suffix = _split_suffix(number)
+    if base is None:
+        return number.strip().upper(), None, None
 
-    # 优先尝试三字符后缀（CHS/CHT/CH）→ 仅中字
-    if match := SUFFIX_PATTERN_TRIPLE.match(stripped):
-        base = match.group(1)
-        suffix = match.group(2).upper()
-    # 再尝试双字符后缀（UC/CU）
-    elif match := SUFFIX_PATTERN_DUAL.match(stripped):
-        base = match.group(1)
-        suffix = match.group(2).upper()
-    else:
-        # 再尝试单字符后缀（U/C）
-        if match := SUFFIX_PATTERN_SINGLE.match(stripped):
-            base = match.group(1)
-            suffix = match.group(2).upper()
-            # 验证 base 是否有效（必须有字母+数字组合）
-            if not re.search(r"[A-Za-z]{2,}.*\d", base):
-                return stripped.upper(), None, None
-        else:
-            return stripped.upper(), None, None
-
-    # 标准化 base 中的分隔符
     base = base.replace("_", "-").replace(".", "-").replace(" ", "-").upper()
-
-    is_chinese = None
-    is_mosaic = None
-
-    # CHS/CHT/CH → 中字
-    if suffix in ("CHS", "CHT", "CH"):
-        is_chinese = True
-    else:
-        if "C" in suffix:
-            is_chinese = True
-        if "U" in suffix:
-            is_mosaic = False  # U = Uncensored = 无码
-
+    is_chinese, is_mosaic, _hd = _classify_suffix_full(suffix, False)
     return base, is_chinese, is_mosaic
+
+
+def parse_suffix_full(number: str,
+                      bracket_chinese: bool = False
+                      ) -> tuple[str, Optional[bool], Optional[bool], Optional[bool]]:
+    """解析番号后缀（含 LTX 高清无码）。
+
+    🔴 2026-10-22 新增。返回 `(base, is_chinese, is_mosaic, is_hd_uncensored)`：
+
+        ABC-123-C     → (ABC-123, True,  None,   None)
+        ABC-123-U     → (ABC-123, None,  False,  None)
+        ABC-123-LTX   → (ABC-123, None,  False,  True)   高清无码
+        ABC-123-C-LTX → (ABC-123, True,  False,  True)   中文高清无码
+        ABC-123-UC    → (ABC-123, True,  False,  None)
+
+    LTX 判为无码（is_mosaic=False）**同时**置 is_hd_uncensored=True，
+    这样既让"只看无码"的既有筛选继续生效，又能单独筛"高清无码"。
+    """
+    base, suffix = _split_suffix(number)
+    if base is None:
+        return number.strip().upper(), None, None, None
+
+    base = base.replace("_", "-").replace(".", "-").replace(" ", "-").upper()
+    is_chinese, is_mosaic, is_hd = _classify_suffix_full(suffix, bracket_chinese)
+    return base, is_chinese, is_mosaic, is_hd
 
 
 # ============================================
@@ -842,7 +964,14 @@ def strip_episode_suffix(number: str) -> str:
 _CODE_HEAD_RE = re.compile(r"([A-Za-z]{2,10}-\d{2,5})")
 
 #: 属性标记（中字 / 无码），必须完整吃掉剩余部分
-_ATTR_FULL_RE = re.compile(r"[-_.\s]?(?:[Uu][Cc]|[Cc]|[Uu])")
+#: 番号之后的「属性标记」整尾匹配：-C / -U / -UC / -CU，
+#: 🔴 2026-10-22 追加可选的 LTX 段，支持组合：
+#:   -C-LTX（中文高清无码）/ -U-LTX（高清无码）/ -UC-LTX（中字高清无码）
+#:   不加这段，`ABC-123-C-LTX` 的尾巴 `-C-LTX` 匹配不上 ⇒ split_code_and_part
+#:   返回 (None, None) ⇒ 整片被判「跳过」。
+_ATTR_FULL_RE = re.compile(
+    r"[-_.\s]?(?:[Uu][Cc]|[Cc]|[Uu])(?:[-_.\s]?[Ll][Tt][Xx])?"
+)
 
 #: 分卷标记（只作用于番号之后的剩余部分）
 #:   1. -cd1 / -CD-2 / part03 / disk 2 / vol1 / dvd1 / EP1 / episode2
@@ -877,15 +1006,17 @@ _ATTR_LETTERS = frozenset({"C", "U"})
 #:      ⚠️ 裸 `-E`/`-Z` 不会被这里吃掉——分卷正则先跑，单字母仍是分卷（见 _parse_tail）。
 #:   2. 编码词独立成组：AAC / DTS / AC3 / EAC3 / FLAC / TRUEHD / ATMOS / OPUS / MP3
 #:      （DTS-HD / AAC-LC / TRUEHD-ATMOS 由「token + 分隔符 + token」天然覆盖）。
-#:   3. 中字多字符标记 CHS / CHT / CH（number.py:578 的后缀正则早已认这三种，
+#:   3. 中字多字符标记 CHS / CHT / CH（number.py:623 的后缀正则早已认这三种，
 #:      但 split_code_and_part 漏了 ⇒ ABC-123-CHS 曾被判「跳过」）。
+#:      🔴 2026-10-22 补 LTX（高清无码）—— 同理，不加则 ABC-123-LTX 的尾巴
+#:      解析不出来，会被当成"未知尾巴"处理。
 #:   4. 分隔符类加入花括号/方括号：ABC-123-HD{1080p}。
 _TAIL_QUALITY_RE = re.compile(
     r"^[-_.\s{}\[\]]*(?:[EeZz][-_.\s{}\[\]]*)?"
     r"(?:(?:1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD|AI|HDR"
     r"|x264|x265|HEVC|H\.264|H\.265|AVC"
     r"|AAC|DTS|AC3|EAC3|FLAC|TRUEHD|ATMOS|OPUS|MP3"
-    r"|UNCENSORED|LEAKED|CHINESE|CN|CHS|CHT|CH|中字|字幕)"
+    r"|UNCENSORED|LEAKED|CHINESE|CN|CHS|CHT|CH|LTX|中字|字幕)"
     r"[-_.\s{}\[\]]*)*$",
     re.IGNORECASE,
 )
@@ -1182,7 +1313,10 @@ def _apply_suffix(result: NumberResult, bracket_chinese: bool = False) -> Number
         result: NumberResult 提取结果
         bracket_chinese: 是否从方括号中检测到中字标记（v3.0 新增）
     """
-    base, is_chinese, is_mosaic = parse_suffix(result.number)
+    # 🔴 2026-10-22：改用 parse_suffix_full，让 -LTX / -C-LTX 的 is_hd_uncensored
+    #   能一路带到 NumberResult（此前只解包 3 元组，LTX 信息在这里被丢掉）。
+    base, is_chinese, is_mosaic, is_hd = parse_suffix_full(
+        result.number, bracket_chinese)
     result.number = base
     # 方括号中字标记作为补充：若后缀未给出中字信息，但方括号检测到中字，则标记为中字
     if is_chinese is None and bracket_chinese:
@@ -1190,20 +1324,10 @@ def _apply_suffix(result: NumberResult, bracket_chinese: bool = False) -> Number
     else:
         result.is_chinese = is_chinese
     result.is_mosaic = is_mosaic
+    result.is_hd_uncensored = is_hd
     # 计算标准刮削格式
     result.formatted = compute_formatted(result)
     return result
-
-
-def _classify_suffix(suffix: str, bracket_chinese: bool) -> tuple:
-    """解析后缀中的中字/无码标记"""
-    if suffix in ("CHS", "CHT", "CH"):
-        return True, None
-    is_chinese = True if "C" in suffix else None
-    is_mosaic = False if "U" in suffix else None
-    if is_chinese is None and bracket_chinese:
-        is_chinese = True
-    return is_chinese, is_mosaic
 
 
 def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> Optional[NumberResult]:
@@ -1221,51 +1345,74 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
     # 抢先返回 JAV ⇒ 素人番号「不带数字」去搜源站，必然搜不到/搜错。
     # 这里复用 AMATEUR_PATTERN（数字段开头），保证 200GANA/259LUXU 形态原样保留。
     if match := AMATEUR_PATTERN.search(name):
-        base = _normalize_amateur(match.group())
-        _, is_chinese, is_mosaic = parse_suffix(base)
+        raw_token = match.group()
+        base = _normalize_amateur(raw_token)
+        # 🔴 2026-10-22：必须用**原始 token** 解析后缀，不能用剥离后的 base。
+        #   `_normalize_amateur` 内部已把 `-C/-U/-LTX` 等尾号摘掉，若拿它的返回值
+        #   再 parse_suffix_full，后缀信息早已不存在 ⇒ 素人番号的中字/无码/高清无码
+        #   标记全部丢失（实测 `200GANA-3414-C` 的 is_chinese 恒为 None，
+        #   改造前就有此缺陷，LTX 会同样踩中）。
+        _b, is_chinese, is_mosaic, is_hd = parse_suffix_full(raw_token, bracket_chinese)
         result = NumberResult(
             number=base, original=filename, number_type=NumberType.AMATEUR,
             confidence=0.85, is_chinese=is_chinese, is_mosaic=is_mosaic,
+            is_hd_uncensored=is_hd,
         )
         if bracket_chinese and result.is_chinese is None:
             result.is_chinese = True
         result.formatted = compute_formatted(result)
         return result
 
-    # v3.0: 优先匹配三字符后缀 CHS/CHT/CH
-    for suffix_pat in [r"(CHS|CHT|CH)", r"(UC|CU)", r"(U|C)"]:
-        # 带横线: ABC-123-UC, ABC-123-C, ABC-123-CHS
+    # v3.0: 优先匹配三字符后缀 CHS/CHT/CH；v3.1(2026-10-22) 加入 LTX 与组合后缀
+    # 🔴 2026-10-22 两项改动：
+    #   1. suffix_pat 列表把 **LTX 组合**（-C-LTX / -U-LTX / -UC-LTX / -LTX-C …）
+    #      排在最前。旧列表只有单层后缀，`ABC-123-C-LTX` 匹配不上 ⇒ 掉到
+    #      _try_match_raw 分支，后缀信息全丢。
+    #   2. 正则末尾由 `{suffix_pat}$` 改为 `{suffix_pat}(?:[-_.\s]?{quality})*$`，
+    #      允许后缀之后再接画质/编码词（`ABC-123-C-LTX-1080p`）。旧写法要求后缀
+    #      必须在串尾 ⇒ 真实文件名（几乎都带 -1080p/-HD）全部丢后缀
+    #      （改造前 `ABC-123-C-1080p` 也一样丢，属既有缺陷）。
+    _LTX_COMBO = r"(?:[UC]{1,2}[-_.\s]?LTX|LTX[-_.\s]?[UC]{1,2}|LTX)"
+    _QUALITY_ALT = (r"1080p|720p|480p|2160p|4K|8K|HD|FHD|UHD|AI|HDR"
+                    r"|x264|x265|HEVC|AVC|AAC|DTS|AC3|EAC3|FLAC|TRUEHD|ATMOS|OPUS|MP3")
+    for suffix_pat in [rf"({_LTX_COMBO})", r"(CHS|CHT|CH)", r"(UC|CU)", r"(U|C)"]:
+        # 带横线: ABC-123-UC, ABC-123-C, ABC-123-CHS, ABC-123-LTX, ABC-123-C-LTX
+        #         （以及上述任一形态再跟 -1080p / -HD / -x264 等）
         jav_suffix_pattern = re.compile(
-            rf"([A-Za-z]{{2,}}-\d{{2,}}[A-Za-z]?)[-_.\s]?{suffix_pat}$",
+            rf"([A-Za-z]{{2,}}-\d{{2,}}[A-Za-z]?)[-_.\s]?{suffix_pat}"
+            rf"(?:[-_.\s]?(?:{_QUALITY_ALT}))*$",
             re.IGNORECASE,
         )
         if match := jav_suffix_pattern.search(name):
             base = match.group(1).upper()
-            suffix = match.group(2).upper()
-            is_chinese, is_mosaic = _classify_suffix(suffix, bracket_chinese)
+            suffix = re.sub(r"[^A-Za-z]", "", match.group(2)).upper()
+            is_chinese, is_mosaic, is_hd = _classify_suffix_full(suffix, bracket_chinese)
             result = NumberResult(
                 number=base, original=filename, number_type=NumberType.JAV,
                 confidence=0.90, is_chinese=is_chinese, is_mosaic=is_mosaic,
+                is_hd_uncensored=is_hd,
             )
             result.formatted = compute_formatted(result)
             return result
 
-    # v3.0: 无横线也优先匹配三字符
-    for suffix_pat in [r"(CHS|CHT|CH)", r"(UC|CU)", r"(U|C)"]:
-        # 无横线: ABC123UC, ABC123C, ABC123CHS
+    # v3.0: 无横线也优先匹配三字符（同样支持 LTX 组合与画质尾巴）
+    for suffix_pat in [rf"({_LTX_COMBO})", r"(CHS|CHT|CH)", r"(UC|CU)", r"(U|C)"]:
+        # 无横线: ABC123UC, ABC123C, ABC123CHS, ABC123LTX, ABC123CLTX
         jav_nosep_suffix = re.compile(
-            rf"([A-Za-z]{{2,}})(\d{{2,}}){suffix_pat}$",
+            rf"([A-Za-z]{{2,}})(\d{{2,}}){suffix_pat}"
+            rf"(?:[-_.\s]?(?:{_QUALITY_ALT}))*$",
             re.IGNORECASE,
         )
         if match := jav_nosep_suffix.search(name):
             prefix = match.group(1).upper()
             digits = match.group(2)
-            suffix = match.group(3).upper()
+            suffix = re.sub(r"[^A-Za-z]", "", match.group(3)).upper()
             number = f"{prefix}-{digits}"
-            is_chinese, is_mosaic = _classify_suffix(suffix, bracket_chinese)
+            is_chinese, is_mosaic, is_hd = _classify_suffix_full(suffix, bracket_chinese)
             result = NumberResult(
                 number=number, original=filename, number_type=NumberType.JAV,
                 confidence=0.85, is_chinese=is_chinese, is_mosaic=is_mosaic,
+                is_hd_uncensored=is_hd,
             )
             result.formatted = compute_formatted(result)
             return result

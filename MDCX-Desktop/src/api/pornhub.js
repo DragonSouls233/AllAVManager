@@ -8,8 +8,14 @@ export async function getPornhubActor(id) {
   return api.get(`/pornhub/actors/${id}`)
 }
 
-export async function getPornhubMovies(params = {}) {
-  return api.get('/pornhub/movies', { params })
+/** PORNHUB 影片列表。
+ *
+ * 第二个参数收 `{ signal }`：Query 层可以用 `cancelQueries()` 真正中止在途请求；
+ * 将来页面若从 `fetchQuery` 改成 `useQuery`（有 observer），组件卸载会自动中止。
+ * 注意 `fetchQuery` 本身没有 observer，**不会**随页面切走自动取消 —— 竞态由 store 里的序号兜底。
+ * 不传 signal 时行为和以前完全一致。 */
+export async function getPornhubMovies(params = {}, { signal } = {}) {
+  return api.get('/pornhub/movies', { params, signal })
 }
 
 export async function getPornhubMovie(id) {
@@ -81,8 +87,8 @@ export async function getPornhubPlayUrl(movieId, protocol = 'http') {
 }
 
 // ===== 演员列表增强 =====
-export async function getPornhubActorsPage(params = {}) {
-  return api.get('/pornhub/actors', { params })
+export async function getPornhubActorsPage(params = {}, { signal } = {}) {
+  return api.get('/pornhub/actors', { params, signal })
 }
 export async function getPornhubActorNationalities() {
   return api.get('/pornhub/actors/nationalities')

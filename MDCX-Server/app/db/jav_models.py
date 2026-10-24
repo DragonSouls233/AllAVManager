@@ -34,6 +34,13 @@ class JavMovie(MovieMixin, JAV_BASE):
     is_mosaic: Mapped[bool | None] = mapped_column(Boolean, default=True)
     is_leak: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 流出/破解版
     is_4k: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 4K 分辨率版（文件名 -4K/-UHD 后缀）
+    # 🔴 2026-10-22 新增：高清无码（文件名 -LTX / -C-LTX 后缀）。
+    #   LTX 是"新技术去码"，画质高于普通 -U 破解版，用户要求单独区分。
+    #   与 is_mosaic=False 并存：LTX 同时算无码（is_mosaic=False），
+    #   并在此字段单独标记，便于筛选/统计"高清无码"。
+    #   -LTX   → 高清无码
+    #   -C-LTX → 中文 + 高清无码
+    is_hd_uncensored: Mapped[bool | None] = mapped_column(Boolean, default=False)
     label: Mapped[str | None] = mapped_column(String(100))
     tmdb_id: Mapped[int | None] = mapped_column(Integer, index=True)  # TMDB ID（fanart.tv查询）
 

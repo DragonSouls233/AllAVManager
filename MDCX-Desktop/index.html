@@ -5,6 +5,24 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>龙魂 - 视频管理系统</title>
+    <!--
+      首屏密度预写（借鉴 peach 的 index.html 内联脚本：它只负责第一帧，之后交给 app）。
+      不写这段的话，Electron 冷启动时网格会先按默认 200px 画出来，等 JS 跑完再跳到用户选的那一档。
+      ⚠️ 这里的 tiles 必须与 src/utils/density.js 的 DENSITY_TILES 保持一致（内联脚本没法 import）。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var tiles = { compact: '150px', medium: '200px', big: '300px' }
+          var d = localStorage.getItem('mdcx_density')
+          if (!tiles[d]) d = 'medium'
+          document.documentElement.style.setProperty('--tile', tiles[d])
+          document.documentElement.dataset.density = d
+        } catch (e) {
+          /* localStorage 被禁用时静默退回默认值 */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

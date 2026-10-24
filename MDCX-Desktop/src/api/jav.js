@@ -8,8 +8,9 @@ export async function getJavActor(id) {
   return api.get(`/jav/actors/${id}`)
 }
 
-export async function getJavMovies(params = {}) {
-  return api.get('/jav/movies', { params })
+/** JAV 影片列表。第二个参数收 `{ signal }`，由 Query 层传入用于中止过期响应。 */
+export async function getJavMovies(params = {}, { signal } = {}) {
+  return api.get('/jav/movies', { params, signal })
 }
 
 export async function getJavMovie(id) {

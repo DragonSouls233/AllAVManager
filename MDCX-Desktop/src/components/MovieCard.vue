@@ -1,7 +1,7 @@
 <template>
   <div
     class="movie-card"
-    :class="[`mode-${viewMode}`, `img-${imageMode}`]"
+    :class="[`mode-${viewMode}`, `img-${imageMode}`, `poster-${posterMode}`]"
     role="article"
     :aria-label="`影片：${movie.code}${movie.title ? ' - ' + movie.title : ''}`"
     tabindex="0"
@@ -11,11 +11,20 @@
     @keydown.enter="$emit('click', movie.id)"
     @keydown.space.prevent="$emit('click', movie.id)"
   >
-    <div class="movie-cover">
+    <!-- 🔴 2026-10-23 修复：海报模式此前只存 CSS、模板从不挂类 ⇒ 工具栏
+         「完整/马赛克/仅番号」三个按钮点了完全没反应。现在按 posterMode 渲染。 -->
+    <div class="movie-cover" :class="{ 'poster-only': isNumberOnly }">
+      <!-- 纯净模式：不加载任何封面图，只显示番号 -->
+      <template v-if="isNumberOnly">
+        <div class="poster-only-code">{{ movie.code || '未知番号' }}</div>
+        <div class="poster-only-hint">MDCX</div>
+      </template>
       <img
+        v-else
         :src="displayCover"
         :alt="`封面图：${movie.code}`"
         class="movie-cover-img"
+        :class="{ 'cover-mosaic': isMosaic }"
         decoding="async"
         loading="lazy"
         @error="onCoverError"
@@ -89,10 +98,12 @@
       <div class="movie-title" :title="movie.title || '未命名'">{{ movie.title || '未命名' }}</div>
 
       <!-- 中文/无码 badge（直接读 is_chinese / is_uncensored 字段，不依赖 _tags） -->
-      <div class="movie-badges" v-if="movie.is_4k || movie.is_leak || movie.is_chinese || movie.is_uncensored">
+      <div class="movie-badges" v-if="movie.is_4k || movie.is_leak || movie.is_chinese || movie.is_uncensored || movie.is_hd_uncensored">
         <el-tag v-if="movie.is_4k" size="small" type="warning" effect="dark">4K</el-tag>
         <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
-        <el-tag v-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
+        <!-- 高清无码（LTX）优先于普通无码，避免被混进「无码」里 -->
+        <el-tag v-if="movie.is_hd_uncensored" size="small" type="primary" effect="dark">{{ movie.is_chinese ? '中文高清无码' : '高清无码' }}</el-tag>
+        <el-tag v-else-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
         <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="dark">中文</el-tag>
         <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="dark">无码</el-tag>
       </div>
@@ -185,7 +196,8 @@
       <div class="movie-badges" v-if="viewMode !== 'compact'">
         <el-tag v-if="movie.is_4k" size="small" type="success" effect="dark">4K</el-tag>
         <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
-        <el-tag v-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
+        <el-tag v-if="movie.is_hd_uncensored" size="small" type="primary" effect="dark">{{ movie.is_chinese ? '中文高清无码' : '高清无码' }}</el-tag>
+        <el-tag v-else-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
         <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="plain">中文</el-tag>
         <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="plain">无码</el-tag>
       </div>
@@ -211,6 +223,10 @@ const props = defineProps({
 })
 
 defineEmits(['click', 'play', 'fav', 'actor-click', 'tag-click', 'preview-cover'])
+
+// 海报模式派生状态（马赛克 / 纯净仅番号）
+const isMosaic = computed(() => props.posterMode === 'mosaic')
+const isNumberOnly = computed(() => props.posterMode === 'number_only')
 
 // 悬停轮换截图
 const imgIndex = ref(0)
@@ -274,6 +290,8 @@ const onCoverError = () => {
 
 const onEnter = () => {
   const m = props.movie
+  // 马赛克/纯净模式下不轮换截图：纯净模式根本没图，马赛克模式轮换会让模糊图忽明忽暗
+  if (isMosaic.value || isNumberOnly.value) return
   if (!m.sample_images || m.sample_images.length === 0) return
   imgIndex.value = 0
   let i = 0

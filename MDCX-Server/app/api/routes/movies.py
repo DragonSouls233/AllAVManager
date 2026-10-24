@@ -478,6 +478,7 @@ async def list_movies(
             is_chinese=m.is_chinese,
             is_leak=m.is_leak,
             is_4k=getattr(m, "is_4k", None),
+            is_hd_uncensored=getattr(m, "is_hd_uncensored", None),
             file_path=m.file_path,
             file_size=m.file_size,
             sample_images=_parse_sample_images(m.sample_images),
@@ -2573,6 +2574,18 @@ async def update_movie(
             session.add(MovieActor(movie_id=movie_id, actor_id=actor.id))
             actor_names_for_nfo.append(nm)
 
+    # 字段级归属留痕（移植自 peach field_owners）：用户在前端手动编辑的真相字段，
+    # 标记为 user:manual，后续自动刮削不再悄悄覆盖这些值。
+    try:
+        from app.utils.field_owners import OWNED_FIELDS, USER_MANUAL, mark_owner
+
+        edited = [f for f in OWNED_FIELDS if f in body]
+        if edited:
+            mark_owner(movie, edited, owner=USER_MANUAL)
+    except Exception:
+        # 归属只是留痕，写失败不应阻断主流程
+        pass
+
     await session.commit()
     await session.refresh(movie)
 
@@ -3059,6 +3072,11 @@ async def _apply_scrape_result(session, movie, result, module: str = "jav", skip
                 movie.is_leak = True
             if not getattr(movie, "is_4k", None) and flags.get("is_4k"):
                 movie.is_4k = True
+            # 🔴 2026-10-22：高清无码 LTX（-LTX / -C-LTX）
+            if not getattr(movie, "is_hd_uncensored", None) and flags.get("is_hd_uncensored"):
+                movie.is_hd_uncensored = True
+                if movie.is_mosaic is not False:
+                    movie.is_mosaic = False
     except Exception:
         pass
 

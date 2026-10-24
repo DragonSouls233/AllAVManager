@@ -447,6 +447,7 @@ async def get_actor_movies(
                 "is_uncensored": m.is_uncensored,
                 "is_leak": m.is_leak,
                 "is_4k": m.is_4k,
+                "is_hd_uncensored": m.is_hd_uncensored,
                 "module_type": "jav",
                 "is_starring": _is_starring(m),
                 "file_path": m.file_path,
@@ -532,6 +533,7 @@ async def get_actor_timeline(actor_id: int):
                     "is_uncensored": m.is_uncensored,
                     "is_leak": m.is_leak,
                     "is_4k": m.is_4k,
+                    "is_hd_uncensored": m.is_hd_uncensored,
                     "module_type": "jav",
                 } for m in ms],
             })
@@ -551,6 +553,7 @@ async def get_actor_timeline(actor_id: int):
                 "is_uncensored": m.is_uncensored,
                 "is_leak": m.is_leak,
                 "is_4k": m.is_4k,
+                "is_hd_uncensored": m.is_hd_uncensored,
                 "module_type": "jav",
             } for m in unknown_movies],
         } if unknown_movies else None
@@ -650,6 +653,7 @@ async def list_movies(
     is_chinese: Optional[int] = Query(None, description="1=仅中文"),
     no_chinese: Optional[int] = Query(None, description="1=仅没中文(无中字，含未判定)"),
     is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
+    is_hd_uncensored: Optional[int] = Query(None, description="1=仅高清无码（文件名 -LTX / -C-LTX，2026-10-22 新增）"),
     solo: Optional[int] = Query(None, description="1=仅单人作品（actor 字段恰好一个演员）"),
     info_state: Optional[str] = Query(None, description="complete=信息全 / incomplete=信息不全（NFO+封面+预览图）"),
     sort: Optional[str] = Query(None, description="排序字段: created_at, release_date, duration, rating, code。前缀-表示降序；code 为番号自然排序（ABC-001 < ABC-002 < ABC-010）"),
@@ -695,6 +699,10 @@ async def list_movies(
             filters.append(or_(JavMovie.is_chinese == 0, JavMovie.is_chinese.is_(None)))
         if is_uncensored:
             filters.append(JavMovie.is_uncensored == 1)
+        if is_hd_uncensored:
+            # 🔴 2026-10-22：高清无码（LTX）。只按 is_hd_uncensored 列筛，
+            #   不叠加 is_uncensored —— LTX 落库时两者同时为 True，加 AND 是冗余。
+            filters.append(JavMovie.is_hd_uncensored == 1)
         if solo:
             # v3.1 单人筛选：actor 字段非空且不含分隔符（不靠 MovieActor 表，其恒为空）
             filters.append(JavMovie.actor.isnot(None))
@@ -805,7 +813,8 @@ async def list_movies(
                  "file_path": m.file_path, "status": m.status,
                  # 版本标识（列表页 badge 依赖）：中文/无码/4K/流出
                  "is_chinese": m.is_chinese, "is_uncensored": m.is_uncensored,
-                 "is_4k": m.is_4k, "is_leak": m.is_leak}
+                 "is_4k": m.is_4k, "is_leak": m.is_leak,
+                 "is_hd_uncensored": m.is_hd_uncensored}
                 for m in movies
             ],
         }
@@ -856,6 +865,7 @@ async def get_movie(movie_id: int):
             "original_title": movie.original_title,
             "is_chinese": movie.is_chinese, "is_uncensored": movie.is_uncensored,
             "is_mosaic": movie.is_mosaic, "is_leak": movie.is_leak, "is_4k": movie.is_4k,
+            "is_hd_uncensored": movie.is_hd_uncensored,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "thumb_url": movie.thumb_url, "sample_images": _parse_sample_images(movie.sample_images),
             "actor": _fill_amateur_actor(movie), "actor_ids": actor_ids, "studio": movie.studio,
@@ -1239,6 +1249,12 @@ async def scrape_jav_movie(movie_id: int):
                     movie.is_leak = True
                 if not getattr(movie, "is_4k", None) and _flags.get("is_4k"):
                     movie.is_4k = True
+                # 🔴 2026-10-22：高清无码 LTX（-LTX / -C-LTX）
+                if not getattr(movie, "is_hd_uncensored", None) and _flags.get("is_hd_uncensored"):
+                    movie.is_hd_uncensored = True
+                    # LTX 本身就是无码，顺带补 is_mosaic=False（与 detect_version_flags 口径一致）
+                    if movie.is_mosaic is not False:
+                        movie.is_mosaic = False
         except Exception:
             pass
         # 外挂字幕兜底（移植 ref114-amane）：同目录存在 .srt/.ass/.ssa/.vtt/.sub

@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 from app.services.naming import render_dirpath, render_filename
+from app.utils.file_ops import copy_file_resilient
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,11 @@ class FileOrganizeService:
             if job_type == OrganizeType.HARDLINK.value:
                 os.link(source, target)
             elif job_type == OrganizeType.COPY.value:
-                shutil.copy2(source, target)
+                # 🔴 必须用降级复制：目标是 SMB/网盘挂载时 copy2 的 copystat 会被拒
+                # （EPERM），抛 OSError ⇒ 下面 except 把整个整理任务判失败，但内容其实
+                # 已经拷好了。copy_file_resilient 会退化为「只拷内容」。
+                # 返回值 False 表示源=目标同一文件（内容本就到位），同样算成功。
+                copy_file_resilient(source, target)
             elif job_type == OrganizeType.MOVE.value:
                 # 同卷优先使用原子改名（防覆盖），跨卷回退 shutil.move
                 if _same_fs(Path(source), Path(target)):
@@ -341,7 +346,8 @@ class FileOrganizeService:
             if job_type == OrganizeType.HARDLINK.value and e.errno == 18:
                 logger.warning(f"硬链接失败（跨盘符），降级为复制: {source} -> {target}")
                 try:
-                    shutil.copy2(source, target)
+                    # 硬链接跨盘兜底复制，同样走降级：内容到位即算成功
+                    copy_file_resilient(source, target)
                     return True
                 except Exception as fallback_e:
                     logger.error(f"降级复制也失败: {fallback_e}")
@@ -575,7 +581,7 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
 
     安全模式流程：
         1. 校验目标磁盘空间 (shutil.disk_usage) >= 文件大小 x 1.1
-        2. 复制文件 (shutil.copy2)
+        2. 复制文件 (app.utils.file_ops.copy_file_resilient，元数据失败自动降级)
         3. SHA256 校验源文件和目标文件完整性
         4. 校验通过才删除原文件 (os.remove)
         5. 任一环节失败自动回滚（删除已复制的目标文件）
@@ -642,7 +648,9 @@ def safe_move_file(src: str, dst: str, safe_mode: bool = True) -> dict:
 
     copied = False
     try:
-        shutil.copy2(src, dst)
+        # 降级复制：网盘/SMB 上 copy2 的 copystat 被拒会让内容已好的 file 被判失败，
+        # 而这里失败会直接返回、连 dst 都不清理（留下半成品）。内容到位即继续走校验。
+        copy_file_resilient(src, dst)  # False = 源与目标同一文件，内容本就在位
         copied = True
     except Exception as e:
         result["error"] = f"复制文件失败: {e}"

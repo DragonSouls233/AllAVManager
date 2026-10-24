@@ -103,6 +103,7 @@
             :movie="m"
             :view-mode="viewMode"
             :image-mode="imageMode"
+            :poster-mode="posterMode"
             @click="goDetail"
           />
         </div>
@@ -130,6 +131,9 @@ import { ElMessage } from 'element-plus'
 import { ArrowLeft, Search, Refresh, Collection } from '@element-plus/icons-vue'
 import MovieCard from '@/components/MovieCard.vue'
 import { getModuleSeries, getModuleSeriesMovies } from '@/api'
+import { useUiStore } from '@/stores/ui'
+
+const uiStore = useUiStore()
 
 const props = defineProps({
   module: { type: String, default: 'jav' },
@@ -163,6 +167,8 @@ const moviePageSize = ref(24)
 const loadingMovies = ref(false)
 const viewMode = ref('standard')
 const imageMode = ref('poster')
+// 海报模式（完整/马赛克/仅番号）是全局偏好，与 viewMode/imageMode 一样跟随 uiStore
+const posterMode = computed(() => uiStore.posterMode)
 
 const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
 

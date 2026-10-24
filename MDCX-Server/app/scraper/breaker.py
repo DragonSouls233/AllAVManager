@@ -92,6 +92,12 @@ DEFAULT_MIN_SAMPLES = 5
 #: 每熔断一次冷却翻倍的倍数（用于半开失败后的退避）
 BACKOFF_FACTOR = 2.0
 
+#: 单源请求预算（窗口内允许的最大尝试次数）。``None`` = 不限制（保持现状）。
+#: 设一个较小值可实现 peach 的 budget gate 思路：对单一站点穷追猛打会被窗口内
+#: 直接拦下，避免被 WAF 拉黑。复用 ``scrape_attempts`` 的计数，零新增表。
+#: 🔴 默认关闭，开启需显式传 ``request_budget``，不改变任何现有行为。
+DEFAULT_REQUEST_BUDGET: int | None = None
+
 #: 🔴 2026-10-19 审计 #8：半开探针租约。冷却期满瞬间只放**一个**请求过去试探，
 #: 其余请求继续被挡；若探针在 PROBE_LEASE 内未回报（请求中途崩溃/卡死），
 #: 则允许一个新探针接管，避免永久卡死。参考 crawlerx HostCircuit::probe_until 的租约思路。
@@ -224,10 +230,14 @@ class SourceBreaker:
         window_minutes: int = DEFAULT_WINDOW_MINUTES,
         min_samples: int = DEFAULT_MIN_SAMPLES,
         enabled: bool = True,
+        request_budget: int | None = DEFAULT_REQUEST_BUDGET,
     ) -> None:
         self.window_minutes = window_minutes
         self.min_samples = min_samples
         self.enabled = enabled
+        # 🔴 budget gate（peach 思路）：窗口内某源尝试次数超过阈值即拦下，
+        # 避免对单站穷追猛打。None = 关闭。
+        self.request_budget = request_budget
         self._states: dict[str, BreakerState] = {}
 
     # -- 状态访问 ------------------------------------------------------
@@ -316,6 +326,22 @@ class SourceBreaker:
 
         # 3) 查库判定（跨进程重启也生效）
         stats = await self._load_window_stats(name)
+
+        # 3.5) budget gate（peach 思路）：窗口内尝试次数超阈值 → 直接拦下。
+        # 复用 scrape_attempts 的 attempts 计数，给一个 BLOCKED 量级冷却即可，
+        # 不计入 strike 翻倍（预算是"节流"不是"故障"）。默认关闭。
+        if self.request_budget and int(stats.get("attempts") or 0) >= self.request_budget:
+            cooldown = DEFAULT_BLOCKED_COOLDOWN
+            st.open_until = now + cooldown
+            st.last_reason = "budget_exceeded"
+            st.half_open = False
+            return BreakerDecision(
+                should_skip=True,
+                reason="budget_exceeded",
+                cooldown=cooldown,
+                stats=stats,
+            )
+
         verdict = self._evaluate(stats)
         if not verdict.should_skip:
             # 允许本次请求。若源**刚从熔断窗口恢复**（open_until 曾被置为未来值，>0），

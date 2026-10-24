@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.module_helper import get_module_model, get_module_session, MODULE_MODELS
 from app.services import ffmpeg_thumbnail, gif_generator, chapter_marker, subtitle_matcher
+from app.services import subtitle_online
 from app.utils.bin_tools import get_ffprobe_path
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,66 @@ async def serve_subtitle_file(
         "X-Subtitle-Source-Encoding": source_enc,
     }
     return Response(content=text.encode("utf-8"), media_type=media_type, headers=headers)
+
+
+# ===== 在线字幕（SubtitleCat，移植自 peach） =====
+
+class OnlineSubtitleSearch(BaseModel):
+    """在线字幕搜索请求体（也支持 query 直接传）"""
+    q: str = Field(..., description="番号或关键字，如 SSIS-001")
+    offset: int = Field(0, ge=0, description="分页偏移，步长 6")
+
+
+@router.get("/{movie_id}/subtitles/online/search")
+async def online_subtitle_search(
+    movie_id: int,
+    q: str | None = Query(None, description="番号或关键字；缺省时取影片 code"),
+    offset: int = Query(0, ge=0, description="分页偏移，步长 6"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub/anime"),
+):
+    """按番号/关键字搜索 SubtitleCat 在线中文字幕。"""
+    if not q:
+        movie = await _get_movie(module, movie_id)
+        q = getattr(movie, "code", None)
+    if not q:
+        raise HTTPException(status_code=400, detail="缺少搜索词且影片无番号")
+    try:
+        return await subtitle_online.search(q, offset=offset)
+    except subtitle_online.SubtitleSearchError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/{movie_id}/subtitles/online/files")
+async def online_subtitle_files(
+    movie_id: int,
+    id: str = Query(..., description="搜索返回的字幕条目 id"),
+    module: str = Query("jav", description="模块名"),
+):
+    """列出某个在线字幕条目的可用语言文件。"""
+    try:
+        return await subtitle_online.files(id)
+    except subtitle_online.SubtitleSearchError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{movie_id}/subtitles/online/load")
+async def online_subtitle_load(
+    movie_id: int,
+    id: str = Query(..., description="字幕条目 id"),
+    index: int = Query(0, ge=0, description="文件下标（0=简中，1=繁中）"),
+    module: str = Query("jav", description="模块名"),
+):
+    """下载并转码某个在线字幕文件为 WebVTT 文本返回。"""
+    try:
+        text, encoding, filename = await subtitle_online.load(id, index)
+    except subtitle_online.SubtitleSearchError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    headers = {
+        "Content-Type": "text/vtt; charset=utf-8",
+        "X-Subtitle-Filename": quote(filename),
+        "X-Subtitle-Source-Encoding": encoding,
+    }
+    return Response(content=text.encode("utf-8"), media_type="text/vtt", headers=headers)
 
 
 # ===== 播放器配置 =====

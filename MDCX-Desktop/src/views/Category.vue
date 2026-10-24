@@ -97,6 +97,7 @@
             :movie="m"
             :view-mode="viewMode"
             :image-mode="imageMode"
+            :poster-mode="uiStore.posterMode"
             @click="goDetail"
           />
         </div>

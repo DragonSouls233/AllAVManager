@@ -200,14 +200,19 @@ export const getMovieImageUrl = (movie, imageMode = 'poster') => {
  * 影片版本标记统一生成（封面墙 / 各模块影片库 / 演员详情共用）。
  * 与后端扫描/导入识别口径一一对应：
  *   -4K/-UHD → 4K；-Leak/-流出/-破解 → 破解；
- *   -C → 中文；-U → 无码；-UC（复合）→ 无码中文
- * 返回 [{ text, type }]，type 用于 el-tag 颜色映射（chinese/uncensored/leak/uc/4k）。
+ *   -C → 中文；-U → 无码；-UC（复合）→ 无码中文；
+ *   -LTX → 高清无码；-C-LTX → 中文高清无码（2026-10-22 后端新增，画质高于普通 -U 破解版）
+ * 返回 [{ text, type }]，type 用于 el-tag 颜色映射（chinese/uncensored/leak/uc/4k/hd/hdc）。
  */
 export const getMovieVersionBadges = (movie) => {
   const list = []
   if (movie?.is_4k) list.push({ text: '4K', type: '4k' })
   if (movie?.is_leak) list.push({ text: '破解', type: 'leak' })
-  if (movie?.is_chinese && movie?.is_uncensored) {
+  // 🔴 高清无码（LTX）优先于普通无码：LTX 落库时 is_uncensored 也为 true，
+  //    若先判 is_uncensored 就会显示成「无码」，把 LTX 混进普通无码里 —— 正是用户要求区分开的。
+  if (movie?.is_hd_uncensored) {
+    list.push({ text: movie?.is_chinese ? '中文高清无码' : '高清无码', type: 'hd' })
+  } else if (movie?.is_chinese && movie?.is_uncensored) {
     list.push({ text: '无码中文', type: 'uc' })
   } else if (movie?.is_chinese) {
     list.push({ text: '中文', type: 'chinese' })
@@ -225,6 +230,7 @@ export const versionBadgeType = (type) => {
     uncensored: 'warning',
     uc: 'warning',
     '4k': 'success',
+    hd: 'primary',
   }
   return map[type] || 'info'
 }

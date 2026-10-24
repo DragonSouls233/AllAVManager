@@ -276,6 +276,17 @@ async def apply_merge(
             setattr(movie, "source", last_source)
         except Exception:
             pass
+        # 字段级归属留痕（移植自 peach field_owners）：用户通过来源合并页主动批准的
+        # 候选，标记为 review:<source>；无来源时按 user:manual 记。这样后续自动刮削
+        # 不会再悄悄覆盖用户已经确认过的值。
+        try:
+            from app.utils.field_owners import USER_MANUAL, mark_owner, review_owner
+
+            owner = USER_MANUAL if last_source == "manual" else review_owner(last_source)
+            mark_owner(movie, updated, owner=owner)
+        except Exception:
+            # 归属只是留痕，写失败不应阻断主流程
+            pass
 
     await session.commit()
 

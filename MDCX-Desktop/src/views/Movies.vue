@@ -158,6 +158,7 @@
           :movie="item"
           :view-mode="uiStore.viewMode"
           :image-mode="uiStore.imageMode"
+          :poster-mode="uiStore.posterMode"
           @click="goDetail"
           @play="playMovie"
           @fav="toggleFavorite"

@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "@tanstack/vue-query": "^5.104.5",
     "@vueuse/core": "^12.4.0",
     "artplayer": "^5.2.2",
     "axios": "^1.7.9",

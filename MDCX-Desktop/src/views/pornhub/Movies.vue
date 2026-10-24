@@ -1,6 +1,6 @@
 <template>
-  <div class="module-movies">
-    <div class="toolbar">
+  <PageShell padding="compact">
+    <template #toolbar>
       <el-input v-model="keyword" placeholder="搜索标题/viewkey..." clearable style="width: 280px">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
@@ -53,35 +53,56 @@
         <el-option label="发行日期" value="release_date" />
       </el-select>
       <el-tag v-if="store.total">共 {{ store.total }} 部</el-tag>
+      <!-- 批量刮削后台运行期间，角标数字会自动刷新；这里给个轻提示，避免用户以为数字卡住了 -->
+      <el-tag v-if="statsPolling" size="small" type="info" effect="plain">待刮削数自动刷新中</el-tag>
       <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
       <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
       <el-tag v-if="route.query.genre" type="danger" closable @close="clearRouteFilter('genre')">类别：{{ route.query.genre }}</el-tag>
       <el-tag v-if="route.query.code_prefix" type="info" closable @close="clearRouteFilter('code_prefix')">番号：{{ route.query.code_prefix }}</el-tag>
+
+      <!-- 卡片密度切换：独立按钮，不替换任何原有入口；选择存在 localStorage，下次进来自动恢复 -->
+      <el-tooltip :content="`卡片密度：${densityLabel}（点击切换）`" placement="top">
+        <el-button @click="onCycleDensity">
+          <el-icon><Grid /></el-icon>
+        </el-button>
+      </el-tooltip>
+    </template>
+
+    <!--
+      首次加载铺骨架（MediaGrid 内部判断：一条数据都没有时才铺）；
+      已有内容时刷新只在网格上压一层透明遮罩，不铺骨架 —— 否则批量刮削的 15 秒轮询会让整页反复闪。
+    -->
+    <div v-loading="store.loading && store.movies.length" element-loading-background="transparent">
+      <MediaGrid
+        :items="store.movies"
+        :loading="store.loading"
+        :skeleton-count="24"
+        empty-description="暂无 PORNHub 影片，请先扫描目录"
+      >
+        <template #default="{ item: m }">
+          <div class="movie-card" @click="goDetail(m.id)">
+            <div class="cover">
+              <img :src="getCoverSrc(m)" :alt="m.title" @error="onCoverError">
+              <div class="cover-badge">{{ m.uploader || 'PH' }}</div>
+              <div v-if="m.duration" class="duration-badge">{{ formatDuration(m.duration) }}</div>
+            </div>
+            <div class="info">
+              <div class="title">{{ m.title || m.code }}</div>
+              <div class="meta">
+                <span class="code">{{ m.code }}</span>
+                <span v-if="m.source_views" class="views">{{ formatNumber(m.source_views) }} 次播放</span>
+                <span v-if="m.rating" class="rating">★ {{ m.rating }}</span>
+              </div>
+              <div class="categories" v-if="m.categories">
+                <el-tag size="mini" v-for="c in parseCategories(m.categories)" :key="c" type="info">{{ c }}</el-tag>
+              </div>
+            </div>
+          </div>
+        </template>
+      </MediaGrid>
     </div>
 
-    <div class="movies-grid" v-loading="store.loading">
-      <div v-for="m in store.movies" :key="m.id" class="movie-card" @click="goDetail(m.id)">
-        <div class="cover">
-          <img :src="getCoverSrc(m)" :alt="m.title" @error="onCoverError">
-          <div class="cover-badge">{{ m.uploader || 'PH' }}</div>
-          <div v-if="m.duration" class="duration-badge">{{ formatDuration(m.duration) }}</div>
-        </div>
-        <div class="info">
-          <div class="title">{{ m.title || m.code }}</div>
-          <div class="meta">
-            <span class="code">{{ m.code }}</span>
-            <span v-if="m.source_views" class="views">{{ formatNumber(m.source_views) }} 次播放</span>
-            <span v-if="m.rating" class="rating">★ {{ m.rating }}</span>
-          </div>
-          <div class="categories" v-if="m.categories">
-            <el-tag size="mini" v-for="c in parseCategories(m.categories)" :key="c" type="info">{{ c }}</el-tag>
-          </div>
-        </div>
-      </div>
-      <el-empty v-if="!store.loading && !store.movies.length" description="暂无 PORNHub 影片，请先扫描目录" />
-    </div>
-
-    <div class="pagination" v-if="store.total > 0">
+    <template #footer v-if="store.total > 0">
       <el-pagination
         v-model:current-page="store.page"
         v-model:page-size="store.pageSize"
@@ -91,7 +112,7 @@
         @current-change="loadMovies"
         @size-change="onPageSizeChange"
       />
-    </div>
+    </template>
 
     <el-dialog v-model="showDedupDialog" title="内容去重 (SHA1 指纹)" width="720px" :close-on-click-modal="false">
       <div v-if="dedupScanning" class="dedup-status">
@@ -151,25 +172,29 @@
         </div>
       </div>
     </el-dialog>
-  </div>
+  </PageShell>
 </template>
 
 <script setup>
 
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
 import { getCoverSrc } from '@/utils/media'
+import PageShell from '@/components/base/PageShell.vue'
+import MediaGrid from '@/components/base/MediaGrid.vue'
+import { currentDensity, cycleDensity, DENSITY_LABELS } from '@/utils/density'
 import {
   syncPornhubMovieActors,
   pornhubDedupScan,
   pornhubDedupApply,
   pornhubDedupStatus,
 } from '@/api/pornhub'
-import { Link, Delete, MagicStick } from '@element-plus/icons-vue'
+import { Link, Delete, MagicStick, Grid } from '@element-plus/icons-vue'
 import { Picture } from '@element-plus/icons-vue'
+import { usePendingPoll } from '@/query'
 
 // 🔴 2026-10-13：补每页条数选择器（对齐 JAV 有码）。
 // 换每页条数时必须回到第 1 页，否则可能停在一个不存在的页码上。
@@ -194,7 +219,10 @@ async function startScrapeAll() {
   scrapingAll.value = true
   try {
     const res = await store.triggerScrapeAll()
-    ElMessage.success(res.message || '批量刮削已启动，可在日志查看进度')
+    // 任务已在后台跑起来：让缓存里的旧统计失效，并开启角标轮询
+    store.invalidateMovies()
+    startStatsPoll()
+    ElMessage.success(res.message || '批量刮削已启动，待刮削数量会自动刷新')
   } catch (e) {
     ElMessage.error('启动失败：' + (e?.response?.data?.detail || e.message || '未知错误'))
   } finally {
@@ -247,6 +275,26 @@ async function refetchCovers() {
 const router = useRouter()
 const route = useRoute()
 const store = usePornhubStore()
+
+// 待刮削角标的自动刷新。
+//
+// 🔴 起因：批量刮削是「接口立刻返回 started、任务在后台串行跑」的语义。此前角标只在
+// loadMovies() 里更新，任务跑起来后前端再没有任何东西去取新数字 ⇒ 角标一直停在进页面
+// 那一刻的值（用户看到「刮了几千次怎么还剩 9000」，其实服务端早已不是这个数）。
+// 现在任务启动后打开轮询：只请求 limit=1 的最小数据取 pending_count，归零自动停，
+// 页面卸载也会停（usePendingPoll 内部处理），不会把定时器带出组件生命周期。
+const { polling: statsPolling, start: startStatsPoll } = usePendingPoll(
+  () => store.refreshStats(),
+  { intervalMs: 15000, maxDurationMs: 6 * 60 * 60 * 1000 },
+)
+
+// 卡片密度：小/中/大 三档，存 localStorage。写的是全局 --tile，所以切换后所有用 MediaGrid 的
+// 页面一起变（详见 src/utils/density.js）。默认中图，与改造前各页面的 200px 一致，不切就零变化。
+const density = ref(currentDensity())
+const densityLabel = computed(() => DENSITY_LABELS[density.value])
+function onCycleDensity() {
+  density.value = cycleDensity()
+}
 const keyword = ref('')
 const scanning = ref(false)
 const scrapingAll = ref(false)
@@ -416,10 +464,8 @@ watch(() => route.query, () => { store.page = 1; loadMovies() }, { deep: true })
 </script>
 
 <style scoped>
-.module-movies { padding: 20px; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
-.movies-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-.movie-card { cursor: pointer; border: 1px solid #ebeef5; border-radius: 8px; overflow: hidden; transition: all 0.2s; }
+/* 页面外层、工具条、网格、分页的样式已收到 PageShell / MediaGrid 里，这里只留卡片本身的样式 */
+.movie-card { cursor: pointer; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; transition: all 0.2s; background: var(--bg-card); }
 .movie-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
 .cover { position: relative; aspect-ratio: 3/4; overflow: hidden; }
 .cover img { width: 100%; height: 100%; object-fit: cover; }
@@ -432,7 +478,6 @@ watch(() => route.query, () => { store.page = 1; loadMovies() }, { deep: true })
 .views { font-size: 10px; color: #409eff; }
 .rating { font-size: 10px; color: #e6a23c; margin-left: auto; }
 .categories { margin-top: 4px; display: flex; gap: 2px; flex-wrap: wrap; }
-.pagination { margin-top: 20px; display: flex; justify-content: center; }
 .dedup-status { text-align: center; padding: 30px 0; }
 .dedup-status p { margin-top: 16px; color: #666; }
 .dedup-result h4 { margin: 16px 0 8px; font-size: 14px; }

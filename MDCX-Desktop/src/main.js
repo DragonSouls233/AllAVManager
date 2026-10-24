@@ -1,13 +1,16 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { VueQueryPlugin } from '@tanstack/vue-query'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
+import { queryClient } from './query'
 import { useThemeStore } from './stores/theme'
 import { isDesktop } from './config/flavor'
 import { bootstrapDesktop } from './utils/bootstrap'
+import { applyDensity } from './utils/density'
 import './styles/index.css'
 import './styles/element-overrides.css'
 
@@ -24,8 +27,14 @@ const app = createApp(App)
 const pinia = createPinia()
 app.use(pinia)
 
+// 取数缓存：全站唯一的 QueryClient（决策见 src/query/client.js）
+app.use(VueQueryPlugin, { queryClient })
+
 // 初始化主题（必须在 pinia 安装后、app.mount 前）
 useThemeStore().initTheme()
+
+// 卡片密度：index.html 已预写第一帧，这里再写一次是为了让之后切档有统一入口
+applyDensity()
 
 app.use(ElementPlus)
 

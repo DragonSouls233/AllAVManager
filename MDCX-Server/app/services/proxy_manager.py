@@ -231,8 +231,18 @@ class ProxyManager:
             http_port = _pick_free_port(socks_port + 1, exclude={socks_port})
         self._state.socks_port = socks_port
         self._state.http_port = http_port
-        # 为每个节点分配探测专用 socks 端口（基址 18930，避开 socks/http），
-        # 供 _country_probe_loop 经该节点出口探测出口国家。
+        # 为每个节点分配探测专用 socks 端口，供 _country_probe_loop 经该节点出口
+        # 探测出口国家。
+        # 🔴 端口段全景（硬约束，改动前必读）：
+        #    18920/18921  主 xray socks/http（本模块 _pick_free_port 动态选）
+        #    18930-18933  jp_proxy 常驻 xray socks（JP_SOCKS_PORT=18930, MAX_JP_NODES=4）
+        #    18935        jp_proxy http（=18930+4+1）
+        #    18940-18949  国家探测 inbound（本段，基址 18940）
+        #    18950+       scrape_proxy_pool（POOL_PORT_BASE=18950, 每节点 stride 3）
+        #    ⇒ 探测段绝不能回到 18930：jp_proxy 常驻段 18930-18935 与它正面重叠，
+        #      两者都「盲分配+bind 测试」，谁后起谁失败；2026-10-20 服务器那次
+        #      xray exited early，残留进程端口特征（18930-18933+18935）正是孤儿
+        #      jp_proxy，探测段当时起点就是 18930。
         # 🔴 必须把「已分配的端口」累进 exclude 再分配下一个：_pick_free_port 是
         #    「试绑→立刻放回」，同一个端口在后续调用里又是空闲的 ⇒ 多个节点会拿到
         #    同一端口 ⇒ 生成重复 inbound ⇒ xray 第二个绑定失败 ⇒ 整个代理起不来
@@ -240,7 +250,7 @@ class ProxyManager:
         probe_ports: dict[str, int] = {}
         if self._nodes:
             used = {socks_port, http_port}
-            base = 18930
+            base = 18940
             for i, n in enumerate(self._nodes.values()):
                 p = _pick_free_port(base + i, exclude=used)
                 probe_ports[n.id] = p

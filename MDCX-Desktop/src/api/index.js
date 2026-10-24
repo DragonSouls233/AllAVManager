@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { queryClient } from '@/query/client'
 
 const STORAGE_KEY = 'serverUrl'
 
@@ -20,6 +21,8 @@ export function setServerUrl(url) {
     localStorage.setItem(STORAGE_KEY, url.replace(/\/$/, ''))
   }
   api.defaults.baseURL = getBaseURL()
+  // 换了服务器必须清空查询缓存：否则新服务器上会先看到上一台的列表和统计数字
+  queryClient.clear()
 }
 
 export function getServerUrl() {
@@ -568,6 +571,35 @@ export const generateChapterThumbnails = (movieId, module) =>
 // 注意：/player/* 端点的 module 后端默认值是 jav，漏传会让非 jav 模块字幕 404
 export const listSubtitles = (movieId, module) =>
   api.get(`/player/${movieId}/subtitles`, { params: module ? { module } : {} })
+
+// 在线字幕（SubtitleCat，移植自 peach）
+export const searchOnlineSubtitles = (movieId, q, offset = 0, module) =>
+  api.get(`/player/${movieId}/subtitles/online/search`, {
+    params: { q, offset, ...(module ? { module } : {}) },
+  })
+export const getOnlineSubtitleFiles = (movieId, id, module) =>
+  api.get(`/player/${movieId}/subtitles/online/files`, {
+    params: { id, ...(module ? { module } : {}) },
+  })
+// 在线字幕加载为 WebVTT 文本并转成 blob URL（供 Artplayer 直接挂载）
+export const fetchOnlineSubtitleText = async (movieId, id, index, module) => {
+  const url =
+    `/api/v1/player/${movieId}/subtitles/online/load` +
+    `?id=${encodeURIComponent(id)}&index=${index}${module ? `&module=${module}` : ''}`
+  const resp = await fetch(url, { credentials: 'include' })
+  if (!resp.ok) {
+    let msg = `字幕加载失败 (${resp.status})`
+    try {
+      const j = await resp.json()
+      if (j?.detail) msg = j.detail
+    } catch (e) {
+      /* ignore */
+    }
+    throw new Error(msg)
+  }
+  const text = await resp.text()
+  return URL.createObjectURL(new Blob([text], { type: 'text/vtt' }))
+}
 
 // 音轨切换（v3.5 新增）
 export const listAudioTracks = (movieId, module) =>

@@ -71,6 +71,11 @@ class MovieMixin:
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
     scraped_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # 字段级归属（移植自 peach field_owners）：记录每个真相字段当前是谁写的，
+    # user:/review: 归属的字段自动刮削不得覆盖。存 JSON 字符串，如
+    # {"title": "user:manual", "plot": "auto:javdb"}。
+    field_owners: Mapped[str | None] = mapped_column(Text, default="{}")
+
     # 外键列
     @declared_attr
     def studio_id(cls) -> Mapped[int | None]:

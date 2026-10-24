@@ -92,10 +92,12 @@
             <div class="version-badges">
               <el-tag v-if="movie.is_4k" size="small" type="warning" effect="dark">4K</el-tag>
               <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
-              <el-tag v-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
+              <!-- 2026-10-22 后端新增：高清无码（-LTX / -C-LTX），优先于普通无码显示 -->
+              <el-tag v-if="movie.is_hd_uncensored" size="small" type="primary" effect="dark">{{ movie.is_chinese ? '中文高清无码' : '高清无码' }}</el-tag>
+              <el-tag v-else-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
               <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="dark">中文</el-tag>
               <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="dark">无码</el-tag>
-              <span v-if="!movie.is_4k && !movie.is_leak && !movie.is_chinese && !movie.is_uncensored">-</span>
+              <span v-if="!movie.is_4k && !movie.is_leak && !movie.is_chinese && !movie.is_uncensored && !movie.is_hd_uncensored">-</span>
             </div>
           </dd>
 

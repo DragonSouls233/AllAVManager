@@ -838,7 +838,11 @@ class ImportSync:
             avatar_dir.mkdir(parents=True, exist_ok=True)
 
             dest_path = avatar_dir / f"actor_{actor_id}.jpg"
-            shutil.copy2(source_path, str(dest_path))
+            # 头像源文件常来自 SMB/网盘挂载，copy2 的 copystat 可能被拒（EPERM）：
+            # 内容已拷好却抛错 ⇒ 头像永远存不进去。降级为「只要内容」。
+            from app.utils.file_ops import copy_file_resilient
+
+            copy_file_resilient(source_path, dest_path)
             return str(dest_path)
         except Exception as e:
             logger.warning(f"保存演员头像失败: {e}")

@@ -294,6 +294,9 @@
           <el-button size="small" @click="loadSubtitles">
             <el-icon><Refresh /></el-icon> 重新扫描
           </el-button>
+          <el-button size="small" type="primary" plain @click="openOnlineSubtitles">
+            <el-icon><Search /></el-icon> 在线字幕
+          </el-button>
         </div>
 
         <div v-if="subtitles.embedded?.length || subtitles.external?.length">
@@ -354,6 +357,48 @@
         </div>
         <el-empty v-else description="未找到字幕文件。支持 .srt / .ass / .ssa / .vtt / .sub，可放到视频同目录（同名或含番号）、同目录 subtitles/ 子目录，或 data/subtitles/ 字幕库" :image-size="60" />
       </el-tab-pane>
+
+      <!-- 在线字幕对话框（SubtitleCat，移植自 peach） -->
+      <el-dialog
+        v-model="onlineSubVisible"
+        title="在线字幕（SubtitleCat）"
+        width="640px"
+        append-to-body
+        @open="onOnlineSubOpen"
+      >
+        <div class="online-sub-toolbar">
+          <el-input
+            v-model="onlineSubQuery"
+            placeholder="输入番号，如 SSIS-001"
+            clearable
+            style="max-width: 280px"
+            @keyup.enter="searchOnlineSubtitlesHandler"
+          />
+          <el-button type="primary" :loading="onlineSubLoading" @click="searchOnlineSubtitlesHandler">
+            <el-icon><Search /></el-icon> 搜索
+          </el-button>
+        </div>
+        <div v-if="onlineSubResults.length" class="online-sub-list">
+          <el-table :data="onlineSubResults" border size="small">
+            <el-table-column label="标题" prop="title" />
+            <el-table-column label="语言" width="130" prop="language" />
+            <el-table-column label="格式" width="70" prop="format" />
+            <el-table-column label="操作" width="200">
+              <template #default="{ row }">
+                <el-button text size="small" type="primary" :loading="onlineSubLoadingId === row.id" @click="loadOnlineSubtitle(row)">
+                  加载到播放器
+                </el-button>
+                <el-button text size="small" @click="previewOnlineSubtitle(row)">预览</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-if="onlineSubMore" class="online-sub-more">
+            <el-button text size="small" :loading="onlineSubLoading" @click="loadMoreOnlineSubtitles">加载更多</el-button>
+          </div>
+        </div>
+        <el-empty v-else-if="!onlineSubLoading && onlineSubSearched" description="未找到在线字幕" :image-size="60" />
+        <div v-if="onlineSubError" class="online-sub-error">{{ onlineSubError }}</div>
+      </el-dialog>
 
       <!-- 缩略图进度条 -->
       <el-tab-pane label="进度条预览" name="sprite">
@@ -668,6 +713,7 @@ import {
   autoDetectChapters, generateChapterThumbnails,
   listGifs, generateGif, deleteGif,
   listSubtitles,
+  searchOnlineSubtitles, getOnlineSubtitleFiles, fetchOnlineSubtitleText,
   getThumbnailSprite, generateThumbnailSprite,
   getSourceMergeFields, previewSourceScrape, applySourceMerge,
   getHlsQualities,
@@ -742,6 +788,18 @@ const gifForm = reactive({ duration: 3.0, width: 480, fps: 12 })
 
 // 字幕
 const subtitles = ref({ embedded: [], external: [] })
+
+// 在线字幕（SubtitleCat，移植自 peach）
+const onlineSubVisible = ref(false)
+const onlineSubQuery = ref('')
+const onlineSubResults = ref([])
+const onlineSubLoading = ref(false)
+const onlineSubLoadingId = ref('')
+const onlineSubMore = ref(false)
+const onlineSubOffset = ref(0)
+const onlineSubSearched = ref(false)
+const onlineSubError = ref('')
+const onlineSubBlobUrls = ref([])
 
 // 缩略图进度条
 const spriteMeta = ref(null)
@@ -1535,6 +1593,119 @@ const previewSubtitle = async (sub) => {
   }
 }
 
+// ===== 在线字幕（SubtitleCat，移植自 peach）=====
+const openOnlineSubtitles = () => {
+  // 默认用当前影片番号作为搜索词
+  if (!onlineSubQuery.value && movie.value?.code) {
+    onlineSubQuery.value = movie.value.code
+  }
+  onlineSubVisible.value = true
+}
+
+const onOnlineSubOpen = () => {
+  onlineSubResults.value = []
+  onlineSubOffset.value = 0
+  onlineSubMore.value = false
+  onlineSubSearched.value = false
+  onlineSubError.value = ''
+}
+
+const searchOnlineSubtitlesHandler = async () => {
+  onlineSubOffset.value = 0
+  onlineSubResults.value = []
+  await doSearchOnlineSubtitles()
+}
+
+const loadMoreOnlineSubtitles = async () => {
+  onlineSubOffset.value += 6
+  await doSearchOnlineSubtitles(true)
+}
+
+const doSearchOnlineSubtitles = async (append = false) => {
+  if (!onlineSubQuery.value.trim()) {
+    ElMessage.warning('请输入番号或关键字')
+    return
+  }
+  onlineSubLoading.value = true
+  onlineSubError.value = ''
+  try {
+    const res = await searchOnlineSubtitles(
+      route.params.id,
+      onlineSubQuery.value.trim(),
+      onlineSubOffset.value,
+      activeModule(),
+    )
+    const list = res.results || []
+    onlineSubResults.value = append ? [...onlineSubResults.value, ...list] : list
+    onlineSubMore.value = !!res.more
+    onlineSubSearched.value = true
+  } catch (e) {
+    onlineSubError.value = e?.response?.data?.detail || e.message || '在线字幕搜索失败'
+    onlineSubSearched.value = true
+  } finally {
+    onlineSubLoading.value = false
+  }
+}
+
+const loadOnlineSubtitle = async (row) => {
+  if (!art) {
+    ElMessage.warning('播放器尚未就绪')
+    return
+  }
+  onlineSubLoadingId.value = row.id
+  try {
+    // 简中=0，繁中=1：先尝试简中，失败再繁中
+    let blobUrl = null
+    let usedIndex = 0
+    for (const idx of [0, 1]) {
+      try {
+        blobUrl = await fetchOnlineSubtitleText(route.params.id, row.id, idx, activeModule())
+        usedIndex = idx
+        break
+      } catch (e) {
+        if (idx === 1) throw e
+      }
+    }
+    // 释放旧 blob，避免内存泄漏
+    onlineSubBlobUrls.value.forEach((u) => URL.revokeObjectURL(u))
+    onlineSubBlobUrls.value = [blobUrl]
+    art.subtitle = {
+      url: blobUrl,
+      type: 'vtt',
+      encoding: 'utf-8',
+      style: { color: '#fff' },
+    }
+    ElMessage.success(`已加载在线字幕：${row.title}（${usedIndex === 0 ? '简体中文' : '繁体中文'}）`)
+  } catch (e) {
+    ElMessage.error(`在线字幕加载失败：${e.message || e}`)
+  } finally {
+    onlineSubLoadingId.value = ''
+  }
+}
+
+const previewOnlineSubtitle = async (row) => {
+  try {
+    const blobUrl = await fetchOnlineSubtitleText(route.params.id, row.id, 0, activeModule())
+    const resp = await fetch(blobUrl)
+    const text = await resp.text()
+    URL.revokeObjectURL(blobUrl)
+    if (!text.trim()) {
+      ElMessage.warning('字幕内容为空')
+      return
+    }
+    const blocks = text.split(/\r?\n\r?\n/).filter((b) => b.trim())
+    const preview = blocks.slice(0, 40).join('\n\n')
+    const more = blocks.length > 40 ? `\n\n…（共 ${blocks.length} 条，仅显示前 40 条）` : ''
+    await ElMessageBox.alert(preview + more, `在线字幕预览：${row.title}`, {
+      confirmButtonText: '关闭',
+      customClass: 'subtitle-preview-box',
+      dangerouslyUseHTMLString: false,
+    }).catch(() => {})
+  } catch (e) {
+    ElMessage.error(`在线字幕预览失败：${e.message || e}`)
+  }
+}
+
 // ===== 缩略图进度条 =====
 const loadSprite = async () => {
   try {
@@ -1760,6 +1931,8 @@ onUnmounted(() => {
   window.removeEventListener('mdcx-mpv-toggle', onMpvToggle)
   window.removeEventListener('mdcx-mpv-screenshot', onMpvScreenshot)
   window.removeEventListener('keydown', onGlobalShortcut)
+  // 释放在线字幕产生的 blob URL，避免内存泄漏
+  onlineSubBlobUrls.value.forEach((u) => URL.revokeObjectURL(u))
   // art 实例由 <ArtplayerVideo> 组件自行销毁，避免重复 destroy
 })
 </script>

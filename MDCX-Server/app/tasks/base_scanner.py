@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from app.utils.logger import get_logger
+from app.utils.file_ops import copy_file_resilient
 
 logger = get_logger(__name__)
 
@@ -143,6 +144,10 @@ def detect_version_flags(file_name: str) -> dict:
         "is_uncensored": False,
         "is_leak": False,
         "is_4k": False,
+        # 🔴 2026-10-22 新增：高清无码（-LTX / -C-LTX 后缀）。
+        #   LTX 是新技术去码，画质高于普通 -U 破解版，用户要求单独区分。
+        #   与 is_uncensored 并存：LTX 同时算无码，并在此字段单独标记。
+        "is_hd_uncensored": False,
     }
 
     # ---- 全文扫描（覆盖 [中字]、（中文）、中文字幕版 等常见命名习惯） ----
@@ -161,6 +166,15 @@ def detect_version_flags(file_name: str) -> dict:
     if "4k" in low or "uhd" in low:
         flags["is_4k"] = True
 
+    # 🔴 2026-10-22：高清无码 LTX。全文任意位置出现即算（-LTX / -C-LTX / ABC123LTX）。
+    #   注意必须先判 LTX 再判下面的单字符后缀，避免 LTX 里的 "L/T/X" 被误读。
+    if "ltx" in low:
+        flags["is_hd_uncensored"] = True
+        flags["is_uncensored"] = True   # LTX 也是无码
+        # LTX 前的 C（-C-LTX）表示中字
+        if re.search(r"c[-_.\s]?ltx", low):
+            flags["is_chinese"] = True
+
     # ---- 尾部后缀（兼容传统命名） ----
     # 尾部版本后缀（允许 - / _ / 空格 / 无分隔符）
     m = re.search(r"[-_.\s]?([A-Za-z0-9\u4e00-\u9fff]{1,12})$", stem)
@@ -174,6 +188,18 @@ def detect_version_flags(file_name: str) -> dict:
     if sl == "uc":
         flags["is_chinese"] = True
         flags["is_uncensored"] = True
+        return flags
+
+    # 🔴 2026-10-22：LTX 及组合后缀（-LTX / -C-LTX / -CLTX / -U-LTX）。
+    #   放在单字符规则**之前**：否则 LTX 末尾的 "X" 虽不匹配任何单字符规则，
+    #   但 `-C-LTX` 的 "C" 会被上面 `"c" in sl` 命中（尚可），而 `-LTX` 单独出现时
+    #   末尾 "X" 不命中、中间的 "LT" 也不命中 ⇒ 若无此分支，纯 LTX 会漏判。
+    if "ltx" in sl:
+        flags["is_hd_uncensored"] = True
+        flags["is_uncensored"] = True
+        # 组合里的 C 表示中字（-C-LTX / -CLTX）
+        if re.search(r"^[a-z]*c[a-z]*ltx$", sl) or "c-ltx" in low or "cltx" in sl:
+            flags["is_chinese"] = True
         return flags
 
     if "4k" in sl or "uhd" in sl:
@@ -488,35 +514,17 @@ def iter_media_entries(
 def _copy_file_resilient(src: Path, dst: Path) -> bool:
     """跨网络盘复制单个文件，带 SameFileError / 元数据失败降级。
 
+    实现已统一到 :func:`app.utils.file_ops.copy_file_resilient`，此处保留薄封装是为了
+    不改动本模块的调用方签名（语义：True=已写入副本，False=源=目标同一文件跳过）。
+
     服务器的媒体目录常是 SMB 映射盘（`L:` = `\\\\host\\share`），同一个物理文件可能
-    通过不同路径可达（如 `L:\\data` 与服务器本地 `E:\\MDCX-Server\\data`）。此时
-    `shutil.copy2` 会抛 SameFileError；另外 SMB 上 copystat（写 mtime/权限）经常
-    被拒绝，导致明明内容可复制却整体失败。
+    通过不同路径可达（如 `L:\\data` 与服务器本地 `E:\\MDCX-Server\\data`），此时
+    `shutil.copy2` 会抛 SameFileError；另外 SMB 上 copystat（写 mtime/权限）经常被
+    拒绝，导致明明内容可复制却整体失败。
 
-    降级链：samefile 短路 → copy2（保留元数据）→ 纯字节流 copyfileobj（只要内容）。
+    降级链：samefile 短路 → copy2（保留元数据）→ copyfile（只要内容）。
     """
-    try:
-        if dst.exists() and src.samefile(dst):
-            logger.debug(f"源与目标为同一文件，跳过: {src}")
-            return False
-    except OSError:
-        pass  # 网络盘不支持 samefile，交给后续实际复制去兜底
-
-    try:
-        shutil.copy2(src, dst)
-        return True
-    except shutil.SameFileError:
-        logger.debug(f"源与目标为同一文件，跳过: {src}")
-        return False
-    except OSError as e:
-        # SMB / 只读属性 / copystat 被拒：退化为只要内容的字节流复制
-        logger.debug(f"copy2 失败，改用字节流复制 {src}: {e}")
-        try:
-            with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
-            return True
-        except Exception as e2:
-            raise RuntimeError(f"字节流复制也失败: {e2}") from e2
+    return copy_file_resilient(src, dst)
 
 
 async def copy_video_assets_to_data_dir(

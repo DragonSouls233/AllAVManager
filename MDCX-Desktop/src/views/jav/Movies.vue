@@ -46,6 +46,8 @@
         <el-icon><Document /></el-icon> 导入 NFO
       </el-button>
       <el-tag v-if="store.total">{{ store.total }} 部</el-tag>
+      <!-- 批量刮削后台运行期间角标数字会自动刷新，给个轻提示免得以为卡住了 -->
+      <el-tag v-if="statsPolling" size="small" type="info" effect="plain">待刮削数自动刷新中</el-tag>
       <!-- 详情页跳转筛选状态（系列/片商/类别/番号前缀） -->
       <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
       <el-tag v-if="route.query.maker" type="warning" closable @close="clearRouteFilter('maker')">片商：{{ route.query.maker }}</el-tag>
@@ -60,6 +62,8 @@
         <el-radio-button value="chinese">有中文</el-radio-button>
         <el-radio-button value="no_chinese">没中文</el-radio-button>
         <el-radio-button value="uncensored">无码</el-radio-button>
+        <!-- 2026-10-22 后端新增：高清无码（-LTX / -C-LTX），画质高于普通 -U 破解版 -->
+        <el-radio-button value="hd_uncensored" title="高清无码（文件名 -LTX / -C-LTX）">高清无码</el-radio-button>
         <el-radio-button value="solo">单人</el-radio-button>
         <el-radio-button value="complete">信息全</el-radio-button>
         <el-radio-button value="incomplete">信息不全</el-radio-button>
@@ -154,6 +158,7 @@ import { useJavStore } from '@/stores/jav'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getCoverSrc, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
 import { forceScrapeJavMovie } from '@/api/jav'
+import { usePendingPoll } from '@/query'
 
 const router = useRouter()
 const route = useRoute()
@@ -161,6 +166,13 @@ const store = useJavStore()
 const keyword = ref('')
 const scanning = ref(false)
 const sortBy = ref('')
+
+// 待刮削角标自动刷新：批量刮削是后台串行任务，角标只在 loadMovies 时更新会一直停在旧值。
+// 只请求 limit=1 取 pending_count，归零/卸载自动停（详见 src/query/pending-poll.js）。
+const { polling: statsPolling, start: startStatsPoll } = usePendingPoll(
+  () => store.refreshStats(),
+  { intervalMs: 15000, maxDurationMs: 6 * 60 * 60 * 1000 },
+)
 
 // ============== 状态缓存（sessionStorage） ==============
 // 从详情页返回时恢复用户之前浏览的页码和数据
@@ -239,7 +251,8 @@ function resetFilters() {
   loadMovies()
 }
 
-// 信息筛选 TAB：''=全部 / chinese=有中文 / no_chinese=没中文 / uncensored=无码 / complete=信息全 / incomplete=信息不全
+// 信息筛选 TAB：''=全部 / chinese=有中文 / no_chinese=没中文 / uncensored=无码
+//              / hd_uncensored=高清无码(-LTX) / solo=单人 / complete=信息全 / incomplete=信息不全
 const infoTab = ref('')
 
 function onInfoTabChange() {
@@ -253,6 +266,7 @@ async function loadMovies() {
   if (infoTab.value === 'chinese') params.is_chinese = 1
   else if (infoTab.value === 'no_chinese') params.no_chinese = 1
   else if (infoTab.value === 'uncensored') params.is_uncensored = 1
+  else if (infoTab.value === 'hd_uncensored') params.is_hd_uncensored = 1
   else if (infoTab.value === 'solo') params.solo = 1
   else if (infoTab.value === 'complete' || infoTab.value === 'incomplete') params.info_state = infoTab.value
   await store.loadMovies(params)
@@ -323,7 +337,10 @@ async function startScrapeAll() {
       { confirmButtonText: '开始刮削', cancelButtonText: '取消', type: 'warning' }
     )
     const res = await store.triggerScrapeAll()
-    ElMessage.success(res.message || '批量刮削已启动')
+    // 任务在后台跑起来：让旧统计失效并开启角标轮询
+    store.invalidateMovies()
+    startStatsPoll()
+    ElMessage.success((res.message || '批量刮削已启动') + '，待刮削数量会自动刷新')
   } catch (e) {
     if (e !== 'cancel') {
       console.error('[批量刮削启动失败]', e) // 保留完整堆栈，便于定位 DOMException 来源

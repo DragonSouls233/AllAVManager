@@ -144,7 +144,10 @@ class FileOrganizer:
                 shutil.move(str(src_path), str(dest_path))
                 logger.info(f"Moved: {src_path} -> {dest_path}")
             else:
-                shutil.copy2(str(src_path), str(dest_path))
+                # 降级复制：目标常在 SMB/网盘挂载上，copystat 被拒不应让整个整理失败
+                from app.utils.file_ops import copy_file_resilient
+
+                copy_file_resilient(src_path, dest_path)
                 logger.info(f"Copied: {src_path} -> {dest_path}")
             
             return str(dest_path)

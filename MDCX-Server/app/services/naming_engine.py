@@ -23,6 +23,7 @@ from app.services.naming import (
     build_template_context,
     get_available_variables,
 )
+from app.utils.file_ops import copy_file_resilient
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -251,7 +252,9 @@ class FileOrganizer:
             dest_dir.mkdir(parents=True, exist_ok=True)
 
             if self.mode == OrganizeMode.COPY:
-                shutil.copy2(str(src), str(dest_path))
+                # 降级复制：目标常在 SMB/网盘挂载，copy2 的 copystat 被拒会抛 OSError
+                # ⇒ 外层把整理判失败，但内容其实已拷好。
+                copy_file_resilient(src, dest_path)
             elif self.mode == OrganizeMode.MOVE:
                 shutil.move(str(src), str(dest_path))
             elif self.mode == OrganizeMode.SYMLINK:

@@ -589,7 +589,15 @@ class ScraperWorkflow:
                 前端会跳到另一个视频。反过来，已有值为空（如历史上落下的空壳）时
                 照常写入，正好顺手把路径补上。
                 """
+                # 字段级归属保护（移植自 peach field_owners）：用户手动填写 /
+                # 复核批准的真相字段，自动刮削一律不覆盖。
+                from app.utils.field_owners import protected_fields
+
+                _protected = protected_fields(_movie)
+
                 for key, value in common_fields.items():
+                    if key in _protected:
+                        continue  # 受保护字段：保留用户/复核的值
                     if value is None and key in _KEEP_IF_NONE:
                         continue
                     if merge and key in ("file_path", "file_size", "output_dir"):
@@ -598,9 +606,11 @@ class ScraperWorkflow:
                     setattr(_movie, key, value)
                 # 模块专属列：只有非 None 才写（None = 源站没说，不该清掉旧值）
                 for key, value in _module_cols.items():
+                    if key in _protected:
+                        continue
                     setattr(_movie, key, value)
                 # 额外字段只更新非空值
-                if result.maker:
+                if result.maker and "studio" not in _protected:
                     _movie.studio = result.maker
 
             if movie:

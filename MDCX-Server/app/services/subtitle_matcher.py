@@ -67,7 +67,6 @@ def find_local_subtitles(file_path: str, code: Optional[str] = None) -> list[dic
             }
         ]
     """
-    video_path = Path(file_path)
     results = []
     seen: set[str] = set()
 
@@ -79,6 +78,17 @@ def find_local_subtitles(file_path: str, code: Optional[str] = None) -> list[dic
         seen.add(key)
         results.append(_build_subtitle_info(candidate, source))
 
+    # 🔴 2026-10-22：None/异常输入守卫必须**早于** Path()。
+    #   Path(None) 直接抛 TypeError，而早先的空值判断写在 Path() 之后
+    #   ⇒ 调用方传 None 时整个请求 500。
+    #   （实测：find_local_subtitles(None) 崩在 Path(None)；空字符串/不存在路径
+    #    则正常返回 []。）
+    if file_path is None:
+        return results
+    try:
+        video_path = Path(str(file_path).strip())
+    except (TypeError, ValueError):
+        return results
     if not str(file_path).strip() or not video_path.exists():
         return results
 
@@ -144,6 +154,38 @@ def _build_subtitle_info(path: Path, source: str) -> dict:
 
 # ===== 字幕编码嗅探 =====
 
+#: 常见中文字（高频字）——用于在多个候选编码都能"解码成功"时挑出正确的那个。
+#: 场景：GB18030 是 Big5 的超集，cp949(韩文) 与 GB18030 的 CJK 区也大面积重叠，
+#: 三者常常都能把同一段字节"成功"解码 ⇒ 单靠"能不能解码"无法区分，必须看解出来的
+#: 是不是**像中文**。字幕文件以中文为主，用高频字命中数打分最直接。
+_COMMON_CN_CHARS = frozenset(
+    "的一是不了在人有我他这个们中来上大为和国地到以说时要就出会可也你对"
+    "生能而子那得于着下自之年过发后作里用道行所然家种事成方多经么去法学"
+    "如都同现当没动面起看定天分还进好小部其些主样理心她本前开但因只从想"
+    "实日军者意无力它与长正把题问更手比又公很头见做才市老每各知何太世位"
+    "文西口日水火山石田土木目儿女人大小中王父子马牛羊鱼鸟鸟虫风雨雪云电光影"
+    "字幕听说说写写读读做做看看来来去去坐站立走跑跳飞开开关闭上下左右"
+    "前后东西南北里外中间旁边高低长短深浅快慢早晚朝夕春夏秋冬"
+)
+
+
+def _cn_score(text: str) -> int:
+    """解码文本里出现了多少常见中文字（越多越像中文）。"""
+    if not text:
+        return 0
+    return sum(1 for c in text if c in _COMMON_CN_CHARS)
+
+
+#: 编码名归一化（charset_normalizer 与 Python codecs 命名不一致）
+_ENC_ALIASES = {
+    "gb2312": "gb18030", "gbk": "gb18030", "gb18030": "gb18030",
+    "big5": "big5", "big5hkscs": "big5", "cp950": "big5",
+    "cp1252": "cp1252", "windows-1252": "cp1252",
+    "ascii": "utf-8", "utf-8": "utf-8", "utf-8-sig": "utf-8-sig",
+    "utf-16": "utf-16", "utf-16le": "utf-16", "utf-16be": "utf-16",
+}
+
+
 def detect_subtitle_encoding(raw: bytes) -> str:
     """
     嗅探字幕文件编码。
@@ -155,8 +197,17 @@ def detect_subtitle_encoding(raw: bytes) -> str:
     1. UTF-8 BOM（EF BB BF）→ utf-8-sig
     2. UTF-16 BOM → utf-16
     3. 严格 UTF-8 解码成功 → utf-8
-    4. GB18030 / Big5 / cp1252 依次尝试，取第一个严格解码成功的
+    4. 多候选打分：GB18030 / Big5 / cp949 / cp1252 等**都能**把中文字节
+       "成功"解码（GB18030 是 Big5 超集；cp949 与 GB18030 的 CJK 区重叠），
+       单看"能不能解码"必错。改为 charset_normalizer 给候选 + 常见中文字打分挑最优。
     5. 全失败 → latin-1 兜底，保证不抛异常
+
+    🔴 2026-10-22 重构第 4 步，修两个实测 bug：
+      a) Big5 繁体字幕被判成 GBK ⇒ 乱码（「繁體中文」→「羉砰いゅ」）。
+         原因：旧实现顺序尝试 GB18030→Big5，而 GB18030 是 Big5 超集，
+         Big5 永远排不上。
+      b) 只换 charset_normalizer 后，短中文又被偏好判成 cp949（韩文）⇒ 同样乱码。
+         故加「常见中文字打分」消歧：中文得分最高者胜出。
     """
     if not raw:
         return "utf-8"
@@ -166,7 +217,47 @@ def detect_subtitle_encoding(raw: bytes) -> str:
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
         return "utf-16"
 
-    for enc in ("utf-8", "gb18030", "big5", "cp1252"):
+    # 严格 UTF-8（能解码就是 UTF-8，优先级最高）
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+
+    # ---- 收集候选编码（charset_normalizer 的建议优先，再补固定候选） ----
+    candidates: list[str] = []
+    try:
+        from charset_normalizer import from_bytes
+        for match in from_bytes(raw):
+            enc = (match.encoding or "").lower().replace("_", "-")
+            if enc and enc not in candidates:
+                candidates.append(enc)
+            if len(candidates) >= 5:
+                break
+    except Exception:
+        pass
+    for enc in ("gb18030", "big5", "cp949", "cp1252"):
+        if enc not in candidates:
+            candidates.append(enc)
+
+    # ---- 逐个解码，用常见中文字打分挑最优 ----
+    best_enc, best_score = None, -1
+    for enc in candidates:
+        norm = _ENC_ALIASES.get(enc, enc)
+        try:
+            text = raw.decode(norm)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        score = _cn_score(text)
+        # 严格大于 ⇒ 平分时保留前面的候选（charset_normalizer 的建议优先）
+        if score > best_score:
+            best_enc, best_score = norm, score
+
+    if best_enc:
+        return best_enc
+
+    # 兜底：顺序尝试（理论上走不到，charset_normalizer 异常时保底）
+    for enc in ("gb18030", "big5", "cp949", "cp1252"):
         try:
             raw.decode(enc)
         except (UnicodeDecodeError, LookupError):

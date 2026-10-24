@@ -29,6 +29,7 @@ import {
   scrapeAllPendingPornhub,
 } from '@/api/pornhub'
 import { scanModule } from '@/api/modules'
+import { queryClient, queryKeys, invalidateByPrefix } from '@/query'
 
 export const usePornhubStore = defineStore('pornhub', () => {
   // 影片
@@ -71,7 +72,15 @@ export const usePornhubStore = defineStore('pornhub', () => {
   const currentActor = ref(null)
 
   // ========== 影片 ==========
+  // 取数走 Query 缓存（决策见 src/query/client.js）：
+  //  · 同一组参数的在途请求会被合并，快速翻页不会打出一串重复请求；
+  //  · 竞态保护靠下面的 loadSeq —— `fetchQuery` 没有 observer，不会随组件卸载自动取消，
+  //    所以「迟到的响应不许回写」必须自己判；signal 已铺好，供将来改用 useQuery 或手动 cancelQueries；
+  //  · 后台任务（刮削/扫描/补封面）启动后调 invalidateMovies()。
+  let loadSeq = 0
+
   async function loadMovies(extra = {}) {
+    const seq = ++loadSeq
     loading.value = true
     try {
       const params = {
@@ -86,13 +95,41 @@ export const usePornhubStore = defineStore('pornhub', () => {
       Object.keys(params).forEach(k => {
         if (params[k] === '' || params[k] === null || params[k] === undefined) delete params[k]
       })
-      const res = await getPornhubMovies(params)
+      const res = await queryClient.fetchQuery({
+        queryKey: queryKeys.pornhub.movies(params),
+        queryFn: ({ signal }) => getPornhubMovies(params, { signal }),
+      })
+      // 期间用户又触发了新的取数 ⇒ 这次结果已经过时，不许写回（否则翻页会跳回上一页）
+      if (seq !== loadSeq) return
       movies.value = res.items || []
       total.value = res.total || 0
-        pendingCount.value = res.pending_count || 0
+      pendingCount.value = res.pending_count || 0
     } finally {
-      loading.value = false
+      if (seq === loadSeq) loading.value = false
     }
+  }
+
+  /** 只刷「待刮削」角标，不动当前页列表。
+   *
+   * 批量刮削/扫描是后台任务，pending_count 会一直下降；用 limit=1 的最小请求去取，
+   * 代价远小于重取整页（PORNHUB 列表带封面字段，一页 24 条很重）。
+   * 返回当前数量，取不到返回 null（让轮询继续但不中断）。 */
+  async function refreshStats() {
+    try {
+      const res = await queryClient.fetchQuery({
+        queryKey: queryKeys.pornhub.stats,
+        queryFn: ({ signal }) => getPornhubMovies({ limit: 1 }, { signal }),
+      })
+      pendingCount.value = res.pending_count || 0
+      return pendingCount.value
+    } catch {
+      return null
+    }
+  }
+
+  /** 让所有影片列表查询过期。后台任务改了库之后调用，下一次取数才拿新数据。 */
+  function invalidateMovies() {
+    return invalidateByPrefix(queryKeys.pornhub.moviesRoot)
   }
 
   async function loadMovieDetail(id) {
@@ -115,7 +152,7 @@ export const usePornhubStore = defineStore('pornhub', () => {
 
   // ========== 演员 ==========
   async function loadActors() {
-    const res = await getPornhubActorsPage({
+    const params = {
       skip: (actorPage.value - 1) * actorPageSize.value,
       limit: actorPageSize.value,
       search: actorSearch.value,
@@ -123,6 +160,10 @@ export const usePornhubStore = defineStore('pornhub', () => {
       profile_status: actorProfileStatus.value,
       sort_by: actorSortBy.value,
       sort_dir: actorSortDir.value,
+    }
+    const res = await queryClient.fetchQuery({
+      queryKey: queryKeys.pornhub.actors(params),
+      queryFn: ({ signal }) => getPornhubActorsPage(params, { signal }),
     })
     actors.value = res.items || []
     actorTotal.value = res.total || 0
@@ -217,6 +258,7 @@ export const usePornhubStore = defineStore('pornhub', () => {
     nationalities, externalStatus, currentMovie, currentActor,
     // 影片 actions
     loadMovies, loadMovieDetail, scrapeMovie, rescrapeMovie, updateMovie,
+    refreshStats, invalidateMovies,
     // 演员 actions
     loadActors, loadNationalities, loadActorDetail,
     scrapeActor, scrapeAllActors, updateActor, setActorProfileUrl,
