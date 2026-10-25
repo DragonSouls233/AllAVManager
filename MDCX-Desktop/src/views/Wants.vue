@@ -82,8 +82,9 @@
             <span class="muted">{{ formatDate(row.created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
+            <el-button text type="primary" size="small" @click="onFindResources(row)">找资源</el-button>
             <el-button v-if="row.status !== 'found'" text type="success" size="small" @click="onMarkFound(row)">标记找到</el-button>
             <el-button v-if="row.status === 'found'" text type="primary" size="small" @click="onReopen(row)">重新想要</el-button>
             <el-button text type="danger" size="small" @click="onDelete(row)">删除</el-button>
@@ -91,6 +92,8 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <ResourceDialog v-model="resDialogVisible" :code="resDialogCode" :want-id="resDialogWantId" />
   </div>
 </template>
 
@@ -99,6 +102,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getWants, checkWants, addWant, updateWant, deleteWant } from '@/api'
+import ResourceDialog from '@/components/wants/ResourceDialog.vue'
 
 const statusFilter = ref('wanted')
 const items = ref([])
@@ -106,6 +110,11 @@ const loading = ref(false)
 const adding = ref(false)
 const checking = ref(false)
 const form = reactive({ code: '', title: '', note: '', priority: false })
+
+// 磁力资源对话框
+const resDialogVisible = ref(false)
+const resDialogCode = ref('')
+const resDialogWantId = ref(null)
 
 const moduleLabels = {
   jav: 'JAV', fc2: 'FC2', uncensored: '无码',
@@ -198,6 +207,12 @@ async function onMarkFound(row) {
   } catch (e) {
     ElMessage.error('操作失败')
   }
+}
+
+function onFindResources(row) {
+  resDialogCode.value = row.code
+  resDialogWantId.value = row.id
+  resDialogVisible.value = true
 }
 
 async function onReopen(row) {

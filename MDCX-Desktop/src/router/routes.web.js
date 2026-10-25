@@ -105,6 +105,51 @@ export const routes = [
         meta: { title: '媒体健康扫描' }
       },
       {
+        // 🔴 以下 7 条在拆分 routes.web/desktop 时漏迁：页面文件一直在 src/views 下，
+        // 但没有任何路由引用 → 构建产物里没有对应 chunk，页面等于不存在。
+        // 路径/name 一律沿用拆分前 src/router/index.js 的原始定义，恢复原访问地址。
+        path: 'unrecognized-files',
+        name: 'UnrecognizedFiles',
+        component: () => import('@/views/UnrecognizedFiles.vue'),
+        meta: { title: '未识别文件' }
+      },
+      {
+        path: 'file-organize',
+        name: 'FileOrganize',
+        component: () => import('@/views/FileOrganize.vue'),
+        meta: { title: '文件整理' }
+      },
+      {
+        path: 'auto-organize',
+        name: 'AutoOrganize',
+        component: () => import('@/views/AutoOrganize.vue'),
+        meta: { title: '自动整理' }
+      },
+      {
+        path: 'refresh-folders',
+        name: 'RefreshFolders',
+        component: () => import('@/views/RefreshFolders.vue'),
+        meta: { title: '刷新目录' }
+      },
+      {
+        path: 'webdav-import',
+        name: 'WebDAVImport',
+        component: () => import('@/views/WebDAVImport.vue'),
+        meta: { title: 'WebDAV 导入' }
+      },
+      {
+        path: 'cloud-drive2',
+        name: 'CloudDrive2',
+        component: () => import('@/views/CloudDrive2.vue'),
+        meta: { title: 'CloudDrive2 网盘' }
+      },
+      {
+        path: 'pan-115',
+        name: 'Pan115',
+        component: () => import('@/views/Pan115.vue'),
+        meta: { title: '115 网盘' }
+      },
+      {
         path: 'wants',
         name: 'Wants',
         component: () => import('@/views/Wants.vue'),

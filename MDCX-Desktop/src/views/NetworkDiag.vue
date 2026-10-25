@@ -13,6 +13,11 @@
         <el-button @click="loadConfig" :loading="loadingConfig">
           <el-icon><Refresh /></el-icon> 重载配置
         </el-button>
+        <el-tooltip content="一键收集日志/配置/环境信息打成脱敏 zip，排查问题时直接发这个包" placement="top">
+          <el-button :loading="exportingBundle" @click="onExportBundle">
+            <el-icon><Download /></el-icon> 导出诊断包
+          </el-button>
+        </el-tooltip>
         <el-button type="primary" @click="runFullDiag" :loading="running">
           <el-icon><Cpu /></el-icon> 运行完整诊断
         </el-button>
@@ -242,12 +247,12 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Connection, Refresh, Cpu, Setting, Check, Promotion, Link,
-  Histogram, Aim, VideoPlay,
+  Histogram, Aim, VideoPlay, Download,
   SuccessFilled, WarningFilled, CircleCloseFilled, RemoveFilled,
 } from '@element-plus/icons-vue'
 import {
   getDiagSites, runDiagnosis, singleCheck,
-  getDiagConfig, updateDiagConfig,
+  getDiagConfig, updateDiagConfig, exportDiagnosticsBundle,
 } from '@/api'
 
 // 站点列表
@@ -258,6 +263,7 @@ const savingConfig = ref(false)
 const singleLoading = ref(false)
 const proxyChecking = ref(false)
 const rechecking = ref('')
+const exportingBundle = ref(false)
 
 // 诊断报告
 const report = reactive({
@@ -466,6 +472,30 @@ const statusTagType = (s) => {
 const alertType = (s) => {
   const m = { OK: 'success', WARNING: 'warning', FAILED: 'error', SKIPPED: 'info', CANCELLED: 'info' }
   return m[s] || 'info'
+}
+
+// 导出诊断包（zip blob 下载；文件名与后端同格式，本地生成）
+async function onExportBundle() {
+  exportingBundle.value = true
+  try {
+    const blob = await exportDiagnosticsBundle()
+    const now = new Date()
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
+    const filename = `mdcx-diagnostics-${stamp}.zip`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    ElMessage.success(`诊断包已导出：${filename}（含脱敏日志与配置，可直接外发）`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '导出诊断包失败')
+  } finally {
+    exportingBundle.value = false
+  }
 }
 
 onMounted(() => {

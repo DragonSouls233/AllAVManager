@@ -206,6 +206,20 @@ def _scan_mp4_box_order(file_path: str) -> Optional[bool]:
     return moov_off < mdat_off
 
 
+def _moov_before_mdat(boxes: dict) -> Optional[bool]:
+    """从 box 扫描结果取 moov/mdat 先后；任一方缺失返回 None（不猜）。
+
+    🔴 不能直接写 `boxes.get("moov", -1) < boxes.get("mdat", -1)`：
+    dict.get 的默认值只在**键不存在**时生效，而 `_scan_mp4_boxes` 总会写入
+    这两个键（缺席时值是 None），于是变成 `int < None` → TypeError，
+    analyze 接口直接 500（砍断的片正好走这条分支）。
+    """
+    moov_off, mdat_off = boxes.get("moov"), boxes.get("mdat")
+    if moov_off is None or mdat_off is None:
+        return None
+    return moov_off < mdat_off
+
+
 async def _decode_check(file_path: str, ffmpeg: str) -> tuple[int, str]:
     """全解码一遍数报错行（-f null -）。返回 (错误行数, 摘要)。
 
@@ -224,6 +238,14 @@ async def _decode_check(file_path: str, ffmpeg: str) -> tuple[int, str]:
         except ProcessLookupError:
             pass
         return -1, f"解码验证超时（>{DECODE_TIMEOUT}s）"
+    except asyncio.CancelledError:
+        # 任务被取消：wait_for 只取消等待，不会杀子进程。不 kill 的话 ffmpeg
+        # 会以孤儿进程继续跑满一个 CPU 直到跑完（REPAIR_TIMEOUT 给的是 1 小时）。
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        raise
     lines = [l.strip() for l in (stderr or b"").decode("utf-8", "replace").splitlines() if l.strip()]
     return len(lines), " | ".join(lines[:3])[:200]
 
@@ -307,7 +329,7 @@ async def analyze_file(file_path: str, decode_check: bool = False) -> dict:
             file_path, "truncated", True,
             "文件数据被砍断（索引 moov 还在，常见于 faststart 片下载中断）："
             "remux 能救出已写入的全部完整帧",
-            size=size, moov_before_mdat=(boxes.get("moov") is not None and boxes.get("moov", -1) < boxes.get("mdat", -1)),
+            size=size, moov_before_mdat=_moov_before_mdat(boxes),
             **summary,
         ).to_dict()
 
@@ -322,7 +344,7 @@ async def analyze_file(file_path: str, decode_check: bool = False) -> dict:
                 f"中段数据损坏（全解码报错 {decode_errors} 行）：{dec_summary}。"
                 "remux 丢弃损坏包后可救回大部分内容",
                 size=size, decode_errors=decode_errors,
-                moov_before_mdat=(boxes.get("moov") is not None and boxes.get("moov", -1) < boxes.get("mdat", -1)),
+                moov_before_mdat=_moov_before_mdat(boxes),
                 **summary,
             ).to_dict()
 
@@ -404,6 +426,13 @@ async def _run_ffmpeg(cmd: list[str], timeout: int, log: Callable[[str], None],
         except ProcessLookupError:
             pass
         return -1, f"ffmpeg 超时（>{timeout}s）"
+    except asyncio.CancelledError:
+        # 同上：取消只断等待，不断子进程，必须自己 kill，否则孤儿 ffmpeg 常驻。
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        raise
     finally:
         holder["proc"] = None
     text = (stderr or b"").decode("utf-8", "replace")
@@ -503,6 +532,12 @@ async def repair_file(
                 except ProcessLookupError:
                     pass
                 return {"status": "error", "message": f"解码验证超时（>{DECODE_TIMEOUT}s）"}
+            except asyncio.CancelledError:
+                try:
+                    dec_proc.kill()
+                except ProcessLookupError:
+                    pass
+                raise
             finally:
                 holder["proc"] = None
             decode_errors = len([l for l in (dec_err or b"").decode("utf-8", "replace").splitlines() if l.strip()])

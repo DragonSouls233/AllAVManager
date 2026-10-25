@@ -179,6 +179,9 @@ export const runDiagnosis = () => api.post('/network-diag/run')
 export const singleCheck = (data) => api.post('/network-diag/check', data)
 export const getDiagConfig = () => api.get('/network-diag/config')
 export const updateDiagConfig = (params) => api.put('/network-diag/config', null, { params })
+// 诊断包导出（zip blob，返回二进制；文件名由调用方按 mdcx-diagnostics-<时间戳>.zip 生成）
+export const exportDiagnosticsBundle = () =>
+  api.get('/diagnostics/bundle', { responseType: 'blob' })
 
 // ============================================
 // 人脸裁剪
@@ -452,6 +455,9 @@ export const checkWants = () => api.get('/wants/check')
 export const addWant = (data) => api.post('/wants', data)
 export const updateWant = (id, data) => api.put(`/wants/${id}`, data)
 export const deleteWant = (id) => api.delete(`/wants/${id}`)
+export const searchWantResources = (code, force = false) =>
+  api.post('/wants/resources', { code, force })
+export const sendWantResource = (data) => api.post('/wants/resources/send', data)
 
 // 播放列表（跨模块连播队列）
 export const listPlaylists = () => api.get('/playlists')
@@ -798,6 +804,13 @@ export const manualLinkFile = (data) => api.post('/unrecognized/manual-link', da
 export const manualSetNumber = (data) => api.post('/unrecognized/manual-set-number', data)
 export const renameUnrecognizedFile = (data) => api.post('/unrecognized/rename', data)
 export const deleteUnrecognizedFile = (data) => api.post('/unrecognized/delete', data)
+
+// ============== 推广残留清理 ==============
+export const scanAdResidue = (data) => api.post('/ad-residue/scan', data || {})
+export const trashAdResidue = (paths) => api.post('/ad-residue/trash', { paths })
+export const getAdTrash = () => api.get('/ad-residue/trash')
+export const restoreAdTrash = (paths) => api.post('/ad-residue/trash/restore', { paths })
+export const purgeAdTrash = (paths) => api.post('/ad-residue/trash/purge', { paths })
 
 // ============== CloudDrive2 网盘 ==============
 export const getCloudDrive2Config = () => api.get('/cloud-drive2/config')

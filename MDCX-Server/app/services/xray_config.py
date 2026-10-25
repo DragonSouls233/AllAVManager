@@ -78,6 +78,13 @@ SCRAPE_PROXY_DOMAINS = [
     "phncdn.com",
     "google.com",  # 用于测速与出口 IP 检查
     "generate_204",
+    # 🔴 磁力搜索源（wants_resources / aggregate_searcher 的 sukebei 源）：
+    #    nyaa.si 主站与 sukebei 子站同域，两者都列（nyaa.si 镜像会跳主站）。
+    #    2026-10-25 开发机实测直连 200，但服务器是国内出口，domain 模式下
+    #    清单外域名一律直连 → 漏配就静默超时（本清单的历史坑，见上方注释），
+    #    宁可走代理。加这两条后无论用户有没有配 xray 都能搜。
+    "sukebei.nyaa.si",
+    "nyaa.si",
 ]
 
 # ============================================================
