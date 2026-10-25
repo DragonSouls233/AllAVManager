@@ -5,8 +5,25 @@
       返回
     </el-button>
 
-    <el-card v-if="actor" class="profile-card">
-      <div class="profile">
+    <!--
+      资料卡走通用 EntityHero（与 jav 演员页同一块）。
+      原先那一堆彩色 el-tag 排成的元信息，换成 peach 那种「一行读数 + 右侧资料表」：
+      信息一条没少（作品数/主演/共演/合并/cup/身高/年龄），只是不再用七种颜色抢视线。
+      头像、订阅、检测新片、补充资料、修正名称、标签全部原地保留在槽里。
+    -->
+    <EntityHero
+      v-if="actor"
+      :name="actor.name"
+      :kind-label="moduleLabel"
+      :avatar="getActorAvatar(actor)"
+      :meta="heroMeta"
+      :facts="heroFacts"
+      :links="heroLinks"
+      :related="costars"
+      related-label="同台演员"
+      @pick-related="goCostar"
+    >
+      <template #portrait>
         <div class="profile-avatar" @click="triggerAvatarUpload" title="点击更换头像">
           <img :src="getActorAvatar(actor)" :alt="actor.name" @error="handleAvatarError">
           <div class="avatar-overlay">
@@ -14,116 +31,88 @@
             <span>更换</span>
           </div>
         </div>
-        <input
-          ref="avatarInputRef"
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          style="display:none"
-          @change="onAvatarFileChange"
-        />
-        <div class="profile-info">
-          <div class="profile-name" @dblclick="copyActorName" title="双击复制演员名">{{ actor.name }}</div>
-          <div v-if="actor.name_jp" class="profile-subtitle">{{ actor.name_jp }}</div>
-          <!-- 合并来源：alias 去掉主名本身，逐个显示，让用户知道哪些演员被合并进来了 -->
-          <div v-if="mergedFrom.length" class="profile-alias">
-            <span class="alias-label">已合并 {{ mergedFrom.length }} 个别名：</span>
+      </template>
+
+      <template #title>
+        <div class="profile-name" @dblclick="copyActorName" title="双击复制演员名">{{ actor.name }}</div>
+        <span v-if="actor.name_jp" class="profile-subtitle">{{ actor.name_jp }}</span>
+      </template>
+
+      <template #identity-extra>
+        <!-- 合并来源：alias 去掉主名本身，让用户知道哪些演员被合并进来了 -->
+        <div v-if="mergedFrom.length" class="profile-alias">
+          <span class="alias-label">已合并 {{ mergedFrom.length }} 个别名：</span>
+          <el-tag
+            v-for="a in mergedFrom"
+            :key="a"
+            size="small"
+            type="warning"
+            effect="plain"
+            class="alias-tag"
+          >{{ a }}</el-tag>
+          <el-tooltip content="这些旧名下的作品已与主名合并统计" placement="top">
+            <el-icon class="alias-hint"><InfoFilled /></el-icon>
+          </el-tooltip>
+        </div>
+
+        <div class="profile-actions">
+          <el-button
+            :type="subscribed ? 'warning' : 'primary'"
+            :loading="subscribing"
+            @click="toggleSubscribe"
+          >
+            <el-icon><StarFilled v-if="subscribed" /><Star v-else /></el-icon>
+            {{ subscribed ? '已订阅' : '订阅' }}
+          </el-button>
+          <el-button v-if="subscribed" text @click="checkNewMovies" :loading="checking">
+            <el-icon><Bell /></el-icon> 检测新片
+          </el-button>
+          <el-button text type="danger" size="small" @click="deleteAvatar" :loading="avatarDeleting">
+            <el-icon><Delete /></el-icon> 删除头像
+          </el-button>
+          <el-button text type="primary" size="small" @click="scrapeProfile" :loading="scrapingProfile">
+            <el-icon><MagicStick /></el-icon> 补充资料
+          </el-button>
+          <el-button text type="warning" size="small" @click="openFixNameDialog">
+            <el-icon><Edit /></el-icon> 修正名称
+          </el-button>
+          <el-tag v-if="newMovieCount > 0" type="danger" effect="dark" size="small">
+            {{ newMovieCount }} 部新片
+          </el-tag>
+        </div>
+
+        <!-- 演员标签（v3.4 新增） -->
+        <div class="profile-tags">
+          <div class="tags-header">
+            <span class="tags-title">演员标签</span>
+            <el-button text size="small" @click="openTagDialog">
+              <el-icon><Plus /></el-icon> 添加
+            </el-button>
+          </div>
+          <div class="tags-list">
             <el-tag
-              v-for="a in mergedFrom"
-              :key="a"
-              size="small"
-              type="warning"
-              effect="plain"
-              class="alias-tag"
-            >{{ a }}</el-tag>
-            <el-tooltip content="这些旧名下的作品已与主名合并统计" placement="top">
-              <el-icon class="alias-hint"><InfoFilled /></el-icon>
-            </el-tooltip>
-          </div>
-          <div class="profile-meta">
-            <el-tag type="primary">{{ movieTotal }} 部作品</el-tag>
-            <el-tag v-if="starringTotal > 0" type="success">主演 {{ starringTotal }}</el-tag>
-            <el-tag v-if="coStarTotal > 0" type="info">共演 {{ coStarTotal }}</el-tag>
-            <el-tag v-if="mergedFrom.length" type="warning" effect="dark">含合并</el-tag>
-            <el-tag v-if="actor.cup" type="success">{{ actor.cup }} Cup</el-tag>
-            <el-tag v-if="actor.height" type="info">{{ actor.height }} cm</el-tag>
-            <el-tag v-if="actor.age" type="warning">{{ actor.age }} 岁</el-tag>
-          </div>
-          <div class="profile-actions">
-            <el-button
-              :type="subscribed ? 'warning' : 'primary'"
-              :loading="subscribing"
-              @click="toggleSubscribe"
+              v-for="tag in actorTags"
+              :key="tag.id"
+              :color="tag.color"
+              closable
+              :effect="tag.color ? 'dark' : 'light'"
+              @close="removeTag(tag)"
+              class="actor-tag"
             >
-              <el-icon><StarFilled v-if="subscribed" /><Star v-else /></el-icon>
-              {{ subscribed ? '已订阅' : '订阅' }}
-            </el-button>
-            <el-button v-if="subscribed" text @click="checkNewMovies" :loading="checking">
-              <el-icon><Bell /></el-icon> 检测新片
-            </el-button>
-            <el-button text type="danger" size="small" @click="deleteAvatar" :loading="avatarDeleting">
-              <el-icon><Delete /></el-icon> 删除头像
-            </el-button>
-            <el-button text type="primary" size="small" @click="scrapeProfile" :loading="scrapingProfile">
-              <el-icon><MagicStick /></el-icon> 补充资料
-            </el-button>
-            <el-button text type="warning" size="small" @click="openFixNameDialog">
-              <el-icon><Edit /></el-icon> 修正名称
-            </el-button>
-            <el-tag v-if="newMovieCount > 0" type="danger" effect="dark" size="small">
-              {{ newMovieCount }} 部新片
+              {{ tag.name }}
             </el-tag>
-          </div>
-          <div class="profile-grid">
-            <div v-if="actor.birth_date"><span>生日</span>{{ actor.birth_date }}</div>
-            <div v-if="actor.zodiac"><span>星座</span>{{ actor.zodiac }}</div>
-            <div v-if="actor.debut_year"><span>出道年份</span>{{ actor.debut_year }}</div>
-            <div v-if="actor.birthplace"><span>出生地</span>{{ actor.birthplace }}</div>
-            <div v-if="actor.bust"><span>胸围</span>{{ actor.bust }}</div>
-            <div v-if="actor.waist"><span>腰围</span>{{ actor.waist }}</div>
-            <div v-if="actor.hip"><span>臀围</span>{{ actor.hip }}</div>
-          </div>
-
-          <!-- 社交账号（v3.4 新增） -->
-          <div v-if="actor.social_links" class="profile-social">
-            <a
-              v-for="(url, platform) in actor.social_links"
-              :key="platform"
-              :href="url"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="social-link"
-            >
-              <el-icon><Link /></el-icon>
-              {{ socialLabel(platform) }}
-            </a>
-          </div>
-
-          <!-- 演员标签（v3.4 新增） -->
-          <div class="profile-tags">
-            <div class="tags-header">
-              <span class="tags-title">演员标签</span>
-              <el-button text size="small" @click="openTagDialog">
-                <el-icon><Plus /></el-icon> 添加
-              </el-button>
-            </div>
-            <div class="tags-list">
-              <el-tag
-                v-for="tag in actorTags"
-                :key="tag.id"
-                :color="tag.color"
-                closable
-                :effect="tag.color ? 'dark' : 'light'"
-                @close="removeTag(tag)"
-                class="actor-tag"
-              >
-                {{ tag.name }}
-              </el-tag>
-              <span v-if="!actorTags.length" class="tags-empty">暂无标签，点击"添加"创建（如"业界第一"/"传奇"）</span>
-            </div>
+            <span v-if="!actorTags.length" class="tags-empty">暂无标签，点击"添加"创建（如"业界第一"/"传奇"）</span>
           </div>
         </div>
-      </div>
-    </el-card>
+      </template>
+    </EntityHero>
+    <input
+      ref="avatarInputRef"
+      type="file"
+      accept="image/jpeg,image/png,image/webp"
+      style="display:none"
+      @change="onAvatarFileChange"
+    />
 
     <el-card class="movies-card">
       <template #header>
@@ -342,6 +331,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, VideoPlay, Star, StarFilled, Bell, Link, Plus, Camera, Delete, MagicStick, InfoFilled, Edit } from '@element-plus/icons-vue'
 import { defaultAvatar, defaultCover, getActorAvatarUrl, getMovieCoverUrl, getMoviePosterUrl, getMovieThumbUrl, getFileProxyUrl } from '@/utils/media'
+import EntityHero from '@/components/base/EntityHero.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -411,6 +401,83 @@ const mergedFrom = computed(() => {
     .split(/[,，、;；|/／]+/)
     .map(s => s.trim())
     .filter(s => s && s.toLowerCase() !== self)
+})
+
+// ---------- 资料卡（EntityHero）的数据 ----------
+// 模块显示名：同一块卡服务 5 个模块，得说清这位是哪个库的
+const MODULE_LABEL = {
+  jav: 'JAV 有码', fc2: 'FC2', uncensored: '无码',
+  chinese: '中文', western: '欧美', pornhub: 'PORNHUB',
+}
+const moduleLabel = computed(() => MODULE_LABEL[moduleType.value] || moduleType.value)
+
+// 同台演员：关联表为空的模块/演员返回空，整条带不渲染
+const costars = ref([])
+const loadCostars = async () => {
+  costars.value = []
+  try {
+    const res = await commonApi.getActorCostars(
+      actorId.value, { limit: 24, min_movies: 2 }, moduleType.value,
+    )
+    costars.value = (res.items || []).map(p => ({
+      ...p,
+      avatar: p.id ? getActorAvatarUrl({ id: p.id, module_type: moduleType.value }, moduleType.value) : '',
+    }))
+  } catch { costars.value = [] }
+}
+function goCostar (p) {
+  if (p?.id) router.push(`/${moduleType.value}/actors/${p.id}`)
+}
+
+/** 元信息一行：读数性质的内容（作品数/主演/共演/身材），逐项判空 */
+const heroMeta = computed(() => {
+  const a = actor.value
+  if (!a) return []
+  const rows = [{ icon: 'film', value: movieTotal.value ?? 0, text: '部作品', strong: true }]
+  if (starringTotal.value > 0) rows.push({ icon: 'star', value: starringTotal.value, text: '主演' })
+  if (coStarTotal.value > 0) rows.push({ icon: 'user', value: coStarTotal.value, text: '共演' })
+  if (mergedFrom.value.length) {
+    rows.push({ icon: 'id-card', value: '含合并', text: `${mergedFrom.value.length} 个旧名` })
+  }
+  if (a.cup) rows.push({ icon: 'user', value: `${a.cup} Cup` })
+  if (a.height) rows.push({ icon: 'ruler', value: `${a.height} cm` })
+  if (a.age) rows.push({ icon: 'calendar', value: `${a.age} 岁` })
+  return rows
+})
+
+/** 资料表（右栏）：档案字段，有值才有这一行 */
+const heroFacts = computed(() => {
+  const a = actor.value
+  if (!a) return []
+  const rows = []
+  const push = (label, icon, value) => { if (value) rows.push({ label, icon, value: String(value) }) }
+
+  push('生日', 'calendar', a.birth_date)
+  push('星座', 'star', a.zodiac)
+  push('出道年份', 'clock', a.debut_year)
+  push('出生地', 'location', a.birthplace)
+  const sizes = [a.bust, a.waist, a.hip].filter(v => v)
+  if (sizes.length === 3) push('三围', 'ruler', `B${a.bust} · W${a.waist} · H${a.hip}`)
+  else {
+    push('胸围', 'ruler', a.bust)
+    push('腰围', 'ruler', a.waist)
+    push('臀围', 'ruler', a.hip)
+  }
+  // 时间线已加载时补一条活跃年份（该数据只在时间线端点里返回）
+  const yr = timeline.value?.year_range
+  if (yr && yr[0] && yr[1]) push('活跃年份', 'calendar-range', `${yr[0]} - ${yr[1]}`)
+  if (a.hobby) rows.push({ label: '爱好', icon: 'heart', value: a.hobby, clip: true, title: a.hobby })
+  if (a.intro) rows.push({ label: '简介', icon: 'id-card', value: a.intro, clip: true, title: a.intro })
+  return rows
+})
+
+/** 外链：只取库里存下来的社交账号，不拼猜测的站点地址 */
+const heroLinks = computed(() => {
+  const sl = actor.value?.social_links
+  if (!sl || typeof sl !== 'object') return []
+  return Object.entries(sl)
+    .filter(([, url]) => typeof url === 'string' && /^https?:\/\//i.test(url))
+    .map(([platform, url]) => ({ label: socialLabel(platform), url, title: `${socialLabel(platform)} · ${url}` }))
 })
 
 // 视图切换
@@ -731,7 +798,12 @@ const checkNewMovies = async () => {
     const res = await api.checkActorNewMovies(actorId.value)
     newMovieCount.value = res.new_count || 0
     if (res.new_count > 0) {
-      ElMessage.success(`检测到 ${res.new_count} 部新片`)
+      const cnCount = (res.new_movies || []).filter(m => m.upgrade_candidate).length
+      const cnOnly = (res.new_movies || []).filter(m => m.is_chinese && !m.upgrade_candidate).length
+      let msg = `检测到 ${res.new_count} 部新片`
+      if (cnCount > 0) msg += `，其中 ${cnCount} 部中字版可替换本地旧版（到订阅页下载）`
+      else if (cnOnly > 0) msg += `，其中 ${cnOnly} 部是中字版`
+      ElMessage.success(msg)
     } else {
       ElMessage.info('暂无新片')
     }
@@ -859,6 +931,7 @@ const loadAll = () => {
   loadMovies()
   loadTags()
   checkSubscribed()
+  loadCostars()
 }
 
 // 演员 ID 变化 → 整体重新加载

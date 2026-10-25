@@ -121,9 +121,22 @@
             <el-icon size="40"><Picture /></el-icon>
           </div>
           <div class="new-movie-info">
-            <div class="new-movie-code">{{ m.code }}</div>
+            <div class="new-movie-code">
+              {{ m.code }}
+              <el-tag v-if="m.is_chinese" type="warning" size="small" effect="dark" style="margin-left:4px">中文</el-tag>
+            </div>
             <div class="new-movie-title">{{ m.title || '未命名' }}</div>
             <div class="new-movie-date" v-if="m.release_date">{{ m.release_date }}</div>
+            <div v-if="m.upgrade_candidate" class="upgrade-row">
+              <el-tag type="danger" size="small" effect="dark">本地已有旧版</el-tag>
+              <el-button
+                text
+                type="primary"
+                size="small"
+                :loading="downloading === m.id"
+                @click.stop="downloadChinese(m)"
+              >下载中字版替换</el-button>
+            </div>
           </div>
         </div>
       </div>
@@ -140,7 +153,7 @@ import {
 } from '@element-plus/icons-vue'
 import {
   listSubscriptions, subscribeActor, unsubscribeActor, checkActorNewMovies,
-  checkAllSubscriptions, listSubscriptionNewMovies
+  checkAllSubscriptions, listSubscriptionNewMovies, manualDownload
 } from '@/api'
 import { getServerBaseUrl, defaultCover, getFileProxyUrl } from '@/utils/media'
 
@@ -149,6 +162,7 @@ const loading = ref(false)
 const checkingAll = ref(false)
 const subscriptions = ref([])
 const newMovies = ref([])
+const downloading = ref(null)
 
 const totalNewMovies = computed(() =>
   subscriptions.value.reduce((sum, s) => sum + (s.new_movie_count || 0), 0)
@@ -170,6 +184,19 @@ const handleAvatarError = (e) => {
 
 const handleCoverError = (e) => {
   e.target.src = defaultCover('MDCX')
+}
+
+// 方案 A：下载中字版替换本地旧版（用户手动点，旧文件不动）
+const downloadChinese = async (m) => {
+  downloading.value = m.id
+  try {
+    await manualDownload({ code: m.code, quality: '1080p' })
+    ElMessage.success(`已提交搜索下载：${m.code}。下载完成后按自动整理规则入库；本地旧版文件不会动，你可以在「媒体健康扫描」确认新片到位后自行删除旧文件。`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '下载提交失败')
+  } finally {
+    downloading.value = null
+  }
 }
 
 const formatTime = (iso) => {
@@ -486,5 +513,13 @@ onMounted(() => loadData())
   font-size: 10px;
   color: var(--text-placeholder);
   margin-top: 2px;
+}
+
+.upgrade-row {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 </style>

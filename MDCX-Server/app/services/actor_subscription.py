@@ -5,23 +5,29 @@
 - 订阅/取消订阅演员
 - 列出订阅（含新片增量）
 - 检测新片：对比 last_movie_count 与当前影片数
+- 新片中字标记：is_chinese + upgrade_candidate（中字新片且本地有旧版，2026-10-25）
 - 触发 Webhook 通知（订阅了 notify_new_movie 的）
 
 设计要点：
 - 不修改现有 Actor 模型
 - 用户级订阅（user_id）+ 全局订阅（user_id=NULL）
 - 检测可由后台任务定期触发，也可手动调用
+- upgrade_candidate 判定：新片 is_chinese=True，且同 base 番号存在
+  **磁盘上真实存在**的非中文版（os.path.isfile 实测，不是只看库记录）
+  ——对应「出了中字版可以替换本地旧版」的场景
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.wants import base_code
 from app.utils.module_helper import get_module_model, get_module_session
 
 logger = logging.getLogger(__name__)
@@ -195,6 +201,79 @@ async def is_subscribed(
 
 # ===== 新片检测 =====
 
+def _entry_field(entry, key: str, default=None):
+    """从 ORM 对象或 dict 取字段（新片列表两种形态都要支持）"""
+    if isinstance(entry, dict):
+        return entry.get(key, default)
+    return getattr(entry, key, default)
+
+
+async def annotate_upgrade_flags(
+    session: AsyncSession,
+    Movie,
+    entries: list,
+) -> dict:
+    """给新片列表标注中字/可替换标记（只读，不写库）。
+
+    Args:
+        entries: 新片列表，ORM Movie 或 dict 均可（需有 id/code/is_chinese）
+    Returns:
+        {movie_id: {"is_chinese": bool, "upgrade_candidate": bool}}
+        - is_chinese: 该片是中字版（-C 后缀；pornhub 等无此概念的模块恒 False）
+        - upgrade_candidate: 中字片且同 base 番号有**磁盘上真实存在**的非中文版
+
+    实现：一次 LIKE 批量查所有 base 候选，Python 侧精确 base 比对 + os.path.isfile
+    实测（口径：文件必须在磁盘上，库里记着但文件没了不算旧版）。
+    """
+    flags: dict[int, dict] = {}
+    if not entries:
+        return flags
+
+    # is_chinese 只有 JAV/FC2 模型有（中字是 -C 后缀概念）；没有该列的模块
+    # （pornhub/uncensored/chinese/western）不算中字升级，直接返回基础标记
+    if not hasattr(Movie, "is_chinese"):
+        for e in entries:
+            flags[_entry_field(e, "id")] = {"is_chinese": False, "upgrade_candidate": False}
+        return flags
+
+    # 中字新片的 base 番号集合（只对中字片算 upgrade）
+    chinese_entries = []
+    bases: set[str] = set()
+    for e in entries:
+        is_cn = bool(_entry_field(e, "is_chinese", False))
+        eid = _entry_field(e, "id")
+        flags[eid] = {"is_chinese": is_cn, "upgrade_candidate": False}
+        if is_cn:
+            code = _entry_field(e, "code") or ""
+            bc = base_code(code)
+            if bc:
+                chinese_entries.append((eid, bc))
+                bases.add(bc)
+
+    if not bases:
+        return flags
+
+    # 批量查同 base 的影片（upper+LIKE 前缀；SQLite ASCII 大小写转换对番号够用）
+    conds = [func.upper(Movie.code).like(bc + "%") for bc in bases]
+    rows = (await session.execute(
+        select(Movie.code, Movie.file_path, Movie.is_chinese).where(or_(*conds))
+    )).all()
+
+    # 有本地旧版（磁盘实测）的 base 集合
+    local_old_bases: set[str] = set()
+    for code, file_path, is_cn in rows:
+        if not code or is_cn or not file_path:
+            continue
+        bc = base_code(code)
+        if bc in bases and os.path.isfile(str(file_path)):
+            local_old_bases.add(bc)
+
+    for eid, bc in chinese_entries:
+        if bc in local_old_bases:
+            flags[eid]["upgrade_candidate"] = True
+    return flags
+
+
 async def check_new_movies_for_actor(
     actor_id: int,
     session: AsyncSession,
@@ -242,6 +321,14 @@ async def check_new_movies_for_actor(
         sub.last_checked_at = now
         sub.last_movie_count = current_count
     await session.commit()
+
+    # 标注中字/可替换（commit 后挂实例属性，不持久化；路由层 getattr 读取）
+    if new_movies:
+        flags = await annotate_upgrade_flags(session, Movie, new_movies)
+        for m in new_movies:
+            f = flags.get(m.id) or {}
+            m.is_chinese_flag = bool(f.get("is_chinese", False))
+            m.upgrade_candidate = bool(f.get("upgrade_candidate", False))
 
     return new_movies
 
@@ -342,28 +429,38 @@ async def list_new_movies_for_subscription(
         return []
 
     # 查询这些演员的影片，按发布日期倒序
+    has_cn = hasattr(Movie, "is_chinese")
+    select_cols = [
+        Movie.id, Movie.code, Movie.title, Movie.cover_url,
+        Movie.release_date, Movie.created_at,
+        Actor.name.label("actor_name"),
+    ]
+    if has_cn:
+        select_cols.append(Movie.is_chinese)
     movies_stmt = (
-        select(
-            Movie.id, Movie.code, Movie.title, Movie.cover_url,
-            Movie.release_date, Movie.created_at,
-            Actor.name.label("actor_name"),
-        )
+        select(*select_cols)
         .join(MovieActor, Movie.id == MovieActor.movie_id)
         .join(Actor, MovieActor.actor_id == Actor.id)
         .where(MovieActor.actor_id.in_(actor_ids))
         .order_by(Movie.release_date.desc().nullslast(), Movie.created_at.desc())
         .limit(limit)
     )
-    result = await session.execute(movies_stmt)
-    return [
+    rows = (await session.execute(movies_stmt)).all()
+
+    # 组装 + 中字/可替换标注（is_chinese 列没有的模块恒 False）
+    entries = [
         {
-            "id": row.id,
-            "code": row.code,
-            "title": row.title,
-            "cover_url": row.cover_url,
-            "release_date": row.release_date,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "actor_name": row.actor_name,
+            "id": r.id, "code": r.code, "title": r.title,
+            "cover_url": r.cover_url, "release_date": r.release_date,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "actor_name": r.actor_name,
+            "is_chinese": bool(r[-1]) if has_cn else False,
         }
-        for row in result.all()
+        for r in rows
     ]
+    flags = await annotate_upgrade_flags(session, Movie, entries)
+    for e in entries:
+        f = flags.get(e["id"]) or {}
+        e["is_chinese"] = bool(f.get("is_chinese", False))
+        e["upgrade_candidate"] = bool(f.get("upgrade_candidate", False))
+    return entries

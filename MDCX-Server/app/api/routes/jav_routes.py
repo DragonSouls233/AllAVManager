@@ -353,7 +353,79 @@ async def get_actor(actor_id: int):
                     "avatar_url": actor.avatar_url, "source": actor.source,
                     "source_site": actor.source_site,
                     "movie_count": real_count,
-                    "created_at": str(actor.created_at)}
+                    "created_at": str(actor.created_at),
+                    # 2026-10-25 新增：资料页（EntityHero）用的档案字段，全部可为空，
+                    # 前端按「有值才显示一行」渲染，缺字段不会留空洞。
+                    "name_jp": actor.name_jp, "name_en": actor.name_en,
+                    "birth_date": actor.birth_date, "age": actor.age,
+                    "height": actor.height, "cup": actor.cup,
+                    "bust": actor.bust, "waist": actor.waist, "hip": actor.hip,
+                    "birthplace": actor.birthplace, "zodiac": actor.zodiac,
+                    "hobby": actor.hobby, "debut_year": actor.debut_year,
+                    "social_links": actor.social_links, "intro": actor.intro}
+    finally:
+        await session.close()
+
+
+@router.get("/actors/{actor_id}/costars")
+async def get_actor_costars(
+    actor_id: int,
+    limit: int = Query(24, ge=1, le=60, description="返回同台演员数量"),
+    min_movies: int = Query(2, ge=1, le=50, description="至少共同出演多少部才计入"),
+):
+    """同台演员（按共同出演作品数降序）
+
+    只数 `movie_actors` 关联表里的真实共演关系：先取该演员（含全部别名）的作品
+    id 集合，再统计同一部里出现过的其它演员。没有关联数据时返回空列表，
+    前端据此不渲染资料卡底那一条。
+    """
+    from sqlalchemy import func, select
+
+    from app.db.jav_models import JavActor, JavMovie, MovieActor
+    from app.utils.actor_alias import actor_movie_condition_for
+
+    db = get_jav_db()
+    session = await db.get_session()
+    try:
+        actor = await session.get(JavActor, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+        # 作品 id 取两条路的并集：
+        #   1) movie_actors 关联表（生产库 9550 部有演员关联，最准）
+        #   2) movies.actor 字段按名/别名 token 匹配兜底（关联表漏填、或演员合并过旧名时补上）
+        movie_ids = set(
+            (await session.execute(
+                select(MovieActor.movie_id).where(MovieActor.actor_id == actor_id)
+            )).scalars().all()
+        )
+        try:
+            cond = actor_movie_condition_for(JavMovie, actor)
+        except Exception:
+            cond = None
+        if cond is not None:
+            movie_ids |= set((await session.execute(select(JavMovie.id).where(cond))).scalars().all())
+        if not movie_ids:
+            return {"total": 0, "items": []}
+
+        rows = (await session.execute(
+            select(MovieActor.actor_id, func.count(func.distinct(MovieActor.movie_id)).label("n"))
+            .where(MovieActor.movie_id.in_(list(movie_ids)), MovieActor.actor_id != actor_id)
+            .group_by(MovieActor.actor_id)
+            .having(func.count(func.distinct(MovieActor.movie_id)) >= min_movies)
+            .order_by(func.count(func.distinct(MovieActor.movie_id)).desc())
+            .limit(limit)
+        )).all()
+        if not rows:
+            return {"total": 0, "items": []}
+
+        id_to_n = {int(r[0]): int(r[1]) for r in rows}
+        actors = (await session.execute(
+            select(JavActor).where(JavActor.id.in_(list(id_to_n)))
+        )).scalars().all()
+        items = [{"id": a.id, "name": a.name, "avatar_url": a.avatar_url,
+                  "movie_count": id_to_n.get(a.id, 0)} for a in actors]
+        items.sort(key=lambda x: x["movie_count"], reverse=True)
+        return {"total": len(items), "items": items}
     finally:
         await session.close()
 

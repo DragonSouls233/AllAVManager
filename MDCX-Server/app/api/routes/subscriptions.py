@@ -89,6 +89,8 @@ async def check_actor(
                 "title": m.title,
                 "release_date": m.release_date,
                 "cover_url": m.cover_url,
+                "is_chinese": bool(getattr(m, "is_chinese_flag", False)),
+                "upgrade_candidate": bool(getattr(m, "upgrade_candidate", False)),
             }
             for m in new_movies
         ],

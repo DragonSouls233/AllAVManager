@@ -599,6 +599,67 @@ async def get_actor(
         return ActorDetailResponse(actor=actor_resp, movie_count=movie_count, recent_movies=movie_resps)
 
 
+@router.get("/{actor_id}/costars")
+async def get_actor_costars(
+    actor_id: int,
+    module: str = Query("jav", description="模块名：jav/fc2/uncensored/chinese/western/pornhub"),
+    limit: int = Query(24, ge=1, le=60, description="返回同台演员数量"),
+    min_movies: int = Query(2, ge=1, le=50, description="至少共同出演多少部才计入"),
+):
+    """同台演员（按共同出演作品数降序）
+
+    作品 id 取两条路的并集，两条都可能缺：
+      1) movie_actors 关联表（jav 生产库 9550 部有关联，最准；有些模块没填）
+      2) movies.actor 字段按名/别名 token 匹配兜底（关联表漏填、或演员合并过旧名时补上）
+    一条都没有就返回空列表，前端据此不渲染资料卡底那一条带。
+    """
+    from sqlalchemy import func, select
+
+    actor_cls = get_module_model(module, "actor")
+    movie_cls = get_module_model(module, "movie")
+    MovieActor = _get_mod_cls(module, "MovieActor")
+
+    sess = await get_module_session(module)
+    async with sess:
+        actor = await sess.get(actor_cls, actor_id)
+        if not actor:
+            raise HTTPException(status_code=404, detail="演员不存在")
+
+        movie_ids = set(
+            (await sess.execute(
+                select(MovieActor.movie_id).where(MovieActor.actor_id == actor_id)
+            )).scalars().all()
+        )
+        try:
+            cond = actor_movie_condition_for(movie_cls, actor)
+        except Exception:
+            cond = None
+        if cond is not None:
+            movie_ids |= set((await sess.execute(select(movie_cls.id).where(cond))).scalars().all())
+        if not movie_ids:
+            return {"total": 0, "items": []}
+
+        rows = (await sess.execute(
+            select(MovieActor.actor_id, func.count(func.distinct(MovieActor.movie_id)).label("n"))
+            .where(MovieActor.movie_id.in_(list(movie_ids)), MovieActor.actor_id != actor_id)
+            .group_by(MovieActor.actor_id)
+            .having(func.count(func.distinct(MovieActor.movie_id)) >= min_movies)
+            .order_by(func.count(func.distinct(MovieActor.movie_id)).desc())
+            .limit(limit)
+        )).all()
+        if not rows:
+            return {"total": 0, "items": []}
+
+        id_to_n = {int(r[0]): int(r[1]) for r in rows}
+        actors = (await sess.execute(
+            select(actor_cls).where(actor_cls.id.in_(list(id_to_n)))
+        )).scalars().all()
+        items = [{"id": a.id, "name": a.name, "avatar_url": getattr(a, "avatar_url", None),
+                  "module_type": module, "movie_count": id_to_n.get(a.id, 0)} for a in actors]
+        items.sort(key=lambda x: x["movie_count"], reverse=True)
+        return {"total": len(items), "items": items}
+
+
 @router.get("/{actor_id}/movies")
 async def get_actor_movies(
     actor_id: int,

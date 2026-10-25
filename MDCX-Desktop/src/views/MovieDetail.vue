@@ -190,6 +190,23 @@
         <el-icon><StarFilled v-if="fav" /><Star v-else /></el-icon>
         {{ fav ? '已收藏' : '收藏' }}
       </el-button>
+      <el-dropdown trigger="click" @command="onAddToPlaylist">
+        <el-button plain>
+          <el-icon><FolderAdd /></el-icon> 加入播放列表
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="p in playlistOptions" :key="p.id" :command="p.id">
+              <span style="margin-right: 8px">{{ p.name }}</span>
+              <span style="color: var(--el-text-color-secondary); font-size: 12px">{{ p.item_count || 0 }} 部</span>
+            </el-dropdown-item>
+            <el-dropdown-item v-if="!playlistOptions.length" disabled>暂无播放列表</el-dropdown-item>
+            <el-dropdown-item divided command="__new__">
+              <el-icon><Plus /></el-icon> 新建播放列表并加入
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <el-button type="primary" @click="openEditDialog">
         <el-icon><Edit /></el-icon> 编辑元数据
       </el-button>
@@ -283,10 +300,11 @@
 <script setup>
 import { ref, computed, onMounted, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft, VideoPlay, Star, StarFilled, MagicStick,
-  PictureFilled, PictureRounded, VideoCamera, Loading, Edit, DocumentCopy, Refresh
+  PictureFilled, PictureRounded, VideoCamera, Loading, Edit, DocumentCopy, Refresh,
+  FolderAdd, Plus
 } from '@element-plus/icons-vue'
 import { getMovieCoverUrl, defaultCover, getFileProxyUrl, getServerBaseUrl } from '@/utils/media'
 import http from '@/api'
@@ -667,6 +685,44 @@ const toggleFav = async () => {
   } catch { ElMessage.error('操作失败') }
 }
 
+// ---------- 播放列表 ----------
+const playlistOptions = ref([])
+const loadPlaylistOptions = async () => {
+  try {
+    const { listPlaylists } = await import('@/api')
+    const res = await listPlaylists()
+    const data = res.items ? res : (res.data || res)
+    playlistOptions.value = Array.isArray(data) ? data : []
+  } catch { playlistOptions.value = [] }
+}
+const onAddToPlaylist = async (command) => {
+  let playlistId = command
+  let playlistName = ''
+  if (command === '__new__') {
+    try {
+      const { value } = await ElMessageBox.prompt('新播放列表的名称', '新建播放列表', {
+        confirmButtonText: '创建并加入', cancelButtonText: '取消',
+        inputValidator: (v) => (v && String(v).trim()) ? true : '名称不能为空'
+      })
+      const { createPlaylist } = await import('@/api')
+      const p = await createPlaylist({ name: String(value).trim() })
+      playlistId = p.id
+      playlistName = p.name
+      loadPlaylistOptions()
+    } catch { return }  // 用户取消或创建失败
+  } else {
+    playlistName = playlistOptions.value.find(p => p.id === command)?.name || ''
+  }
+  if (!playlistId) return
+  try {
+    const { addPlaylistItem } = await import('@/api')
+    await addPlaylistItem(playlistId, { module: moduleType.value, movie_id: movieId.value })
+    ElMessage.success(`已加入播放列表${playlistName ? `「${playlistName}」` : ''}（重复添加会自动移到末尾）`)
+  } catch (e) {
+    ElMessage.error(`加入失败: ${e?.response?.data?.detail || e?.message}`)
+  }
+}
+
 // ---------- 刮削 ----------
 const forceScrape = ref(false)
 const scrape = async () => {
@@ -822,7 +878,7 @@ watch(movieId, (val) => {
 // 模块切换时重置 API 缓存，确保 loadApi 加载正确的模块接口
 watch(moduleType, () => { apiRef.value = null })
 
-onMounted(() => { load() })
+onMounted(() => { load(); loadPlaylistOptions() })
 </script>
 
 <style scoped>

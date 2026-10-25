@@ -4,46 +4,43 @@
       <el-icon><ArrowLeft /></el-icon> 返回演员列表
     </el-button>
 
-    <div v-if="actor" class="detail-content">
-      <div class="avatar-section">
-        <img :src="getAvatarSrc(actor)" alt="" @error="handleAvatarError">
-        <h2>{{ actor.name }}</h2>
-        <div class="stats">
-          <el-statistic title="作品数" :value="actor.movie_count || 0" />
-          <el-statistic v-if="actor.total_views" title="总播放" :value="actor.total_views" />
+    <!--
+      资料区走通用 EntityHero（与 JAV/无码/FC2 等模块同一块卡）。
+      原先是「左列头像 + 右列 el-descriptions 边框表」，边框表在暗色下留白很重、
+      字段一多就两列挤成一团；换成一行读数 + 右栏资料表后，信息一条没少。
+    -->
+    <EntityHero
+      v-if="actor"
+      :name="actor.name"
+      kind-label="PORNHUB"
+      :avatar="getAvatarSrc(actor)"
+      :meta="heroMeta"
+      :facts="heroFacts"
+      :links="heroLinks"
+      :related="costars"
+      related-label="同台演员"
+      @pick-related="goCostar"
+    >
+      <template #identity-extra>
+        <div class="actor-actions">
+          <el-button type="primary" size="small" :loading="scraping" @click="scrapeProfile">
+            <el-icon><Refresh /></el-icon> 刮削资料/头像
+          </el-button>
+          <el-button v-if="actor.photo_url" type="success" size="small" :loading="downloadingAvatar" @click="downloadPhoto">
+            <el-icon><Download /></el-icon> 下载头像
+          </el-button>
         </div>
-        <el-button type="primary" size="small" :loading="scraping" @click="scrapeProfile" style="margin-top: 12px">
-          <el-icon><Refresh /></el-icon> 刮削资料/头像
-        </el-button>
-        <el-button v-if="actor.photo_url" type="success" size="small" :loading="downloadingAvatar" @click="downloadPhoto" style="margin-top: 6px">
-          <el-icon><Download /></el-icon> 下载头像
-        </el-button>
+        <div v-if="actor.aliases && actor.aliases.length" class="aliases-section">
+          <span class="aliases-label">别名</span>
+          <el-tag v-for="a in actor.aliases" :key="a" size="small" type="info" style="margin: 2px">{{ a }}</el-tag>
+        </div>
+      </template>
+    </EntityHero>
 
-        <div v-if="actor.profile_url" class="profile-link">
-          <a :href="actor.profile_url" target="_blank" rel="noopener">{{ actor.profile_url }}</a>
-        </div>
-      </div>
-      <div class="info-section">
+    <div v-if="actor" class="info-section">
         <div v-if="actor.bio" class="bio-section">
           <h3>Bio</h3>
           <p>{{ actor.bio }}</p>
-        </div>
-
-        <div v-if="actor.background || actor.birthplace || actor.country || actor.nationality" class="profile-fields">
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item v-if="actor.country" label="Country">{{ actor.country }}</el-descriptions-item>
-            <el-descriptions-item v-if="actor.nationality" label="Nationality">{{ actor.nationality }}</el-descriptions-item>
-            <el-descriptions-item v-if="actor.birthplace" label="Birth Place">{{ actor.birthplace }}</el-descriptions-item>
-            <el-descriptions-item v-if="actor.background" label="Background">{{ actor.background }}</el-descriptions-item>
-            <el-descriptions-item v-if="actor.photo_url" label="Photo URL" :span="2">
-              <el-text style="word-break: break-all; font-size: 11px">{{ actor.photo_url }}</el-text>
-            </el-descriptions-item>
-          </el-descriptions>
-        </div>
-
-        <div v-if="actor.aliases && actor.aliases.length" class="aliases-section">
-          <h4>Aliases</h4>
-          <el-tag v-for="a in actor.aliases" :key="a" size="small" type="info" style="margin: 2px">{{ a }}</el-tag>
         </div>
 
         <div class="movies-section" style="margin-top: 20px">
@@ -56,17 +53,18 @@
           </div>
           <el-empty v-else description="暂无作品" />
         </div>
-      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePornhubStore } from '@/stores/pornhub'
 import { ElMessage } from 'element-plus'
-import { getAvatarSrc, getCoverSrc } from '@/utils/media'
+import EntityHero from '@/components/base/EntityHero.vue'
+import { getAvatarSrc, getCoverSrc, getActorAvatarUrlById } from '@/utils/media'
+import { getActorCostars } from '@/api'
 import {
   scrapePornhubActorProfile,
   getPornhubActorMovies,
@@ -124,6 +122,53 @@ async function downloadPhoto() {
   }
 }
 
+// ---------- 资料卡（EntityHero）的数据 ----------
+const heroMeta = computed(() => {
+  const a = actor.value
+  if (!a) return []
+  const rows = [{ icon: 'film', value: a.movie_count || 0, text: '部作品', strong: true }]
+  if (a.total_views) rows.push({ icon: 'star', value: a.total_views, text: '次播放' })
+  if (a.nationality) rows.push({ icon: 'user', value: a.nationality })
+  if (a.country) rows.push({ icon: 'location', value: a.country })
+  return rows
+})
+
+const heroFacts = computed(() => {
+  const a = actor.value
+  if (!a) return []
+  const rows = []
+  const push = (label, icon, value) => { if (value) rows.push({ label, icon, value: String(value) }) }
+  push('国籍', 'user', a.nationality)
+  push('国家', 'location', a.country)
+  push('出生地', 'location', a.birthplace)
+  push('背景', 'id-card', a.background)
+  if (a.aliases?.length) rows.push({ label: '别名', icon: 'tags', value: '', tags: a.aliases })
+  return rows
+})
+
+/** 外链：只放库里存下来的演员主页，不拼站点搜索地址 */
+const heroLinks = computed(() => {
+  const url = actor.value?.profile_url
+  if (!url || !/^https?:\/\//i.test(url)) return []
+  return [{ label: 'PORNHUB 主页', url, title: url, icon: 'link' }]
+})
+
+// 同台演员：PORNHUB 关联表有 90378 部片的共演关系，这条带基本都能出东西
+const costars = ref([])
+const loadCostars = async (id) => {
+  costars.value = []
+  try {
+    const res = await getActorCostars(id, { limit: 24, min_movies: 2 }, 'pornhub')
+    costars.value = (res.items || []).map(p => ({
+      ...p,
+      avatar: p.id ? getActorAvatarUrlById(p.id, 'pornhub') : '',
+    }))
+  } catch { costars.value = [] }
+}
+function goCostar (p) {
+  if (p?.id) router.push(`/pornhub/actors/${p.id}`)
+}
+
 async function loadActorData(id) {
   if (!id) return
   loading.value = true
@@ -131,6 +176,7 @@ async function loadActorData(id) {
     actor.value = await store.loadActorDetail(id)
     const res = await getPornhubActorMovies(id)
     movies.value = res?.movies || []
+    loadCostars(id)
   } finally {
     loading.value = false
   }
@@ -144,14 +190,9 @@ watch(() => route.params.id, (newId) => loadActorData(Number(newId)))
 
 <style scoped>
 .actor-detail { padding: 20px; }
-.detail-content { display: flex; gap: 24px; }
-.avatar-section { flex-shrink: 0; width: 240px; text-align: center; }
-.avatar-section img { width: 150px; height: 150px; border-radius: 50%; object-fit: cover; margin-bottom: 12px; }
-.avatar-section h2 { font-size: 18px; margin-bottom: 8px; }
-.stats { font-size: 13px; color: #999; display: flex; flex-direction: column; gap: 8px; align-items: center; margin-bottom: 12px; }
-.profile-link { font-size: 11px; color: #409eff; word-break: break-all; margin-top: 8px; }
-.profile-link a { text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
-.profile-fields { margin-top: 16px; }
+.actor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.aliases-section { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; }
+.aliases-label { color: var(--text-secondary, #6b7280); font-size: 12px; }
 .info-section { flex: 1; }
 .bio-section { margin-bottom: 16px; }
 .bio-section h3 { font-size: 14px; margin-bottom: 8px; }

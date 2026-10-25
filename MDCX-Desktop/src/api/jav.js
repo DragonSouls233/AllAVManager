@@ -103,6 +103,11 @@ export async function getJavActorTags(id) {
   return api.get(`/jav/actors/${id}/tags`)
 }
 
+/** 同台演员（按共同出演作品数降序）。关联表为空时后端返回空 items。 */
+export async function getJavActorCostars(id, params = {}) {
+  return api.get(`/jav/actors/${id}/costars`, { params })
+}
+
 export async function uploadJavActorAvatar(id, file) {
   const formData = new FormData()
   formData.append('file', file)

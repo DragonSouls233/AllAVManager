@@ -274,6 +274,12 @@ export const getActorMovies = (id, params = {}, module) => {
 }
 export const getActorTimeline = (id, module) =>
   api.get(`/actors/${id}/timeline`, { params: module ? { module } : {} })
+// 同台演员（按共同出演作品数降序）。关联表为空 / 该演员无共演时后端返回空 items。
+export const getActorCostars = (id, params = {}, module) => {
+  const p = { ...params }
+  if (module) p.module = module
+  return api.get(`/actors/${id}/costars`, { params: p })
+}
 export const updateActor = (id, data) => api.patch(`/actors/${id}`, data)
 export const getActorStats = () => api.get('/actors/stats/overview')
 export const scrapeActorProfile = (id) => api.post(`/actors/${id}/scrape-profile`, null, { timeout: 120000 })
@@ -428,6 +434,43 @@ export const checkFavorite = (entityType, entityId) => api.get('/favorites/check
 export const computeFingerprint = (movieId) => api.post(`/fingerprint/compute/${movieId}`)
 export const scanFingerprints = (limit = 50) => api.post('/fingerprint/scan', null, { params: { limit } })
 export const findDuplicates = (threshold = 5) => api.get('/fingerprint/duplicates', { params: { threshold } })
+
+// 媒体健康扫描（只读）：盘符未就绪 / 文件不存在 / ffprobe 探测失败
+export const scanMediaHealth = (modules, deep = false) => {
+  const params = new URLSearchParams()
+  ;(Array.isArray(modules) ? modules : [modules]).forEach(m => params.append('module', m))
+  if (deep) {
+    params.append('probe', '1')
+    params.append('probe_limit', '500')
+  }
+  return api.get(`/media-health/scan?${params.toString()}`, { timeout: 600000 })
+}
+
+// 想要清单（待找的片子，按番号）
+export const getWants = (status) => api.get('/wants', { params: status ? { status } : {} })
+export const checkWants = () => api.get('/wants/check')
+export const addWant = (data) => api.post('/wants', data)
+export const updateWant = (id, data) => api.put(`/wants/${id}`, data)
+export const deleteWant = (id) => api.delete(`/wants/${id}`)
+
+// 播放列表（跨模块连播队列）
+export const listPlaylists = () => api.get('/playlists')
+export const getPlaylist = (id) => api.get(`/playlists/${id}`)
+export const createPlaylist = (data) => api.post('/playlists', data)
+export const updatePlaylist = (id, data) => api.put(`/playlists/${id}`, data)
+export const deletePlaylist = (id) => api.delete(`/playlists/${id}`)
+export const addPlaylistItem = (id, data) => api.post(`/playlists/${id}/items`, data)
+export const removePlaylistItem = (id, itemId) => api.delete(`/playlists/${id}/items/${itemId}`)
+export const movePlaylistItem = (itemId, direction) =>
+  api.post(`/playlists/0/items/${itemId}/move`, { direction })
+export const playPlaylist = (id) => api.post(`/playlists/${id}/play`)
+
+// 媒体修复（损坏/非 faststart 文件的 ffmpeg 修复，原文件先备份后替换）
+export const analyzeMediaRepair = (data) => api.post('/media-repair/analyze', data)
+export const startMediaRepairJob = (data) => api.post('/media-repair/jobs', data)
+export const listMediaRepairJobs = (limit = 20) => api.get('/media-repair/jobs', { params: { limit } })
+export const getMediaRepairJob = (id) => api.get(`/media-repair/jobs/${id}`)
+export const cancelMediaRepairJob = (id) => api.post(`/media-repair/jobs/${id}/cancel`)
 export const fingerprintStatus = () => api.get('/fingerprint/status')
 
 // ============================================

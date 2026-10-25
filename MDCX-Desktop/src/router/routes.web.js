@@ -99,6 +99,24 @@ export const routes = [
         meta: { title: '重复番号扫描' }
       },
       {
+        path: 'media-health',
+        name: 'MediaHealth',
+        component: () => import('@/views/MediaHealth.vue'),
+        meta: { title: '媒体健康扫描' }
+      },
+      {
+        path: 'wants',
+        name: 'Wants',
+        component: () => import('@/views/Wants.vue'),
+        meta: { title: '想要清单' }
+      },
+      {
+        path: 'playlists',
+        name: 'Playlists',
+        component: () => import('@/views/Playlists.vue'),
+        meta: { title: '播放列表' }
+      },
+      {
         path: 'patch',
         name: 'Patch',
         component: () => import('@/views/Patch.vue')

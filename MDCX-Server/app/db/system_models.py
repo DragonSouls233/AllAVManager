@@ -191,6 +191,80 @@ class FavoriteItem(SystemBase):
     group: Mapped["FavoriteGroup"] = relationship(back_populates="items")
 
 
+# ========== 想要清单（待找的片子） ==========
+
+class WantsItem(SystemBase):
+    """想要清单：还没找到的片子，按番号记录（跨模块）
+
+    与 FavoriteItem（已入库实体的收藏夹）互补：本表存**尚未入库**的番号，
+    用户手动记下；找到/入库后标记 found。设计要点：
+    - normalized_code 为匹配键（大写去空白），用户输 ssis-001 与 SSIS-001
+      视为同一条；唯一约束 (user_id, normalized_code) 防重复记
+    - magnet 字段：找到资源（磁链）时先存着，对应 peach wants_magnets 的思路
+    - status: wanted（想要中）/ found（已找到）/ dropped（不想要了）
+    - 检查接口实时查各模块 movies 表，标出 in_library / chinese_available
+      （该 base 番号已有中字版入库）——后者是订阅中字替换的判定基础
+    """
+    __tablename__ = "wants_items"
+    __table_args__ = (
+        UniqueConstraint("user_id", "normalized_code", name="uq_wants_user_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, index=True)  # None = 全局清单
+    code: Mapped[str] = mapped_column(String(100), nullable=False)  # 用户输入的原始番号
+    normalized_code: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(500))  # 备注标题
+    note: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="wanted", index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # 0 普通 / 1 想要
+    magnet: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
+
+
+# ========== 播放列表（跨模块连播队列） ==========
+
+class Playlist(SystemBase):
+    """播放列表：跨模块的连播队列（jav + PH 可以混在一个列表里）
+
+    与 wants（未入库待找）不同：本表存**已入库影片**的播放队列。
+    mpv 原生支持多文件连播，播放时按 sort_order 依次传文件路径。
+    """
+    __tablename__ = "playlists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, index=True)  # None = 全局
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
+
+    items: Mapped[list["PlaylistItem"]] = relationship(
+        back_populates="playlist", cascade="all, delete-orphan",
+        order_by="PlaylistItem.sort_order",
+    )
+
+
+class PlaylistItem(SystemBase):
+    """播放列表条目：(module, movie_id) 定位跨模块影片"""
+    __tablename__ = "playlist_items"
+    __table_args__ = (
+        UniqueConstraint("playlist_id", "module", "movie_id", name="uq_playlist_item"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    playlist_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("playlists.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    module: Mapped[str] = mapped_column(String(20), nullable=False, default="jav", index=True)
+    movie_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    playlist: Mapped["Playlist"] = relationship(back_populates="items")
+
+
 # ========== 数据库迁移记录 ==========
 
 class Migration(SystemBase):

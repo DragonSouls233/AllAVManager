@@ -341,6 +341,10 @@
             <el-icon><Files /></el-icon>
             <template #title>重复番号扫描</template>
           </el-menu-item>
+          <el-menu-item index="/media-health">
+            <el-icon><FirstAidKit /></el-icon>
+            <template #title>媒体健康扫描</template>
+          </el-menu-item>
           <el-menu-item index="/view-status">
             <el-icon><CircleCheck /></el-icon>
             <template #title>三态标记</template>
@@ -378,6 +382,14 @@
           <el-menu-item index="/series-subscriptions">
             <el-icon><Collection /></el-icon>
             <template #title>系列订阅</template>
+          </el-menu-item>
+          <el-menu-item index="/wants">
+            <el-icon><Star /></el-icon>
+            <template #title>想要清单</template>
+          </el-menu-item>
+          <el-menu-item index="/playlists">
+            <el-icon><VideoPlay /></el-icon>
+            <template #title>播放列表</template>
           </el-menu-item>
           <!-- 站点与插件 -->
           <el-menu-item index="/sites">
@@ -868,7 +880,7 @@ import {
   ChatLineRound, UserFilled, FolderOpened, CircleCheck, WarningFilled, Cloudy, Download, Grid,
   Film, Loading, RefreshLeft, RefreshRight, CircleCheckFilled, CloseBold,
   PictureFilled, Collection, Share, Promotion, SetUp,
-  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading, MapLocation
+  Operation, OfficeBuilding, DataLine, Management, Key, Search, Reading, MapLocation, FirstAidKit
 } from '@element-plus/icons-vue'
 import { getNsfwConfig, updateNsfwConfig, toggleNsfwMode } from '@/api'
 import { getSystemHealth, getDashboardStats, getTaskStats, getVersion, getTags } from '@/api'
@@ -1344,12 +1356,15 @@ const pageTitle = computed(() => {
     '/poster-enhance': '海报增强',
     '/fingerprint': '视频指纹去重',
     '/duplicates': '重复番号扫描',
+    '/media-health': '媒体健康扫描',
     '/view-status': '三态视频标记',
     '/tasks': '任务中心',
     '/viewing-report': 'AI 观影报告',
     '/webhooks': 'Webhook 通知',
     '/subscriptions': '演员订阅',
     '/series-subscriptions': '系列订阅',
+    '/wants': '想要清单',
+    '/playlists': '播放列表',
     '/sites': '站点注册表',
     '/modules': '模块管理',
     '/metatube-plugin': 'Metatube 插件',

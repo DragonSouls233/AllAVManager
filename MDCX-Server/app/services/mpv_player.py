@@ -215,6 +215,67 @@ async def _get_movie(movie_id: int, module: str = "jav") -> Optional["Movie"]:
         return await session.get(MovieModel, movie_id)
 
 
+async def play_files(
+    file_paths: list,
+    volume: int = 70,
+    window_width: Optional[int] = None,
+    window_height: Optional[int] = None,
+    on_top: bool = True,
+    hotkeys: Optional[list[dict]] = None,
+) -> dict:
+    """启动 mpv 连播多个文件（按列表顺序，mpv 原生多文件支持）
+
+    与 play_video 的区别：不做影片校验/play_count 更新（调用方已解析好
+    有效路径），只负责起进程。单文件场景等价于 play_video 的文件部分。
+    """
+    paths = [str(p) for p in (file_paths or []) if p]
+    if not paths:
+        return {"status": "error", "message": "没有可播放的文件"}
+    # 过滤不存在的文件（连播中途遇到失效文件 mpv 会报错退出）
+    valid = [p for p in paths if Path(p).exists()]
+    if not valid:
+        return {"status": "error", "message": "所有文件都不存在"}
+
+    mpv_path = _find_mpv()
+    if not mpv_path:
+        return {"status": "error", "message": "未找到 mpv 可执行文件，请安装 mpv"}
+
+    hk_config = hotkeys or DEFAULT_HOTKEYS
+    input_conf = _build_input_conf(hk_config)
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False, encoding="utf-8") as f:
+        f.write(input_conf)
+        input_conf_path = f.name
+
+    cmd = [mpv_path, f"--input-conf={input_conf_path}"]
+    if volume:
+        cmd.append(f"--volume={volume}")
+    if on_top:
+        cmd.append("--ontop")
+    if window_width and window_height:
+        cmd.append(f"--autofit={window_width}x{window_height}")
+    if len(valid) > 1:
+        # 连播提示（OSD 显示当前序号）
+        cmd.append(f"--osd-playing-msg=连播 1/{len(valid)} | 空格:暂停 n/p:切上下一部 ESC:退出")
+    cmd.append("--")
+    cmd.extend(valid)
+
+    try:
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info(f"mpv 连播已启动，PID={process.pid}，{len(valid)} 个文件")
+        return {
+            "status": "ok",
+            "pid": process.pid,
+            "mpv_path": mpv_path,
+            "file_count": len(valid),
+            "skipped_missing": len(paths) - len(valid),
+        }
+    except Exception as e:
+        logger.error(f"启动 mpv 连播失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 async def get_mpv_config() -> dict:
     """获取 mpv 配置（热键、音量等）"""
     from app.db.system_models import Setting

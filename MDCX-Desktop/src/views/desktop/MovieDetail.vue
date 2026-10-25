@@ -100,6 +100,24 @@
               <span>清除</span>
             </button>
           </div>
+
+          <!-- 加入播放列表（下拉选列表，可新建；不替换原有按钮） -->
+          <el-dropdown trigger="click" @command="onAddToPlaylist">
+            <button class="md-btn" type="button" title="把本片加入跨模块连播队列">
+              <svg viewBox="0 0 24 24"><path d="M3 6h12v2H3zm0 5h12v2H3zm0 5h8v2H3zm14-8v8l6-4z" /></svg>
+              加入播放列表
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="p in playlistOptions" :key="p.id" :command="p.id">
+                  <span style="margin-right: 8px">{{ p.name }}</span>
+                  <span style="color: var(--el-text-color-secondary); font-size: 12px">{{ p.item_count || 0 }} 部</span>
+                </el-dropdown-item>
+                <el-dropdown-item v-if="!playlistOptions.length" disabled>暂无播放列表</el-dropdown-item>
+                <el-dropdown-item divided command="__new__">新建播放列表并加入</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
 
         <!-- 类别 -->
@@ -183,6 +201,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Picture } from '@element-plus/icons-vue'
 import PosterCard from '@/components/cinema/PosterCard.vue'
 import { useLibraryStore } from '@/stores/library'
@@ -190,7 +209,7 @@ import { getServerBaseUrl, getCoverSrc, defaultAvatar, getMovieVersionBadges } f
 import { normMedia, decorateMovies } from '@/utils/browse'
 import {
   getModuleMovie, getModuleRelated, getMovieViewStatus, setMovieViewStatus,
-  getViewingHistory
+  getViewingHistory, listPlaylists, createPlaylist, addPlaylistItem
 } from '@/api'
 import { getAnimeMovie, getAnimeSeriesMovies, getAnimeMovies } from '@/api/anime'
 import { vCoverFit, COVER_AR } from '@/utils/coverFit'
@@ -447,7 +466,43 @@ async function load() {
 // 详情页内点相关推荐/同系列集数会变路由参数而不重建组件 → watch 重新加载
 watch([module, movieId], () => { load() })
 
+// ---------- 播放列表 ----------
+const playlistOptions = ref([])
+const loadPlaylistOptions = async () => {
+  try {
+    const res = await listPlaylists()
+    const data = res.items ? res : (res.data || res)
+    playlistOptions.value = Array.isArray(data) ? data : []
+  } catch { playlistOptions.value = [] }
+}
+const onAddToPlaylist = async (command) => {
+  let playlistId = command
+  let playlistName = ''
+  if (command === '__new__') {
+    try {
+      const { value } = await ElMessageBox.prompt('新播放列表的名称', '新建播放列表', {
+        confirmButtonText: '创建并加入', cancelButtonText: '取消',
+        inputValidator: (v) => (v && String(v).trim()) ? true : '名称不能为空'
+      })
+      const p = await createPlaylist({ name: String(value).trim() })
+      playlistId = p.id
+      playlistName = p.name
+      loadPlaylistOptions()
+    } catch { return }  // 用户取消或创建失败
+  } else {
+    playlistName = playlistOptions.value.find(p => p.id === command)?.name || ''
+  }
+  if (!playlistId) return
+  try {
+    await addPlaylistItem(playlistId, { module: module.value, movie_id: movieId.value })
+    ElMessage.success(`已加入播放列表${playlistName ? `「${playlistName}」` : ''}（重复添加会自动移到末尾）`)
+  } catch (e) {
+    ElMessage.error(`加入失败: ${e?.response?.data?.detail || e?.message}`)
+  }
+}
+
 load()
+loadPlaylistOptions()
 </script>
 
 <style scoped>
