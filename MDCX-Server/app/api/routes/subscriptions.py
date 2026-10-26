@@ -6,7 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+
+from app.db.module_db import ModuleDatabase
 from app.services import actor_subscription as svc
+from app.services import actor_subscription_online as online_svc
 from app.utils.module_helper import get_module_session
 
 router = APIRouter()
@@ -117,3 +121,90 @@ async def list_new_movies(
     """列出订阅演员的新片"""
     items = await svc.list_new_movies_for_subscription(user_id, session, limit=limit, module=module)
     return {"items": items}
+
+
+# ============================================================================
+# 线上资源比对（本地已有 / 本地缺失 / 缺中文版）
+# ============================================================================
+
+def _spawn_online_job(kind: str, actor_id: int, module: str, coro_factory):
+    """起一个后台任务，内部用 module_db.session_scope 自管 session（不依赖请求 session）。"""
+    job = online_svc._new_job(kind, actor_id)
+    job["module"] = module
+
+    async def _worker():
+        mod_db = ModuleDatabase.get_instance(module)
+        try:
+            async with mod_db.session_scope() as s:
+                await coro_factory(s, job)
+            if job["status"] == "running":
+                job["status"] = "done"
+        except Exception as e:  # noqa: BLE001
+            job["status"] = "error"
+            job["error"] = str(e)
+
+    asyncio.create_task(_worker())
+    return job["id"]
+
+
+@router.get("/{actor_id}/online")
+async def online_comparison(
+    actor_id: int,
+    module: str = "jav",
+    session: AsyncSession = Depends(_subs_session),
+):
+    """本地已有 / 本地缺失 / 缺中文版 三档比对。"""
+    return await online_svc.get_comparison(actor_id, session, module=module)
+
+
+@router.post("/{actor_id}/sync-online")
+async def sync_online_endpoint(
+    actor_id: int,
+    module: str = "jav",
+    user_id: Optional[int] = None,
+):
+    """同步该演员 JavDB 在线片单到库（后台任务，进度轮询）。"""
+    return {
+        "job_id": _spawn_online_job(
+            "sync_online", actor_id, module,
+            lambda s, job: online_svc.sync_online(actor_id, s, module, user_id=user_id, progress=job),
+        )
+    }
+
+
+@router.post("/{actor_id}/refresh-chinese")
+async def refresh_chinese_endpoint(
+    actor_id: int,
+    module: str = "jav",
+    limit: int = Query(80, ge=1, le=400),
+):
+    """逐条抓磁力，扫描 -C/-UC 真判中文版（后台任务）。"""
+    return {
+        "job_id": _spawn_online_job(
+            "refresh_chinese", actor_id, module,
+            lambda s, job: online_svc.refresh_chinese(actor_id, s, module, progress=job, limit=limit),
+        )
+    }
+
+
+@router.post("/{actor_id}/online/download-missing")
+async def download_missing_endpoint(
+    actor_id: int,
+    module: str = "jav",
+):
+    """把本地缺失的中文版一键投递到下载器（后台任务）。"""
+    return {
+        "job_id": _spawn_online_job(
+            "download_missing", actor_id, module,
+            lambda s, job: online_svc.download_missing_chinese(actor_id, s, module, progress=job),
+        )
+    }
+
+
+@router.get("/jobs/{job_id}")
+async def poll_online_job(job_id: str):
+    """轮询后台任务进度。"""
+    job = online_svc.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在或已过期")
+    return job

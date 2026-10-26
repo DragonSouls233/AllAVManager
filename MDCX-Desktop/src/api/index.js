@@ -707,6 +707,17 @@ export const checkActorNewMovies = (actorId) =>
 export const checkAllSubscriptions = () => api.post('/subscriptions/check-all')
 export const listSubscriptionNewMovies = (params) =>
   api.get('/subscriptions/new-movies', { params })
+// 订阅线上资源比对（本地已有 / 本地缺失 / 缺中文版）
+export const getSubscriptionOnline = (actorId, params) =>
+  api.get(`/subscriptions/${actorId}/online`, { params })
+export const syncSubscriptionOnline = (actorId, data) =>
+  api.post(`/subscriptions/${actorId}/sync-online`, data || {})
+export const refreshSubscriptionChinese = (actorId, params) =>
+  api.post(`/subscriptions/${actorId}/refresh-chinese`, { params })
+export const downloadMissingChinese = (actorId) =>
+  api.post(`/subscriptions/${actorId}/online/download-missing`)
+export const getOnlineJob = (jobId) =>
+  api.get(`/subscriptions/jobs/${jobId}`)
 
 // ============================================
 // Viewing 观影历史 + AI 报告

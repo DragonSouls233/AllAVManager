@@ -487,6 +487,34 @@
             <el-icon><FolderOpened /></el-icon>
             <template #title>文件管理</template>
           </el-menu-item>
+          <el-menu-item index="/unrecognized-files">
+            <el-icon><FolderOpened /></el-icon>
+            <template #title>未识别文件</template>
+          </el-menu-item>
+          <el-menu-item index="/file-organize">
+            <el-icon><FolderOpened /></el-icon>
+            <template #title>文件整理</template>
+          </el-menu-item>
+          <el-menu-item index="/auto-organize">
+            <el-icon><Operation /></el-icon>
+            <template #title>自动整理</template>
+          </el-menu-item>
+          <el-menu-item index="/refresh-folders">
+            <el-icon><Connection /></el-icon>
+            <template #title>文件夹刷新</template>
+          </el-menu-item>
+          <el-menu-item index="/cloud-drive2">
+            <el-icon><Connection /></el-icon>
+            <template #title>CloudDrive2</template>
+          </el-menu-item>
+          <el-menu-item index="/pan-115">
+            <el-icon><Link /></el-icon>
+            <template #title>115 网盘</template>
+          </el-menu-item>
+          <el-menu-item index="/webdav-import">
+            <el-icon><Upload /></el-icon>
+            <template #title>WebDAV 导入</template>
+          </el-menu-item>
           <el-menu-item index="/system-status">
             <el-icon><DataLine /></el-icon>
             <template #title>系统状态</template>

@@ -391,6 +391,7 @@ class ActorSubscriptionMixin:
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_movie_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    javdb_actor_id: Mapped[str | None] = mapped_column(String(64), index=True)
     __table_args__ = (
         UniqueConstraint("user_id", "actor_id", name="uq_user_actor_subscription"),
     )
@@ -398,6 +399,35 @@ class ActorSubscriptionMixin:
     @declared_attr
     def actor_id(cls) -> Mapped[int]:
         return mapped_column(Integer, ForeignKey("actors.id", ondelete="CASCADE"), nullable=False, index=True)
+
+
+class ActorSubscriptionOnlineMixin:
+    """演员订阅：线上资源记录。
+
+    用户订阅演员后，系统抓取该演员在 JavDB 的在线片单（番号+影片页 URL+中文版标记）
+    落库，供「本地已有 / 本地缺失」比对。中文版判定以磁力链接名含 ``-C``/``-UC``
+    后缀为准（JavDB 影片列表的 ``has_cnsub`` 字段不可靠：实测 OFJE-655 列表
+    ``has_cnsub=False`` 但其 ``-C`` 磁力真实存在）。
+    """
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_id: Mapped[int] = mapped_column(Integer, ForeignKey("actors.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    code: Mapped[str] = mapped_column(String(100), index=True)            # 线上原始番号（可能含 -C/-UC）
+    base_code: Mapped[str] = mapped_column(String(100), index=True)        # 去版本后缀的 base，用于本地比对
+    title: Mapped[str | None] = mapped_column(String(500))
+    release_date: Mapped[str | None] = mapped_column(String(20), index=True)
+    javdb_movie_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    url: Mapped[str | None] = mapped_column(Text)                         # 线上影片页 URL
+    is_chinese_code: Mapped[bool] = mapped_column(Boolean, default=False)  # 番号本身是 -C/-UC 中文版
+    has_chinese_online: Mapped[bool | None] = mapped_column(Boolean, default=None)  # 线上磁力含 -C/-UC（磁级真判）
+    best_chinese_magnet: Mapped[str | None] = mapped_column(Text)         # 最佳中文磁力（下载用，持久化）
+    magnet_count: Mapped[int] = mapped_column(Integer, default=0)
+    chinese_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    __table_args__ = (
+        UniqueConstraint("user_id", "actor_id", "code", name="uq_sub_online_actor_code"),
+    )
 
 
 class SeriesSubscriptionMixin:

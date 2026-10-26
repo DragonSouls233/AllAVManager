@@ -17,7 +17,7 @@ from app.db._module_mixins import (
     PlayHistoryMixin, ImportRecordMixin, PatchRecordMixin,
     FileOrganizeJobMixin, AutoOrganizeRuleMixin,
     MovieRelationMixin, UserRecommendationMixin,
-    ActorSubscriptionMixin, SeriesSubscriptionMixin,
+    ActorSubscriptionMixin, ActorSubscriptionOnlineMixin, SeriesSubscriptionMixin,
 )
 
 
@@ -74,6 +74,9 @@ class ActorTier(ActorTierMixin, PORNHUB_BASE):
 
 class ActorSubscription(ActorSubscriptionMixin, PORNHUB_BASE):
     __tablename__ = "actor_subscriptions"
+
+class ActorSubscriptionOnline(ActorSubscriptionOnlineMixin, PORNHUB_BASE):
+    __tablename__ = "actor_subscription_onlines"
 
 class PlayHistory(PlayHistoryMixin, PORNHUB_BASE):
     __tablename__ = "play_history"

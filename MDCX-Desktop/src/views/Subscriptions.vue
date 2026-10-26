@@ -76,6 +76,9 @@
             <el-button size="small" :loading="sub._checking" @click="checkOne(sub)">
               检测
             </el-button>
+            <el-button size="small" @click="openOnline(sub)">
+              资源比对
+            </el-button>
             <el-button size="small" type="danger" plain @click="unsub(sub)">
               取消订阅
             </el-button>
@@ -141,6 +144,122 @@
         </div>
       </div>
     </el-card>
+
+    <!-- 资源比对：本地已有 / 本地缺失 / 缺中文版 -->
+    <el-dialog
+      v-model="onlineVisible"
+      :title="`资源比对 · ${onlineActorName}`"
+      width="900px"
+      top="4vh"
+      @close="stopOnlinePoll"
+    >
+      <div v-loading="onlineLoading">
+        <div class="online-stats">
+          <el-tag type="info" effect="plain">在线 {{ onlineData.online_total || 0 }}</el-tag>
+          <el-tag type="success" effect="plain">本地已有 {{ onlineData.local_count || 0 }}</el-tag>
+          <el-tag type="warning" effect="plain">本地缺失 {{ onlineData.missing_count || 0 }}</el-tag>
+          <el-tag type="danger" effect="plain">缺中文版 {{ onlineData.missing_chinese_count || 0 }}</el-tag>
+          <span v-if="onlineData.synced_at" class="online-time">同步于 {{ formatTime(onlineData.synced_at) }}</span>
+        </div>
+
+        <div class="online-toolbar">
+          <el-button size="small" :loading="onlineSyncing" @click="syncOnline">同步线上片单</el-button>
+          <el-button size="small" :loading="onlineRefreshing" @click="refreshChinese">检测中文版</el-button>
+          <el-button
+            size="small"
+            type="danger"
+            :disabled="!onlineData.missing_chinese_count"
+            :loading="onlineDownloading"
+            @click="downloadMissing"
+          >下载缺失中文版</el-button>
+          <span v-if="onlineProgress" class="online-progress">
+            <el-icon class="is-loading"><Loading /></el-icon> {{ onlineProgress }}
+          </span>
+        </div>
+
+        <el-alert
+          v-if="!onlineData.online_total"
+          type="info"
+          :closable="false"
+          show-icon
+          title="尚未同步线上片单"
+          description="点「同步线上片单」抓取该演员在 JavDB 的在线番号（含影片页与中文版标记），再与本地目录比对。"
+        />
+
+        <el-tabs v-else v-model="onlineTab" class="online-tabs">
+          <el-tab-pane name="missing_chinese">
+            <template #label>
+              缺中文版
+              <el-badge
+                :value="onlineData.missing_chinese_count || 0"
+                type="danger"
+                :hidden="!onlineData.missing_chinese_count"
+              />
+            </template>
+            <el-table :data="onlineData.missing_chinese" border size="small" max-height="440">
+              <el-table-column prop="code" label="番号" width="130" />
+              <el-table-column label="标题" min-width="170" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.title || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="release_date" label="发行" width="100" />
+              <el-table-column label="状态" width="130">
+                <template #default="{ row }">
+                  <el-tag type="danger" size="small" effect="dark">缺中文版</el-tag>
+                  <el-tag v-if="row.local_old_file" type="info" size="small">本地有旧版</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="170">
+                <template #default="{ row }">
+                  <el-button tag="a" :href="row.url" target="_blank" text type="primary" size="small">看线上</el-button>
+                  <el-button
+                    text
+                    type="success"
+                    size="small"
+                    :disabled="!row.best_chinese_magnet"
+                    @click="copyMagnet(row)"
+                  >复制磁力</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane name="missing" :label="`本地缺失 (${onlineData.missing_count || 0})`">
+            <el-table :data="onlineData.missing" border size="small" max-height="440">
+              <el-table-column prop="code" label="番号" width="130" />
+              <el-table-column label="标题" min-width="190" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.title || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="release_date" label="发行" width="100" />
+              <el-table-column label="中文版" width="100">
+                <template #default="{ row }">
+                  <el-tag v-if="row.has_chinese_online === true" type="danger" size="small">有</el-tag>
+                  <el-tag v-else-if="row.has_chinese_online === false" type="info" size="small">无</el-tag>
+                  <span v-else class="muted">未检测</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="90">
+                <template #default="{ row }">
+                  <el-button tag="a" :href="row.url" target="_blank" text type="primary" size="small">看线上</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane name="local" :label="`本地已有 (${onlineData.local_count || 0})`">
+            <el-table :data="onlineData.local" border size="small" max-height="440">
+              <el-table-column prop="code" label="番号" width="130" />
+              <el-table-column label="标题" min-width="190" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.title || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="release_date" label="发行" width="100" />
+              <el-table-column label="状态" width="90">
+                <template #default><el-tag type="success" size="small">本地</el-tag></template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -149,11 +268,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  StarFilled, Refresh, Bell, Film, Picture
+  StarFilled, Refresh, Bell, Film, Picture, Loading
 } from '@element-plus/icons-vue'
 import {
   listSubscriptions, subscribeActor, unsubscribeActor, checkActorNewMovies,
-  checkAllSubscriptions, listSubscriptionNewMovies, manualDownload
+  checkAllSubscriptions, listSubscriptionNewMovies, manualDownload,
+  getSubscriptionOnline, syncSubscriptionOnline, refreshSubscriptionChinese,
+  downloadMissingChinese, getOnlineJob
 } from '@/api'
 import { getServerBaseUrl, defaultCover, getFileProxyUrl } from '@/utils/media'
 
@@ -292,6 +413,143 @@ const unsub = async (sub) => {
 
 const goActor = (id) => router.push(`/actors/${id}`)
 const goPlay = (id) => router.push(`/movie/${id}`)
+
+// ===== 资源比对（本地已有 / 本地缺失 / 缺中文版）=====
+const onlineVisible = ref(false)
+const onlineActorId = ref(null)
+const onlineActorName = ref('')
+const onlineData = ref({})
+const onlineTab = ref('missing_chinese')
+const onlineLoading = ref(false)
+const onlineSyncing = ref(false)
+const onlineRefreshing = ref(false)
+const onlineDownloading = ref(false)
+const onlineProgress = ref('')
+let onlineTimer = null
+
+const stopOnlinePoll = () => {
+  if (onlineTimer) {
+    clearInterval(onlineTimer)
+    onlineTimer = null
+  }
+  onlineProgress.value = ''
+}
+
+const _pollJob = (jobId, onDone) => {
+  stopOnlinePoll()
+  onlineProgress.value = '任务启动中…'
+  onlineTimer = setInterval(async () => {
+    try {
+      const job = await getOnlineJob(jobId)
+      const done = job.done || 0
+      const total = job.total || 0
+      onlineProgress.value = job.message || `${job.stage || ''} ${done}/${total}`
+      if (job.status === 'done' || job.status === 'error') {
+        stopOnlinePoll()
+        if (job.status === 'error') {
+          ElMessage.error(`任务失败：${job.error || '未知错误'}`)
+        } else if (onDone) {
+          await onDone(job)
+        }
+      }
+    } catch (e) {
+      stopOnlinePoll()
+      ElMessage.error('轮询任务状态失败')
+    }
+  }, 1500)
+}
+
+const openOnline = async (sub) => {
+  onlineActorId.value = sub.actor_id
+  onlineActorName.value = sub.actor_name || '演员'
+  onlineVisible.value = true
+  onlineData.value = {}
+  await loadOnline()
+}
+
+const loadOnline = async () => {
+  if (!onlineActorId.value) return
+  onlineLoading.value = true
+  try {
+    const res = await getSubscriptionOnline(onlineActorId.value)
+    onlineData.value = res || {}
+    if (res && res.missing_chinese_count) onlineTab.value = 'missing_chinese'
+  } catch (e) {
+    console.error(e)
+  } finally {
+    onlineLoading.value = false
+  }
+}
+
+const syncOnline = async () => {
+  if (!onlineActorId.value) return
+  onlineSyncing.value = true
+  try {
+    const { job_id } = await syncSubscriptionOnline(onlineActorId.value)
+    _pollJob(job_id, async () => {
+      ElMessage.success('线上片单同步完成')
+      await loadOnline()
+    })
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '同步失败')
+  } finally {
+    onlineSyncing.value = false
+  }
+}
+
+const refreshChinese = async () => {
+  if (!onlineActorId.value) return
+  onlineRefreshing.value = true
+  try {
+    const { job_id } = await refreshSubscriptionChinese(onlineActorId.value)
+    _pollJob(job_id, async () => {
+      ElMessage.success('中文版检测完成')
+      await loadOnline()
+    })
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '检测失败')
+  } finally {
+    onlineRefreshing.value = false
+  }
+}
+
+const downloadMissing = async () => {
+  if (!onlineActorId.value) return
+  try {
+    await ElMessageBox.confirm(
+      `将把该演员「本地缺失的中文版」逐一下投递到下载器，确认？`,
+      '批量下载缺失中文版',
+      { type: 'warning' }
+    )
+  } catch (e) {
+    return
+  }
+  onlineDownloading.value = true
+  try {
+    const { job_id } = await downloadMissingChinese(onlineActorId.value)
+    _pollJob(job_id, async (job) => {
+      const r = job.result || {}
+      ElMessage.success(
+        `投递完成：成功 ${r.sent || 0} / 失败 ${r.failed || 0} / 跳过 ${r.skipped || 0}`
+      )
+      await loadOnline()
+    })
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '下载提交失败')
+  } finally {
+    onlineDownloading.value = false
+  }
+}
+
+const copyMagnet = async (row) => {
+  if (!row.best_chinese_magnet) return
+  try {
+    await navigator.clipboard.writeText(row.best_chinese_magnet)
+    ElMessage.success('已复制中文版磁力链接')
+  } catch (e) {
+    ElMessage.warning('复制失败，请手动复制')
+  }
+}
 
 onMounted(() => loadData())
 </script>
@@ -521,5 +779,40 @@ onMounted(() => loadData())
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+/* 资源比对对话框 */
+.online-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.online-time {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+.online-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.online-progress {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.online-tabs {
+  margin-top: 4px;
+}
+.muted {
+  color: var(--text-placeholder);
+  font-size: 12px;
 }
 </style>

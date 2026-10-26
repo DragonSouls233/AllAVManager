@@ -17,7 +17,7 @@ from app.db._module_mixins import (
     PlayHistoryMixin, ImportRecordMixin, PatchRecordMixin,
     FileOrganizeJobMixin, AutoOrganizeRuleMixin,
     MovieRelationMixin, UserRecommendationMixin,
-    ActorSubscriptionMixin, SeriesSubscriptionMixin,
+    ActorSubscriptionMixin, ActorSubscriptionOnlineMixin, SeriesSubscriptionMixin,
 )
 
 
@@ -72,6 +72,9 @@ class ActorCompareURL(ActorCompareURLMixin, WESTERN_BASE):
 
 class ActorSubscription(ActorSubscriptionMixin, WESTERN_BASE):
     __tablename__ = "actor_subscriptions"
+
+class ActorSubscriptionOnline(ActorSubscriptionOnlineMixin, WESTERN_BASE):
+    __tablename__ = "actor_subscription_onlines"
 
 class SeriesSubscription(SeriesSubscriptionMixin, WESTERN_BASE):
     __tablename__ = "series_subscriptions"
