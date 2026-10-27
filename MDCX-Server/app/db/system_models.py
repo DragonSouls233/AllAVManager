@@ -275,3 +275,38 @@ class Migration(SystemBase):
     version: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(500))
     applied_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+# ========== 高清版目标（跨模块） ==========
+
+class QualityGoal(SystemBase):
+    """高清版目标：给某部片子设定「想要更高清版本」，到货时自动检测到
+
+    Peach 的 ``/quality-goals`` 思路。要点：
+    - ``target_height`` 是**垂直像素**（2160=4K / 1080 / 720 / 480），比存字符串
+      标签更好比较；UI 负责把 「4K / 1080p」翻译成数字
+    - 匹配键是 ``(module, normalized_code)``：同一番号在不同模块是不同片子
+    - ``current_height`` 是**上次检测时**的实测分辨率快照，用于前端直接展示，
+      避免每次打开页面都跑一遍 ffprobe 子进程
+    - status: open（等更好的版本）/ fulfilled（已达目标）/ dropped（放弃）
+    """
+    __tablename__ = "quality_goals"
+    __table_args__ = (
+        UniqueConstraint("module", "normalized_code", name="uq_quality_goal_module_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    module: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(100), nullable=False)  # 原始番号
+    normalized_code: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(500))
+    target_height: Mapped[int] = mapped_column(Integer, nullable=False, default=2160)
+    current_height: Mapped[int | None] = mapped_column(Integer)      # 上次实测快照
+    current_width: Mapped[int | None] = mapped_column(Integer)
+    file_path: Mapped[str | None] = mapped_column(String(1000))     # 上次实测的文件
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    note: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime)

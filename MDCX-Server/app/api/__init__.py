@@ -4,7 +4,7 @@ API 路由模块
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, anime_routes, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, proxy_jp, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates, jav_series, previews, avleague, wikipedia, actor_enrich, jav_gap_routes, source_order, media_health, wants, playlists, media_repair, diagnostics, ad_residue
+from app.api.routes import auth, config, files, health, logs, movies, tasks, patch, actors, anime_routes, crawlers, stats, import_, tags, studios, series, nfo, workflows, compare, favorites, fingerprint, mpv, translate, tiers, webdav, network_diag, face_crop, naming, mnamer, site_priority, emby_config, emby_push, strm, nsfw, mosaic, player, proxy_play, plugins, subscriptions, series_subscriptions, subscription_downloader, viewing_reports, users, telegram_bot, view_status, file_organize, cookiecloud, cookies, gfriends, unrecognized, cloud_drive2, pan_115, metatube, source_merge, tvbox_config, downloaders, themes, schema, deploy, backup, poster_enhance, movie_graph, recommendations, nfo_scrape, fanart, auto_organize, proxy_xray, proxy_jp, chinese_routes, modules, fc2_routes, uncensored_routes, jav_routes, pornhub_routes, western_routes, download, site_manage, scan_control, post_processing, mcp_stream, western_enhanced, stash_api, ws_events, read_only, actresses, duplicates, jav_series, previews, avleague, wikipedia, actor_enrich, jav_gap_routes, source_order, media_health, wants, playlists, media_repair, diagnostics, ad_residue, queues, review, quality_goals, taste
 
 api_router = APIRouter()
 
@@ -107,3 +107,7 @@ api_router.include_router(previews.router, prefix="/previews", tags=["本地预�
 api_router.include_router(avleague.router, prefix="/avleague", tags=["AV联盟"])
 api_router.include_router(wikipedia.router, prefix="/wikipedia", tags=["维基百科"])
 api_router.include_router(actor_enrich.router, prefix="/actor-enrich", tags=["演员资料补全"])
+api_router.include_router(queues.router, prefix="/queues", tags=["观影队列"])
+api_router.include_router(review.router, prefix="/review", tags=["刮削复核"])
+api_router.include_router(quality_goals.router, prefix="/quality-goals", tags=["高清版目标"])
+api_router.include_router(taste.router, prefix="/taste", tags=["口味画像"])

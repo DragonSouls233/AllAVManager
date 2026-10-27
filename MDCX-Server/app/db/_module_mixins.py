@@ -65,6 +65,11 @@ class MovieMixin:
     last_played_at: Mapped[datetime | None] = mapped_column(DateTime)
     view_status: Mapped[str | None] = mapped_column(String(20), index=True)
 
+    # 观影队列标记（跨模块聚合队列页 /queues 使用）
+    # watch_later: 稍后看队列；flagged: 人工标记的「重点/待处理」
+    watch_later: Mapped[bool | None] = mapped_column(Boolean, default=False, index=True)
+    flagged: Mapped[bool | None] = mapped_column(Boolean, default=False, index=True)
+
     # 状态
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())

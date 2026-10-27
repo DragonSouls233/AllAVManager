@@ -41,6 +41,10 @@
             <el-icon><Files /></el-icon>
             <template #title>影片库</template>
           </el-menu-item>
+          <el-menu-item index="/jav/browse">
+            <el-icon><PictureFilled /></el-icon>
+            <template #title>浏览（Peach 风）</template>
+          </el-menu-item>
           <el-menu-item index="/jav/categories">
             <el-icon><Grid /></el-icon>
             <template #title>类别</template>
@@ -1419,6 +1423,7 @@ const pageTitle = computed(() => {
     '/movie-graph': '影片图谱',
     // JAV 有码
     '/jav/movies': 'JAV 有码 - 影片库',
+    '/jav/browse': 'JAV 有码 - 浏览（Peach 风）',
     '/jav/actors': 'JAV 有码 - 演员库',
     '/jav/studios': 'JAV 有码 - 制片厂',
     '/jav/scrape': 'JAV 有码 - 刮削管理',

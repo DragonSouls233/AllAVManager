@@ -55,6 +55,7 @@ webhooks.json
 *.temp
 backup_*
 backups/
+_refs
 
 # 运行时数据（保留 README 与空目录占位）
 data/**

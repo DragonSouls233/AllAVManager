@@ -558,6 +558,13 @@ export const routes = [
         component: () => import('@/views/MovieDetail.vue')
       },
       {
+        // 2026-10-26：新增 Peach 风浏览页（海报墙 + 悬停预览 + 点击即播），
+        // 与 jav/movies 管理视图并存，只做「看」、不挂写操作。
+        path: 'jav/browse',
+        name: 'JavBrowse',
+        component: () => import('@/views/jav/Browse.vue')
+      },
+      {
         path: 'jav/actors',
         name: 'JavActors',
         component: () => import('@/views/jav/Actors.vue')
