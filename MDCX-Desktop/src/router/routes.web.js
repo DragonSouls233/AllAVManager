@@ -257,6 +257,53 @@ export const routes = [
         name: 'ViewingReport',
         component: () => import('@/views/ViewingReport.vue')
       },
+      // 🔴 2026-10-26：Peach 风四大跨模块功能（观影队列 / 刮削复核 / 高清版目标 / 口味画像）。
+      //    均为跨模块工具，挂在「工具与服务」分组，不归属任何单一模块。
+      {
+        path: 'queues',
+        name: 'Queues',
+        component: () => import('@/views/Queue.vue'),
+        meta: { title: '观影队列' }
+      },
+      {
+        path: 'review',
+        name: 'Review',
+        component: () => import('@/views/Review.vue'),
+        meta: { title: '刮削复核' }
+      },
+      {
+        path: 'quality-goals',
+        name: 'QualityGoals',
+        component: () => import('@/views/QualityGoals.vue'),
+        meta: { title: '高清版目标' }
+      },
+      {
+        path: 'taste',
+        name: 'Taste',
+        component: () => import('@/views/Taste.vue'),
+        meta: { title: '口味画像' }
+      },
+      // 🔴 2026-10-27：Peach 统计总览（消费 /stats/* 现有接口）
+      {
+        path: 'stats',
+        name: 'Stats',
+        component: () => import('@/views/Stats.vue'),
+        meta: { title: '统计总览' }
+      },
+      // 🔴 2026-10-27：Peach 沉浸浏览（全屏逐片，纯前端）
+      {
+        path: 'immerse',
+        name: 'Immerse',
+        component: () => import('@/views/Immerse.vue'),
+        meta: { title: '沉浸浏览' }
+      },
+      // 🔴 2026-10-27：Peach 垃圾文件检测（样本片/预告/广告/系统垃圾）
+      {
+        path: 'junk-files',
+        name: 'JunkFiles',
+        component: () => import('@/views/JunkFiles.vue'),
+        meta: { title: '垃圾文件检测' }
+      },
       {
         path: 'users',
         name: 'Users',

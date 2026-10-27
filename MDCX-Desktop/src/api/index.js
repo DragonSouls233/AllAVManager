@@ -1154,3 +1154,57 @@ export const getModuleSeries = (module, params = {}) =>
   api.get('/jav/series', { params: { module, ...params } })
 export const getModuleSeriesMovies = (module, seriesName, params = {}) =>
   api.get(`/jav/series/${encodeURIComponent(seriesName)}/movies`, { params: { module, ...params } })
+
+// ============== 观影队列（跨模块：未看 / 稍后看 / 已标记） ==============
+export const getQueueStats = (module = 'all') =>
+  api.get('/queues/stats', { params: { module } })
+export const listQueueMovies = (queue, params = {}) =>
+  api.get('/queues/movies', { params: { queue, ...params } })
+export const toggleQueueFlag = (data) => api.post('/queues/toggle', data)
+export const batchQueueFlag = (data) => api.post('/queues/batch', data)
+export const clearQueueFlag = (field, module) =>
+  api.post('/queues/clear', null, { params: { field, module } })
+// 走 blob 而非直连 URL：直连 <a href> 不带 Authorization 头会被 401 拦下
+export const exportQueueCsv = (queue, module = 'all', limit = 5000) =>
+  api.get('/queues/export', { params: { queue, module, limit }, responseType: 'blob' })
+
+// ============== 刮削复核（人工核查可疑条目） ==============
+export const listReviewRules = () => api.get('/review/rules')
+export const scanReview = (module = 'all', force = false) =>
+  api.post('/review/scan', null, { params: { module, force } })
+export const getReviewStats = (module = 'all') =>
+  api.get('/review/stats', { params: { module } })
+export const listReviewIssues = (params = {}) =>
+  api.get('/review/issues', { params })
+export const ignoreReviewIssue = (data) => api.post('/review/ignore', data)
+export const ignoreReviewBatch = (items) => api.post('/review/ignore/batch', { items })
+export const unignoreReviewIssue = (data) => api.post('/review/unignore', data)
+export const clearIgnoreList = () => api.post('/review/ignore/clear')
+export const exportReviewCsv = (params = {}) =>
+  api.get('/review/export', { params, responseType: 'blob' })
+
+// ============== 高清版目标 ==============
+export const listQualityPresets = () => api.get('/quality-goals/presets')
+export const getQualityStats = () => api.get('/quality-goals/stats')
+export const listQualityGoals = (params = {}) =>
+  api.get('/quality-goals', { params })
+export const createQualityGoals = (data) => api.post('/quality-goals', data)
+export const updateQualityGoal = (goalId, data) =>
+  api.patch(`/quality-goals/${goalId}`, data)
+export const deleteQualityGoal = (goalId) =>
+  api.delete(`/quality-goals/${goalId}`)
+export const checkQualityGoal = (goalId) =>
+  api.post(`/quality-goals/${goalId}/check`)
+export const checkAllQualityGoals = (limit = 100) =>
+  api.post('/quality-goals/check', null, { params: { limit } })
+
+// ============== 口味画像 ==============
+export const getTasteProfile = (module = 'all') =>
+  api.get('/taste/profile', { params: { module } })
+export const getTasteRecommend = (module = 'all', limit = 24) =>
+  api.get('/taste/recommend', { params: { module, limit } })
+export const getTasteStats = (module = 'all') =>
+  api.get('/taste/stats', { params: { module } })
+
+// ============== 垃圾文件检测 ==============
+export const scanJunkFiles = (data) => api.post('/junk-files/scan', data || {})

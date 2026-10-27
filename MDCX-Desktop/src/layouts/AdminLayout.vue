@@ -376,6 +376,35 @@
             <el-icon><Promotion /></el-icon>
             <template #title>智能推荐</template>
           </el-menu-item>
+          <!-- 🔴 2026-10-26：Peach 风四大跨模块功能 -->
+          <el-menu-item index="/queues">
+            <el-icon><List /></el-icon>
+            <template #title>观影队列</template>
+          </el-menu-item>
+          <el-menu-item index="/review">
+            <el-icon><Warning /></el-icon>
+            <template #title>刮削复核</template>
+          </el-menu-item>
+          <el-menu-item index="/quality-goals">
+            <el-icon><VideoCamera /></el-icon>
+            <template #title>高清版目标</template>
+          </el-menu-item>
+          <el-menu-item index="/taste">
+            <el-icon><IceCream /></el-icon>
+            <template #title>口味画像</template>
+          </el-menu-item>
+          <el-menu-item index="/stats">
+            <el-icon><Histogram /></el-icon>
+            <template #title>统计总览</template>
+          </el-menu-item>
+          <el-menu-item index="/immerse">
+            <el-icon><FullScreen /></el-icon>
+            <template #title>沉浸浏览</template>
+          </el-menu-item>
+          <el-menu-item index="/junk-files">
+            <el-icon><Delete /></el-icon>
+            <template #title>垃圾文件检测</template>
+          </el-menu-item>
           <!-- 监测与通知 -->
           <el-menu-item index="/tasks">
             <el-icon><List /></el-icon>
@@ -1421,6 +1450,13 @@ const pageTitle = computed(() => {
     '/users': '用户管理',
     '/recommendations': '智能推荐',
     '/movie-graph': '影片图谱',
+    '/queues': '观影队列',
+    '/review': '刮削复核',
+    '/quality-goals': '高清版目标',
+    '/taste': '口味画像',
+    '/stats': '统计总览',
+    '/immerse': '沉浸浏览',
+    '/junk-files': '垃圾文件检测',
     // JAV 有码
     '/jav/movies': 'JAV 有码 - 影片库',
     '/jav/browse': 'JAV 有码 - 浏览（Peach 风）',
