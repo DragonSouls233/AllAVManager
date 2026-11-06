@@ -142,7 +142,7 @@ onMounted(loadMovies)
 .movie-card { cursor: pointer; background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-kpi); transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease; }
 .movie-card:hover { transform: translateY(-3px); border-color: var(--card-border-hover); box-shadow: var(--shadow-hover, var(--shadow-card)); }
 .cover { position: relative; aspect-ratio: 3/4; overflow: hidden; background: var(--bg-hover); }
-.cover img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.3s ease; }
+.cover img { width: 100%; height: 100%; object-fit: cover; object-position: right center; display: block; transition: transform 0.3s ease; }
 .movie-card:hover .cover img { transform: scale(1.04); }
 .cover-badge { position: absolute; top: 8px; left: 8px; background: rgba(15,18,26,0.5); -webkit-backdrop-filter: blur(8px) saturate(140%); backdrop-filter: blur(8px) saturate(140%); color: #fff; padding: 2px 8px; border-radius: 8px; font-size: 11px; font-weight: 600; border: 1px solid rgba(255,255,255,0.3); }
 .cover-badges { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }

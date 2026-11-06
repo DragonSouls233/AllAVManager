@@ -1,7 +1,7 @@
 <template>
-  <div class="ltx-mirror">
-    <header class="topbar">
-      <div class="ttl">
+  <div class="ltx-page">
+    <header class="hdr">
+      <div class="hdr-l">
         <h2>JAV · LTX 库</h2>
         <div class="sub">
           线上 <b>{{ onlineTotal }}</b> 部 / <b>{{ actorTotal }}</b> 演员 ·
@@ -10,8 +10,8 @@
           <span v-if="savedAt"> · 快照 {{ savedAt }}</span>
         </div>
       </div>
-      <div class="actions">
-        <el-input v-model="actorKw" placeholder="搜索演员" clearable style="width: 180px">
+      <div class="hdr-r">
+        <el-input v-model="actorKw" class="search" placeholder="搜索演员" clearable>
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
         <el-checkbox v-model="onlyNew">只看本地没有</el-checkbox>
@@ -19,10 +19,11 @@
       </div>
     </header>
 
-    <el-alert v-if="err" :title="err" type="error" :closable="false" show-icon style="margin-bottom: 10px" />
+    <el-alert v-if="err" :title="err" type="error" :closable="false" show-icon class="err" />
 
-    <div class="body">
-      <aside class="actors" v-loading="loading">
+    <div class="layout">
+      <!-- 演员列表 -->
+      <aside class="side" v-loading="loading">
         <div
           v-for="a in filteredActors"
           :key="a.name"
@@ -30,69 +31,91 @@
           :class="{ active: a.name === current, 'is-new': a.is_new }"
           @click="selectActor(a.name)"
         >
-          <img v-if="a.avatar" class="ava" :src="a.avatar" loading="lazy" @error="$event.target.style.visibility='hidden'" />
-          <span v-else class="ava ava-empty">{{ (a.name || '?').slice(0, 1) }}</span>
-          <span class="aname" :title="a.name">{{ a.name }}</span>
-          <span class="acount">{{ a.count }}</span>
-          <span class="astat" :class="{ good: a.have > 0 }">{{ a.have }}/{{ a.count }}</span>
+          <span class="ava">
+            <span class="ava-l">{{ (a.name || '?').slice(0, 1) }}</span>
+            <img
+              v-if="a.avatar"
+              :src="a.avatar"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+              @error="$event.target.style.display = 'none'"
+            />
+          </span>
+          <span class="meta">
+            <span class="aname" :title="a.name">{{ a.name }}</span>
+            <span class="abar">
+              本地 <b :class="{ good: a.have > 0 }">{{ a.have }}</b> / {{ a.count }}
+              <span class="dot" v-if="a.is_new">新</span>
+            </span>
+          </span>
         </div>
-        <el-empty v-if="!loading && !filteredActors.length" description="无匹配演员" :image-size="60" />
+        <el-empty v-if="!loading && !filteredActors.length" description="无匹配演员" :image-size="56" />
       </aside>
 
-      <main class="mainpane">
-        <div class="grid-head">
+      <!-- 作品网格 -->
+      <section class="main">
+        <div class="bar">
           <span class="cur">{{ current || '—' }}</span>
-          <el-tag v-if="currentInfo && currentInfo.is_new" type="danger" size="small">本地没有</el-tag>
+          <el-tag v-if="currentInfo && currentInfo.is_new" type="danger" size="small" effect="dark">本地没有</el-tag>
           <span class="muted">本地 {{ currentInfo ? currentInfo.have : 0 }} / 线上 {{ currentInfo ? currentInfo.count : 0 }}</span>
+          <span class="grow" />
           <el-checkbox v-model="onlyMissingItems">只看缺失</el-checkbox>
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            :disabled="!missingLinksCount"
-            @click="copyActorMissing"
-          >
-            复制该演员缺失链接（{{ missingLinksCount }}）
+          <el-select v-model="sortBy" size="small" style="width: 108px">
+            <el-option label="日期 ↓" value="date" />
+            <el-option label="评分 ↓" value="score" />
+            <el-option label="番号 ↑" value="code" />
+          </el-select>
+          <el-button size="small" type="primary" plain :disabled="!missingLinksCount" @click="copyActorMissing">
+            复制缺失链接（{{ missingLinksCount }}）
           </el-button>
         </div>
 
-        <div class="grid" v-loading="loadingActor">
-          <div v-for="it in filteredItems" :key="it.code" class="card">
-            <div class="cover">
-              <img
-                v-if="it.cover"
-                :src="it.cover"
-                loading="lazy"
-                referrerpolicy="no-referrer"
-                @error="$event.target.style.visibility='hidden'"
-              />
-              <span v-else class="cover-empty" />
-              <span class="code-badge" title="点击复制番号" @click="copyText(it.code)">{{ it.code }}</span>
-              <span v-if="!it.owned" class="miss-badge">缺失</span>
-              <span v-else class="own-badge">已拥有</span>
-            </div>
-            <div class="cinfo">
-              <div class="ctitle" :title="it.title">{{ it.title || it.code }}</div>
-              <div class="cactions">
-                <span class="link-kind" :class="kind(it)">{{ kindLabel(it) }}</span>
-                <el-button v-if="it.links.length" text size="small" type="primary" @click="copyText(it.links.join('\n'))">
-                  复制链接
-                </el-button>
+        <div class="scroll" v-loading="loadingActor">
+          <div v-if="sortedItems.length" class="grid">
+            <div v-for="it in sortedItems" :key="it.code" class="card">
+              <div class="cover">
+                <img
+                  v-if="it.cover"
+                  :src="it.cover"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  @error="$event.target.style.display = 'none'"
+                />
+                <span class="ph" v-else>{{ it.code.slice(0, 3) }}</span>
+                <span class="badge-code" title="点击复制番号" @click="copyText(it.code)">{{ it.code }}</span>
+                <span v-if="it.score" class="badge-score">★ {{ Number(it.score).toFixed(1) }}</span>
+                <span class="badge-state" :class="it.owned ? 'own' : 'miss'">{{ it.owned ? '已拥有' : '缺失' }}</span>
+              </div>
+              <div class="body">
+                <div class="title" :title="it.title">{{ it.title || it.code }}</div>
+                <div class="meta2">
+                  <span v-if="it.date">{{ it.date }}</span>
+                  <span v-if="it.maker" class="maker">{{ it.maker }}</span>
+                </div>
+                <div class="acts">
+                  <span class="kind" :class="kind(it)">{{ kindLabel(it) }}</span>
+                  <span class="grow" />
+                  <el-button v-if="it.links.length" text size="small" type="primary" @click="copyText(it.links.join('\n'))">复制链接</el-button>
+                  <el-button v-if="it.jav_id" text size="small" @click="openLocal(it.jav_id)">打开本地</el-button>
+                </div>
               </div>
             </div>
           </div>
-          <el-empty v-if="!loadingActor && !filteredItems.length" description="该演员暂无作品" />
+          <el-empty v-else-if="!loadingActor" description="该演员暂无作品" />
         </div>
-      </main>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { getLtxLibrary, getLtxActor, refreshLtxSnapshot } from '@/api/jav'
+
+const router = useRouter()
 
 const loading = ref(false)
 const loadingActor = ref(false)
@@ -100,6 +123,7 @@ const err = ref('')
 const actorKw = ref('')
 const onlyNew = ref(false)
 const onlyMissingItems = ref(false)
+const sortBy = ref('date')
 
 const onlineTotal = ref(0)
 const actorTotal = ref(0)
@@ -111,6 +135,7 @@ const current = ref('')
 const currentItems = ref([])
 
 const currentInfo = computed(() => actors.value.find((a) => a.name === current.value) || null)
+
 const filteredActors = computed(() => {
   const q = actorKw.value.trim().toUpperCase()
   return actors.value.filter((a) => {
@@ -119,9 +144,21 @@ const filteredActors = computed(() => {
     return true
   })
 })
-const filteredItems = computed(() =>
-  onlyMissingItems.value ? currentItems.value.filter((it) => !it.owned) : currentItems.value,
-)
+
+const sortedItems = computed(() => {
+  let list = currentItems.value
+  if (onlyMissingItems.value) list = list.filter((it) => !it.owned)
+  const arr = [...list]
+  if (sortBy.value === 'score') {
+    arr.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
+  } else if (sortBy.value === 'code') {
+    arr.sort((a, b) => String(a.code).localeCompare(String(b.code)))
+  } else {
+    arr.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  }
+  return arr
+})
+
 const missingLinksCount = computed(
   () => currentItems.value.filter((it) => !it.owned && it.links && it.links.length).length,
 )
@@ -189,7 +226,7 @@ async function updateSnapshot() {
     const res = await refreshLtxSnapshot()
     applyLibrary(await getLtxLibrary())
     await loadActor(current.value)
-    ElMessage.success('已更新快照：' + (res.count != null ? res.count + ' 部' : 'OK') + '，封面/头像后台下载中')
+    ElMessage.success('已更新快照：' + (res.count != null ? res.count + ' 部' : 'OK') + '，封面/头像后台更新中')
   } catch (e) {
     err.value = '更新失败：' + (e.message || e) + '（需服务器内置代理能访问外网）'
   } finally {
@@ -239,72 +276,88 @@ function copyActorMissing() {
   copyText(links.join('\n'))
 }
 
+function openLocal(id) {
+  if (id) router.push(`/jav/movies/${id}`)
+}
+
 onMounted(loadLibrary)
 </script>
 
 <style scoped>
-.ltx-mirror {
+.ltx-page {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 16px 20px;
+  /* 覆盖全局 .main-content > * 的 24px padding 与 1440px 居中：贴左、满宽 */
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 8px 12px 10px 0 !important;
   box-sizing: border-box;
 }
-.topbar {
+.hdr {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   flex-shrink: 0;
 }
-.ttl h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
+.hdr h2 {
+  margin: 0 0 5px;
+  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text-primary);
 }
-.ttl .sub {
-  font-size: 12.5px;
+.hdr .sub {
+  font-size: 13px;
   color: var(--text-secondary);
 }
-.ttl .sub b {
+.hdr .sub b {
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
-.ttl .sub .warn {
+.hdr .sub .warn {
   color: var(--el-color-warning);
 }
-.actions {
+.hdr-r {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-shrink: 0;
 }
-.body {
+.hdr-r .search {
+  width: 200px;
+}
+.err {
+  margin-bottom: 10px;
+}
+.layout {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 12px;
+  gap: 16px;
 }
-.actors {
-  width: 232px;
+
+/* ---------- 演员列表 ---------- */
+.side {
+  width: 288px;
   flex-shrink: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--hairline, var(--border-color));
-  border-radius: var(--radius-card, 10px);
+  border-radius: 12px;
   background: var(--bg-card, #fff);
-  padding: 6px;
+  padding: 8px;
 }
 .actor {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 8px;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 10px;
   cursor: pointer;
-  font-size: 13px;
+  transition: background-color 0.12s;
 }
 .actor:hover {
   background: var(--hover-layer, #f5f7fa);
@@ -316,158 +369,223 @@ onMounted(loadLibrary)
   color: var(--el-color-danger);
 }
 .ava {
-  width: 28px;
-  height: 28px;
+  position: relative;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
-  object-fit: cover;
   flex-shrink: 0;
-  background: var(--hover-layer);
-}
-.ava-empty {
-  display: inline-flex;
+  overflow: hidden;
+  background: linear-gradient(135deg, #dfe4ee, #c9d1e0);
+  display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  color: var(--text-secondary);
+}
+.ava-l {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.ava img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.actor .meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
 }
 .aname {
-  flex: 1;
-  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.abar {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 1px;
+}
+.abar b {
   color: var(--text-primary);
-}
-.acount {
-  font-size: 11px;
-  color: var(--text-placeholder);
   font-variant-numeric: tabular-nums;
 }
-.astat {
-  font-size: 11px;
-  color: var(--text-placeholder);
-  font-variant-numeric: tabular-nums;
-  min-width: 38px;
-  text-align: right;
-}
-.astat.good {
+.abar b.good {
   color: var(--el-color-success);
 }
-.mainpane {
+.dot {
+  margin-left: 6px;
+  color: #fff;
+  background: var(--el-color-danger);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+}
+
+/* ---------- 作品区 ---------- */
+.main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-.grid-head {
+.bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   flex-shrink: 0;
 }
-.grid-head .cur {
+.bar .cur {
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
 }
-.grid-head .muted {
+.bar .muted {
   font-size: 12px;
   color: var(--text-secondary);
 }
-.grid {
+.grow {
+  flex: 1;
+}
+.scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 4px 8px 2px;
+}
+.grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 18px;
   align-content: start;
-  padding-right: 4px;
 }
 .card {
   border: 1px solid var(--hairline, var(--border-color));
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--bg-card, #fff);
-  display: flex;
-  flex-direction: column;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 24px -10px rgba(0, 0, 0, 0.22);
+  border-color: var(--card-border-hover, var(--border-color));
 }
 .cover {
   position: relative;
   aspect-ratio: 2 / 3;
-  background: var(--hover-layer);
+  background: linear-gradient(135deg, #eef1f6, #dde3ee);
 }
 .cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* DVD 展开图正面在右 ⇒ 右对齐，露出正面 */
+  object-position: right center;
   display: block;
 }
-.cover-empty {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.code-badge {
+.ph {
   position: absolute;
-  left: 6px;
-  top: 6px;
-  font-size: 11px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #b6becd;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.badge-code {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  font-size: 11.5px;
   font-family: var(--font-mono, monospace);
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.62);
   color: #fff;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
   cursor: pointer;
 }
-.miss-badge,
-.own-badge {
+.badge-score {
   position: absolute;
-  right: 6px;
-  top: 6px;
+  right: 8px;
+  top: 8px;
   font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.92);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.badge-state {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
   color: #fff;
 }
-.miss-badge {
-  background: var(--el-color-danger);
+.badge-state.own {
+  background: rgba(16, 185, 129, 0.94);
 }
-.own-badge {
-  background: var(--el-color-success);
+.badge-state.miss {
+  background: rgba(239, 68, 68, 0.94);
 }
-.cinfo {
-  padding: 6px 8px;
+.body {
+  padding: 8px 10px 9px;
 }
-.ctitle {
-  font-size: 12px;
+.title {
+  font-size: 12.5px;
+  line-height: 1.4;
   color: var(--text-regular);
-  line-height: 1.35;
-  height: 2.7em;
+  height: 2.8em;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-.cactions {
+.meta2 {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-placeholder);
+  display: flex;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.meta2 .maker {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acts {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 6px;
 }
-.link-kind {
+.kind {
   font-size: 10px;
-  padding: 0 5px;
-  border-radius: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
   color: #fff;
 }
-.link-kind.ed2k {
+.kind.ed2k {
   background: var(--el-color-success);
 }
-.link-kind.magnet {
+.kind.magnet {
   background: var(--el-color-primary);
 }
-.link-kind.other {
+.kind.other {
   background: var(--text-placeholder);
 }
 </style>

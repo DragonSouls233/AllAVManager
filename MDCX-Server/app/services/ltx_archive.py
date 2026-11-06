@@ -90,6 +90,7 @@ def init_db() -> None:
                 primary_actor TEXT,
                 cover_url TEXT,
                 cover_file TEXT,
+                cover_source TEXT,
                 links_json TEXT,
                 release_date TEXT,
                 maker TEXT,
@@ -102,6 +103,8 @@ def init_db() -> None:
         cols = [r[1] for r in c.execute("PRAGMA table_info(ltx_items)").fetchall()]
         if "primary_actor" not in cols:
             c.execute("ALTER TABLE ltx_items ADD COLUMN primary_actor TEXT")
+        if "cover_source" not in cols:
+            c.execute("ALTER TABLE ltx_items ADD COLUMN cover_source TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_ltx_code_norm ON ltx_items(code_norm)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_ltx_primary ON ltx_items(primary_actor)")
         c.execute(
@@ -200,6 +203,77 @@ def local_jav_ltx_codes() -> set[str]:
         return set()
 
 
+def _jav_db_path() -> Path | None:
+    from app.config.manager import DATA_DIR
+
+    p = Path(DATA_DIR) / "database" / "jav.db"
+    return p if p.exists() else None
+
+
+def local_jav_cover_map(codes: set[str]) -> dict[str, Path]:
+    """番号 → 本地 JAV 封面文件（复用，省下载）。只查传入的 codes。"""
+    p = _jav_db_path()
+    if not p or not codes:
+        return {}
+    from app.config.manager import DATA_DIR
+
+    out: dict[str, Path] = {}
+    try:
+        c = sqlite3.connect("file:%s?mode=ro" % p.as_posix(), uri=True, timeout=10)
+        try:
+            rows = c.execute(
+                "SELECT code, cover_url FROM movies WHERE cover_url IS NOT NULL AND cover_url<>''"
+            ).fetchall()
+        finally:
+            c.close()
+    except Exception:
+        return {}
+    movies_root = Path(DATA_DIR) / "movies" / "jav"
+    for code, cover in rows:
+        if not code:
+            continue
+        norm = str(code).upper()
+        if norm not in codes or norm in out:
+            continue
+        cp = None
+        try:
+            cp = Path(str(cover))
+        except Exception:
+            cp = None
+        if cp and cp.is_file() and cp.stat().st_size > 0:
+            out[norm] = cp
+            continue
+        d = movies_root / str(code)
+        for fn in ("poster.jpg", "poster.png", "cover.jpg", "thumb.jpg"):
+            f = d / fn
+            if f.is_file() and f.stat().st_size > 0:
+                out[norm] = f
+                break
+    return out
+
+
+def local_jav_id_map(codes: set[str]) -> dict[str, int]:
+    """番号 → 本地 JAV 影片 id（仅 is_hd_uncensored=1），供页面回链本地详情。"""
+    p = _jav_db_path()
+    if not p or not codes:
+        return {}
+    out: dict[str, int] = {}
+    try:
+        c = sqlite3.connect("file:%s?mode=ro" % p.as_posix(), uri=True, timeout=10)
+        try:
+            rows = c.execute(
+                "SELECT id, code FROM movies WHERE COALESCE(is_hd_uncensored,0)=1"
+            ).fetchall()
+        finally:
+            c.close()
+    except Exception:
+        return {}
+    for mid, code in rows:
+        if code and str(code).upper() in codes:
+            out[str(code).upper()] = mid
+    return out
+
+
 def snapshot_meta() -> dict:
     init_db()
     c = _conn()
@@ -253,11 +327,12 @@ def list_actors() -> dict:
         rows = c.execute(
             "SELECT primary_actor, code_norm FROM ltx_items"
         ).fetchall()
-        avatars = dict(
-            (r[0], r[1]) for r in c.execute(
-                "SELECT name, avatar_file FROM ltx_avatars"
+        avatars = {
+            r[0]: (r[1], r[2])
+            for r in c.execute(
+                "SELECT name, avatar_file, avatar_url FROM ltx_avatars"
             ).fetchall()
-        )
+        }
     finally:
         c.close()
 
@@ -276,7 +351,11 @@ def list_actors() -> dict:
     for name, a in agg.items():
         if a["have"] == 0:
             new_cnt += 1
-        has_avatar = name in avatars and avatars[name]
+        file, url = avatars.get(name, (None, None))
+        if file:
+            avatar = "/api/v1/jav/ltx-avatar?name=%s" % _q(name)
+        else:
+            avatar = url or ""
         actors.append(
             {
                 "name": name,
@@ -284,7 +363,7 @@ def list_actors() -> dict:
                 "have": a["have"],
                 "missing": a["missing"],
                 "is_new": a["have"] == 0,
-                "avatar": "/api/v1/jav/ltx-avatar?name=%s" % _q(name) if has_avatar else "",
+                "avatar": avatar,
             }
         )
     actors.sort(key=lambda x: (-x["count"], x["name"]))
@@ -312,15 +391,17 @@ def actor_items(actor: str) -> dict:
     c = _conn()
     try:
         rows = c.execute(
-            "SELECT code, code_norm, title, cover_url, cover_file, links_json "
+            "SELECT code, code_norm, title, cover_url, cover_file, links_json, release_date, maker, score "
             "FROM ltx_items WHERE primary_actor=? ORDER BY release_date DESC",
             (actor,),
         ).fetchall()
     finally:
         c.close()
     items = []
-    for code, norm, title, cover_url, cover_file, lj in rows:
+    norms = set()
+    for code, norm, title, cover_url, cover_file, lj, rdate, maker, score in rows:
         norm = norm or str(code).upper()
+        norms.add(norm)
         try:
             links = json.loads(lj or "[]")
         except Exception:
@@ -332,8 +413,15 @@ def actor_items(actor: str) -> dict:
                 "cover": _cover_view(norm, cover_file, cover_url),
                 "links": links,
                 "owned": norm in local,
+                "date": rdate or "",
+                "maker": maker or "",
+                "score": score,
+                "_norm": norm,
             }
         )
+    idmap = local_jav_id_map(norms)
+    for it in items:
+        it["jav_id"] = idmap.get(it.pop("_norm"))
     return {"actor": actor, "items": items}
 
 
@@ -459,36 +547,49 @@ def _download_worker(max_workers: int) -> None:
         finally:
             c.close()
 
+        import shutil
+
+        # 复用本地 JAV 封面（有番号+封面就不下载）
+        local_map = local_jav_cover_map({str(r[0]).upper() for r in crow})
+
         def dl_cover(row):
             norm, actor, url, cover_file = row
             rel = "covers/%s/%s.jpg" % (_safe_name(actor), _safe_code(norm))
             target = archive_dir() / rel
             if target.exists() and target.stat().st_size > 0:
-                return (norm, rel)
-            # 旧扁平文件迁移
-            old = archive_dir() / "covers" / ("%s.jpg" % _safe_code(norm))
-            if old.exists() and old.stat().st_size > 0:
-                target.parent.mkdir(parents=True, exist_ok=True)
+                return (norm, rel, "jav" if norm in local_map else None)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # 1) 优先复制本地 JAV 封面（不下载）
+            src = local_map.get(norm)
+            if src is not None:
                 try:
-                    old.replace(target)
-                    return (norm, rel)
+                    shutil.copyfile(src, target)
+                    return (norm, rel, "jav")
                 except Exception:
                     pass
-            target.parent.mkdir(parents=True, exist_ok=True)
+            # 2) 旧扁平文件迁移
+            old = archive_dir() / "covers" / ("%s.jpg" % _safe_code(norm))
+            if old.exists() and old.stat().st_size > 0:
+                try:
+                    old.replace(target)
+                    return (norm, rel, "remote")
+                except Exception:
+                    pass
+            # 3) 网络下载
             try:
                 b = fetch_bytes(url)
                 if b:
                     target.write_bytes(b)
-                    return (norm, rel)
+                    return (norm, rel, "remote")
             except Exception:
                 pass
-            return (norm, None)
+            return (norm, None, None)
 
         done = []
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            for i, (norm, rel) in enumerate(ex.map(dl_cover, crow)):
+            for i, (norm, rel, src) in enumerate(ex.map(dl_cover, crow)):
                 if rel:
-                    done.append((rel, norm))
+                    done.append((rel, src, norm))
                 if (i + 1) % 200 == 0:
                     logger.info("[ltx] 封面 %d/%d", i + 1, len(crow))
                     _commit_cover(done)
@@ -508,6 +609,7 @@ def _download_worker(max_workers: int) -> None:
             name, url = row
             rel = "avatars/%s.jpg" % _safe_name(name)
             target = archive_dir() / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists() and target.stat().st_size > 0:
                 return (name, rel)
             try:
@@ -547,7 +649,11 @@ def _commit_cover(pairs):
         return
     c = _conn()
     try:
-        c.executemany("UPDATE ltx_items SET cover_file=? WHERE code_norm=?", pairs)
+        c.executemany(
+            "UPDATE ltx_items SET cover_file=?, cover_source=COALESCE(?, cover_source) "
+            "WHERE code_norm=?",
+            pairs,
+        )
         c.commit()
     finally:
         c.close()

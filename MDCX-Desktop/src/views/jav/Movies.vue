@@ -486,6 +486,8 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* DVD 展开图（约 1.49:1，正面在右、背面在左）⇒ 右对齐，露出正面，别露中间脊 */
+  object-position: right center;
   display: block;
   transition: transform 0.3s ease;
 }
