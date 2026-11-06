@@ -4,11 +4,16 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
     <title>龙魂 - 视频管理系统</title>
     <!--
-      首屏密度预写（借鉴 peach 的 index.html 内联脚本：它只负责第一帧，之后交给 app）。
-      不写这段的话，Electron 冷启动时网格会先按默认 200px 画出来，等 JS 跑完再跳到用户选的那一档。
-      ⚠️ 这里的 tiles 必须与 src/utils/density.js 的 DENSITY_TILES 保持一致（内联脚本没法 import）。
+      首屏预写（同步执行、必须在 body 绘制前）：只负责第一帧，之后交给 app。
+      ① 密度：借鉴 peach 的内联脚本。不写的话 Electron 冷启动会先按 200px 画网格，
+         等 JS 跑完再跳到用户选的那一档。
+         ⚠️ tiles 必须与 src/utils/density.js 的 DENSITY_TILES 保持一致（内联脚本没法 import）。
+      ② 主题：借鉴 JavBoss public/theme-init.js。原先 index.html 只写 --tile，
+         深色用户冷启动会先闪一帧白底再被 stores/theme.js 切成暗色。
+         ⚠️ preference 的判定必须与 src/stores/theme.js::readPreference 保持一致。
     -->
     <script>
       ;(function () {
@@ -20,6 +25,25 @@
           document.documentElement.dataset.density = d
         } catch (e) {
           /* localStorage 被禁用时静默退回默认值 */
+        }
+
+        try {
+          var p = localStorage.getItem('mdcx_theme')
+          if (p !== 'light' && p !== 'dark' && p !== 'system') {
+            // 与 stores/theme.js 保持一致：Electron 首次启动默认暗色，Web 默认亮色
+            p = (window.electronAPI && window.electronAPI.isElectron) ? 'dark' : 'light'
+          }
+          var dark = p === 'dark' ||
+            (p === 'system' && window.matchMedia &&
+             window.matchMedia('(prefers-color-scheme: dark)').matches)
+          var root = document.documentElement
+          root.classList.toggle('dark', dark)
+          root.style.colorScheme = dark ? 'dark' : 'light'
+          root.dataset.themePreference = p
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', dark ? '#141414' : '#ffffff')
+        } catch (e) {
+          /* 无 matchMedia / localStorage 时静默退回默认亮色 */
         }
       })()
     </script>

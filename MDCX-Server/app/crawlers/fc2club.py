@@ -1,5 +1,10 @@
 """
 FC2Club 爬虫 - 从 fc2club.top 刮削 FC2 内容
+
+🔴 2026-11-06 实测：站点已失效，运行时在
+   ``app/crawlers/provider.py::DISABLED_CRAWLERS`` 被自动禁用。
+   fc2club.net 302 跳广告页，fc2club.top / fc2club.com TLS 连接被重置。
+本文件保留并修好两处兼容性缺陷（见下），站点复活后可随时重新启用。
 """
 
 import logging
@@ -35,16 +40,14 @@ class FC2ClubCrawler(BaseCrawler):
     language = "zh"
     requires_proxy = False
 
-    async def scrape(self, code: str) -> Optional[ScrapeResult]:
-        """
-        刮削指定番号
+    async def scrape(self, code: str, ctx=None) -> Optional[ScrapeResult]:
+        """刮削指定番号。
 
-        Args:
-            code: 番号（如 FC2-123456）
-
-        Returns:
-            ScrapeResult 刮削结果
+        🔴 2026-11-06 兼容性修复：BaseCrawler 抽象接口与 engine 调用都是
+        ``scrape(code, ctx=ctx)``（engine.py:579），旧签名没有 ctx ⇒ 一旦
+        启用本爬虫，每次调用都抛 TypeError 被上层吞成「源无数据」。
         """
+
         number_id = self._extract_number_id(code)
         if not number_id:
             return None
@@ -56,7 +59,9 @@ class FC2ClubCrawler(BaseCrawler):
                 html_text = await client.get_text(detail_url)
                 html = etree.fromstring(html_text, etree.HTMLParser())
 
-                # 检查是否找到页面
+                # 页面正常但没取到标题 = 该站未收录 / 不是详情页结构，
+                # 属正常业务响应，**不 mark_error**：批量刮削里连遇几个
+                # 未收录片就把爬虫标 ERROR 永久下线，后续会全部秒判未找到。
                 title = self._get_title(html, number_id)
                 if not title:
                     return None
@@ -66,9 +71,6 @@ class FC2ClubCrawler(BaseCrawler):
 
                 if result:
                     self.mark_success()
-                else:
-                    self.mark_error()
-
                 return result
 
             except Exception as e:
@@ -142,7 +144,12 @@ class FC2ClubCrawler(BaseCrawler):
                 title=title,
                 source=self.name,
                 studio=studio,
-                publisher=studio,
+                # 🔴 2026-11-06 修复：ScrapeResult 没有 publisher 字段
+                # （dataclass 里叫 maker）。旧代码每次都抛
+                # ``TypeError: __init__() got an unexpected keyword argument
+                # 'publisher'``，被本方法末尾的 ``except Exception: return None``
+                # 静默吞掉 ⇒ 该源即使站点正常也永远返回「无数据」。
+                maker=studio,
                 genres=genres,
                 actors=actors,
                 cover_url=cover_url,
@@ -224,8 +231,10 @@ class FC2ClubCrawler(BaseCrawler):
         if results:
             for item in results:
                 text = str(item).strip()
-                if "无码" in text:
+                # 站面用日文汉字「無碼/有碼」，旧代码只认简体「无码/有码」
+                # ⇒ FC2 无码片的 is_uncensored 恒为 None。两种写法都认。
+                if any(k in text for k in ("无码", "無碼", "無修正")):
                     return True
-                if "有码" in text:
+                if any(k in text for k in ("有码", "有碼")):
                     return False
         return None

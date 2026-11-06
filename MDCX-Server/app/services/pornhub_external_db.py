@@ -28,6 +28,9 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+# 2026-11-06：只读外部库统一走语句级超时（timeout=10 只是锁等待）。
+from app.utils.sqlite_ro import connect_ro, fetch_all
+
 logger = logging.getLogger(__name__)
 
 # 默认种子源路径（用户可在 config / 端点中覆盖）
@@ -115,9 +118,8 @@ class PornhubExternalDB:
                 logger.warning(f"[pornhub-ext] 外部 DB 不存在: {self.db_path}")
                 return False
             try:
-                self._conn = sqlite3.connect(
-                    f"file:{self.db_path}?mode=ro", uri=True, timeout=10,
-                    check_same_thread=False,
+                self._conn = connect_ro(
+                    self.db_path, check_same_thread=False,
                 )
                 self._conn.row_factory = sqlite3.Row
                 self._build_index()
@@ -142,14 +144,19 @@ class PornhubExternalDB:
         """
         if not self._conn:
             return
-        cur = self._conn.execute(
+        # 一次性载入全表（约 803 条），给 60s 宽裕时限；
+        # 仍然拦住失控查询把进程挂死的情况。
+        rows = fetch_all(
+            self._conn,
             "SELECT id, name, url, country, mode, local_directory, "
             "online_count, local_count, missing_count "
-            "FROM models"
+            "FROM models",
+            statement_timeout_ms=60_000,
+            label="pornhub-ext:build_index",
         )
         skipped_non_ph = 0
         skipped_bad_url = 0
-        for row in cur.fetchall():
+        for row in rows:
             url = (row["url"] or "").strip()
             low = url.lower()
             # 只保留 PORNHUB（排除 javdb.com 等 JAV 源）

@@ -136,6 +136,9 @@ async def source_status():
         SourceCapability,
         capabilities_for_source,
     )
+    # 2026-11-06：HTML 解析器结构改版计数（纯内存，无 DB 查询）。
+    # 与熔断互补：熔断说明「源被跳过」，结构失效说明「解析器读不出字段」。
+    from app.scraper.detail_structure import get_detail_structure_stats
 
     provider = get_provider()
     breaker = get_breaker()
@@ -192,4 +195,5 @@ async def source_status():
         "circuit_open": open_count,
         "capability_axes": [c.value for c in SourceCapability],
         "sources": sources,
+        "detail_structure": get_detail_structure_stats(),
     }

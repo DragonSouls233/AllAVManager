@@ -46,6 +46,9 @@ from app.crawlers import fc2_enhanced
 # FC2 JavBus 补全爬虫（演员/高清封面，多源合并一员；参考 ref107-garage javbus 解析）
 from app.crawlers import fc2_javbus
 
+# FC2DB 补充源（2026-11-06 实测：/work/<id>/ 直出标题/封面/标签/演员/发售日）
+from app.crawlers import fc2db
+
 # 导入欧美刮削器（Vixen / NaughtyAmerica / AdultTime / AyloAPI / Aggregate / Stash）
 from app.crawlers.western import vixen_network, naughtyamerica, adulttime, aylo_api, theporndb
 from app.crawlers import western_aggregate
@@ -94,6 +97,7 @@ __all__ = [
     "fc2club",
     "fc2hub",
     "fc2ppvdb",
+    "fc2db",
     "faleno",
     "dahlia",
     "dmm",

@@ -455,11 +455,14 @@ async def refresh_library():
 
     # 获取用户列表
     import httpx
+    from app.utils.emby import build_auth_headers
     user_id = None
     async with httpx.AsyncClient(timeout=10, verify=False) as http:
         resp = await http.get(
             f"{config.emby.url.rstrip('/')}/Users",
-            headers={"X-Emby-Token": config.emby.api_key},
+            # 🔴 2026-11-06：与 EmbyClient 走同一鉴权出口，Jellyfin 12
+            #   关闭 legacy X-Emby-Token 后此处才不会 401。
+            headers=build_auth_headers(config.emby.api_key),
         )
         if resp.status_code == 200:
             users = resp.json()

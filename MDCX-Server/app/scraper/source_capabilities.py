@@ -203,6 +203,8 @@ SOURCE_CAPABILITIES: dict[str, set[SourceCapability]] = {
     "fc2_javbus": {SourceCapability.MOVIE},
     "fc2club": {SourceCapability.MOVIE},
     "fc2ppvdb": {SourceCapability.MOVIE},
+    # 2026-11-06 实测可用：标题/封面/标签/演员/发售日/卖家，不提供剧照与评分
+    "fc2db": {SourceCapability.MOVIE},
     "javbooks": {SourceCapability.MOVIE},   # 已死，仅兜底
     "missav_api": {SourceCapability.MOVIE},
     # fanart：纯图片源（剧照 / logo / thumb），无元数据 ⇒ 只标 GALLERY。

@@ -361,6 +361,13 @@ async def get_source_health(
 
     breakers = get_breaker().snapshot()
 
+    # 2026-11-06：HTML 解析器的「结构改版」信号（进程内计数）。
+    # 与历史成功率互补：成功率低可能只是「该源没收录」，而结构失效意味着
+    # 解析器整体失灵，必须单独可见，否则只会表现为大量静默的空结果。
+    from app.scraper.detail_structure import get_detail_structure_stats
+
+    detail_structure = get_detail_structure_stats()
+
     return {
         "window_hours": hours,
         "module": module,
@@ -371,6 +378,7 @@ async def get_source_health(
         "pruned": pruned,
         "demote_candidates": [r["source"] for r in rows if r["demote"]],
         "circuit_open": breakers,
+        "detail_structure": detail_structure,
     }
 
 

@@ -62,6 +62,15 @@ DISABLED_CRAWLERS: set[str] = {
     # DMM 数据改由 `dmm_web` 走官方现行端点 `api.video.dmm.co.jp/graphql`
     # （需日本出口），已在 app/crawlers/dmm.py 实测打通。
     "dmm",
+    # 🔴 2026-11-06 实测：FC2Club 三个域名都已拿不到影片页，留着只会让
+    #   FC2 刮削每部白跑一轮超时请求（且返回 None 会误触发熔断）。
+    #     fc2club.net  /html/FC2-4573362.html → 302 跳 http://survey-twist.com
+    #                  （广告/调查页，跟随重定向后只有 494B，无 h3 标题）
+    #     fc2club.top  → TLS 连接被重置（curl 55 Send failure）
+    #     fc2club.com  → TLS 连接被重置（curl 56 missing close_notify）
+    #   站点复活后从本集合移除即可，爬虫代码保留（见 app/crawlers/fc2club.py
+    #   与 app/crawlers/md/fc2club.py 的兼容性修复）。
+    "fc2club",
 }
 
 

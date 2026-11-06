@@ -243,6 +243,41 @@ TH101_PATTERN = re.compile(r"TH101-\d{3,}-\d{5,}", re.IGNORECASE)
 # 前导零修正:ssni00644 → ssni-644(mdcx:253)
 LEADING_ZERO_PATTERN = re.compile(r"([A-Z]{2,})00(\d{3})", re.IGNORECASE)
 
+
+def _normalize_padded_catalog_digits(digits: str) -> str:
+    """FANZA/DMM content-ID 的 5 位补零数字段归一为正式番号（至少 3 位）。
+
+    FANZA 的 content_id 形如 ``sone00035``（片商字母 + 5 位数字，前两位是补零），
+    对应正式番号 ``SONE-035``；``ipvr00256`` → ``IPVR-256``。
+
+    🔴 2026-11-06 实测缺陷：不做归一的话，同一目录下
+      ``sone00035.mp4``       -> SONE-00035（_classify_token ⑨ 提前返回）
+      ``sone00035.chs.srt``   -> SONE-035  （走到 1693 行 LEADING_ZERO_PATTERN）
+    同一部片被拆成两个番号 ⇒ 查重、刮削、字幕配对全部错。
+
+    只处理 ``00NNN``（5 位且前两位为 0）这一确定性形态，判据与
+    :data:`LEADING_ZERO_PATTERN` 完全一致；``ABC-1234``、
+    ``FC2-1234567``、``300MIUM-1437`` 等真实长番号不受影响。
+    """
+    if len(digits) == 5 and digits.startswith("00") and digits.isdigit():
+        return str(int(digits)).zfill(3)
+    return digits
+
+
+def _normalize_padded_catalog_number(number: str) -> str:
+    """把 ``PREFIX-00NNN`` / ``PREFIX00NNN`` 形态的 FANZA content-ID 归一。
+
+    供 ``_apply_suffix``（extract_number 的公共出口）与 ``normalize_number``
+    共用，保证「从文件名提取」和「标准化已有番号」两条路径结果一致。
+    """
+    m = re.fullmatch(r"([A-Za-z]{2,})-?(\d{5})([A-Za-z]?)", number)
+    if m and m.group(2).startswith("00"):
+        return (f"{m.group(1).upper()}-"
+                f"{_normalize_padded_catalog_digits(m.group(2))}"
+                f"{m.group(3).upper()}")
+    return number
+
+
 # h_173mega05:FANZA CDN 番号(mdcx:276)
 H_FANZA_PATTERN = re.compile(r"H_\d{3,}([A-Z]{2,})(\d{2,})", re.IGNORECASE)
 
@@ -1313,6 +1348,10 @@ def _apply_suffix(result: NumberResult, bracket_chinese: bool = False) -> Number
         result: NumberResult 提取结果
         bracket_chinese: 是否从方括号中检测到中字标记（v3.0 新增）
     """
+    # 🔴 2026-11-06：FANZA/DMM content-ID 补零归一放在后缀解析**之前**，
+    #   这是 extract_number 绝大多数分支的公共出口，一次覆盖无横线/带横线/
+    #   带分卷等全部形态（详见 _normalize_padded_catalog_digits 的实测说明）。
+    result.number = _normalize_padded_catalog_number(result.number)
     # 🔴 2026-10-22：改用 parse_suffix_full，让 -LTX / -C-LTX 的 is_hd_uncensored
     #   能一路带到 NumberResult（此前只解包 3 元组，LTX 信息在这里被丢掉）。
     base, is_chinese, is_mosaic, is_hd = parse_suffix_full(
@@ -1384,7 +1423,9 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
             re.IGNORECASE,
         )
         if match := jav_suffix_pattern.search(name):
-            base = match.group(1).upper()
+            # 🔴 2026-11-06：本分支直接 return、不经 _apply_suffix，
+            #   必须在这里单独做 FANZA content-ID 补零归一。
+            base = _normalize_padded_catalog_number(match.group(1).upper())
             suffix = re.sub(r"[^A-Za-z]", "", match.group(2)).upper()
             is_chinese, is_mosaic, is_hd = _classify_suffix_full(suffix, bracket_chinese)
             result = NumberResult(
@@ -1407,7 +1448,7 @@ def _try_match_raw_with_suffix(filename: str, bracket_chinese: bool = False) -> 
             prefix = match.group(1).upper()
             digits = match.group(2)
             suffix = re.sub(r"[^A-Za-z]", "", match.group(3)).upper()
-            number = f"{prefix}-{digits}"
+            number = f"{prefix}-{_normalize_padded_catalog_digits(digits)}"
             is_chinese, is_mosaic, is_hd = _classify_suffix_full(suffix, bracket_chinese)
             result = NumberResult(
                 number=number, original=filename, number_type=NumberType.JAV,
@@ -1936,6 +1977,9 @@ def normalize_number(number: str) -> str:
         number = re.sub(r"FC2[-_]?PPV[-_]?", "FC2-", number)
         number = re.sub(r"FC2-+", "FC2-", number)
 
+    # 🔴 2026-11-06：与 extract_number 的归一保持同一口径，避免 DB 里已有
+    #   SONE-00035 与新提取的 SONE-035 被当成两部片（查重键=(番号,分卷)）。
+    number = _normalize_padded_catalog_number(number)
     return number
 
 

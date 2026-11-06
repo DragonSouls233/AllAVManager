@@ -18,6 +18,7 @@ from app.crawlers.base import (
     ScrapeResult,
 )
 from app.crawlers.provider import register_crawler
+from app.scraper.detail_structure import record_detail_check, record_fallback_result
 from app.utils.http_client import AsyncHttpClient
 
 logger = logging.getLogger(__name__)
@@ -82,10 +83,107 @@ class JavDBCrawler(BaseCrawler):
 
         html = Selector(detail_text)
         result = self._parse_detail_page(html, code, url)
+        kind, coverage, missing_anchors, missing_fields = \
+            self._inspect_detail_structure(html, result, code)
+
+        # 🔴 2026-11-06：javDB 改版可观测降级。
+        # 我方主力 scrape() 走官方 App API，HTML 解析只在 scrape_url()（按指定
+        # URL 补刮）使用。一旦站点改掉信息块结构，语义 XPath 会「集体返回空」，
+        # 旧实现静默 return None，日志/指标全无，只能等用户发现字段全空。
+        # 现在：结构失效 → 打 warning + 计数 + 自动改用 App API 按番号重查。
+        if kind == "structure_degraded":
+            logger.warning(
+                "JavDB 详情页结构疑似改版: code=%s url=%s coverage=%d/%d "
+                "missing_anchors=%s missing_fields=%s → 降级到官方 App API",
+                code, url, coverage, len(self._DETAIL_CORE_FIELDS),
+                missing_anchors, missing_fields,
+            )
+            api_result = await self._scrape_via_app_api(code, zone=self._infer_zone(code))
+            fallback_ok = bool(api_result is not None and api_result.is_valid())
+            record_fallback_result(self.name, fallback_ok)
+            if fallback_ok:
+                return api_result
+            logger.warning("JavDB App API 降级未命中: code=%s，保留 HTML 解析结果", code)
+        elif kind == "not_detail_page":
+            # CF 挑战页 / 404 / 列表页：反爬或链接失效，不是结构改版，别混进指标。
+            logger.debug("JavDB 返回非详情页内容: code=%s url=%s", code, url)
+
         if result:
             self.mark_success()
         # 页面正常但解析无结果 = 详情字段不匹配（正常响应），不 mark_error。
         return result
+
+    # 详情页结构锚点：任一信息标签存在即认为「信息块还在」。
+    # 站点改版最典型的表现是整块信息区移位/换标签（ref206 的 nth-of-type 5→4），
+    # 那时这些标签会集体消失。中英双语都列，避免语言切换误报。
+    _DETAIL_INFO_LABELS = (
+        "日期:", "Released Date:", "時長", "Duration:",
+        "片商:", "Maker:", "發行:", "Publisher:",
+        "類別:", "Tags:", "導演:", "Director:",
+    )
+
+    # 用于「字段覆盖度」诊断，只记日志/指标；判定主要看上面的锚点。
+    _DETAIL_CORE_FIELDS = (
+        "original_title", "cover_url", "release_date", "duration",
+        "studio", "maker", "series", "genres", "actors",
+        "directors", "rating", "sample_images",
+    )
+
+    def _inspect_detail_structure(
+        self,
+        html: Selector,
+        result: Optional[ScrapeResult],
+        code: str,
+    ) -> tuple[str, int, list[str], list[str]]:
+        """检查 HTML 结构，返回 (kind, coverage, missing_anchors, missing_fields)。
+
+        kind:
+          ok                 结构正常；
+          structure_degraded 详情页面在、但信息块锚点消失或字段几乎全空；
+          not_detail_page    不是详情页（CF/404/列表页），不算结构改版。
+        """
+        title_block = bool(html.xpath(
+            "//h2[contains(@class,'title') and contains(@class,'is-4')]"
+        ).get())
+        labels = " or ".join(
+            'contains(text(),"%s")' % t for t in self._DETAIL_INFO_LABELS
+        )
+        info_block = bool(html.xpath("//strong[%s]" % labels).get())
+        cover_img = bool(html.xpath(
+            "//img[contains(@class,'video-cover')]"
+        ).get())
+
+        anchors = {
+            "title_block": title_block,
+            "info_block": info_block,
+            "cover_img": cover_img,
+        }
+        missing_anchors = [k for k, v in anchors.items() if not v]
+
+        if result is None:
+            missing_fields = list(self._DETAIL_CORE_FIELDS)
+        else:
+            missing_fields = [
+                f for f in self._DETAIL_CORE_FIELDS
+                if not getattr(result, f, None)
+            ]
+        coverage = len(self._DETAIL_CORE_FIELDS) - len(missing_fields)
+
+        if not title_block:
+            kind = "not_detail_page"
+        elif result is None or not info_block or coverage <= 2:
+            kind = "structure_degraded"
+        else:
+            kind = "ok"
+
+        record_detail_check(
+            self.name,
+            code=code,
+            kind=kind,
+            missing_anchors=missing_anchors,
+            missing_fields=missing_fields,
+        )
+        return kind, coverage, missing_anchors, missing_fields
 
     async def _scrape_via_app_api(self, code: str, zone: Optional[str] = None) -> Optional[ScrapeResult]:
         """通过 JavDB 匿名 App JSON API 刮削（免登录、绕过 Cloudflare）。

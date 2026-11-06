@@ -23,6 +23,9 @@ import sqlite3
 import threading
 from pathlib import Path
 
+# 2026-11-06：只读查询统一走语句级超时（timeout=10 只是锁等待，管不住慢 SQL）。
+from app.utils.sqlite_ro import connect_ro, fetch_all
+
 logger = logging.getLogger(__name__)
 
 _dl_lock = threading.Lock()
@@ -190,11 +193,13 @@ def local_jav_ltx_codes() -> set[str]:
     if not p.exists():
         return set()
     try:
-        c = sqlite3.connect("file:%s?mode=ro" % p.as_posix(), uri=True, timeout=10)
+        c = connect_ro(p)
         try:
-            rows = c.execute(
-                "SELECT code FROM movies WHERE COALESCE(is_hd_uncensored,0)=1"
-            ).fetchall()
+            rows = fetch_all(
+                c,
+                "SELECT code FROM movies WHERE COALESCE(is_hd_uncensored,0)=1",
+                label="ltx:local_jav_ltx_codes",
+            )
             return {str(r[0]).upper() for r in rows if r[0]}
         finally:
             c.close()
@@ -219,11 +224,13 @@ def local_jav_cover_map(codes: set[str]) -> dict[str, Path]:
 
     out: dict[str, Path] = {}
     try:
-        c = sqlite3.connect("file:%s?mode=ro" % p.as_posix(), uri=True, timeout=10)
+        c = connect_ro(p)
         try:
-            rows = c.execute(
-                "SELECT code, cover_url FROM movies WHERE cover_url IS NOT NULL AND cover_url<>''"
-            ).fetchall()
+            rows = fetch_all(
+                c,
+                "SELECT code, cover_url FROM movies WHERE cover_url IS NOT NULL AND cover_url<>''",
+                label="ltx:local_jav_cover_map",
+            )
         finally:
             c.close()
     except Exception:
@@ -259,11 +266,13 @@ def local_jav_id_map(codes: set[str]) -> dict[str, int]:
         return {}
     out: dict[str, int] = {}
     try:
-        c = sqlite3.connect("file:%s?mode=ro" % p.as_posix(), uri=True, timeout=10)
+        c = connect_ro(p)
         try:
-            rows = c.execute(
-                "SELECT id, code FROM movies WHERE COALESCE(is_hd_uncensored,0)=1"
-            ).fetchall()
+            rows = fetch_all(
+                c,
+                "SELECT id, code FROM movies WHERE COALESCE(is_hd_uncensored,0)=1",
+                label="ltx:local_jav_id_map",
+            )
         finally:
             c.close()
     except Exception:

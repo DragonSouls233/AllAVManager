@@ -63,6 +63,18 @@
       </div>
     </el-alert>
 
+    <!-- HTML 解析器结构改版：原来只会表现为「一堆空字段」，现在一眼可见 -->
+    <el-alert
+      v-if="detailStructureAlert"
+      type="warning" show-icon :closable="false" class="breaker-banner"
+      :title="detailStructureAlert.title"
+    >
+      <div class="breaker-list">
+        <div v-for="(line, i) in detailStructureAlert.lines" :key="i" class="breaker-tag">{{ line }}</div>
+        <div class="breaker-tag">若持续出现，说明站点结构已改版，需更新对应爬虫解析器。</div>
+      </div>
+    </el-alert>
+
     <!-- 工具栏 -->
     <el-card class="toolbar-card" shadow="never">
       <div class="toolbar">
@@ -246,6 +258,25 @@ const healthMap = computed(() => {
 const breakerList = computed(() =>
   (health.value.sources || []).filter(s => s.breaker?.open)
 )
+
+// 2026-11-06：HTML 解析器结构改版计数（后端进程内，服务重启清零）。
+// 熔断说明「源被跳过」，结构失效说明「解析器读不出字段」——后者过去完全静默。
+const detailStructureAlert = computed(() => {
+  const d = health.value.detail_structure || {}
+  const bad = Object.entries(d).filter(([, v]) => (v.structure_degraded || 0) > 0)
+  if (!bad.length) return null
+  const total = bad.reduce((n, [, v]) => n + (v.structure_degraded || 0), 0)
+  const fallbackOk = bad.reduce((n, [, v]) => n + (v.fallback_ok || 0), 0)
+  const lines = bad.map(([name, v]) => {
+    const last = v.last || {}
+    const missing = (last.missing_fields || []).slice(0, 6).join('、')
+    return `${name}：${v.structure_degraded} 次结构异常，最近番号 ${last.code || '-'}${missing ? '，缺 ' + missing : ''}`
+  })
+  return {
+    title: `${total} 次详情页结构解析异常（已自动降级到官方接口 ${fallbackOk} 次）`,
+    lines,
+  }
+})
 
 const TIER_LABEL = { primary: '主力', aux: '辅助', jp: '日本', other: '未入序' }
 const TIER_TAG = { primary: 'success', aux: 'warning', jp: 'danger', other: 'info' }

@@ -51,6 +51,10 @@ SCRAPE_PROXY_DOMAINS = [
     "r18.com",
     "fc2.com",
     "fc2cmadb.com",
+    # 🔴 2026-11-06 新增 FC2DB 源：主站 domain 会由 _registered_crawler_domains()
+    #    自动派生，但封面走 img.fc2db.net 子域，这里显式登记主域确保 domain 模式下
+    #    「主站 + 封面 CDN」一起走代理（Xray domain: 规则匹配子域）。
+    "fc2db.net",
     "iqqtv.cloud",
     "iqqtv.co",
     "airav.wiki",

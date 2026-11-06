@@ -16,7 +16,68 @@ from enum import Enum
 
 import httpx
 
+from app import __version__ as MDCX_VERSION
+
 logger = logging.getLogger(__name__)
+
+
+def build_media_browser_auth_header(
+    token: str, *, client: str = "MDCX", device: str = "Server",
+    version: str = MDCX_VERSION,
+) -> str:
+    """Emby / Jellyfin 通用的 ``MediaBrowser`` 鉴权值。
+
+    Version 会显示在 Emby 后台「设备 / 正在播放」里，取项目实际版本，
+    不写死占位值（参考 JavdBviewed ``embyUserAuth.ts``）。
+    """
+    return (f'MediaBrowser Client="{client}", Device="{device}", '
+            f'DeviceId="MDCX", Version="{version}", Token="{token}"')
+
+
+def build_auth_headers(api_key: str, *, json_body: bool = False) -> dict[str, str]:
+    """构造 Emby / Jellyfin 出向请求的统一鉴权头。
+
+    🔴 2026-11-06：Jellyfin 12 起 legacy ``X-Emby-Token`` 默认关闭，
+    只认标准 ``Authorization: MediaBrowser ...``；旧版 Emby 则读
+    ``X-Emby-Authorization``。三个头同发可同时兼容 Emby 3.x/4.x 与
+    Jellyfin 10/12，缺少后两者在 Jellyfin 12 上必然 401。
+
+    ``json_body=True`` 才加 ``Content-Type``：图片上传走二进制 content，
+    加 application/json 会让 Emby 误判请求体格式。
+    """
+    auth = build_media_browser_auth_header(api_key)
+    headers = {
+        "Accept": "application/json",
+        "X-Emby-Token": api_key,
+        "X-Emby-Authorization": auth,
+        "Authorization": auth,
+    }
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def describe_emby_error(exc: Exception) -> str:
+    """把 httpx 异常与 RFC7807 ProblemDetails 拼成可读错误文案。
+
+    Jellyfin 的 400/401 经常只返回 ``{"title": "..."}`` 而没有 ``message``，
+    原先只打 ``str(exc)``（如 "Client error '401 Unauthorized'"）看不出原因。
+    """
+    response = getattr(exc, "response", None)
+    detail = ""
+    if response is not None:
+        try:
+            raw = response.json()
+            if isinstance(raw, dict):
+                detail = str(raw.get("message") or raw.get("Message")
+                             or raw.get("title") or raw.get("Title")
+                             or raw.get("detail") or "")
+        except Exception:
+            try:
+                detail = (response.text or "")[:200]
+            except Exception:
+                detail = ""
+    return f"{exc}" + (f" | 服务端: {detail}" if detail else "")
 
 
 class EmbyItemType(str, Enum):
@@ -74,10 +135,7 @@ class EmbyClient:
         self.config = config
         self.base_url = config.url.rstrip('/')
         self.api_key = config.api_key
-        self.headers = {
-            'X-Emby-Token': self.api_key,
-            'Content-Type': 'application/json',
-        }
+        self.headers = build_auth_headers(self.api_key, json_body=True)
     
     async def _request(
         self,
@@ -119,7 +177,7 @@ class EmbyClient:
                 return None
             
             except httpx.HTTPError as e:
-                logger.error(f"Emby API error: {e}")
+                logger.error(f"Emby API error: {describe_emby_error(e)}")
                 raise
     
     async def get_system_info(self) -> dict:
@@ -398,7 +456,7 @@ class EmbyClient:
                 with open(path, 'rb') as f:
                     response = await client.post(
                         url,
-                        headers={'X-Emby-Token': self.api_key},
+                        headers=build_auth_headers(self.api_key),
                         content=f.read(),
                     )
                     response.raise_for_status()
@@ -406,7 +464,7 @@ class EmbyClient:
                     return True
             
             except Exception as e:
-                logger.error(f"Failed to upload image: {e}")
+                logger.error(f"Failed to upload image: {describe_emby_error(e)}")
                 return False
     
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
@@ -476,14 +534,14 @@ class EmbyClient:
                     # 上传到 Emby
                     response = await client.post(
                         url,
-                        headers={'X-Emby-Token': self.api_key},
+                        headers=build_auth_headers(self.api_key),
                         content=img_response.content,
                     )
                     response.raise_for_status()
                     return True
                 
                 except Exception as e:
-                    logger.error(f"Failed to update person image: {e}")
+                    logger.error(f"Failed to update person image: {describe_emby_error(e)}")
                     return False
         
         elif image_path:
