@@ -45,7 +45,7 @@
             </el-checkbox>
             <br />
             <el-checkbox v-for="opt in fieldGroups.images" :key="opt.value" :value="opt.value" border size="small">
-              <span style="color:#409eff">{{ opt.label }}</span>
+              <span style="color:#5468d4">{{ opt.label }}</span>
             </el-checkbox>
           </el-checkbox-group>
         </el-form-item>
@@ -651,20 +651,20 @@ onMounted(async () => {
 <style scoped>
 .patch { display: flex; flex-direction: column; gap: 16px; }
 .step-card, .content-card { border-radius: 10px; }
-.hint { margin-left: 8px; color: #909399; font-size: 12px; }
-.card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #303133; }
-.detect-result h4, .report h4 { color: #303133; margin: 12px 0; }
-.result-stat { text-align: center; padding: 16px; background: #f5f7fa; border-radius: 8px; }
-.result-num { font-size: 24px; font-weight: 700; color: #303133; }
+.hint { margin-left: 8px; color: var(--text-secondary); font-size: 12px; }
+.card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text-primary); }
+.detect-result h4, .report h4 { color: var(--text-primary); margin: 12px 0; }
+.result-stat { text-align: center; padding: 16px; background: var(--bg-page); border-radius: 8px; }
+.result-num { font-size: 24px; font-weight: 700; color: var(--text-primary); }
 .result-num.success { color: #67c23a; }
 .result-num.warning { color: #e6a23c; }
 .result-num.danger { color: #f56c6c; }
-.result-num.info { color: #909399; }
-.result-label { color: #909399; font-size: 12px; margin-top: 4px; }
+.result-num.info { color: var(--text-secondary); }
+.result-label { color: var(--text-secondary); font-size: 12px; margin-top: 4px; }
 .job-progress { margin-top: 16px; }
-.job-info { display: flex; gap: 16px; margin-top: 10px; color: #606266; font-size: 13px; }
-.to-patch-num { font-weight: 600; color: var(--el-color-primary, #409eff); }
-.muted-num { color: #909399; }
+.job-info { display: flex; gap: 16px; margin-top: 10px; color: var(--text-regular); font-size: 13px; }
+.to-patch-num { font-weight: 600; color: var(--el-color-primary, var(--accent)); }
+.muted-num { color: var(--text-secondary); }
 
 /* 补刮来源：主力 / 备用 分组 */
 .source-pool { display: flex; flex-direction: column; gap: 8px; width: 100%; }
@@ -676,10 +676,10 @@ onMounted(async () => {
   border-radius: 4px;
   font-size: 12px;
   line-height: 18px;
-  color: #909399;
+  color: var(--text-secondary);
   background: #f4f4f5;
 }
-.source-tag.primary { color: #409eff; background: rgba(64, 158, 255, 0.12); font-weight: 600; }
+.source-tag.primary { color: var(--accent); background: rgba(84, 104, 212, 0.12); font-weight: 600; }
 .source-row :deep(.el-checkbox-group) { display: flex; flex-wrap: wrap; gap: 6px 8px; }
 .source-row :deep(.el-checkbox) { margin-right: 0; }
 .source-actions { display: flex; align-items: center; gap: 2px; }

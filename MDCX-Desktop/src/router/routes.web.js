@@ -21,6 +21,18 @@ export const routes = [
         name: 'Home',
         component: () => import('@/views/Home.vue')
       },
+
+      /* ===== 2026-11-01 工具中心（P0-7）· 新增 7 条，旧路由 0 删除（R2） =====
+       * 组页内部一律 <ToolPageShell group-key="…"/>，不含业务逻辑；
+       * 组内工具通过 ?tool= 切换（见 components/shell/ToolPageShell.vue）。
+       */
+      { path: 'tools',           name: 'ToolsHub',      component: () => import('@/views/tools/ToolsHub.vue'),      meta: { title: '工具中心' } },
+      { path: 'tools/scrape',    name: 'ToolsScrape',   component: () => import('@/views/tools/ToolsScrape.vue'),   meta: { title: '工具中心 · 刮削与源' } },
+      { path: 'tools/fix',       name: 'ToolsFix',      component: () => import('@/views/tools/ToolsFix.vue'),      meta: { title: '工具中心 · 补全与对比' } },
+      { path: 'tools/organize',  name: 'ToolsOrganize', component: () => import('@/views/tools/ToolsOrganize.vue'), meta: { title: '工具中心 · 整理与入库' } },
+      { path: 'tools/health',    name: 'ToolsHealth',   component: () => import('@/views/tools/ToolsHealth.vue'),   meta: { title: '工具中心 · 去重与健康' } },
+      { path: 'tools/download',  name: 'ToolsDownload', component: () => import('@/views/tools/ToolsDownload.vue'), meta: { title: '工具中心 · 下载与网盘' } },
+      { path: 'tools/system',    name: 'ToolsSystem',   component: () => import('@/views/tools/ToolsSystem.vue'),   meta: { title: '工具中心 · 系统与代理' } },
       {
         path: 'movies',
         name: 'Movies',
@@ -572,7 +584,8 @@ export const routes = [
       },
       {
         path: 'uncensored',
-        redirect: { name: 'UncensoredScrape' }
+        // 2026-11-01 P0-8：进"无码"模块应先看到影片库，而不是刮削页
+        redirect: '/uncensored/movies'
       },
       {
         path: 'uncensored/compare',
@@ -603,6 +616,23 @@ export const routes = [
         path: 'jav/movies/:id',
         name: 'JavMovieDetail',
         component: () => import('@/views/MovieDetail.vue')
+      },
+      {
+        // 2026-11-02：独立 LTX 影片库（只显 -LTX/-C-LTX 高清无码）。
+        // 复用 jav/Movies.vue，forcedTab 锁定过滤、hideTabs 隐藏筛选 tab 防止切走。
+        path: 'jav/ltx',
+        name: 'JavLtx',
+        component: () => import('@/views/jav/Movies.vue'),
+        props: { forcedTab: 'hd_uncensored', hideTabs: true },
+        meta: { title: 'JAV · LTX 影片库' }
+      },
+      {
+        // 2026-11-06：LTX 补全对比——拉线上 ltx.libray.workers.dev 片单，与本地高清无码
+        // 番号做差，按演员分组，一键复制缺失下载链接（ed2k/磁力）。
+        path: 'jav/ltx-gap',
+        name: 'JavLtxGap',
+        component: () => import('@/views/jav/LtxGap.vue'),
+        meta: { title: 'JAV · LTX 补全' }
       },
       {
         // 2026-10-26：新增 Peach 风浏览页（海报墙 + 悬停预览 + 点击即播），

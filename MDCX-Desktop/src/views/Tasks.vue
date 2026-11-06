@@ -306,11 +306,21 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.tasks { display: flex; flex-direction: column; gap: 16px; }
-.toolbar-card, .table-card, .scheduled-card { border-radius: 10px; }
+/* 分区之间距统一 20px（v6 口径 20–24px） */
+.tasks { display: flex; flex-direction: column; gap: 20px; }
+
+/* ⚠️ 卡片质感（radius / border / shadow）由 src/styles/commercial.css 的 `.el-card`
+   以 `!important` 统一提供。原来这里写 `.toolbar-card, .table-card, .scheduled-card
+   { border-radius: 10px }` —— 无 !important，永远被全局覆盖，属**无效声明**，
+   故移除。要改卡片外观请改全局，不要在这里加。 */
+
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .toolbar-left, .toolbar-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #303133; }
-.text-muted { color: #c0c4cc; }
-.pagination { margin-top: 16px; display: flex; justify-content: center; }
+
+/* 分区标题：16px / 600 / -0.01em */
+.card-title { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
+
+.text-muted { color: var(--text-placeholder); }
+
+.pagination { margin-top: 20px; display: flex; justify-content: center; font-variant-numeric: tabular-nums; }
 </style>

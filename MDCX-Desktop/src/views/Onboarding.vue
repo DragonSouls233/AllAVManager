@@ -12,7 +12,7 @@
         <!-- 步骤 1：欢迎 -->
         <div v-if="activeStep === 0" class="step-panel">
           <div class="welcome-block">
-            <el-icon :size="64" color="#409eff"><VideoCamera /></el-icon>
+            <el-icon :size="64" color="#5468d4"><VideoCamera /></el-icon>
             <h2>欢迎使用 龙魂</h2>
             <p>龙魂视频管理系统配置向导将引导你完成首次设置，整个过程约 2 分钟。</p>
             <ul class="welcome-features">
@@ -291,24 +291,24 @@ onMounted(() => {
 .step-panel h2 {
   margin: 12px 0 4px;
   font-size: 22px;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
 }
 
 .step-panel h3 {
   margin: 0;
   font-size: 16px;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
 }
 
 .step-panel p {
   margin: 0;
   font-size: 13px;
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
   line-height: 1.6;
 }
 
 .step-hint {
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
 }
 
 /* 欢迎页 */
@@ -335,7 +335,7 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
 }
 
 .welcome-features .el-icon {
@@ -349,7 +349,7 @@ onMounted(() => {
 
 .form-tip {
   font-size: 12px;
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(--text-placeholder, var(--text-placeholder));
   margin-top: 4px;
 }
 
@@ -363,7 +363,7 @@ onMounted(() => {
 
 .crawler-count {
   font-size: 12px;
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
 }
 
 .crawler-list {
@@ -413,7 +413,7 @@ onMounted(() => {
   justify-content: space-between;
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid var(--border-light, #ebeef5);
+  border-top: 1px solid var(--border-light, var(--hairline, var(--border-color)));
 }
 
 .step-actions .el-button:last-child {

@@ -311,7 +311,7 @@ onMounted(() => {
 
 .subtitle {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -327,7 +327,7 @@ onMounted(() => {
 .stat-value {
   font-size: 22px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -341,7 +341,7 @@ onMounted(() => {
 .stat-label {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .action-bar {
@@ -356,7 +356,7 @@ onMounted(() => {
 }
 
 .muted {
-  color: #c0c4cc;
+  color: var(--text-placeholder);
 }
 
 .pagination {
@@ -382,7 +382,7 @@ onMounted(() => {
   align-items: center;
   padding: 8px;
   border-radius: 8px;
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light, var(--bg-page));
 }
 
 .recent-cover {
@@ -405,7 +405,7 @@ onMounted(() => {
 
 .recent-cover.placeholder .el-icon {
   font-size: 22px;
-  color: #c0c4cc;
+  color: var(--text-placeholder);
 }
 
 .recent-info {
@@ -414,12 +414,12 @@ onMounted(() => {
 
 .recent-code {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .recent-name {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;

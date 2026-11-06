@@ -606,7 +606,7 @@ onUnmounted(() => {
   justify-content: space-between;
   margin-bottom: 16px;
   padding: 16px 20px;
-  background: linear-gradient(135deg, #ffffff 0%, #f5f7fa 100%);
+  background: linear-gradient(135deg, #ffffff 0%, var(--bg-page) 100%);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
@@ -617,13 +617,13 @@ onUnmounted(() => {
   gap: 8px;
   margin: 0;
   font-size: 20px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .page-subtitle {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .page-header-actions {
@@ -635,7 +635,7 @@ onUnmounted(() => {
 .info-card {
   margin-bottom: 16px;
   border-radius: 8px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
 }
 
 .card-title {
@@ -643,12 +643,12 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
   line-height: 1.5;
 }
@@ -664,18 +664,18 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #f5f7fa;
+  background: var(--bg-page);
   border-radius: 6px;
 }
 
 .info-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .info-value {
   font-size: 13px;
-  color: #303133;
+  color: var(--text-primary);
   font-weight: 500;
   font-family: 'Consolas', 'Monaco', monospace;
 }
@@ -686,7 +686,7 @@ onUnmounted(() => {
 
 .path-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -697,7 +697,7 @@ onUnmounted(() => {
 
 .empty-tip {
   text-align: center;
-  color: #909399;
+  color: var(--text-secondary);
   padding: 24px 0;
   font-size: 13px;
 }
@@ -712,7 +712,7 @@ onUnmounted(() => {
 }
 
 .event-time {
-  color: #909399;
+  color: var(--text-secondary);
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 12px;
   min-width: 100px;

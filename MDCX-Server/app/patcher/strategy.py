@@ -483,6 +483,13 @@ class PatchEngine:
                     result.patched_fields = [f.value for f in plan.fields_to_patch]
                 else:
                     result.failed_fields = [f.value for f in plan.fields_to_patch]
+                    # 🔴 2026-10-31：若本次补刮无结果是因为适用源正在冷却/熔断，
+                    #    则不是真失败——已有封面/数据应被保留，稍后源恢复再补。
+                    #    明确记日志，避免误判为"刮削失败"（Peach cover-source-pause 思路）。
+                    _cool_mod = module or self._detect_module(missing_info)
+                    await self._log_if_sources_cooling(
+                        missing_info.movie_code, _cool_mod
+                    )
             
             # 3. 下载图片（如果需要）
             if plan.need_download_images:
@@ -577,6 +584,39 @@ class PatchEngine:
                 if part == "movies" and i + 1 < len(parts):
                     return parts[i + 1]
         return None
+
+    async def _log_if_sources_cooling(self, code: str, module: Optional[str]) -> None:
+        """补刮无结果时，若适用源正在冷却/熔断，明确记录「保留已有数据」。
+
+        🔴 2026-10-31（Peach cover-source-pause 思路）：
+        一次补刮返回空，可能是因为所有适用源此刻都在熔断/冷却窗口内
+        （而非源真的坏了）。这种情况不应被当成"刮削失败"——库里已有的
+        封面与元数据应被保留，等源恢复（半开探针）后再补。这里只打日志，
+        不改 patch 的状态判定，避免误伤调用方的成功/失败统计。
+        """
+        if not module:
+            return
+        try:
+            from app.crawlers.provider import get_crawlers_for_module
+            from app.scraper.breaker import get_breaker
+
+            crawlers = get_crawlers_for_module(module)
+            breaker = get_breaker()
+            cooling = []
+            for c in crawlers:
+                try:
+                    v = await breaker.check_persisted(c.name)
+                except Exception:  # noqa: BLE001
+                    continue
+                if v.should_skip:
+                    cooling.append(f"{c.name}({v.cooldown:.0f}s)")
+            if cooling:
+                logger.info(
+                    f"补刮 {code} 无结果：适用源正在冷却/熔断 "
+                    f"[{', '.join(cooling)}]，保留已有封面与数据，稍后源恢复再补"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"_log_if_sources_cooling 判定跳过: {e}")
 
     async def _get_video_file_dir(self, missing_info: MissingInfo) -> Optional[Path]:
         """从模块数据库查询 file_path，返回视频文件所在目录。
@@ -898,6 +938,18 @@ class PatchEngine:
 
         async with self.image_processor as proc:
             source = (scraped_data or {}).get("source")
+            # 🔴 2026-10-31：封面源冷却保底（借鉴 Peach cover-source-pause）。
+            #    一次性判定封面来源当前是否处于熔断/冷却中。冷却中的源不要在封面
+            #    下载这一步再去打网络——既浪费已限流的源预算，又可能把已有本地
+            #    封面覆盖成坏图。内存中已 open 的源零成本短路，未命中才查库。
+            source_cooling = 0.0
+            if source:
+                try:
+                    from app.scraper.breaker import get_breaker
+                    _v = await get_breaker().check_persisted(source)
+                    source_cooling = _v.cooldown if _v.should_skip else 0.0
+                except Exception:  # noqa: BLE001
+                    source_cooling = 0.0
             for image_type in remaining:
                 try:
                     # 预览图（extrafanart）：多图，写入 output_dir/extrafanart/
@@ -930,7 +982,21 @@ class PatchEngine:
                     url_key = f"{image_type.value}_url"
                     url = (scraped_data or {}).get(url_key)
                     if not url and missing_info.cover_url_fallback:
-                        if image_type in (ImageType.POSTER, ImageType.COVER):
+                        # 🔴 2026-10-31：缺图时回退到库里已有封面，覆盖整组
+                        #    （poster/cover/thumb/fanart），避免 thumb/fanart 缺图时
+                        #    不留任何占位。此前只回退 POSTER/COVER。
+                        if image_type in (ImageType.POSTER, ImageType.COVER,
+                                          ImageType.THUMB, ImageType.FANART):
+                            url = missing_info.cover_url_fallback
+                    # 🔴 2026-10-31：封面来源正在冷却 ⇒ 保留已有封面，不去打网络。
+                    #    直接回退库里已有封面，稍后源恢复再补（Peach cover-source-pause）。
+                    elif url and source_cooling > 0 and missing_info.cover_url_fallback:
+                        if image_type in (ImageType.POSTER, ImageType.COVER,
+                                          ImageType.THUMB, ImageType.FANART):
+                            logger.info(
+                                f"封面源 {source} 冷却中（剩余 {source_cooling:.0f}s），"
+                                f"保留已有封面，暂不重新下载：{missing_info.movie_code}"
+                            )
                             url = missing_info.cover_url_fallback
                     if not url:
                         continue

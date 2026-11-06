@@ -1,0 +1,210 @@
+/* ============================================================
+   Commercial Design v6 · 全局组件质感层（2026-11-01）
+   目标：从"后台原型"提升到 Stripe / Linear / Vercel 那种
+         "打磨过的商业产品"质感 —— 排版、层级、阴影、控件一致性。
+   加载顺序：index.css → element-overrides.css → tokens.redesign.css → 本文件（最后）
+   只调质感，不改变量语义；所有颜色/阴影走 token，明暗自动适配。
+   ============================================================ */
+
+/* ---------- 排版基底 ---------- */
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "tnum" 1, "cv11" 1;
+}
+
+/* ---------- 区块标题体系（首页/页面通用） ---------- */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+.section-title {
+  margin: 0;
+  font-size: var(--text-h3, 15px);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+.section-title .section-count {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.section-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color var(--dur-fast, 120ms);
+}
+.section-link:hover {
+  color: var(--accent);
+}
+
+/* ---------- 卡片 ---------- */
+.el-card {
+  border: 1px solid var(--hairline, var(--border-color)) !important;
+  border-radius: var(--radius-card, 10px) !important;
+  box-shadow: var(--shadow-card) !important;
+}
+.el-card__header {
+  border-bottom: 1px solid var(--hairline, var(--border-color)) !important;
+  font-weight: 600;
+}
+
+/* ---------- 按钮：更利落、带轻微立体 ---------- */
+.el-button {
+  border-radius: var(--radius-ctl, 8px) !important;
+  font-weight: 500;
+}
+.el-button--primary {
+  box-shadow:
+    0 1px 2px rgba(16, 24, 40, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.el-button--primary:not(.is-disabled):hover {
+  filter: brightness(1.06);
+}
+.el-button--default:not(.is-text):not(.is-link) {
+  background: var(--bg-card);
+}
+
+/* ---------- 输入 / 选择 / 文本域 ---------- */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: var(--radius-ctl, 8px) !important;
+}
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--accent) inset !important;
+}
+
+/* ---------- 标签 ---------- */
+.el-tag {
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+/* ---------- 表格：表头分区、行悬浮 ---------- */
+.el-table {
+  --el-table-border-color: var(--hairline, var(--border-color));
+}
+.el-table th.el-table__cell {
+  background: var(--bg-page) !important;
+  font-weight: 600;
+  color: var(--text-regular) !important;
+}
+.el-table__body tr:hover > td.el-table__cell {
+  background: var(--bg-hover) !important;
+}
+
+/* ---------- 弹层 / 下拉：更柔和的阴影与圆角 ---------- */
+.el-popper,
+.el-dropdown__popper,
+.el-select__popper,
+.el-popover.el-popper {
+  border-radius: 10px !important;
+  box-shadow: var(--shadow-pop) !important;
+}
+
+/* ---------- 分页 ---------- */
+.el-pagination.is-background .el-pager li {
+  border-radius: 6px;
+}
+
+/* ---------- 对话框 ---------- */
+.el-dialog {
+  border-radius: var(--radius-lg, 16px) !important;
+  box-shadow: var(--shadow-pop) !important;
+}
+
+/* ============================================================
+   Commercial v6 · 控件收口（分段筛选 / 空状态 / 提示 / 分页）
+   ============================================================ */
+
+/* 分段控件（el-radio-button）：Linear/Vercel 风 segmented */
+.el-radio-group {
+  background: var(--bg-page);
+  padding: 3px;
+  border-radius: 10px;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.el-radio-group .el-radio-button__inner {
+  border: none !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary);
+  font-weight: 500;
+  padding: 5px 12px;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.el-radio-group .el-radio-button__inner:hover {
+  color: var(--text-primary);
+}
+.el-radio-group .el-radio-button.is-active .el-radio-button__inner,
+.el-radio-group .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.14) !important;
+}
+
+/* 空状态 */
+.el-empty {
+  padding: 34px 0;
+}
+.el-empty__description p {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* 提示条 */
+.el-alert {
+  border-radius: 10px;
+  border: 1px solid var(--hairline, var(--border-color));
+}
+
+/* 全局消息 */
+.el-message {
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+}
+
+/* 分页：更紧凑、激活块圆角 accent */
+.el-pagination {
+  --el-pagination-button-bg-color: transparent;
+  font-variant-numeric: tabular-nums;
+}
+.el-pagination.is-background .el-pager li.is-active {
+  background: var(--accent) !important;
+}
+
+/* 开关：激活轨道 accent */
+.el-switch.is-checked .el-switch__core {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 复选框 / 单选框：accent */
+.el-checkbox__input.is-checked .el-checkbox__inner,
+.el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.el-radio__input.is-checked .el-radio__inner {
+  background: var(--accent);
+  border-color: var(--accent);
+}

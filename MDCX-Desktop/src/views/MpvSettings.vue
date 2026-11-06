@@ -11,7 +11,7 @@
       </template>
 
       <el-alert v-if="!config.mpv_installed" type="warning" :closable="false" style="margin-bottom: 20px">
-        未检测到 mpv，请先安装。<a href="https://mpv.io/installation/" target="_blank" style="color: #409eff">安装指南</a>
+        未检测到 mpv，请先安装。<a href="https://mpv.io/installation/" target="_blank" style="color: #5468d4">安装指南</a>
       </el-alert>
 
       <el-form label-width="120px" style="max-width: 600px">

@@ -526,7 +526,7 @@ onMounted(() => {
 
 .page-subtitle {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .page-header-actions {
@@ -541,13 +541,13 @@ onMounted(() => {
 .summary-card {
   text-align: center;
   padding: 8px 0;
-  border-left: 4px solid #909399;
+  border-left: 4px solid var(--text-secondary);
 }
 
 .summary-card.ok { border-left-color: #67c23a; }
 .summary-card.warning { border-left-color: #e6a23c; }
 .summary-card.failed { border-left-color: #f56c6c; }
-.summary-card.skipped { border-left-color: #909399; }
+.summary-card.skipped { border-left-color: var(--text-secondary); }
 
 .summary-num {
   font-size: 32px;
@@ -558,11 +558,11 @@ onMounted(() => {
 .summary-card.ok .summary-num { color: #67c23a; }
 .summary-card.warning .summary-num { color: #e6a23c; }
 .summary-card.failed .summary-num { color: #f56c6c; }
-.summary-card.skipped .summary-num { color: #909399; }
+.summary-card.skipped .summary-num { color: var(--text-secondary); }
 
 .summary-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -584,7 +584,7 @@ onMounted(() => {
 .diag-time {
   margin-left: auto;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   font-weight: normal;
 }
 
@@ -601,17 +601,17 @@ onMounted(() => {
 .status-ok { color: #67c23a; }
 .status-warning { color: #e6a23c; }
 .status-failed { color: #f56c6c; }
-.status-skipped { color: #909399; }
+.status-skipped { color: var(--text-secondary); }
 
 .diag-duration {
   font-family: 'Consolas', monospace;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .diag-message {
   font-size: 13px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .diag-details {
@@ -626,7 +626,7 @@ onMounted(() => {
 }
 
 .opt-url {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 11px;
   margin-left: 8px;
 }
@@ -654,7 +654,7 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   padding: 6px 0;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--hairline, var(--border-color));
   font-size: 12px;
 }
 
@@ -663,17 +663,17 @@ onMounted(() => {
 }
 
 .site-name {
-  color: #409eff;
+  color: var(--accent);
   font-weight: 600;
 }
 
 .site-url {
-  color: #909399;
+  color: var(--text-secondary);
   text-decoration: none;
 }
 
 .site-url:hover {
-  color: #409eff;
+  color: var(--accent);
   text-decoration: underline;
 }
 

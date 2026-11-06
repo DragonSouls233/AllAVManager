@@ -56,7 +56,7 @@ const titleText = computed(() => props.title || TYPE_META[props.type]?.label || 
   gap: 12px;
   padding: 40px 20px;
   text-align: center;
-  color: var(--text-secondary, #909399);
+  color: var(----text-secondary, #909399);
 }
 
 .empty-state.inline {
@@ -69,13 +69,13 @@ const titleText = computed(() => props.title || TYPE_META[props.type]?.label || 
 }
 
 .empty-icon {
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(----text-placeholder, #c0c4cc);
 }
 
 /* 加载中图标旋转 */
 .type-loading .empty-icon {
   animation: rotating 1.5s linear infinite;
-  color: var(--el-color-primary, #409eff);
+  color: var(----el-color-primary, #5468d4);
 }
 
 /* 错误状态使用危险色 */
@@ -86,7 +86,7 @@ const titleText = computed(() => props.title || TYPE_META[props.type]?.label || 
 .empty-title {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-primary, #303133);
+  color: var(----text-primary, #303133);
 }
 
 .empty-state.inline .empty-title {
@@ -95,7 +95,7 @@ const titleText = computed(() => props.title || TYPE_META[props.type]?.label || 
 
 .empty-desc {
   font-size: 12px;
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(----text-placeholder, #c0c4cc);
   line-height: 1.5;
   max-width: 320px;
 }

@@ -318,7 +318,7 @@ onBeforeUnmount(() => {
 
 .page-subtitle {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: #909399;
 }
 
 .page-header-actions {
@@ -340,7 +340,7 @@ onBeforeUnmount(() => {
 
 .filter-tip {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: #909399;
   margin-left: auto;
 }
 
@@ -377,7 +377,7 @@ onBeforeUnmount(() => {
 .task-count {
   margin-left: auto;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: #909399;
 }
 
 /* 日志流 */
@@ -425,12 +425,12 @@ onBeforeUnmount(() => {
 }
 
 .level-info {
-  color: #409eff;
+  color: var(--accent);
 }
 
 .level-info .log-level {
-  background: rgba(64, 158, 255, 0.2);
-  color: #66b1ff;
+  background: rgba(84, 104, 212, 0.2);
+  color: #7c8af0;
 }
 
 .level-success {

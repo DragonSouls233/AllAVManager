@@ -285,43 +285,43 @@ async function startScan() {
 
 <style scoped>
 .mh-page { max-width: 1200px; margin: 0 auto; }
-.page-header h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
-.page-header .desc { color: #909399; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+.page-header h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); margin-bottom: 6px; }
+.page-header .desc { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
 .toolbar {
   display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 20px; background: #fff; padding: 16px; border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  margin-bottom: 20px; background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color));
+  padding: 16px; border-radius: var(--radius-card, 10px); box-shadow: var(--shadow-kpi);
 }
 .summary, .breakdown {
-  background: #fff; padding: 20px; border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04); margin-bottom: 16px;
+  background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); padding: 20px; border-radius: var(--radius-card, 10px);
+  box-shadow: var(--shadow-kpi); margin-bottom: 16px;
 }
-.bd-card { text-align: center; padding: 12px 8px; border-radius: 8px; border: 1px solid #ebeef5; }
+.bd-card { text-align: center; padding: 12px 8px; border-radius: var(--radius-card, 10px); border: 1px solid var(--hairline, var(--border-color)); }
 .bd-num { font-size: 26px; font-weight: 600; line-height: 1.2; }
-.bd-label { font-size: 13px; color: #606266; margin-top: 2px; }
-.bd-hint { font-size: 11px; color: #909399; margin-top: 6px; line-height: 1.5; }
-.bd-drive .bd-num { color: #e6a23c; }
-.bd-file .bd-num { color: #f56c6c; }
-.bd-probe .bd-num { color: #f56c6c; }
+.bd-label { font-size: 13px; color: var(--text-regular); margin-top: 2px; }
+.bd-hint { font-size: 11px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
+.bd-drive .bd-num { color: var(--warning-color); }
+.bd-file .bd-num { color: var(--danger-color); }
+.bd-probe .bd-num { color: var(--danger-color); }
 .bd-action { margin-top: 8px; }
 .repair-jobs {
-  background: #fff; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); border-radius: var(--radius-card, 10px); padding: 12px 16px; margin-bottom: 16px;
+  box-shadow: var(--shadow-kpi);
 }
 .rj-head {
   display: flex; justify-content: space-between; align-items: center;
-  font-size: 13px; font-weight: 600; color: #606266; margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text-regular); margin-bottom: 8px;
 }
 .rj-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; }
 .rj-item { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .rj-name {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--font-mono, monospace); color: #606266;
+  font-family: var(--font-mono, monospace); color: var(--text-regular);
 }
-.rj-stage { color: #909399; flex: none; }
+.rj-stage { color: var(--text-secondary); flex: none; }
 .ghost-tip { margin-bottom: 16px; }
-.issues { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 0 16px 16px; }
+.issues { background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); border-radius: var(--radius-card, 10px); box-shadow: var(--shadow-kpi); padding: 0 16px 16px; }
 .issue-tabs { margin-top: 8px; }
-.placeholder { background: #fff; border-radius: 8px; padding: 40px 0; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
-.all-ok { background: #fff; border-radius: 8px; padding: 24px 0; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.placeholder { background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); border-radius: var(--radius-card, 10px); padding: 40px 0; box-shadow: var(--shadow-kpi); }
+.all-ok { background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); border-radius: var(--radius-card, 10px); padding: 24px 0; box-shadow: var(--shadow-kpi); }
 </style>

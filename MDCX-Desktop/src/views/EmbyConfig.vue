@@ -520,7 +520,7 @@ onMounted(() => {
   justify-content: space-between;
   margin-bottom: 16px;
   padding: 16px 20px;
-  background: linear-gradient(135deg, #ffffff 0%, #f5f7fa 100%);
+  background: linear-gradient(135deg, #ffffff 0%, var(--bg-page) 100%);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
@@ -531,13 +531,13 @@ onMounted(() => {
   gap: 8px;
   margin: 0;
   font-size: 20px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .page-subtitle {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .page-header-actions {
@@ -549,7 +549,7 @@ onMounted(() => {
 .guide-card {
   margin-bottom: 16px;
   border-radius: 8px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
 }
 
 .card-title {
@@ -557,12 +557,12 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
   line-height: 1.4;
 }
@@ -581,7 +581,7 @@ onMounted(() => {
 
 .guide-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -603,7 +603,7 @@ onMounted(() => {
 }
 
 .client-detail .muted {
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 :deep(.el-collapse-item__header) {

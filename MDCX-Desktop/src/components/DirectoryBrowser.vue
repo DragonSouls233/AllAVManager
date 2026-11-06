@@ -41,7 +41,7 @@
         :class="{ selected: selectedPath === entry.path }"
         @click="onItemClick(entry)"
       >
-        <el-icon v-if="entry.is_drive" :size="20" style="margin-right:8px;color:#409eff;"><Connection /></el-icon>
+        <el-icon v-if="entry.is_drive" :size="20" style="margin-right:8px;color:#5468d4;"><Connection /></el-icon>
         <el-icon v-else :size="20" style="margin-right:8px;color:#e6a23c;"><Folder /></el-icon>
         <span class="item-name">{{ entry.is_drive ? entry.path : entry.name }}</span>
         <el-tag v-if="entry.drive_type" size="small" type="info">{{ entry.drive_type }}</el-tag>

@@ -17,7 +17,7 @@ export const getServerBaseUrl = () => {
 
 export const defaultAvatar = (name = '') => {
   const text = encodeURIComponent((name || '?').slice(0, 1).toUpperCase())
-  return `data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='60' fill='%23409eff'/%3E%3Ctext x='60' y='70' text-anchor='middle' font-size='48' font-family='Arial' fill='white'%3E${text}%3C/text%3E%3C/svg%3E`
+  return `data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='60' fill='%235468d4'/%3E%3Ctext x='60' y='70' text-anchor='middle' font-size='48' font-family='Arial' fill='white'%3E${text}%3C/text%3E%3C/svg%3E`
 }
 
 export const defaultCover = (code = '') => {

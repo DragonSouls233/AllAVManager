@@ -3609,3 +3609,143 @@ async def javdb_top250_cover(url: str = Query(..., description="spfcas 原始封
             "Content-Length": str(len(data)),
         },
     )
+
+
+# ============================================================
+# LTX 线上资源库本地存档（SQLite + 封面文件），防线上库消失
+# ------------------------------------------------------------
+# 目录：<安装根>/ltx_archive（与 data/ 平级的独立新文件夹）
+#   ltx.db            : 一行一条作品（番号/演员/封面/下载链接，code 唯一）
+#   covers/<CODE>.jpg : 封面图片（后台下载）
+# 抓取走内置代理（服务器直连外网受限），由每日定时任务 / 页面按钮触发。
+# ============================================================
+_LTX_REMOTE_URL = "https://ltx.libray.workers.dev/api/items"
+
+
+def _fetch_ltx_catalog_sync() -> dict:
+    """同步抓取线上 LTX 库（走内置代理；服务器直连外网受限，必须带代理）。"""
+    import requests
+
+    from app.services.proxy_manager import get_effective_proxy_url
+
+    proxy = get_effective_proxy_url(url=_LTX_REMOTE_URL)
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    sess = requests.Session()
+    sess.trust_env = False
+    try:
+        r = sess.get(
+            _LTX_REMOTE_URL,
+            timeout=60,
+            verify=False,
+            proxies=proxies,
+            headers={"Accept": "application/json"},
+        )
+        r.raise_for_status()
+        data = r.json()
+    finally:
+        sess.close()
+    if not isinstance(data.get("items"), list):
+        raise RuntimeError("远程返回缺少 items 数组")
+    return data
+
+
+@router.post("/ltx-snapshot/refresh")
+async def refresh_ltx_snapshot():
+    """抓取线上 LTX 库 → 写入 SQLite（增量 upsert + 头像映射）→ 后台下载封面/头像。"""
+    import asyncio as _asyncio
+
+    from app.services import ltx_archive
+
+    try:
+        data = await _asyncio.to_thread(_fetch_ltx_catalog_sync)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="抓取失败: %s" % str(e)[:200])
+
+    n = ltx_archive.upsert_items(data["items"], data.get("updated_at"))
+    ltx_archive.save_avatars(data.get("avatars") or {})
+    started = ltx_archive.start_download()
+    meta = ltx_archive.snapshot_meta()
+    return {
+        "ok": True,
+        "count": n,
+        "saved_at": meta.get("saved_at"),
+        "covers_started": started,
+        "dir": str(ltx_archive.archive_dir()),
+    }
+
+
+@router.get("/ltx-snapshot")
+async def get_ltx_snapshot():
+    """快照元信息（条数/时间）。"""
+    from app.services import ltx_archive
+
+    meta = ltx_archive.snapshot_meta()
+    if not meta.get("count"):
+        raise HTTPException(status_code=404, detail="尚无快照，请先抓取")
+    return meta
+
+
+@router.get("/ltx-gap")
+async def get_ltx_gap():
+    """仅缺失（按演员分组，含封面/链接）。"""
+    import asyncio as _asyncio
+
+    from app.services import ltx_archive
+
+    meta = ltx_archive.snapshot_meta()
+    if not meta.get("count"):
+        raise HTTPException(status_code=404, detail="尚无快照，请先抓取")
+    return await _asyncio.to_thread(ltx_archive.query_gap)
+
+
+@router.get("/ltx-library")
+async def get_ltx_library():
+    """完整镜像：演员列表（头像/线上数/本地有/缺失）。"""
+    import asyncio as _asyncio
+
+    from app.services import ltx_archive
+
+    meta = ltx_archive.snapshot_meta()
+    if not meta.get("count"):
+        raise HTTPException(status_code=404, detail="尚无快照，请先抓取")
+    return await _asyncio.to_thread(ltx_archive.list_actors)
+
+
+@router.get("/ltx-library/actor")
+async def get_ltx_actor(name: str = Query(..., description="演员名")):
+    """某演员名下全部作品（含本地是否已拥有）。"""
+    import asyncio as _asyncio
+
+    from app.services import ltx_archive
+
+    return await _asyncio.to_thread(ltx_archive.actor_items, name)
+
+
+@router.get("/ltx-cover/{code}")
+async def get_ltx_cover(code: str):
+    """返回本地已下载的封面图（按演员文件夹存放）；未下载 → 404。"""
+    from fastapi.responses import FileResponse
+
+    from app.services import ltx_archive
+
+    p = ltx_archive.get_cover_path(code)
+    if p is None:
+        raise HTTPException(status_code=404, detail="无本地封面")
+    return FileResponse(
+        str(p), media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"}
+    )
+
+
+@router.get("/ltx-avatar")
+async def get_ltx_avatar(name: str = Query(..., description="演员名")):
+    """返回本地已下载的演员头像；未下载 → 404。"""
+    from fastapi.responses import FileResponse
+
+    from app.services import ltx_archive
+
+    p = ltx_archive.get_avatar_path(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail="无本地头像")
+    return FileResponse(
+        str(p), media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"}
+    )

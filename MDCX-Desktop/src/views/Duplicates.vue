@@ -232,13 +232,15 @@ async function startScan() {
 }
 
 .page-header h2 {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
   margin-bottom: 6px;
 }
 
 .page-header .desc {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
   margin-bottom: 20px;
 }
@@ -248,17 +250,19 @@ async function startScan() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
-  background: #fff;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
   padding: 16px;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  border-radius: var(--radius-card, 10px);
+  box-shadow: var(--shadow-kpi);
 }
 
 .summary {
-  background: #fff;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
   padding: 20px;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  border-radius: var(--radius-card, 10px);
+  box-shadow: var(--shadow-kpi);
   margin-bottom: 20px;
 }
 
@@ -273,6 +277,8 @@ async function startScan() {
 .content-groups h3 {
   font-size: 16px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
   margin-bottom: 6px;
   display: flex;
   align-items: center;
@@ -280,16 +286,16 @@ async function startScan() {
 }
 
 .content-groups .desc {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
   margin-bottom: 16px;
 }
 
 .cat-block {
   margin-bottom: 12px;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--hairline, var(--border-color));
+  border-radius: var(--radius-card, 10px);
+  background: var(--bg-card);
 }
 
 .cat-title {
@@ -300,12 +306,12 @@ async function startScan() {
 }
 
 .cat-count {
-  color: #606266;
+  color: var(--text-regular);
   font-size: 14px;
 }
 
 .cat-waste {
-  color: #e6a23c;
+  color: var(--warning-color);
   font-size: 13px;
   margin-left: auto;
   margin-right: 20px;
@@ -313,7 +319,7 @@ async function startScan() {
 
 .code-block {
   margin: 4px 16px 4px 0;
-  border-left: 3px solid #e6a23c;
+  border-left: 3px solid var(--warning-color);
 }
 
 .code-title {
@@ -327,11 +333,11 @@ async function startScan() {
   font-weight: 600;
   font-family: monospace;
   font-size: 14px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .code-waste {
-  color: #e6a23c;
+  color: var(--warning-color);
   font-size: 13px;
   margin-left: auto;
   margin-right: 20px;

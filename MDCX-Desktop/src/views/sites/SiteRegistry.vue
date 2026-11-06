@@ -140,6 +140,6 @@ onMounted(loadSites)
 .site-registry { padding: 20px; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
 .toolbar h2 { margin: 0; font-size: 18px; }
-.site-link { color: #409eff; text-decoration: none; }
+.site-link { color: var(--accent); text-decoration: none; }
 .site-link:hover { text-decoration: underline; }
 </style>

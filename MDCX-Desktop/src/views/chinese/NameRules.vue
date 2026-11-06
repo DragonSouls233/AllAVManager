@@ -209,7 +209,7 @@ onMounted(loadRules)
 }
 .clean-result {
   padding: 12px;
-  background: #f5f7fa;
+  background: var(--bg-page);
   border-radius: 6px;
   line-height: 1.8;
 }

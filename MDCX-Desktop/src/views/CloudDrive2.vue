@@ -251,7 +251,7 @@
           ref="artplayerComp"
           :url="playingUrl"
           :autoplay="true"
-          theme="#409eff"
+          theme="#5468d4"
           @screenshot="onScreenshot"
         />
         <el-input v-model="playingUrl" readonly style="margin-top: 12px">

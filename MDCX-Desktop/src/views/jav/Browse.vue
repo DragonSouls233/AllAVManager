@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
   transform: scale(1);
 }
 .cover-play:hover {
-  background: var(--el-color-primary, #409eff);
+  background: var(--el-color-primary, var(--accent));
 }
 
 /* 常驻元信息（data-media-meta） */

@@ -410,7 +410,7 @@ onMounted(async () => {
   justify-content: space-between;
   margin-bottom: 16px;
   padding: 16px 20px;
-  background: linear-gradient(135deg, #ffffff 0%, #f5f7fa 100%);
+  background: linear-gradient(135deg, #ffffff 0%, var(--bg-page) 100%);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
@@ -421,13 +421,13 @@ onMounted(async () => {
   gap: 8px;
   margin: 0;
   font-size: 20px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .page-subtitle {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .header-actions {
@@ -445,7 +445,7 @@ onMounted(async () => {
 .nav-card,
 .form-card {
   border-radius: 8px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
   height: 100%;
 }
 
@@ -464,7 +464,7 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .nav-tree {
@@ -519,7 +519,7 @@ onMounted(async () => {
 }
 
 :deep(.el-tree-node.is-current > .el-tree-node__content) {
-  background-color: #ecf5ff;
-  color: #409eff;
+  background-color: #eceefb;
+  color: var(--accent);
 }
 </style>

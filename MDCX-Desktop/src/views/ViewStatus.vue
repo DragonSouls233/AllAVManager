@@ -197,10 +197,10 @@ onMounted(loadAll)
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; color: white;
 }
-.stat-browsed .stat-icon { background: linear-gradient(135deg, #909399, #c0c4cc); }
+.stat-browsed .stat-icon { background: linear-gradient(135deg, var(--text-secondary), var(--text-placeholder)); }
 .stat-watched .stat-icon { background: linear-gradient(135deg, #67c23a, #95d475); }
 .stat-wanted .stat-icon { background: linear-gradient(135deg, #e6a23c, #f3d19e); }
-.stat-unmarked .stat-icon { background: linear-gradient(135deg, #dcdfe6, #e4e7ed); color: #909399; }
+.stat-unmarked .stat-icon { background: linear-gradient(135deg, #dcdfe6, var(--hairline, var(--border-color))); color: var(--text-secondary); }
 .stat-label { color: var(--el-text-color-secondary); font-size: 13px; }
 .stat-value { font-size: 28px; font-weight: 600; }
 .filter-card { margin-bottom: 16px; }
@@ -208,11 +208,11 @@ onMounted(loadAll)
 .no-cover {
   width: 50px; height: 70px;
   display: flex; align-items: center; justify-content: center;
-  background: #f5f7fa; color: #c0c4cc; font-size: 11px;
+  background: var(--bg-page); color: var(--text-placeholder); font-size: 11px;
   border-radius: 4px;
 }
 .batch-bar {
-  margin-top: 12px; padding: 12px; background: #f5f7fa;
+  margin-top: 12px; padding: 12px; background: var(--bg-page);
   border-radius: 6px; display: flex; gap: 8px; align-items: center;
 }
 </style>

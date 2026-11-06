@@ -23,7 +23,7 @@ defineProps({
 <style scoped>
 .base-card {
   background: var(--bg-card, #fff);
-  border: 1px solid var(--border-color, #ebeef5);
+  border: 1px solid var(----border-color, #ebeef5);
   border-radius: var(--radius-lg, 12px);
   transition: box-shadow var(--transition-base, 0.25s);
 }
@@ -34,6 +34,6 @@ defineProps({
   justify-content: space-between;
   margin-bottom: 12px;
 }
-.base-card__title { font-size: 16px; font-weight: 600; color: var(--text-primary, #303133); }
+.base-card__title { font-size: 16px; font-weight: 600; color: var(----text-primary, #303133); }
 .base-card__body { width: 100%; }
 </style>

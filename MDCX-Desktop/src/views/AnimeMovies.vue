@@ -335,7 +335,7 @@ onUnmounted(() => { if (dirPolling.value) clearInterval(dirPolling.value) })
 .dp-stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; color: var(--el-text-color-secondary); }
 .dp-stats .ok { color: #67c23a; }
 .dp-stats .fail { color: #f56c6c; }
-.dp-stats .skip { color: #909399; }
+.dp-stats .skip { color: var(--text-secondary); }
 .dp-current { margin-top: 8px; color: #e6a23c; }
 .dp-errors { margin-top: 8px; color: #f56c6c; }
 .dp-errors .err { font-size: 12px; word-break: break-all; }

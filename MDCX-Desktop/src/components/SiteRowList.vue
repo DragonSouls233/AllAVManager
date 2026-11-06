@@ -75,17 +75,17 @@ function pingText(r) {
 .site-list-inner { margin:-8px; }
 .site-row { display:grid; grid-template-columns:80px 1fr 200px 100px; gap:12px; align-items:center; padding:10px 12px; border-bottom:1px solid #f0f2f5; background:#fff; transition:background .15s; }
 .site-row:last-child { border-bottom:none; }
-.site-row:hover { background:#f5f7fa; }
+.site-row:hover { background:var(--bg-page); }
 .site-row.row-disabled { opacity:.55; background:#fafafa; }
 .row-priority { text-align:center; }
 .row-info { min-width:0; }
 .row-name { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
-.name-text { font-weight:600; font-size:14px; color:#303133; }
+.name-text { font-weight:600; font-size:14px; color:var(--text-primary); }
 .row-url { font-size:12px; margin-bottom:4px; }
-.row-meta { display:flex; flex-wrap:wrap; gap:12px; font-size:11px; color:#909399; }
+.row-meta { display:flex; flex-wrap:wrap; gap:12px; font-size:11px; color:var(--text-secondary); }
 .row-ping { font-size:12px; }
 .ping-row { display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px; }
-.ping-label { color:#909399; font-size:11px; }
-.ping-empty { color:#c0c4cc; font-size:11px; }
+.ping-label { color:var(--text-secondary); font-size:11px; }
+.ping-empty { color:var(--text-placeholder); font-size:11px; }
 .row-actions { display:flex; align-items:center; gap:8px; justify-content:flex-end; }
 </style>

@@ -189,19 +189,59 @@ watch(() => route.params.id, (newId) => loadActorData(Number(newId)))
 </script>
 
 <style scoped>
-.actor-detail { padding: 20px; }
+/* 根节点留白由 AdminLayout 的 `.main-content > *`（--content-pad）统一提供，
+   这里不再自加 padding，否则会与父级叠加（与 views/ActorDetail.vue 根节点一致）。 */
+.actor-detail { min-width: 0; }
+
 .actor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.aliases-section { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; }
-.aliases-label { color: var(--text-secondary, #6b7280); font-size: 12px; }
-.info-section { flex: 1; }
+
+.aliases-section { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 12px; }
+.aliases-label { color: var(--text-secondary); font-size: 12px; letter-spacing: 0.02em; }
+
+.info-section { flex: 1; min-width: 0; }
+
+/* 区块标题：16px/600 + 1px hairline 分隔（对齐 MovieDetail 的 .sec-title） */
 .bio-section { margin-bottom: 16px; }
-.bio-section h3 { font-size: 14px; margin-bottom: 8px; }
-.bio-section p { line-height: 1.6; color: #666; font-size: 13px; }
-.aliases-section { margin-top: 12px; }
-.aliases-section h4 { font-size: 13px; margin-bottom: 6px; color: #666; }
-.movies-section h3 { font-size: 16px; margin-bottom: 12px; }
+.bio-section h3,
+.movies-section h3 {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--hairline, var(--border-color));
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.bio-section p { line-height: 1.7; color: var(--text-secondary); font-size: 13px; }
+
 .movies-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
-.movie-card { cursor: pointer; border: 1px solid #eee; border-radius: 6px; overflow: hidden; }
-.movie-card img { width: 100%; aspect-ratio: 3/4; object-fit: cover; }
-.movie-title { padding: 6px; font-size: 12px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.movie-card {
+  cursor: pointer;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
+  box-shadow: var(--shadow-kpi);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
+}
+.movie-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-pop);
+  border-color: var(--card-border-hover);
+}
+.movie-card img { width: 100%; aspect-ratio: 3/4; object-fit: cover; display: block; }
+
+.movie-title {
+  padding: 6px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-regular);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

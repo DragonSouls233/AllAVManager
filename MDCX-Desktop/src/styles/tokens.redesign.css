@@ -1,0 +1,103 @@
+/* ============================================================
+   MDCX · Phase 1 重构 token 增补（2026-11-01）
+   只新增变量，不改 --radius-sm/md/lg、不改 --bg-* / --text-*、不改 index.css。
+   加载顺序：index.css → element-overrides.css → 本文件（最后，可覆盖个别旧值）。
+   —— 依据 docs/redesign/ARCH-phase1.md §12
+   ============================================================ */
+:root {
+  /* —— PRD §8.6 布局与容器 —— */
+  --sidebar-w:           240px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h:            64px;
+  --content-max:         1440px;
+  --content-pad:         24px;
+  --content-pad-lg:      32px;
+  --statusbar-h:         0px;           /* P0-4：状态栏移除，留位以便将来复用 */
+
+  /* —— 侧栏底色（Q1 决策：浅色 + 1px 右边框，无渐变） —— */
+  --sidebar-bg:          #FBFBFC;
+
+  /* —— PRD §8.3 圆角（新增档位；不复用 --radius-md，它是 12px） —— */
+  --radius-card:         10px;          /* 所有内容卡 / KPI 卡 / 工具卡 */
+  --radius-ctl:          8px;           /* 新外壳的按钮 / 输入框 / 菜单项 / pill */
+
+  /* —— 侧栏行高 —— */
+  --nav-item-h:          36px;
+  --nav-subitem-h:       32px;
+  --nav-indent:          32px;
+
+  /* —— PRD §8.5 交互态 —— */
+  --hover-layer:         rgba(15, 18, 26, 0.04);
+  --active-layer:        rgba(15, 18, 26, 0.07);
+  --focus-ring:          0 0 0 2px var(--bg-card),
+                         0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
+  --dur-fast:            120ms;         /* hover / 图标变色 */
+  --dur-base:            200ms;         /* 展开折叠 / 页面切换 */
+  --ease-out-nav:        cubic-bezier(0.16, 1, 0.3, 1);   /* 不改 --ease-out（已存在） */
+
+  /* —— 卡片边框 hover（PRD §8.4：只改边框色，不动位移/阴影） —— */
+  --card-border-hover:   color-mix(in srgb, var(--accent) 28%, var(--border-color));
+}
+
+html.dark {
+  --sidebar-bg:   #0F1115;
+  --hover-layer:  rgba(255, 255, 255, 0.06);
+  --active-layer: rgba(255, 255, 255, 0.09);
+}
+
+/* PRD §8.6：≥1600px 只放大内边距，不改列数 */
+@media (min-width: 1600px) {
+  :root { --content-pad: var(--content-pad-lg); }
+}
+
+/* ============================================================
+   Commercial Design v6 增补（2026-11-01）
+   排版层级 / 分层阴影 / 区块标题 —— 提升"商业产品"质感
+   ============================================================ */
+:root {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --text-h1: 26px;
+  --text-h2: 18px;
+  --text-h3: 15px;
+  --lh-tight: 1.25;
+  --lh-normal: 1.55;
+  --tracking-tight: -0.012em;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow-kpi:  0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-pop:  0 10px 28px -10px rgba(16, 24, 40, 0.20), 0 2px 8px rgba(16, 24, 40, 0.06);
+  --surface-tint: color-mix(in srgb, var(--accent) 5%, var(--bg-card));
+  --hairline: color-mix(in srgb, var(--border-color) 82%, transparent);
+}
+
+html.dark {
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.24);
+  --shadow-kpi:  0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-pop:  0 12px 32px -12px rgba(0, 0, 0, 0.60), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --surface-tint: color-mix(in srgb, var(--accent) 12%, var(--bg-card));
+}
+
+/* ============================================================
+   内容区留白：单一来源
+   ------------------------------------------------------------
+   问题：AdminLayout 的 .main-content 给 24px，PageShell 再给 20px → 44px。
+   解法：.main-content padding 归零；由「页面根容器」唯一提供一次留白。
+   - 用 `:not(.page-shell)` 把根节点是 PageShell 的页面排除在外，由它自己给
+     （PageShell 已同步改成 var(--content-pad)），两边都恰好 24px，不会叠。
+   - max-width + margin-inline:auto 统一居中到 --content-max（1440px）。
+   - 页面若在根节点自带 padding，其组件样式优先级更高会覆盖本规则，同样不会叠。
+   ============================================================ */
+.main-content {
+  padding: 0;
+}
+
+.main-content > * {
+  max-width: var(--content-max, 1440px);
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
+.main-content > *:not(.page-shell) {
+  padding: var(--content-pad, 24px);
+}

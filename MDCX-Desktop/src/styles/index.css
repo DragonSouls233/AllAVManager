@@ -4,8 +4,8 @@
 
 :root {
   /* 主题色（向后兼容,等价于 --color-primary-500） */
-  --primary-color: #409eff;
-  --primary-light: #66b1ff;
+  --primary-color: #5468d4;
+  --primary-light: #7c8af0;
   --primary-dark: #337ecc;
   --success-color: #67c23a;
   --warning-color: #e6a23c;
@@ -13,8 +13,8 @@
   --info-color: #909399;
 
   /* 品牌渐变 */
-  --brand-gradient: linear-gradient(135deg, #409eff 0%, #6a5acd 100%);
-  --brand-gradient-soft: linear-gradient(135deg, rgba(64, 158, 255, 0.1) 0%, rgba(106, 90, 205, 0.1) 100%);
+  --brand-gradient: linear-gradient(135deg, #5468d4 0%, #8b7fd6 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(84, 104, 212, 0.1) 0%, rgba(106, 90, 205, 0.1) 100%);
 
   /* 中性色（WCAG AA: --text-secondary 调整为 #6c717a,对比度 ≥ 4.5:1） */
   --text-primary: #303133;
@@ -204,16 +204,16 @@
 
 /* ===== 暗黑模式 ===== */
 html.dark {
-  --primary-color: #409eff;
-  --primary-light: #66b1ff;
+  --primary-color: #5468d4;
+  --primary-light: #7c8af0;
   --primary-dark: #337ecc;
   --success-color: #67c23a;
   --warning-color: #e6a23c;
   --danger-color: #f56c6c;
   --info-color: #73767a;
 
-  --brand-gradient: linear-gradient(135deg, #409eff 0%, #6a5acd 100%);
-  --brand-gradient-soft: linear-gradient(135deg, rgba(64, 158, 255, 0.18) 0%, rgba(106, 90, 205, 0.18) 100%);
+  --brand-gradient: linear-gradient(135deg, #5468d4 0%, #8b7fd6 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(84, 104, 212, 0.18) 0%, rgba(106, 90, 205, 0.18) 100%);
 
   --text-primary: #E5EAF3;
   --text-regular: #CFD3DC;
@@ -719,8 +719,8 @@ html.dark .el-button--default:hover {
 }
 
 html.dark .el-tag {
-  background: rgba(64, 158, 255, 0.12);
-  border-color: rgba(64, 158, 255, 0.3);
+  background: rgba(84, 104, 212, 0.12);
+  border-color: rgba(84, 104, 212, 0.3);
   color: var(--primary-light);
 }
 
@@ -953,7 +953,7 @@ html[data-nsfw="off"][data-nsfw-hide-avatar="1"] .actor-hero-avatar::after {
   --z-tooltip: 1060;
 
   /* 焦点 */
-  --focus-ring: 0 0 0 2px var(--primary-color, #409eff);
+  --focus-ring: 0 0 0 2px var(--primary-color, #5468d4);
 }
 
 html.dark {
@@ -1061,3 +1061,108 @@ textarea:focus-visible,
 .skip-link:focus {
   left: 0;
 }
+
+/* ============================================
+   v5.0 · Peach 设计系统覆盖层（2026-11-01）
+   设计目标：中性灰阶打底 + 极淡强调 + 分层阴影 + 悬停光晕
+   —— 作为全站唯一权威 token 来源，覆盖上方所有旧值（后定义胜出）。
+   参考：ref240-peach 的 neutral 色板 / elevation 阴影 / hover 光晕 / 玻璃拟态。
+   ============================================ */
+:root {
+  /* —— 中性色板（Peach 风：灰阶打底，内容优先）—— */
+  --bg-page:     #f6f7f9;
+  --bg-card:     #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-hover:    #eef0f3;
+  --text-primary:    #1b1e24;
+  --text-regular:    #3d4450;
+  --text-secondary:  #6b7280;
+  --text-placeholder: #9aa1ad;
+  --border-color:  #e5e7ec;
+  --border-light:  #f1f2f5;
+
+  /* —— 极淡强调色：镜像运行时主题主色（themes.js 内联注入 --primary-color），可随换肤驱动 —— */
+  --accent:       var(--primary-color);
+  --accent-soft:  color-mix(in srgb, var(--primary-color) 72%, #ffffff);
+  --accent-deep:  color-mix(in srgb, var(--primary-color) 82%, #000000);
+  /* primary / light / dark 由运行时 themes.js 内联注入（优先级高于样式表），此处不重复定义 */
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --danger-color:  #ef4444;
+  --info-color:    #6b7280;
+
+  /* —— 圆角（更柔和）—— */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --surface-radius: 14px;     /* 封面/卡片圆角 */
+  --badge-radius: 10px;
+  --control-radius: 10px;
+  --pill-radius: 9999px;
+
+  /* —— 分层阴影（亮色轻、暗色靠边；取自 Peach elevation）—— */
+  --shadow-xs: 0 1px 2px 0 rgb(17 24 39 / 0.05);
+  --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06), 0 1px 3px 0 rgb(17 24 39 / 0.10);
+  --shadow-md: 0 2px 4px -1px rgb(17 24 39 / 0.06), 0 4px 6px -1px rgb(17 24 39 / 0.10);
+  --shadow-lg: 0 4px 6px -2px rgb(17 24 39 / 0.05), 0 10px 15px -3px rgb(17 24 39 / 0.10);
+  --shadow-hover: 0 8px 24px -6px rgb(17 24 39 / 0.18);
+  --shadow-xl: 0 20px 25px -5px rgb(17 24 39 / 0.10);
+
+  /* —— 悬停光晕表面（卡片 hover 向卡外铺 8px，不挤动邻卡）—— */
+  --hover-surface: #eef0f3;
+
+  /* —— 玻璃拟态（徽章 / 悬浮按钮）—— */
+  --glass-bg: rgba(255, 255, 255, 0.66);
+  --glass-border: rgba(255, 255, 255, 0.55);
+  --glass-blur: 14px;
+  --glass-saturate: 160%;
+  --glass-shadow: 0 1px 2px rgb(17 24 39 / 0.18);
+  --glass-rim: rgba(255, 255, 255, 0.6);
+
+  /* —— 品牌渐变（保留但收敛）—— */
+  --brand-gradient: linear-gradient(135deg, var(--accent) 0%, #8b7fd6 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(84,104,212,0.10) 0%, rgba(139,127,214,0.10) 100%);
+}
+
+html.dark {
+  /* —— 暗色中性色板（卡片靠填充区分层级，阴影只收边）—— */
+  --bg-page:     #0e1116;
+  --bg-card:     #161a21;
+  --bg-elevated: #1c212b;
+  --bg-hover:    #232a36;
+  --text-primary:    #e9ebef;
+  --text-regular:    #c4c9d2;
+  --text-secondary:  #8b93a1;
+  --text-placeholder: #5b6472;
+  --border-color:  #272d3a;
+  --border-light:  #1b2029;
+
+  --accent:      var(--primary-color);
+  --accent-soft: color-mix(in srgb, var(--primary-color) 72%, #ffffff);
+  --accent-deep: color-mix(in srgb, var(--primary-color) 82%, #000000);
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --danger-color:  #ef4444;
+  --info-color:    #8b93a1;
+
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.20);
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.22), 0 1px 3px 0 rgb(0 0 0 / 0.28);
+  --shadow-md: 0 2px 4px -1px rgb(0 0 0 / 0.18), 0 4px 6px -1px rgb(0 0 0 / 0.26);
+  --shadow-lg: 0 4px 6px -2px rgb(0 0 0 / 0.16), 0 10px 15px -3px rgb(0 0 0 / 0.28);
+  --shadow-hover: 0 10px 30px -8px rgb(0 0 0 / 0.55);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.40);
+
+  --hover-surface: #20262f;
+  --glass-bg: rgba(22, 26, 33, 0.60);
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --glass-rim: rgba(255, 255, 255, 0.12);
+  --brand-gradient: linear-gradient(135deg, var(--accent) 0%, #8b7fd6 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(124,138,240,0.16) 0%, rgba(139,127,214,0.16) 100%);
+}
+
+/* —— 修正旧暗色硬编码（#1a1a2e / #181C26 等）跟随新中性系统 —— */
+html.dark .el-menu { background: var(--bg-card) !important; }
+html.dark .el-menu-item { color: var(--text-regular); }
+html.dark .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell { background: var(--bg-hover); }
+html.dark .el-table__body tr:hover > td.el-table__cell { background: var(--bg-hover) !important; }

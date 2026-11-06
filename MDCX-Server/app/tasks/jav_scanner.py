@@ -268,6 +268,21 @@ class JavScanner(BaseScanner):
                 if m.code
             }
             chinese_selfheal_ids: list[int] = []
+            # 存量 is_hd_uncensored 自愈：文件名含 LTX 但库里还不是 True 的行（code→id）。
+            # 旧版扫描器入库时漏传该字段（只传了 is_uncensored），存量 LTX 片全是
+            # 「无码但非高清无码」；与新行入库同理，靠每次全量扫描重扫自愈。
+            hd_missing_by_code: dict[str, int] = {
+                m.code: m.id
+                for m in (
+                    await session.execute(
+                        select(JavMovie.id, JavMovie.code).where(
+                            JavMovie.is_hd_uncensored.isnot(True)
+                        )
+                    )
+                ).all()
+                if m.code
+            }
+            hd_selfheal_ids: list[int] = []
             # file_path 为空的存量行（code→id）。缺口补全/批量刮削的 persist() 会建
             # file_path=NULL 的影片行（视频可能不在盘上，也可能后来才出现），而下面
             # known 分支只查 pending 且从不写 file_path ⇒ 这些行永远停在「没视频路径」。
@@ -366,6 +381,9 @@ class JavScanner(BaseScanner):
                             chinese_selfheal_ids.append(
                                 chinese_missing_by_code[code]
                             )
+                        # 存量自愈：文件名含 LTX（-LTX / -C-LTX）而库里还没标高清明码。
+                        if code in hd_missing_by_code and "ltx" in file_name.lower():
+                            hd_selfheal_ids.append(hd_missing_by_code[code])
                         continue
                     existing_codes.add(code)
 
@@ -443,6 +461,7 @@ class JavScanner(BaseScanner):
                         cover_url=cover_url,
                         is_chinese=is_chinese,
                         is_uncensored=is_uncensored,
+                        is_hd_uncensored=flags["is_hd_uncensored"],
                         is_mosaic=not is_uncensored,
                         is_leak=flags["is_leak"],
                         is_4k=flags["is_4k"],
@@ -517,6 +536,33 @@ class JavScanner(BaseScanner):
                     )
                 except Exception as e:
                     logger.warning("[jav] 存量 is_chinese 自愈失败: %s", e)
+            # 存量 is_hd_uncensored 自愈落库：盘上有 LTX 文件但库里没标高清明码。
+            # 同时补 is_uncensored / is_mosaic，与 detect_version_flags 口径一致。
+            if hd_selfheal_ids:
+                try:
+                    from sqlalchemy import update as _update
+
+                    for i in range(0, len(hd_selfheal_ids), 500):
+                        await session.execute(
+                            _update(JavMovie)
+                            .where(
+                                JavMovie.id.in_(hd_selfheal_ids[i : i + 500])
+                            )
+                            .values(
+                                is_hd_uncensored=True,
+                                is_uncensored=True,
+                                is_mosaic=False,
+                            )
+                        )
+                    await session.commit()
+                    logger.info(
+                        "[jav] 存量 is_hd_uncensored 自愈: %d 部（LTX 文件）",
+                        len(hd_selfheal_ids),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[jav] 存量 is_hd_uncensored 自愈失败: %s", e
+                    )
             # 存量 file_path 补链落库。与自愈同理独立提交：UNIQUE 重试路径会
             # rollback，不能把补链 UPDATE 卷进去；单表 UPDATE 无唯一约束风险。
             if fp_link_updates:

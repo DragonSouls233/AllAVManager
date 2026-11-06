@@ -193,7 +193,7 @@ onMounted(loadAll)
 <style scoped>
 .queue-page { padding: 16px; }
 .page-desc { color: var(--el-text-color-secondary); margin-bottom: 16px; }
-.page-desc code { background: #f5f7fa; padding: 1px 5px; border-radius: 3px; }
+.page-desc code { background: var(--bg-page); padding: 1px 5px; border-radius: 3px; }
 .stats-row { margin-bottom: 16px; }
 .stat-content { display: flex; align-items: center; gap: 16px; }
 .stat-icon {
@@ -201,7 +201,7 @@ onMounted(loadAll)
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; color: white;
 }
-.stat-unseen .stat-icon { background: linear-gradient(135deg, #409eff, #79bbff); }
+.stat-unseen .stat-icon { background: linear-gradient(135deg, var(--accent), #9aa6f2); }
 .stat-later .stat-icon { background: linear-gradient(135deg, #e6a23c, #f3d19e); }
 .stat-flagged .stat-icon { background: linear-gradient(135deg, #f56c6c, #fab6b6); }
 .stat-label { color: var(--el-text-color-secondary); font-size: 13px; }
@@ -213,11 +213,11 @@ onMounted(loadAll)
   min-height: 120px;
 }
 .movie-card-item { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; overflow: hidden; }
-.cover { position: relative; aspect-ratio: 2 / 3; background: #f5f7fa; cursor: pointer; }
+.cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-page); cursor: pointer; }
 .cover-img { width: 100%; height: 100%; }
 .no-cover {
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
-  color: #c0c4cc; font-size: 12px;
+  color: var(--text-placeholder); font-size: 12px;
 }
 .module-tag { position: absolute; left: 6px; top: 6px; }
 .meta { padding: 8px; }

@@ -245,7 +245,7 @@ onMounted(loadList)
 <style scoped>
 .wants-page { max-width: 1200px; margin: 0 auto; }
 .page-header h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
-.page-header .desc { color: #909399; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+.page-header .desc { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
 .add-card { margin-bottom: 16px; }
 .toolbar {
   display: flex; justify-content: space-between; align-items: center;
@@ -253,5 +253,5 @@ onMounted(loadList)
 }
 .list-card { min-height: 300px; }
 .code { font-family: var(--font-mono, monospace); font-size: 12px; font-weight: 500; }
-.muted { color: #909399; font-size: 12px; }
+.muted { color: var(--text-secondary); font-size: 12px; }
 </style>

@@ -465,17 +465,18 @@ watch(() => route.query, () => { store.page = 1; loadMovies() }, { deep: true })
 
 <style scoped>
 /* 页面外层、工具条、网格、分页的样式已收到 PageShell / MediaGrid 里，这里只留卡片本身的样式 */
-.movie-card { cursor: pointer; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; transition: all 0.2s; background: var(--bg-card); }
-.movie-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
-.cover { position: relative; aspect-ratio: 3/4; overflow: hidden; }
-.cover img { width: 100%; height: 100%; object-fit: cover; }
-.cover-badge { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.6); color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-.duration-badge { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,0.7); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
-.info { padding: 8px; }
-.title { font-size: 13px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.movie-card { cursor: pointer; border: 1px solid var(--hairline, var(--border-color)); border-radius: 14px; overflow: hidden; background: var(--bg-card); box-shadow: var(--shadow-kpi); transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease; }
+.movie-card:hover { transform: translateY(-3px); border-color: var(--card-border-hover); box-shadow: var(--shadow-hover, var(--shadow-card)); }
+.cover { position: relative; aspect-ratio: 3/4; overflow: hidden; background: var(--bg-hover); }
+.cover img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.3s ease; }
+.movie-card:hover .cover img { transform: scale(1.04); }
+.cover-badge { position: absolute; top: 8px; left: 8px; background: rgba(15,18,26,0.5); -webkit-backdrop-filter: blur(8px) saturate(140%); backdrop-filter: blur(8px) saturate(140%); color: #fff; padding: 2px 8px; border-radius: 8px; font-size: 11px; font-weight: 600; border: 1px solid rgba(255,255,255,0.3); }
+.duration-badge { position: absolute; bottom: 8px; right: 8px; background: rgba(15,18,26,0.55); -webkit-backdrop-filter: blur(8px) saturate(140%); backdrop-filter: blur(8px) saturate(140%); color: #fff; padding: 2px 6px; border-radius: 7px; font-size: 11px; border: 1px solid rgba(255,255,255,0.28); }
+.info { padding: 10px 12px 12px; }
+.title { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
 .code { font-size: 11px; color: #999; }
-.views { font-size: 10px; color: #409eff; }
+.views { font-size: 10px; color: var(--accent); }
 .rating { font-size: 10px; color: #e6a23c; margin-left: auto; }
 .categories { margin-top: 4px; display: flex; gap: 2px; flex-wrap: wrap; }
 .dedup-status { text-align: center; padding: 30px 0; }

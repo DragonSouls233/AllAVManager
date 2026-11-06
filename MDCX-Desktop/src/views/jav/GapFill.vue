@@ -565,7 +565,7 @@ onBeforeUnmount(stopPolling)
   background: var(--el-fill-color); padding: 1px 6px; border-radius: 3px;
   font-family: ui-monospace, Menlo, Consolas, monospace; color: #2563eb;
 }
-.current-line .elapsed { color: #909399; font-size: 12px; }
+.current-line .elapsed { color: var(--text-secondary); font-size: 12px; }
 
 .fail-box { margin-top: 10px; }
 .fail-line { font-size: 12px; padding: 2px 0; color: #4b5563; }

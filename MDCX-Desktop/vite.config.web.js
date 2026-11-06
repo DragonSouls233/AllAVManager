@@ -32,7 +32,9 @@ export default defineConfig({
   publicDir: 'public',
   build: {
     outDir: '../MDCX-Server/static',
-    emptyOutDir: false,
+    // true：每次构建前清空 static（仅 assets/ + favicon.svg + index.html，全部可重建；
+    // favicon 由 publicDir 重新输出）。避免旧 hash chunk 无限累积。
+    emptyOutDir: true,
     rollupOptions: {
       input: 'index.html'
     }

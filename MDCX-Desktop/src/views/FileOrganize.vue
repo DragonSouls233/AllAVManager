@@ -327,7 +327,7 @@ onMounted(async () => {
 .mode-desc { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
 .template-vars { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
 .template-vars code {
-  background: #f5f7fa; padding: 1px 6px; border-radius: 3px;
+  background: var(--bg-page); padding: 1px 6px; border-radius: 3px;
   margin-right: 4px; font-size: 11px;
 }
 .preview-card, .result-card { border-radius: 8px; margin-bottom: 16px; }

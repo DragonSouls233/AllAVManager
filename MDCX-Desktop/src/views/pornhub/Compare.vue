@@ -194,7 +194,7 @@ function openUrl(url) {
 .result-stats { display: flex; gap: 6px; }
 .video-link { color: var(--el-color-primary); text-decoration: none; font-size: 12px; }
 .video-link:hover { text-decoration: underline; }
-.test-result { margin-top: 10px; padding: 10px; background: #f5f7fa; border-radius: 6px; font-size: 12px; line-height: 1.8; }
+.test-result { margin-top: 10px; padding: 10px; background: var(--bg-page); border-radius: 6px; font-size: 12px; line-height: 1.8; }
 .test-result .old { color: #f56c6c; }
 .test-result .new { color: #67c23a; font-weight: bold; }
 .result-card :deep(.el-tabs__content) { overflow: auto; }

@@ -378,7 +378,7 @@ onMounted(() => {
   background: var(--el-bg-color, #fff);
   border-radius: 8px;
   padding: 16px;
-  border: 1px solid var(--el-border-color-light, #ebeef5);
+  border: 1px solid var(--el-border-color-light, var(--hairline, var(--border-color)));
   min-height: 200px;
 }
 .rule-name {
@@ -396,7 +396,7 @@ onMounted(() => {
   font-size: 12px;
 }
 .condition-text .value {
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light, var(--bg-page));
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 12px;

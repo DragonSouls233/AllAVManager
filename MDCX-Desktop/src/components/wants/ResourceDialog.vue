@@ -148,18 +148,18 @@ async function onCopy(row) {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 12px;
 }
-.res-code .label { color: #909399; font-size: 12px; margin-right: 8px; }
+.res-code .label { color: var(--text-secondary); font-size: 12px; margin-right: 8px; }
 .res-code .code { font-family: var(--font-mono, monospace); font-weight: 600; font-size: 14px; }
 .res-actions { display: flex; align-items: center; gap: 10px; }
-.cache-tip { color: #909399; font-size: 12px; }
+.cache-tip { color: var(--text-secondary); font-size: 12px; }
 .res-alert { margin-bottom: 12px; }
 .res-summary { font-size: 13px; margin-bottom: 8px; color: var(--el-text-color-regular); }
-.muted { color: #909399; font-size: 12px; }
+.muted { color: var(--text-secondary); font-size: 12px; }
 .rname { font-size: 12px; }
 .mono { font-family: var(--font-mono, monospace); font-size: 12px; }
-.seeders { font-family: var(--font-mono, monospace); font-size: 12px; color: #909399; }
+.seeders { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-secondary); }
 .seeders.on { color: #67c23a; font-weight: 600; }
 .res-foot {
-  margin-top: 10px; font-size: 12px; color: #909399; line-height: 1.6;
+  margin-top: 10px; font-size: 12px; color: var(--text-secondary); line-height: 1.6;
 }
 </style>

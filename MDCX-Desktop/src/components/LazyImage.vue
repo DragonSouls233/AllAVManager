@@ -181,7 +181,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(----text-placeholder, #c0c4cc);
   background: var(--bg-page, #f0f2f5);
 }
 

@@ -33,6 +33,16 @@
       <!-- 评分 -->
       <RatingStars v-if="movie.rating != null" :rating="movie.rating" />
 
+      <!-- 质量/地区徽章：玻璃拟态叠加在封面左上（Peach 风） -->
+      <div class="movie-badges" v-if="(movie.is_4k || movie.is_leak || movie.is_chinese || movie.is_uncensored || movie.is_hd_uncensored) && viewMode !== 'compact'">
+        <span v-if="movie.is_4k" class="movie-badge badge-4k">4K</span>
+        <span v-if="movie.is_leak" class="movie-badge badge-leak">破解</span>
+        <span v-if="movie.is_hd_uncensored" class="movie-badge badge-hd">{{ movie.is_chinese ? '中文高清无码' : '高清无码' }}</span>
+        <span v-else-if="movie.is_chinese && movie.is_uncensored" class="movie-badge badge-cn">无码中文</span>
+        <span v-else-if="movie.is_chinese" class="movie-badge badge-cn">中文</span>
+        <span v-else-if="movie.is_uncensored" class="movie-badge badge-unc">无码</span>
+      </div>
+
       <!-- 播放次数 -->
       <div class="movie-play-count" v-if="movie.play_count > 0" aria-hidden="true">
         <el-icon><View /></el-icon> {{ movie.play_count }}
@@ -96,17 +106,6 @@
     <div class="movie-info">
       <div class="movie-code" @dblclick.stop="copyCode" title="双击复制番号">{{ movie.code }}</div>
       <div class="movie-title" :title="movie.title || '未命名'">{{ movie.title || '未命名' }}</div>
-
-      <!-- 中文/无码 badge（直接读 is_chinese / is_uncensored 字段，不依赖 _tags） -->
-      <div class="movie-badges" v-if="movie.is_4k || movie.is_leak || movie.is_chinese || movie.is_uncensored || movie.is_hd_uncensored">
-        <el-tag v-if="movie.is_4k" size="small" type="warning" effect="dark">4K</el-tag>
-        <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
-        <!-- 高清无码（LTX）优先于普通无码，避免被混进「无码」里 -->
-        <el-tag v-if="movie.is_hd_uncensored" size="small" type="primary" effect="dark">{{ movie.is_chinese ? '中文高清无码' : '高清无码' }}</el-tag>
-        <el-tag v-else-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
-        <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="dark">中文</el-tag>
-        <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="dark">无码</el-tag>
-      </div>
 
       <!-- 标签：用户标签=emerald / 抓取标签=orange（紧凑模式隐藏） -->
       <div class="movie-tags" v-if="movie._tags && movie._tags.length && viewMode !== 'compact'">
@@ -191,15 +190,6 @@
         <span v-if="movie.release_date"><el-icon><Calendar /></el-icon> {{ movie.release_date }}</span>
         <span v-if="movie.duration"><el-icon><Clock /></el-icon> {{ formatDuration(movie.duration) }}</span>
         <span v-if="movie.studio"><el-icon><OfficeBuilding /></el-icon> {{ movie.studio }}</span>
-      </div>
-
-      <div class="movie-badges" v-if="viewMode !== 'compact'">
-        <el-tag v-if="movie.is_4k" size="small" type="success" effect="dark">4K</el-tag>
-        <el-tag v-if="movie.is_leak" size="small" type="danger" effect="dark">破解</el-tag>
-        <el-tag v-if="movie.is_hd_uncensored" size="small" type="primary" effect="dark">{{ movie.is_chinese ? '中文高清无码' : '高清无码' }}</el-tag>
-        <el-tag v-else-if="movie.is_chinese && movie.is_uncensored" size="small" type="warning" effect="dark">无码中文</el-tag>
-        <el-tag v-else-if="movie.is_chinese" size="small" type="warning" effect="plain">中文</el-tag>
-        <el-tag v-else-if="movie.is_uncensored" size="small" type="info" effect="plain">无码</el-tag>
       </div>
     </div>
   </div>
@@ -295,10 +285,11 @@ const onEnter = () => {
   if (!m.sample_images || m.sample_images.length === 0) return
   imgIndex.value = 0
   let i = 0
+  // 放缓到 2.6s，且只在停留时轮换，避免用户正阅读时画面忽明忽暗（Peach 准则：不抢阅读位置）
   hoverTimer = setInterval(() => {
     i = (i + 1) % (m.sample_images.length + 1)
     imgIndex.value = i
-  }, 1200)
+  }, 2600)
 }
 
 const onLeave = () => {
@@ -360,24 +351,26 @@ const copyCode = async () => {
 <style scoped>
 .movie-card {
   cursor: pointer;
-  border-radius: 10px;
+  border-radius: var(--surface-radius);
   overflow: hidden;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-sm);
-  transition: transform 0.2s, box-shadow 0.2s;
-  border: 1px solid var(--border-light);
+  background: transparent;
+  box-shadow: none;
+  transition: transform 0.18s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  border: none;
   display: flex;
   flex-direction: column;
 }
 
+/* Peach：悬停时底色向卡外铺 8px 光晕 + 轻微上浮，不挤动邻卡、不弹跳 */
 .movie-card:hover {
   transform: translateY(-4px);
-  box-shadow: var(--shadow-lg);
+  background: var(--hover-surface);
+  box-shadow: 0 0 0 8px var(--hover-surface), var(--shadow-hover);
 }
 
 /* ===== 视图模式：紧凑 ===== */
 .movie-card.mode-compact {
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .movie-card.mode-compact .movie-cover {
   aspect-ratio: 2 / 3;
@@ -455,8 +448,9 @@ const copyCode = async () => {
 .movie-cover {
   position: relative;
   aspect-ratio: 2 / 3;
-  background: #1a1a2e;
+  background: var(--bg-hover);
   overflow: hidden;
+  border-radius: var(--surface-radius);
 }
 
 .movie-cover img {
@@ -477,21 +471,33 @@ const copyCode = async () => {
   position: absolute;
   top: 6px;
   right: 6px;
-  background: rgba(0, 0, 0, 0.65);
+  z-index: 2;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
   color: #fff;
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--badge-radius);
   display: flex;
   align-items: center;
   gap: 3px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .movie-fav-btn {
   position: absolute;
-  bottom: 6px;
-  right: 6px;
-  background: rgba(0, 0, 0, 0.5);
+  bottom: 8px;
+  right: 8px;
+  z-index: 3;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
   color: #fff;
   border-radius: 50%;
   width: 30px;
@@ -500,12 +506,12 @@ const copyCode = async () => {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s;
-  backdrop-filter: blur(4px);
+  transition: background 0.2s, transform 0.2s;
+  opacity: 1;
 }
 
 .movie-fav-btn:hover {
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(0, 0, 0, 0.55);
   transform: scale(1.1);
 }
 
@@ -521,19 +527,22 @@ const copyCode = async () => {
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
   opacity: 0;
   transition: opacity 0.2s, transform 0.2s, background 0.2s;
-  backdrop-filter: blur(4px);
   cursor: pointer;
 }
 
 .movie-play:hover {
-  background: var(--el-color-primary, #409eff);
+  background: var(--accent);
   transform: translate(-50%, -50%) scale(1.08);
 }
 
@@ -541,12 +550,17 @@ const copyCode = async () => {
   opacity: 1;
 }
 
-/* 放大预览按钮（右下角，hover 时显示） */
+/* 放大预览按钮（左下角，hover 时显示） */
 .movie-zoom-btn {
   position: absolute;
-  bottom: 6px;
-  left: 6px;
-  background: rgba(0, 0, 0, 0.5);
+  bottom: 8px;
+  left: 8px;
+  z-index: 3;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
   color: #fff;
   border-radius: 50%;
   width: 28px;
@@ -556,12 +570,11 @@ const copyCode = async () => {
   justify-content: center;
   cursor: pointer;
   opacity: 0;
-  transition: all 0.2s;
-  backdrop-filter: blur(4px);
+  transition: opacity 0.2s, transform 0.2s, background 0.2s;
 }
 
 .movie-zoom-btn:hover {
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(0, 0, 0, 0.55);
   transform: scale(1.1);
 }
 
@@ -607,9 +620,11 @@ const copyCode = async () => {
 
 .movie-code {
   font-weight: 700;
-  color: var(--primary-color);
+  color: var(--text-primary);
   font-size: 14px;
   letter-spacing: 0.3px;
+  /* 番号等读数用等宽数字，宽度稳定（Peach 准则：变化的读数用 tabular-nums） */
+  font-variant-numeric: tabular-nums;
 }
 
 .movie-title {
@@ -620,7 +635,7 @@ const copyCode = async () => {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  line-height: 1.4;
+  line-height: 1.45;
   min-height: 1.4em;
 }
 
@@ -676,6 +691,7 @@ const copyCode = async () => {
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 2px;
+  font-variant-numeric: tabular-nums;
 }
 
 .movie-meta span {
@@ -684,11 +700,49 @@ const copyCode = async () => {
   gap: 3px;
 }
 
+/* 质量/地区徽章：玻璃拟态叠加在封面左上（Peach 风），悬停时淡出让位给悬浮工具 */
 .movie-badges {
+  position: absolute;
+  top: 30px;
+  left: 6px;
+  z-index: 2;
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-  margin-top: 2px;
+  max-width: calc(100% - 12px);
+}
+
+.movie-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--badge-radius);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #fff;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+}
+
+.badge-4k  { color: #ffffff; }
+.badge-leak { color: #ffd7d7; }
+.badge-hd  { color: #cfe4ff; }
+.badge-cn  { color: #ffe6c9; }
+.badge-unc { color: #d7e9ff; }
+
+@media (hover: hover) and (pointer: fine) {
+  .movie-card:hover .movie-badges,
+  .movie-card:hover .movie-play-count {
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+  }
 }
 
 /* 演员悬浮卡 */
@@ -759,7 +813,7 @@ const copyCode = async () => {
 /* 纯净模式：仅显示番号，无封面图 */
 .movie-card.poster-number_only .movie-cover.poster-only {
   aspect-ratio: 2 / 3;
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  background: linear-gradient(135deg, var(--bg-elevated) 0%, #11151c 100%);
   display: flex;
   flex-direction: column;
   align-items: center;

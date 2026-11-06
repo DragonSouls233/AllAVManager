@@ -321,7 +321,7 @@ onMounted(loadAll)
 
 .page-subtitle {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .page-header-actions {
@@ -354,7 +354,7 @@ onMounted(loadAll)
 
 .form-tip {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-left: 8px;
 }
 
@@ -382,7 +382,7 @@ onMounted(loadAll)
 
 .default-item {
   padding: 8px 12px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.15s;
@@ -392,26 +392,26 @@ onMounted(loadAll)
 }
 
 .default-item:hover {
-  border-color: #409eff;
-  background: #ecf5ff;
+  border-color: var(--accent);
+  background: #eceefb;
 }
 
 .default-tpl {
   font-family: 'Consolas', monospace;
   font-size: 12px;
-  color: #409eff;
+  color: var(--accent);
   word-break: break-all;
 }
 
 .default-key {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .var-name {
   font-family: 'Consolas', monospace;
   font-size: 11px;
-  color: #409eff;
+  color: var(--accent);
 }
 
 .filters-list {
@@ -424,7 +424,7 @@ onMounted(loadAll)
   display: flex;
   flex-direction: column;
   padding: 6px 0;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--hairline, var(--border-color));
 }
 
 .filter-item:last-child {
@@ -440,7 +440,7 @@ onMounted(loadAll)
 
 .filter-desc {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 2px;
 }
 
@@ -449,12 +449,12 @@ onMounted(loadAll)
   padding: 0;
   margin: 0;
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .tip-list li {
   padding: 6px 0;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--hairline, var(--border-color));
   line-height: 1.5;
 }
 
@@ -482,7 +482,7 @@ onMounted(loadAll)
 
 :deep(.dark) .default-item:hover {
   background: #2c3e50;
-  border-color: #409eff;
+  border-color: var(--accent);
 }
 
 :deep(.dark) .tip-list code {

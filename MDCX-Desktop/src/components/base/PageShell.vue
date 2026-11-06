@@ -83,7 +83,9 @@ const shellStyle = computed(() => ({
 }
 
 .page-shell {
-  padding: 20px;
+  /* 与 AdminLayout 的 .main-content 留白同源（tokens.redesign.css --content-pad），
+     避免 el-main 24 + PageShell 20 = 44px 的叠加 */
+  padding: var(--content-pad, 24px);
 }
 
 /* compact：媒体库这类以网格为主的页面，减少留白让一屏多放几行 */

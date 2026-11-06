@@ -33,7 +33,7 @@
     </el-card>
 
     <div v-if="!loading">
-      <el-card v-if="javList.length" shadow="never" class="group-card" style="border-left:4px solid #409eff">
+      <el-card v-if="javList.length" shadow="never" class="group-card" style="border-left:4px solid #5468d4">
         <template #header>
           <div class="group-header">
             <span class="group-title"><el-tag type="primary" effect="dark">JAV</el-tag> 有码 · 无码 · FC2</span>
@@ -175,10 +175,10 @@ onMounted(loadData)
 .site-priority-page { padding: 4px; }
 .page-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; }
 .page-title { margin:0 0 4px 0; font-size:20px; display:flex; align-items:center; gap:8px; }
-.page-subtitle { font-size:12px; color:#909399; }
+.page-subtitle { font-size:12px; color:var(--text-secondary); }
 .page-header-actions { display:flex; gap:8px; }
 .summary-card, .group-card { margin-bottom:16px; }
 .group-header { display:flex; align-items:center; gap:12px; }
 .group-title { font-weight:700; font-size:16px; display:flex; align-items:center; gap:8px; }
-.group-desc { font-size:12px; color:#909399; }
+.group-desc { font-size:12px; color:var(--text-secondary); }
 </style>

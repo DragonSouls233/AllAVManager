@@ -271,8 +271,9 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 根节点留白由 AdminLayout 的 `.main-content > *`（--content-pad = 24px）统一提供，
+   这里不再自加 padding（原 20px 会与父级叠成 44px，且与其它页面 24px 不一致） */
 .status-page {
-  padding: 20px;
   max-width: 1200px;
   margin: 0 auto;
 }
@@ -284,21 +285,28 @@ onBeforeUnmount(() => {
 .page-header h2 {
   margin: 0 0 4px 0;
   font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
 .subtitle {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
+/* 分区之间距 20px（v6 口径 20–24px，原 16px 偏密） */
 .block-card {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
+/* 分区标题：16px / 600 / -0.01em */
 .block-title {
   font-weight: 600;
-  font-size: 15px;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -317,13 +325,13 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.health-dot.ok { background: #67c23a; box-shadow: 0 0 8px rgba(103,194,58,.6); }
-.health-dot.err { background: #f56c6c; box-shadow: 0 0 8px rgba(245,108,108,.6); }
-.health-dot.unknown { background: #c0c4cc; }
+.health-dot.ok { background: var(--success-color); box-shadow: 0 0 8px color-mix(in srgb, var(--success-color) 60%, transparent); }
+.health-dot.err { background: var(--danger-color); box-shadow: 0 0 8px color-mix(in srgb, var(--danger-color) 60%, transparent); }
+.health-dot.unknown { background: var(--text-placeholder); }
 
 .health-name {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .health-state {
@@ -331,16 +339,16 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.text-ok { color: #67c23a; }
-.text-err { color: #f56c6c; }
-.text-muted { color: #c0c4cc; }
+.text-ok { color: var(--success-color); }
+.text-err { color: var(--danger-color); }
+.text-muted { color: var(--text-placeholder); }
 
 .error-rate {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
-.muted { color: #909399; }
+.muted { color: var(--text-secondary); }
 
 .stat-row {
   margin-bottom: 8px;
@@ -349,33 +357,35 @@ onBeforeUnmount(() => {
 .mini-stat {
   text-align: center;
   padding: 14px 0;
-  border-radius: 10px;
-  background: var(--el-fill-color-light, #f5f7fa);
+  border-radius: var(--radius-card, 10px);
+  background: var(--bg-page);
+  border: 1px solid var(--hairline, var(--border-color));
 }
 
-.mini-stat.ok { background: rgba(103,194,58,.1); }
-.mini-stat.warn { background: rgba(230,162,60,.12); }
-.mini-stat.err { background: rgba(245,108,108,.1); }
+.mini-stat.ok { background: color-mix(in srgb, var(--success-color) 10%, transparent); }
+.mini-stat.warn { background: color-mix(in srgb, var(--warning-color) 12%, transparent); }
+.mini-stat.err { background: color-mix(in srgb, var(--danger-color) 10%, transparent); }
 
 .ms-value {
   font-size: 26px;
   font-weight: 700;
-  color: #303133;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
-.mini-stat.ok .ms-value { color: #67c23a; }
-.mini-stat.warn .ms-value { color: #e6a23c; }
-.mini-stat.err .ms-value { color: #f56c6c; }
+.mini-stat.ok .ms-value { color: var(--success-color); }
+.mini-stat.warn .ms-value { color: var(--warning-color); }
+.mini-stat.err .ms-value { color: var(--danger-color); }
 
 .ms-label {
   margin-top: 4px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .bar-title {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
   margin: 16px 0 10px;
 }
 
@@ -394,7 +404,7 @@ onBeforeUnmount(() => {
 .bar-label {
   width: 90px;
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -404,7 +414,7 @@ onBeforeUnmount(() => {
 .bar-track {
   flex: 1;
   height: 14px;
-  background: var(--el-fill-color-light, #f0f2f5);
+  background: var(--bg-page);
   border-radius: 7px;
   overflow: hidden;
 }
@@ -412,20 +422,21 @@ onBeforeUnmount(() => {
 .bar-fill {
   height: 100%;
   border-radius: 7px;
-  transition: width .4s;
-  background: #409eff;
+  transition: width 0.4s ease;
+  background: var(--accent);
 }
 
-.bar-fill.ok { background: #67c23a; }
-.bar-fill.warn { background: #e6a23c; }
-.bar-fill.err { background: #f56c6c; }
-.bar-fill.neutral { background: #909399; }
+.bar-fill.ok { background: var(--success-color); }
+.bar-fill.warn { background: var(--warning-color); }
+.bar-fill.err { background: var(--danger-color); }
+.bar-fill.neutral { background: var(--text-placeholder); }
 
 .bar-count {
   width: 50px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   text-align: left;
+  font-variant-numeric: tabular-nums;
 }
 
 .spark {
@@ -438,13 +449,17 @@ onBeforeUnmount(() => {
 
 .spark-bar {
   flex: 1;
-  background: linear-gradient(180deg, #409eff 0%, #6a5acd 100%);
+  background: linear-gradient(
+    180deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 55%, #fff) 100%
+  );
   border-radius: 3px 3px 0 0;
   min-height: 2px;
-  transition: height .4s;
+  transition: height 0.4s ease;
 }
 
 .spark-bar:hover {
-  background: #409eff;
+  background: var(--accent);
 }
 </style>

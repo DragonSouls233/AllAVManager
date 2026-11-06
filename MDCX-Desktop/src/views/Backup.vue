@@ -353,7 +353,7 @@ onMounted(() => {
 
 .subtitle {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -369,7 +369,7 @@ onMounted(() => {
 .stat-value {
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .stat-value.text-success {
@@ -379,7 +379,7 @@ onMounted(() => {
 .stat-label {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .action-bar {

@@ -365,7 +365,7 @@ onMounted(() => {
 
 .subtitle {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -381,7 +381,7 @@ onMounted(() => {
 .stat-value {
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .text-success {
@@ -389,13 +389,13 @@ onMounted(() => {
 }
 
 .text-muted {
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .stat-label {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .action-bar {
@@ -409,12 +409,12 @@ onMounted(() => {
 }
 
 .muted {
-  color: #c0c4cc;
+  color: var(--text-placeholder);
 }
 
 .field-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 

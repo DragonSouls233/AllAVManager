@@ -240,7 +240,7 @@ const reset = () => {
 
 .intro-card {
   border-radius: 10px;
-  background: linear-gradient(135deg, #f0f9ff 0%, #ecf5ff 100%);
+  background: linear-gradient(135deg, var(--el-color-primary-light-9) 0%, #eceefb 100%);
   border-color: #b3d8ff;
 }
 
@@ -253,13 +253,13 @@ const reset = () => {
 .intro h3 {
   margin: 0 0 4px;
   font-size: 17px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .intro p {
   margin: 0;
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
   line-height: 1.6;
 }
 
@@ -277,14 +277,14 @@ const reset = () => {
 
 .form-tip {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
 .switch-label {
   margin-left: 8px;
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .config-form {
@@ -306,13 +306,13 @@ const reset = () => {
 
 .progress-icon {
   font-size: 24px;
-  color: #409eff;
+  color: var(--accent);
   animation: rotating 1.5s linear infinite;
 }
 
 .progress-text {
   font-size: 15px;
-  color: #409eff;
+  color: var(--accent);
   font-weight: 500;
 }
 
@@ -338,19 +338,19 @@ const reset = () => {
 }
 
 .stat-item.highlight.green {
-  background: #f0f9eb;
+  background: var(--el-color-success-light-9);
 }
 
 .stat-item.highlight.blue {
-  background: #ecf5ff;
+  background: #eceefb;
 }
 
 .stat-item.highlight.orange {
-  background: #fdf6ec;
+  background: var(--el-color-warning-light-9);
 }
 
 .stat-item.highlight.red {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
 }
 
 .stat-value {
@@ -361,7 +361,7 @@ const reset = () => {
 }
 
 .highlight.green .stat-value { color: #67c23a; }
-.highlight.blue .stat-value { color: #409eff; }
+.highlight.blue .stat-value { color: var(--accent); }
 .highlight.orange .stat-value { color: #e6a23c; }
 .highlight.red .stat-value { color: #f56c6c; }
 
@@ -377,7 +377,7 @@ const reset = () => {
   gap: 6px;
   margin-top: 16px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 /* 详情 */
@@ -388,11 +388,11 @@ const reset = () => {
 .detail-count {
   font-weight: 400;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .missing-path {
-  color: #c0c4cc;
+  color: var(--text-placeholder);
   font-style: italic;
 }
 </style>

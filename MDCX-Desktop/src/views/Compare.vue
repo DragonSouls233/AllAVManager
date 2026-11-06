@@ -416,7 +416,7 @@ onMounted(() => {
 }
 .hint {
   margin-left: 8px;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .dir-search {
@@ -436,7 +436,7 @@ onMounted(() => {
 .stat-value {
   font-size: 28px;
   font-weight: 600;
-  color: #409eff;
+  color: var(--accent);
 }
 .stat-warning .stat-value {
   color: #e6a23c;
@@ -445,7 +445,7 @@ onMounted(() => {
   color: #f56c6c;
 }
 .stat-label {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
   margin-top: 4px;
 }
@@ -460,7 +460,7 @@ onMounted(() => {
 }
 .local-summary .source {
   margin-left: auto;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .result-card {

@@ -209,7 +209,7 @@ onMounted(() => { loadRules(); loadStats(); loadIssues() })
 .list-card { border-radius: 8px; }
 .type-tag { margin-right: 4px; }
 .batch-bar {
-  margin-top: 12px; padding: 12px; background: #f5f7fa;
+  margin-top: 12px; padding: 12px; background: var(--bg-page);
   border-radius: 6px; display: flex; gap: 8px; align-items: center;
 }
 </style>

@@ -179,6 +179,6 @@ onMounted(() => {
 .toolbar-card, .table-card { border-radius: 10px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .toolbar-left, .toolbar-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.text-muted { color: #c0c4cc; }
+.text-muted { color: var(--text-placeholder); }
 .pagination { margin-top: 16px; display: flex; justify-content: center; }
 </style>

@@ -5,7 +5,7 @@
     统一的不是「长得一样」，而是资料页那一块信息的**分层**：
       ① 大位（头像）  ② 身份：名字 + 元信息一行 + 外链  ③ 资料表（右栏）
       ④ 卡底附注带（同台演员）
-    此前每个模块的演员页各写一套（7 份重复、各自硬编码 #999/#409eff），
+    此前每个模块的演员页各写一套（7 份重复、各自硬编码 #999/#5468d4），
     改一个间距要改 7 处。这里把分层与几何定死，字段由页面传进来 ——
     有值才显示那一行，没有就不占位，所以缺资料的演员不会留一屏空洞。
 
@@ -186,10 +186,10 @@ function onRelatedError(person, event) {
   max-width: 100%;
   margin: 0 0 20px;
   overflow: hidden;
-  border: 1px solid var(--border-color, #ebeef5);
+  border: 1px solid var(----border-color, #ebeef5);
   border-radius: 16px;
   background: var(--bg-card, #fff);
-  color: var(--text-primary, #303133);
+  color: var(----text-primary, #303133);
   font-size: 14px;
   line-height: 22px;
 }
@@ -271,14 +271,23 @@ function onRelatedError(person, event) {
 .eh-title h2 {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 24px;
-  font-weight: 500;
+  /* 27px / 700 / -0.02em = 演员详情页标题口径，与 views/ActorDetail.vue 的
+     `.profile-name` 取同一组值。
+     ⚠️ 两处是「同一个设计值、两个独立规则」，不是重复覆盖：
+        `.profile-name` 是那页塞进 #title 槽的 <div>，本组件的 .eh-title h2 选择器
+        根本不匹配它（元素不同、scope 不同），所以那边不能靠本基类兜底，
+        删掉它自己的字号会让标题掉回基础字号 —— 改任一处都要同步另一处。
+     ⚠️ 本组件目前只有 2 个消费方（views/ActorDetail.vue、views/pornhub/ActorDetail.vue）。
+        新增消费方请先确认标题口径，否则 27px 会静默扩散到别的实体页。 */
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   line-height: 32px;
 }
 .eh-kind {
   flex: none;
   padding: 0 8px;
-  border: 1px solid var(--border-color, #ebeef5);
+  border: 1px solid var(----border-color, #ebeef5);
   border-radius: 999px;
   color: var(--text-secondary, #6b7280);
   font-size: 12px;
@@ -308,14 +317,14 @@ function onRelatedError(person, event) {
   font: inherit;
 }
 .eh-meta-item b {
-  color: var(--text-primary, #303133);
+  color: var(----text-primary, #303133);
   font-weight: 500;
 }
 .eh-meta-item--action {
   cursor: pointer;
 }
 .eh-meta-item--action:hover {
-  color: var(--primary-color, #409eff);
+  color: var(----primary-color, #5468d4);
 }
 
 /* ── 外链 ──
@@ -337,9 +346,9 @@ function onRelatedError(person, event) {
   height: 36px;
   padding: 0 12px 0 8px;
   overflow: hidden;
-  border: 1px solid var(--border-color, #ebeef5);
+  border: 1px solid var(----border-color, #ebeef5);
   border-radius: 10px;
-  color: var(--text-primary, #303133);
+  color: var(----text-primary, #303133);
   font-size: 13px;
   text-decoration: none;
 }
@@ -377,7 +386,7 @@ function onRelatedError(person, event) {
   min-width: 0;
   margin: 0;
   padding: 2px 0 2px 24px;
-  border-left: 1px solid var(--border-color, #ebeef5);
+  border-left: 1px solid var(----border-color, #ebeef5);
   font-size: 13px;
   line-height: 22px;
   text-align: left;
@@ -410,10 +419,10 @@ function onRelatedError(person, event) {
   max-width: 100%;
   overflow: hidden;
   padding: 0 8px;
-  border: 1px solid var(--border-color, #ebeef5);
+  border: 1px solid var(----border-color, #ebeef5);
   border-radius: 999px;
   background: var(--bg-hover, #f3f4f6);
-  color: var(--text-regular, #606266);
+  color: var(----text-regular, #606266);
   font-size: 12px;
   line-height: 20px;
   white-space: nowrap;
@@ -427,7 +436,7 @@ function onRelatedError(person, event) {
   gap: 16px;
   min-width: 0;
   padding: 12px 20px;
-  border-top: 1px solid var(--border-color, #ebeef5);
+  border-top: 1px solid var(----border-color, #ebeef5);
 }
 .eh-foot-label {
   flex: none;
@@ -469,7 +478,7 @@ function onRelatedError(person, event) {
 }
 .eh-related-item:hover {
   background: var(--bg-hover, #f3f4f6);
-  color: var(--text-primary, #303133);
+  color: var(----text-primary, #303133);
 }
 .eh-ring {
   position: relative;
@@ -519,7 +528,7 @@ function onRelatedError(person, event) {
   .eh-facts {
     grid-column: 1 / -1;
     padding: 14px 0 0;
-    border-top: 1px solid var(--border-color, #ebeef5);
+    border-top: 1px solid var(----border-color, #ebeef5);
     border-left: 0;
   }
 }

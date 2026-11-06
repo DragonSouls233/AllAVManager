@@ -72,6 +72,6 @@ const tagType = computed(() => (props.kind === 'drive' ? 'warning' : 'danger'))
 .cap-tip { margin-bottom: 10px; }
 .empty { padding: 20px 0; }
 .code { font-family: var(--font-mono, monospace); font-size: 12px; }
-.path { font-size: 12px; color: #606266; word-break: break-all; }
-.detail { font-size: 12px; color: #909399; }
+.path { font-size: 12px; color: var(--text-regular); word-break: break-all; }
+.detail { font-size: 12px; color: var(--text-secondary); }
 </style>

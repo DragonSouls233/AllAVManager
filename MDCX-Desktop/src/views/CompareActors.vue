@@ -964,7 +964,7 @@ onMounted(() => {
 
 .intro-card {
   border-radius: 10px;
-  background: linear-gradient(135deg, #f0f9ff 0%, #ecf5ff 100%);
+  background: linear-gradient(135deg, var(--el-color-primary-light-9) 0%, #eceefb 100%);
   border-color: #b3d8ff;
 }
 
@@ -974,8 +974,8 @@ onMounted(() => {
   gap: 16px;
 }
 
-.intro h3 { margin: 0 0 4px; font-size: 17px; color: #303133; }
-.intro p { margin: 0; font-size: 13px; color: #606266; line-height: 1.6; }
+.intro h3 { margin: 0 0 4px; font-size: 17px; color: var(--text-primary); }
+.intro p { margin: 0; font-size: 13px; color: var(--text-regular); line-height: 1.6; }
 
 .toolbar-card { border-radius: 10px; }
 
@@ -988,13 +988,13 @@ onMounted(() => {
 
 .toolbar-label {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .toolbar-hint {
   margin-left: auto;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .overwrite-check {
@@ -1006,16 +1006,16 @@ onMounted(() => {
 
 .actor-name {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .name-jp {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .no-config {
-  color: #c0c4cc;
+  color: var(--text-placeholder);
   font-style: italic;
   font-size: 12px;
 }
@@ -1036,7 +1036,7 @@ onMounted(() => {
 .url-source {
   flex: none;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   background: var(--el-fill-color-light);
   border-radius: 4px;
   padding: 0 6px;
@@ -1044,7 +1044,7 @@ onMounted(() => {
 
 .url-text {
   font-size: 12px;
-  color: #409eff;
+  color: var(--accent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1060,7 +1060,7 @@ onMounted(() => {
 
 .dir-text {
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1072,19 +1072,19 @@ onMounted(() => {
 
 .time-text {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .stat-row { margin-bottom: 12px; }
 .result-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .cache-tag { display: inline-flex; align-items: center; gap: 4px; }
 .stat-item { text-align: center; padding: 8px; border-radius: 6px; background: var(--el-fill-color-light); }
-.stat-item.stat-warning { background: #fdf6ec; }
-.stat-item.stat-danger { background: #fef0f0; }
-.stat-val { font-size: 24px; font-weight: 700; color: #409eff; }
+.stat-item.stat-warning { background: var(--el-color-warning-light-9); }
+.stat-item.stat-danger { background: var(--el-color-danger-light-9); }
+.stat-val { font-size: 24px; font-weight: 700; color: var(--accent); }
 .stat-warning .stat-val { color: #e6a23c; }
 .stat-danger .stat-val { color: #f56c6c; }
-.stat-label { font-size: 12px; color: #909399; margin-top: 2px; }
+.stat-label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .result-summary { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .result-tabs { margin-top: 8px; }
 
@@ -1098,15 +1098,15 @@ onMounted(() => {
   flex-direction: column;
   gap: 8px;
 }
-.source-block.source-ok { border-color: #b3e19d; background: #f0f9eb; }
-.source-block.source-error { border-color: #fbc4c4; background: #fef0f0; }
+.source-block.source-ok { border-color: #b3e19d; background: var(--el-color-success-light-9); }
+.source-block.source-error { border-color: #fbc4c4; background: var(--el-color-danger-light-9); }
 .source-block.source-empty { border-color: var(--el-border-color-lighter); background: var(--el-fill-color-light); }
 .source-block-title {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.source-block-name { font-size: 15px; font-weight: 700; color: #303133; }
+.source-block-name { font-size: 15px; font-weight: 700; color: var(--text-primary); }
 .source-block-msg { font-size: 12px; color: #f56c6c; }
 .source-stats {
   display: grid;
@@ -1125,7 +1125,7 @@ onMounted(() => {
 }
 .tab-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 .magnet-cell {
   display: flex;
@@ -1135,7 +1135,7 @@ onMounted(() => {
 }
 .magnet-name {
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1156,7 +1156,7 @@ onMounted(() => {
   font-size: 13px;
   word-break: break-all;
 }
-.dir-path-label { color: #909399; font-size: 12px; }
+.dir-path-label { color: var(--text-secondary); font-size: 12px; }
 .dir-browser-list {
   flex: 1;
   max-height: 400px;
@@ -1172,7 +1172,7 @@ onMounted(() => {
   padding: 8px 12px;
   cursor: pointer;
   transition: background 0.15s;
-  color: #409eff;
+  color: var(--accent);
 }
 .dir-browser-item:hover { background: var(--el-color-primary-light-9); }
 .dir-browser-item .dir-name { font-size: 13px; }

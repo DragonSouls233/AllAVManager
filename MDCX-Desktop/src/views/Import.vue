@@ -893,24 +893,24 @@ onMounted(() => {
 .import-page { display: flex; flex-direction: column; gap: 16px; }
 .import-tabs { border-radius: 10px; }
 .step-card, .content-card { border-radius: 10px; }
-.card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #303133; }
-.form-tip { color: #909399; font-size: 12px; margin-left: 8px; }
-.scan-result h4, .report h4 { color: #303133; margin: 12px 0; }
-.result-stat { text-align: center; padding: 16px; background: #f5f7fa; border-radius: 8px; }
-.result-num { font-size: 24px; font-weight: 700; color: #303133; }
+.card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text-primary); }
+.form-tip { color: var(--text-secondary); font-size: 12px; margin-left: 8px; }
+.scan-result h4, .report h4 { color: var(--text-primary); margin: 12px 0; }
+.result-stat { text-align: center; padding: 16px; background: var(--bg-page); border-radius: 8px; }
+.result-num { font-size: 24px; font-weight: 700; color: var(--text-primary); }
 .result-num.success { color: #67c23a; }
 .result-num.warning { color: #e6a23c; }
 .result-num.danger { color: #f56c6c; }
-.result-num.info { color: #909399; }
-.result-label { color: #909399; font-size: 12px; margin-top: 4px; }
+.result-num.info { color: var(--text-secondary); }
+.result-label { color: var(--text-secondary); font-size: 12px; margin-top: 4px; }
 .job-progress { margin-top: 16px; }
-.job-info { display: flex; gap: 16px; margin-top: 10px; color: #606266; font-size: 13px; }
+.job-info { display: flex; gap: 16px; margin-top: 10px; color: var(--text-regular); font-size: 13px; }
 
 /* mnamer 智能重命名样式 */
-.parsed-section h4, .candidates-section h4, .target-section h4 { color: #303133; margin: 12px 0; }
+.parsed-section h4, .candidates-section h4, .target-section h4 { color: var(--text-primary); margin: 12px 0; }
 .candidate-card { cursor: pointer; transition: border-color 0.2s; }
-.candidate-card.selected { border-color: #409eff; background: #ecf5ff; }
+.candidate-card.selected { border-color: var(--accent); background: #eceefb; }
 .candidate-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.candidate-name { font-weight: 600; color: #303133; font-size: 14px; }
-.candidate-meta { display: flex; flex-wrap: wrap; gap: 12px; color: #606266; font-size: 12px; }
+.candidate-name { font-weight: 600; color: var(--text-primary); font-size: 14px; }
+.candidate-meta { display: flex; flex-wrap: wrap; gap: 12px; color: var(--text-regular); font-size: 12px; }
 </style>

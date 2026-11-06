@@ -426,7 +426,7 @@ onMounted(loadAll)
 }
 .sub {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 .mb {
@@ -437,13 +437,13 @@ onMounted(loadAll)
 }
 .stat-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 .stat-value {
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   word-break: break-all;
 }
 .stat-value.small {
@@ -452,13 +452,13 @@ onMounted(loadAll)
 }
 .unit {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   font-weight: 400;
 }
 .stat-hint {
   margin-top: 6px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -479,7 +479,7 @@ onMounted(loadAll)
 .hint {
   margin-top: 4px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   line-height: 1.6;
 }
 .hint.warn {
@@ -504,7 +504,7 @@ onMounted(loadAll)
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
-  color: #606266;
+  color: var(--text-regular);
   font-family: Consolas, Monaco, monospace;
 }
 </style>

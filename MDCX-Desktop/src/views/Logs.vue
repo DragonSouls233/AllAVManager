@@ -118,20 +118,36 @@ watch(autoRefresh, (val) => {
 </script>
 
 <style scoped>
-.logs { display: flex; flex-direction: column; gap: 16px; }
-.toolbar-card, .log-card { border-radius: 10px; }
+/* 分区之间距统一 20px（v6 口径 20–24px） */
+.logs { display: flex; flex-direction: column; gap: 20px; }
+
+/* ⚠️ 卡片质感（radius / border / shadow）由 src/styles/commercial.css 的 `.el-card`
+   以 `!important` 统一提供。原来这里写 `.toolbar-card, .log-card { border-radius: 10px }`
+   —— 无 !important，永远被全局覆盖，属**无效声明**，故移除。 */
+
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .toolbar-left, .toolbar-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
+/* ⚠️ 日志面板是「终端表面」：**整块调色板固定，不参与主题换肤**。
+   覆盖范围 = 深底 #1a1a2e、正文 #dcdfe6、时间戳/调试灰 #909399、红底对比字 #fff、
+   两条白色 alpha 分隔线，以及下方 .level-* 的级别色**及其底纹**。
+   若把 #1a1a2e / #dcdfe6 换成 --bg-card / --text-primary，亮色主题下会变成
+   「浅底深字」的普通卡片，终端语义就没了；#909399 还会变成深灰压深底、不可读。
+   级别色为什么不走 token，见 .log-level 上方那段。
+   **lead 已批准**：整个终端调色板（深底 #1a1a2e / 正文 #dcdfe6 / 时间戳 #909399 /
+   级别色）刻意不跟随主题，属「数据语义 + 终端表面」例外；--text-* / --hairline 不套用。
+   改动前请先想清楚这条边界。 */
 .log-container {
   height: 600px;
   overflow-y: auto;
   background: #1a1a2e;
-  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-card, 10px);
   padding: 12px;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.6;
+  font-variant-numeric: tabular-nums;
 }
 
 .log-line {
@@ -141,8 +157,9 @@ watch(autoRefresh, (val) => {
   border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
 }
 
-.log-time { color: #909399; flex-shrink: 0; }
-.log-logger { color: #66b1ff; flex-shrink: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.log-time { color: #909399; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+/* --accent-soft = 主色向白偏移 72%，正是深底上需要的浅一档强调色（明暗主题都成立） */
+.log-logger { color: var(--accent-soft, #7c8af0); flex-shrink: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .log-msg { color: #dcdfe6; flex: 1; word-break: break-all; }
 
 .log-level {
@@ -151,13 +168,22 @@ watch(autoRefresh, (val) => {
   border-radius: 3px;
   font-weight: 600;
   font-size: 10px;
+  letter-spacing: 0.02em;
 }
+/* ⚠️ 级别色是**日志数据的严重性编码**（红=错误、橙=警告），属**固定调色板，换主题不跟随**。
+   与上面 .log-container 的深底/浅字同属「终端表面」，整块面板刻意不参与主题换肤。
+   为什么前景不能用 var(--danger-color) 这类状态 token：themes.js:164-166 会按主题注入
+   success/warning/danger，用户导入自定义主题后「错误」可能不再是红色 → 日志语义丢失。
+   **底纹同理，一并不跟主题**：若前景固定 hex、底纹却用会随主题变的 --success-color，
+   会出现「文字固定红、底纹换主题变另一种红」的割裂，所以底纹保持 raw rgba。
+   结论：这几行是**有意保留字面量**，前景与底纹都不要"顺手 token 化"。 */
 .level-debug { color: #909399; background: rgba(144, 147, 153, 0.2); }
 .level-info { color: #67c23a; background: rgba(103, 194, 58, 0.2); }
 .level-warning { color: #e6a23c; background: rgba(230, 162, 60, 0.2); }
 .level-error { color: #f56c6c; background: rgba(245, 108, 108, 0.2); }
 .level-critical { color: #fff; background: #f56c6c; }
 
+/* 错误/警告行整体提亮一档，保证深底上的可读性（同样属固定调色板） */
 .log-error .log-msg { color: #f78989; }
 .log-warning .log-msg { color: #ebb563; }
 </style>

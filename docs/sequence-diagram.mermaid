@@ -1,0 +1,82 @@
+%% MDCX Phase 1 重构 · 时序图（启动→首页 / 命令面板 / 工具切换 / 旧路由兼容）
+%% 对应 docs/redesign/ARCH-phase1.md §4
+sequenceDiagram
+autonumber
+actor U as 用户
+participant M as main.js
+participant R as vue-router
+participant L as AdminLayout
+participant S as AppSidebar
+participant T as AppTopbar
+participant ST as shellStats
+participant API as api/index.js
+participant H as Home
+participant CW as ContinueWatching
+participant CP as CommandPalette
+participant TS as ToolPageShell
+participant TC as ToolComponents
+participant CV as Crawlers.vue
+
+rect rgb(240, 242, 245)
+Note over U,API: ① 启动 → 外壳 → 首页首屏
+U->>M: 打开 /#/
+M->>R: app.use(router)（守卫校验 token）
+R->>L: 渲染 AdminLayout
+L->>ST: loadModulesEnabled() + startPolling(30000)
+ST->>API: getModulesConfig()
+ST->>API: getSystemHealth() / getDashboardStats() / getTaskStats()（Promise.allSettled）
+API-->>ST: {database,tasks} / {movies,actors,modules} / {status_distribution}
+ST->>ST: health = database.healthy===false ? 'error' : error_rate>0.2 ? 'warn' : 'ok'
+ST-->>S: health / moduleMovies
+ST-->>T: runningTasks / taskPercent / version
+R->>H: 渲染 Home.vue
+H->>ST: 读 moviesTotal / actorsTotal / pendingTotal（0 额外请求）
+H->>CW: 挂载区块 2
+CW->>API: getViewingResume({module, limit:3}) × 已启用模块（allSettled）
+API-->>CW: {items:[{movie_id, module, code, cover_url, progress, played_at}]}
+CW->>CW: 归一化 id=movie_id 且 module_type=module（否则封面 404）
+CW-->>H: 渲染 6 张卡（空则整块 v-if 隐藏，不占位）
+H->>API: getTasks({page:1,page_size:8})
+API-->>H: {items:[…]} → RecentActivity
+end
+
+rect rgb(246, 247, 249)
+Note over U,CP: ② Ctrl/Cmd+K 命令面板
+U->>CP: keydown Ctrl/Cmd+K（焦点在 INPUT/TEXTAREA 时不触发）
+CP->>CP: open() + 焦点锁输入框 + 记录触发元素
+U->>CP: 输入「补丁」（≥2 字，350ms 防抖）
+CP->>CP: pageResults = flattenNav(NAV) 模糊匹配（≤6）
+CP->>API: unifiedSearch('补丁')
+API-->>CP: {items:[…]} → contentResults（≤8）
+U->>CP: ↑↓ 选中 + Enter
+CP->>R: router.push('/tools/fix?tool=patch&module=jav')
+CP->>CP: close() + 焦点还原到触发元素
+end
+
+rect rgb(243, 244, 247)
+Note over U,TC: ③ 工具中心组内切换（不整页跳转、不丢滚动）
+U->>TS: 进入 /tools/fix?tool=patch&module=jav
+TS->>TS: group = TOOL_GROUPS.find('fix')；activeTool = tools.find(query.tool)
+TS->>TC: getComponent('patch')
+TC-->>TS: defineAsyncComponent（未就绪时 Suspense 出骨架）
+TS-->>U: <component :is="patch" :module="jav" :key="patch" />
+U->>TS: 点左栏「本地对比」
+TS->>R: router.replace({path:'/tools/fix', query:{tool:'compare', module:'jav'}})
+Note over TS,R: route.name 不变 → keep-alive 不重挂（滚动/URL 状态保留）<br/>activeTool.key 变 → 子组件按 :key 重建
+U->>TS: 右上模块切换器 → JAV 无码
+TS->>R: router.replace({query:{tool:'compare', module:'uncensored'}})
+TS->>TS: localStorage['mdcx_tool_module']='uncensored'
+TS->>TC: 重新解析 moduleAware=true 时才 v-bind {module}
+TS->>TS: normalizeQuery()（非法 tool/module 静默归一化，不报错）
+end
+
+rect rgb(250, 240, 240)
+Note over U,CV: ④ 旧入口 /jav/scrape 仍然可用（R2：旧路由 0 删除）
+U->>R: 直接访问 /#/jav/scrape
+R->>CV: 不走工具中心，直挂 Crawlers.vue（旧路由未删）
+Note over CV: 模块判定：props.module(无) → route.query.module(无) → path 段 'jav' → jav ✅
+CV-->>U: 正常渲染；侧栏高亮「工具中心 › 刮削与源」；面包屑「首页 / 工具中心 / 刮削与源 / 刮削管理」
+U->>R: 访问 /#/uncensored（P0-8）
+R->>R: redirect '/uncensored/movies'（原为 UncensoredScrape）
+R-->>U: 落到无码影片库
+end

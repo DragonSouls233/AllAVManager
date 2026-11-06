@@ -402,7 +402,7 @@ onMounted(loadAll)
 
 .page-subtitle {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .page-header-actions {
@@ -427,19 +427,19 @@ onMounted(loadAll)
 .batch-hint {
   margin-left: auto;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   font-weight: normal;
 }
 
 .form-tip {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-left: 8px;
 }
 
 .batch-tip {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-left: 8px;
 }
 
@@ -451,7 +451,7 @@ onMounted(loadAll)
 
 .info-list li {
   padding: 8px 0;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--hairline, var(--border-color));
 }
 
 .info-list li:last-child {
@@ -459,7 +459,7 @@ onMounted(loadAll)
 }
 
 .info-list strong {
-  color: #409eff;
+  color: var(--accent);
   display: block;
   margin-bottom: 4px;
 }
@@ -467,7 +467,7 @@ onMounted(loadAll)
 .info-list p {
   margin: 0;
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
   line-height: 1.5;
 }
 

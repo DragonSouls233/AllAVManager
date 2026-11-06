@@ -13,6 +13,11 @@ import { bootstrapDesktop } from './utils/bootstrap'
 import { applyDensity } from './utils/density'
 import './styles/index.css'
 import './styles/element-overrides.css'
+// Phase 1 重构 token 增补（只新增变量）。必须排在 element-overrides.css 之后，
+// 否则 Element Plus 的覆盖会赢（ARCH-phase1 §12 / 坑 11）。
+import './styles/tokens.redesign.css'
+// Commercial Design v6：全局组件质感层（按钮/卡片/输入框/表格 + 区块标题）
+import './styles/commercial.css'
 
 // 桌面端（消费型播放器）：强制影院暗色 + 载入影院风设计系统
 // isDesktop 是编译期字面量，Web 构建中此分支被静态消除

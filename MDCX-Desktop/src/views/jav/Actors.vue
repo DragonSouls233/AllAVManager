@@ -542,20 +542,21 @@ onMounted(loadActors)
 .toolbar { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
 .filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .threshold { display: flex; align-items: center; gap: 6px; }
-.muted { color: #909399; font-size: 12px; }
-.actors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
-.actor-card { cursor: pointer; text-align: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px; transition: all 0.2s; }
-.actor-card:hover { border-color: #409eff; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
-.actor-avatar { width: 120px; height: 120px; margin: 0 auto 8px; border-radius: 50%; overflow: hidden; }
-.actor-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.actor-name { font-size: 14px; font-weight: bold; }
+.muted { color: var(--text-secondary); font-size: 12px; }
+.actors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 18px; }
+.actor-card { cursor: pointer; text-align: center; padding: 14px 12px 12px; border: 1px solid var(--hairline, var(--border-color)); border-radius: 14px; background: var(--bg-card); box-shadow: var(--shadow-kpi); transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease; }
+.actor-card:hover { transform: translateY(-3px); border-color: var(--card-border-hover); box-shadow: var(--shadow-card); }
+.actor-avatar { width: 112px; height: 112px; margin: 0 auto 10px; border-radius: 50%; overflow: hidden; background: var(--bg-hover); box-shadow: 0 4px 14px -6px rgba(16,24,40,0.35); }
+.actor-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.3s ease; }
+.actor-card:hover .actor-avatar img { transform: scale(1.05); }
+.actor-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .actor-movies { font-size: 12px; color: #999; }
 .pagination-wrap { margin-top: 20px; display: flex; justify-content: center; }
 .tip { margin-bottom: 4px; }
 .dialog-form { margin-top: 12px; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .preview-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.preview-chip { background: #f4f4f5; border-radius: 4px; padding: 2px 8px; font-size: 12px; color: #606266; }
+.preview-chip { background: #f4f4f5; border-radius: 4px; padding: 2px 8px; font-size: 12px; color: var(--text-regular); }
 .job-status { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .job-msg { font-size: 13px; }
 .job-progress { margin-top: 10px; }

@@ -24,6 +24,7 @@ certs/
 ssl/
 private/
 *.keystore
+MDCX-Desktop.backup-20261031
 
 # 应用凭据（仅匹配明确的凭据文件，勿用 auth*/*token*/*password* 等通配
 # —— 那会误伤 app/api/routes/auth.py、telegram_bot.py 等项目源码）
@@ -247,3 +248,7 @@ docs/参考库能力盘点报告_2026-10-05.html
 docs/PORNHUB演员主页URL同步统计.xlsx
 .github/workflows/ci.yml
 MDCX-Server/bin/yt-dlp.exe
+MDCX-Desktop.backup-*/
+.tmp/
+_archive/
+.references/

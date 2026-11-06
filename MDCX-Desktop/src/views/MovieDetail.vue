@@ -884,26 +884,26 @@ onMounted(() => { load(); loadPlaylistOptions() })
 <style scoped>
 .movie-detail { max-width: 1200px; margin: 0 auto; padding: 12px 16px 32px; }
 .top-bar { margin-bottom: 8px; }
-.hero-title { margin-bottom: 20px; padding: 20px 0 16px; border-bottom: 2px solid var(--el-border-color-light); }
-.hero-h1 { margin: 0; font-size: 24px; font-weight: 700; line-height: 1.4; color: var(--el-text-color-primary); display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
-.hero-code { color: var(--el-color-primary); font-family: 'Courier New', monospace; letter-spacing: 1px; }
+.hero-title { margin-bottom: 20px; padding: 8px 0 16px; border-bottom: 1px solid var(--hairline, var(--border-color)); }
+.hero-h1 { margin: 0; font-size: 27px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; color: var(--text-primary); display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.hero-code { color: var(--accent); font-family: SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.5px; font-variant-numeric: tabular-nums; }
 .hero-divider { color: var(--el-text-color-secondary); }
 .hero-text { font-weight: 400; }
 .hero-subtitle { margin-top: 6px; font-size: 14px; color: var(--el-text-color-secondary); display: flex; gap: 12px; }
 .jp-title { font-family: 'Yu Gothic', 'Hiragino Kaku Gothic ProN', sans-serif; }
 .detail-main { display: flex; gap: 24px; margin-bottom: 24px; }
 .cover-col { flex: 0 0 auto; max-width: 540px; min-width: 320px; display: flex; flex-direction: column; gap: 12px; }
-.cover-wrap { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.12); background: var(--el-bg-color-page); width: fit-content; max-width: 100%; }
+.cover-wrap { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--hairline, var(--border-color)); box-shadow: var(--shadow-card); background: var(--bg-hover); width: fit-content; max-width: 100%; }
 /* 关键：不再强制 aspect-ratio: 2/3。
    JavDB/JavBus/AVMOO 公开封面就 800x538 横向比例 (≈1.49:1)，强制 2/3 + object-fit:cover
    会让 800x538 水平方向压 2.5 倍，看上去糊。
    改为按原图宽高比自然显示（width: auto，img 撑开），浏览器不做放大 → 清晰。 */
 .cover-wrap img { display: block; width: auto; height: auto; max-width: 100%; max-height: 75vh; object-fit: contain; image-rendering: -webkit-optimize-contrast; }
-.cover-fanart-wrap { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.12); background: var(--el-bg-color-page); width: fit-content; max-width: 100%; }
+.cover-fanart-wrap { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--hairline, var(--border-color)); box-shadow: var(--shadow-card); background: var(--bg-hover); width: fit-content; max-width: 100%; }
 .cover-fanart-wrap img { display: block; width: auto; height: auto; max-width: 100%; max-height: 75vh; object-fit: contain; image-rendering: -webkit-optimize-contrast; }
 .info-col { flex: 1; min-width: 0; }
 .meta-list { display: grid; grid-template-columns: 72px 1fr; gap: 10px 12px; margin: 0 0 16px; }
-.meta-list dt { font-weight: 600; color: var(--el-text-color-regular); font-size: 14px; }
+.meta-list dt { font-weight: 500; color: var(--text-secondary); font-size: 12px; letter-spacing: 0.02em; padding-top: 3px; }
 .meta-list dd { margin: 0; color: var(--el-text-color-primary); font-size: 14px; line-height: 1.6; }
 .link-val { color: var(--el-color-primary); cursor: pointer; transition: opacity .2s; }
 .link-val:hover { opacity: .75; text-decoration: underline; }
@@ -919,22 +919,22 @@ onMounted(() => { load(); loadPlaylistOptions() })
 .stars { color: #e6a23c; letter-spacing: 1px; }
 .rating-num { color: var(--el-text-color-secondary); font-size: 13px; margin-left: 6px; }
 .version-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
-.play-box { display: inline-flex; align-items: center; gap: 8px; padding: 10px 28px; background: var(--el-color-primary); color: #fff; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: 600; transition: opacity .2s; margin-top: 8px; }
-.play-box:hover { opacity: .85; }
+.play-box { display: inline-flex; align-items: center; gap: 8px; padding: 11px 28px; background: var(--accent); color: #fff; border-radius: 10px; cursor: pointer; font-size: 16px; font-weight: 600; box-shadow: 0 2px 10px -3px color-mix(in srgb, var(--accent) 60%, transparent); transition: filter .2s; margin-top: 8px; }
+.play-box:hover { filter: brightness(1.06); }
 .play-icon { font-size: 22px; }
 .preview-section, .plot-section, .related-section { margin-bottom: 24px; }
-.sec-title { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 2px solid var(--el-color-primary); color: var(--el-text-color-primary); }
+.sec-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--hairline, var(--border-color)); color: var(--text-primary); }
 .sec-meta { font-size: 12px; font-weight: 500; color: var(--el-text-color-secondary); padding: 2px 8px; border-radius: 10px; background: var(--el-fill-color-light); }
 .sec-action { margin-left: auto; font-weight: 500; }
 
 /* 预览网格：第一张封面跨两列突出显示 */
 .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
 .preview-item {
-  position: relative; border-radius: 8px; overflow: hidden; aspect-ratio: 16/10;
-  background: var(--el-fill-color-light); cursor: zoom-in;
+  position: relative; border-radius: 12px; overflow: hidden; aspect-ratio: 16/10;
+  background: var(--bg-hover); cursor: zoom-in;
   transition: transform .3s cubic-bezier(.16,1,.3,1), box-shadow .3s cubic-bezier(.16,1,.3,1);
 }
-.preview-item:hover { transform: translateY(-3px) scale(1.015); box-shadow: 0 10px 24px rgba(0,0,0,.18); z-index: 2; }
+.preview-item:hover { transform: translateY(-3px) scale(1.015); box-shadow: var(--shadow-pop); z-index: 2; }
 .preview-item.is-cover { grid-column: span 2; grid-row: span 2; aspect-ratio: 16/10; outline: 2px solid var(--el-color-primary); outline-offset: -2px; }
 .preview-item :deep(.el-image) { width: 100%; height: 100%; display: block; }
 .preview-item :deep(.el-image__inner) { transition: transform .4s cubic-bezier(.16,1,.3,1); }
@@ -955,14 +955,14 @@ onMounted(() => { load(); loadPlaylistOptions() })
 .media-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 16px; border: 1px dashed var(--el-border-color); border-radius: 8px; color: var(--el-text-color-secondary); background: var(--el-fill-color-lighter); }
 .media-empty p { margin: 0; font-size: 13px; }
 .plot-text { font-size: 14px; line-height: 1.8; color: var(--el-text-color-regular); }
-.actions-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 24px; padding: 12px; background: var(--el-bg-color-page); border-radius: 8px; }
+.actions-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 24px; padding: 12px; background: var(--bg-card); border: 1px solid var(--hairline, var(--border-color)); border-radius: var(--radius-card, 10px); box-shadow: var(--shadow-kpi); }
 .related-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
-.related-card { cursor: pointer; border-radius: 8px; overflow: hidden; transition: transform .2s, box-shadow .2s; background: var(--el-bg-color-page); }
-.related-card:hover { transform: translateY(-3px); box-shadow: 0 6px 16px rgba(0,0,0,.15); }
-.related-cover { aspect-ratio: 2/3; overflow: hidden; background: var(--el-fill-color); }
+.related-card { cursor: pointer; border-radius: 12px; overflow: hidden; border: 1px solid var(--hairline, var(--border-color)); background: var(--bg-card); box-shadow: var(--shadow-kpi); transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.related-card:hover { transform: translateY(-3px); border-color: var(--card-border-hover); box-shadow: var(--shadow-pop); }
+.related-cover { aspect-ratio: 2/3; overflow: hidden; background: var(--bg-hover); }
 .related-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .related-info { padding: 6px 8px; }
-.related-code { font-size: 12px; font-weight: 700; color: var(--el-color-primary); display: block; }
+.related-code { font-size: 12px; font-weight: 700; color: var(--accent); font-family: SFMono-Regular, Menlo, Consolas, monospace; display: block; }
 .related-title { font-size: 12px; color: var(--el-text-color-regular); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 @media (max-width: 768px) {
   .detail-main { flex-direction: column; }

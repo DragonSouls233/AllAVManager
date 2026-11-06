@@ -204,16 +204,16 @@ onUnmounted(() => {
 }
 .page-header h2 { margin: 0; }
 .page-desc {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
   margin-bottom: 20px;
   padding: 8px 12px;
-  background: #f0f9eb;
+  background: var(--el-color-success-light-9);
   border-radius: 6px;
   border-left: 3px solid #67c23a;
 }
 .site-card {
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--hairline, var(--border-color));
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 12px;
@@ -226,17 +226,17 @@ onUnmounted(() => {
 }
 .site-name { font-weight: 600; font-size: 15px; }
 .site-name .el-tag { margin-left: 8px; }
-.site-body { margin-bottom: 10px; font-size: 13px; color: #606266; }
-.site-body code { background: #f5f7fa; padding: 1px 5px; border-radius: 3px; }
+.site-body { margin-bottom: 10px; font-size: 13px; color: var(--text-regular); }
+.site-body code { background: var(--bg-page); padding: 1px 5px; border-radius: 3px; }
 .site-actions { display: flex; gap: 8px; }
 .login-log {
   margin-top: 10px;
   padding: 8px 12px;
-  background: #f5f7fa;
+  background: var(--bg-page);
   border-radius: 6px;
   font-size: 13px;
 }
-.log-starting, .log-opening, .log-waiting { color: #409eff; }
+.log-starting, .log-opening, .log-waiting { color: var(--accent); }
 .log-saving { color: #e6a23c; }
 .log-completed { color: #67c23a; }
 .log-failed, .log-timeout { color: #f56c6c; }

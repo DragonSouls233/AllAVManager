@@ -419,7 +419,7 @@ onMounted(() => loadData())
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: #909399;
+  background: var(--text-secondary);
   color: #fff;
   display: flex;
   align-items: center;

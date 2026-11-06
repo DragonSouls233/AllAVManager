@@ -502,7 +502,7 @@ onBeforeUnmount(() => {
 .page-title {
   margin: 0;
   font-size: 20px;
-  color: #303133;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -510,7 +510,7 @@ onBeforeUnmount(() => {
 
 .page-subtitle {
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-left: 32px;
 }
 
@@ -524,7 +524,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   font-size: 14px;
 }
 
@@ -549,12 +549,12 @@ onBeforeUnmount(() => {
 }
 
 .status-label {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
 .status-value {
-  color: #303133;
+  color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
 }
@@ -581,7 +581,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   text-align: center;
 }
 
@@ -602,7 +602,7 @@ onBeforeUnmount(() => {
   gap: 4px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: #f5f7fa;
+  background: var(--bg-page);
 }
 
 .module-scan-main {
@@ -630,7 +630,7 @@ onBeforeUnmount(() => {
 }
 
 .dir-path {
-  color: #606266;
+  color: var(--text-regular);
   font-family: Consolas, Monaco, monospace;
   font-size: 12px;
   overflow: hidden;
@@ -643,12 +643,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .module-scan-empty {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   text-align: center;
   padding: 8px 0;
 }
@@ -669,12 +669,12 @@ onBeforeUnmount(() => {
 .stat-value {
   font-size: 22px;
   font-weight: 700;
-  color: #409eff;
+  color: var(--accent);
 }
 
 .stat-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 /* 工具栏 */

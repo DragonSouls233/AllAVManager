@@ -13,6 +13,26 @@ export async function getJavMovies(params = {}, { signal } = {}) {
   return api.get('/jav/movies', { params, signal })
 }
 
+/** 线上 LTX 库 vs 本地高清无码的缺失对比（服务端计算，按演员分组）。404 = 尚无快照。 */
+export async function getLtxGap() {
+  return api.get('/jav/ltx-gap')
+}
+
+/** 完整镜像：演员列表（头像 + 线上数 / 本地有 / 缺失）。 */
+export async function getLtxLibrary() {
+  return api.get('/jav/ltx-library')
+}
+
+/** 某演员名下全部作品（含本地是否已拥有）。 */
+export async function getLtxActor(name) {
+  return api.get('/jav/ltx-library/actor', { params: { name } })
+}
+
+/** 服务器端抓取线上 LTX 库并写入 ltx_archive（走内置代理，增量 upsert + 后台下载封面/头像）。 */
+export async function refreshLtxSnapshot() {
+  return api.post('/jav/ltx-snapshot/refresh')
+}
+
 export async function getJavMovie(id) {
   return api.get(`/jav/movies/${id}`)
 }

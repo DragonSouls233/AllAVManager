@@ -287,7 +287,7 @@ onMounted(() => {
 .stat-badge {
   font-size: 13px;
   font-weight: 400;
-  color: #909399;
+  color: var(--text-secondary);
   margin-left: 12px;
 }
 
@@ -320,15 +320,15 @@ onMounted(() => {
   padding: 8px 12px;
   border-radius: 4px;
   background: #fafafa;
-  border: 1px solid #ebeef5;
-  color: #303133;
+  border: 1px solid var(--hairline, var(--border-color));
+  color: var(--text-primary);
   cursor: pointer;
   transition: all 0.12s ease;
   text-decoration: none;
   user-select: none;
 }
 .category-tag:hover {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
   border-color: #f56c6c;
   color: #f56c6c;
 }
@@ -342,8 +342,8 @@ onMounted(() => {
 }
 .cat-count {
   font-size: 11px;
-  color: #909399;
-  background: #fff;
+  color: var(--text-secondary);
+  background: #ffffff;
   padding: 1px 6px;
   border-radius: 10px;
   min-width: 26px;
@@ -362,7 +362,7 @@ onMounted(() => {
   font-size: 24px;
   font-weight: 700;
   background: linear-gradient(135deg, #f56c6c, #f89898);
-  color: #fff;
+  color: #ffffff;
   padding: 6px 16px;
   border-radius: 4px;
   display: inline-block;

@@ -210,7 +210,7 @@ onMounted(async () => {
 .actors-section { margin-top: 16px; }
 .actors-section h3 { font-size: 14px; margin-bottom: 10px; color: #333; }
 .actors-grid { display: flex; gap: 10px; flex-wrap: wrap; }
-.actor-chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 20px; background: #f5f7fa; cursor: pointer; transition: background .2s; }
+.actor-chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 20px; background: var(--bg-page); cursor: pointer; transition: background .2s; }
 .actor-chip:hover { background: #e8ecf0; }
 .actor-chip img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
 .actor-chip span { font-size: 13px; color: #555; }

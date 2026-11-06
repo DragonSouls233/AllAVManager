@@ -56,7 +56,7 @@
     </div>
 
     <!-- 信息筛选 TAB：中文 / 没中文 / 无码 / 单人 / 信息全 / 信息不全 -->
-    <div class="info-tabs">
+    <div class="info-tabs" v-if="!hideTabs">
       <el-radio-group v-model="infoTab" @change="onInfoTabChange">
         <el-radio-button value="">全部</el-radio-button>
         <el-radio-button value="chinese">有中文</el-radio-button>
@@ -163,6 +163,13 @@ import { usePendingPoll } from '@/query'
 const router = useRouter()
 const route = useRoute()
 const store = useJavStore()
+
+// 2026-11-02：支持作为「独立 LTX 影片库」复用。
+// forcedTab 锁定信息筛选 tab（如 hd_uncensored）；hideTabs 隐藏筛选条防止切走。
+const props = defineProps({
+  forcedTab: { type: String, default: '' },
+  hideTabs: { type: Boolean, default: false },
+})
 const keyword = ref('')
 const scanning = ref(false)
 const sortBy = ref('')
@@ -247,13 +254,16 @@ function resetFilters() {
   sortBy.value = ''
   store.statusFilter = ''
   store.page = 1
+  // 独立库（LTX）重置时保留锁定筛选，确保「只显 LTX」
+  infoTab.value = props.forcedTab || ''
   router.replace({ path: route.path, query: {} })
   loadMovies()
 }
 
 // 信息筛选 TAB：''=全部 / chinese=有中文 / no_chinese=没中文 / uncensored=无码
 //              / hd_uncensored=高清无码(-LTX) / solo=单人 / complete=信息全 / incomplete=信息不全
-const infoTab = ref('')
+// 独立库（LTX）由 props.forcedTab 锁定初始值，配合 hideTabs 不可更改。
+const infoTab = ref(props.forcedTab || '')
 
 function onInfoTabChange() {
   store.page = 1
@@ -443,27 +453,32 @@ onBeforeUnmount(() => {
 .movies-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 16px;
+  gap: 18px;
 }
 
 .movie-card {
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 14px;
   overflow: hidden;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-  transition: transform .2s, box-shadow .2s;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
+  box-shadow: var(--shadow-kpi);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
 }
 
 .movie-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  transform: translateY(-3px);
+  border-color: var(--card-border-hover);
+  box-shadow: var(--shadow-hover, var(--shadow-card));
 }
 
 .cover {
-  aspect-ratio: 2/3;
+  aspect-ratio: 2 / 3;
   position: relative;
-  background: #f0f0f0;
+  background: var(--bg-hover);
   overflow: hidden;
 }
 
@@ -471,76 +486,90 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
 }
 
+.movie-card:hover .cover img {
+  transform: scale(1.04);
+}
+
+/* 玻璃拟态徽章（Peach 风） */
 .cover-badge {
   position: absolute;
-  top: 4px;
-  left: 4px;
-  background: rgba(0,0,0,0.5);
+  top: 8px;
+  left: 8px;
+  background: rgba(15, 18, 26, 0.5);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  backdrop-filter: blur(8px) saturate(140%);
   color: #fff;
   font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
 .cover-badges {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 8px;
+  right: 8px;
   display: flex;
-  gap: 3px;
+  gap: 4px;
 }
 
 .cover-status {
   position: absolute;
-  bottom: 4px;
-  right: 4px;
+  bottom: 8px;
+  right: 8px;
 }
 
 .info {
-  padding: 10px 12px;
+  padding: 10px 12px 12px;
 }
 
 .title {
   font-size: 13px;
-  font-weight: 500;
-  line-height: 1.3;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-bottom: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-bottom: 6px;
 }
 
 .meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .code {
   font-size: 12px;
-  font-family: monospace;
-  color: #409eff;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .studio {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .tags {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .actors {
   display: flex;
-  gap: 3px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
@@ -548,12 +577,18 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
+/* 工具条：商业版——收进一张发丝边卡片，不再是裸露的一排按钮 */
 .toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
   flex-wrap: wrap;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
+  border-radius: var(--radius-card, 10px);
+  box-shadow: var(--shadow-kpi);
 }
 
 .pagination {

@@ -265,27 +265,27 @@ onBeforeUnmount(() => stopPolling())
 <style scoped>
 .repair-dialog { min-height: 200px; }
 .file-info {
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(----el-fill-color-light, #f5f7fa);
   border-radius: 6px; padding: 10px 12px; margin-bottom: 14px;
   font-size: 13px;
 }
 .fi-row { display: flex; gap: 10px; margin: 2px 0; }
-.fi-label { color: var(--el-text-color-secondary, #909399); flex: none; width: 76px; }
+.fi-label { color: var(----el-text-color-secondary, #909399); flex: none; width: 76px; }
 .fi-value { word-break: break-all; }
-.fi-value.path { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--el-text-color-regular, #606266); }
+.fi-value.path { font-family: var(--font-mono, monospace); font-size: 12px; color: var(----el-text-color-regular, #606266); }
 .diag-alert { margin-bottom: 14px; }
 .diag-title { font-weight: 600; }
 .diag-detail { font-size: 12px; line-height: 1.6; margin-top: 4px; }
-.diag-meta { font-size: 12px; color: var(--el-text-color-secondary, #909399); margin-top: 4px; }
+.diag-meta { font-size: 12px; color: var(----el-text-color-secondary, #909399); margin-top: 4px; }
 .repair-options { margin-bottom: 14px; }
 .opt-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.radio-sub { font-size: 11px; color: var(--el-text-color-secondary, #909399); font-weight: normal; line-height: 1.5; margin-top: 2px; }
+.radio-sub { font-size: 11px; color: var(----el-text-color-secondary, #909399); font-weight: normal; line-height: 1.5; margin-top: 2px; }
 .opt-verify { display: block; margin-top: 10px; }
 .safety-alert { margin-top: 10px; }
 .job-panel { margin-top: 14px; }
 .job-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .job-status { display: flex; align-items: center; gap: 8px; }
-.job-stage { font-size: 13px; color: var(--el-text-color-regular, #606266); }
+.job-stage { font-size: 13px; color: var(----el-text-color-regular, #606266); }
 .repair-log {
   background: #1e1e2e; color: #a6accd;
   font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.6;
@@ -297,5 +297,5 @@ onBeforeUnmount(() => stopPolling())
 .result-panel { margin-top: 14px; }
 .result-rows { margin: 10px 0; font-size: 13px; }
 .res-row { display: flex; gap: 10px; margin: 4px 0; }
-.result-tip { font-size: 12px; color: var(--el-text-color-secondary, #909399); }
+.result-tip { font-size: 12px; color: var(----el-text-color-secondary, #909399); }
 </style>

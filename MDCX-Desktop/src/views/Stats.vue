@@ -229,7 +229,7 @@ const trendArea = computed(() => {
 .bar-track { height: 14px; background: rgba(125,125,125,0.18); border-radius: 7px; overflow: hidden; }
 .bar-track.actors { margin-top: 3px; }
 .bar-fill { height: 100%; border-radius: 7px; min-width: 2px; transition: width .4s; }
-.bar-fill.movies { background: linear-gradient(90deg,#409eff,#79bbff); }
+.bar-fill.movies { background: linear-gradient(90deg,var(--accent),#9aa6f2); }
 .bar-fill.actors { background: linear-gradient(90deg,#a855f7,#c084fc); }
 .bar-fill.src { background: linear-gradient(90deg,#10b981,#34d399); }
 .bar-fill.cover { background: linear-gradient(90deg,#f59e0b,#fbbf24); }
@@ -238,8 +238,8 @@ const trendArea = computed(() => {
 .bar-num.actors { color: #c084fc; }
 .trend-wrap { position: relative; }
 .trend-svg { width: 100%; height: 180px; display: block; }
-.trend-area { fill: rgba(64,158,255,0.18); }
-.trend-line { fill: none; stroke: #409eff; stroke-width: 2; }
+.trend-area { fill: rgba(84,104,212,0.18); }
+.trend-line { fill: none; stroke: var(--accent); stroke-width: 2; }
 .trend-axis { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.6; margin-top: 4px; }
-.trend-peak { position: absolute; top: 0; right: 0; font-size: 12px; color: #409eff; }
+.trend-peak { position: absolute; top: 0; right: 0; font-size: 12px; color: var(--accent); }
 </style>

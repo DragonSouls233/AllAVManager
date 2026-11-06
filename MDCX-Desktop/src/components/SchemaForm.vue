@@ -110,7 +110,7 @@
             <!-- 8. color_picker 颜色选择 -->
             <div v-else-if="field.widget === 'color_picker'" class="color-row">
               <el-color-picker
-                :model-value="modelValue[key] || field.default || '#409EFF'"
+                :model-value="modelValue[key] || field.default || '#5468d4'"
                 @update:model-value="(v) => emitUpdate(key, v)"
               />
               <el-input
@@ -465,9 +465,9 @@ defineExpose({
 .nested-form {
   width: 100%;
   padding: 8px 12px;
-  background: #fafbfc;
+  background: var(--bg-page);
   border-radius: 6px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
 }
 
 .nested-form :deep(.el-divider--text) {
@@ -480,7 +480,7 @@ defineExpose({
 
 .field-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
   line-height: 1.4;
 }

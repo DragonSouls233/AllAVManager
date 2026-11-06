@@ -146,7 +146,7 @@ onMounted(() => {
 }
 .coverage-label {
   font-size: 14px;
-  color: #606266;
+  color: var(--text-regular);
   margin-bottom: 8px;
 }
 .action-row {
@@ -171,11 +171,11 @@ onMounted(() => {
 }
 .dup-code {
   font-weight: bold;
-  color: #409eff;
+  color: var(--accent);
 }
 .dup-path {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   word-break: break-all;
 }
 </style>

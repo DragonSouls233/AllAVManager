@@ -1,0 +1,276 @@
+%% MDCX Phase 1 重构 · 类图（数据结构 + 服务）
+%% 对应 docs/redesign/ARCH-phase1.md §3
+classDiagram
+direction TB
+
+%% ---------- config/nav.js（纯数据，零 .vue 依赖） ----------
+class NavItem {
+  +String key
+  +String label
+  +String icon
+  +String to
+  +String kind        // 'link' | 'group'
+  +Boolean defaultOpen
+  +Array children
+  +String countKey    // 'movies' | null
+  +String moduleFlag  // 'jav' | null
+  +Array legacy       // 旧路径，用于选中态/面包屑
+  +String desc
+  +Boolean toolEnabled
+}
+
+class ModuleDef {
+  +String key
+  +String label
+  +String emoji
+  +String movies
+  +String actors
+  +String flag
+  +Boolean toolEnabled
+}
+
+class ToolDef {
+  +String key
+  +String label
+  +String tool          // TOOL_COMPONENTS 的键
+  +Boolean moduleAware  // 吃 module prop
+  +String onlyModule    // 'jav' | null
+  +Array legacy
+  +String section       // 组内子标题（图像质量）
+}
+
+class ToolGroup {
+  +String key           // scrape|fix|organize|health|download|system
+  +String label
+  +String icon
+  +String to
+  +String desc
+  +Array tools
+}
+
+class NavApi {
+  +Array NAV
+  +Array MODULES
+  +Array TOOL_GROUPS
+  +flattenNav(nav) Array
+  +resolveActiveKey(path, query) String
+  +resolveBreadcrumb(path, query) Array
+  +findToolByPath(path) Object
+}
+
+%% ---------- config/toolComponents.js ----------
+class ToolComponents {
+  +Object TOOL_COMPONENTS
+  +getComponent(toolKey) Component
+}
+
+%% ---------- stores/shellStats.js ----------
+class ShellStatsStore {
+  +String health        // ok|warn|error|unknown
+  +Object dashboard     // /stats/dashboard 原样
+  +Object taskStats     // /stats/tasks 原样
+  +String version
+  +Object enabled       // /modules/config
+  +Boolean loading
+  +Number moviesTotal
+  +Number actorsTotal
+  +Number pendingTotal
+  +Number failedTotal
+  +Object moduleMovies
+  +Number runningTasks
+  +Number taskPercent
+  +refresh() Promise
+  +loadModulesEnabled() Promise
+  +startPolling(ms) void
+  +stopPolling() void
+}
+
+%% ---------- 外壳 ----------
+class AppSidebar {
+  +Boolean modelValue   // collapsed
+  +Set openKeys         // 手风琴，持久化 mdcx_nav_open
+  +String activeKey
+  +toggleGroup(key) void
+  +onItemClick(item) void
+}
+
+class NavGroup {
+  +NavItem item
+  +Boolean collapsed
+  +Boolean open
+  +String activeKey
+  +toggle() void
+}
+
+class SidebarStatus {
+  +String health
+  +Number movies
+  +String version
+}
+
+class AppTopbar {
+  +Boolean collapsed
+  +Array breadcrumb
+  +emit update:collapsed
+  +emit open-search
+  +toggleDark() void
+  +toggleNsfw() void
+  +applyNsfwMode() void
+  +refresh() void
+  +logout() void
+}
+
+class PageBreadcrumb {
+  +String path
+  +Object query
+  +Array trail
+}
+
+class CommandPalette {
+  +Boolean modelValue
+  +String keyword
+  +Array pageResults
+  +Array contentResults
+  +Array recent
+  +Number activeIndex
+  +open() void
+  +close() void
+  +onKeydown(e) void
+  +run(item) void
+}
+
+%% ---------- 工具中心 ----------
+class ToolPageShell {
+  +String groupKey
+  +ToolGroup group
+  +ToolDef activeTool
+  +String currentModule
+  +Array moduleOptions
+  +Object moduleProps
+  +Boolean blocked
+  +setTool(key) void
+  +setModule(key) void
+  +normalizeQuery() void
+}
+
+class ToolCard {
+  +ToolGroup group
+  +Number toolCount
+  +String lastRunAt
+}
+
+%% ---------- 首页 ----------
+class Home {
+  +Array blocks
+}
+
+class HeroBanner {
+  +String username
+  +String greeting
+  +String health
+  +Number moviesTotal
+  +Number actorsTotal
+}
+
+class ContinueWatching {
+  +Array items
+  +Boolean loading
+  +load() Promise
+  +open(item) void
+  +cover(item) String
+}
+
+class KpiRow {
+  +Number tagTotal
+  +Array cards
+  +load() Promise
+}
+
+class ModulePills {
+  +Array pills
+}
+
+class QuickActions {
+  +Array actions
+}
+
+class RecentActivity {
+  +Array tasks
+  +Boolean loading
+  +String error
+  +load() Promise
+}
+
+class RecommendStrip {
+  +Array items
+  +load() Promise
+}
+
+class SystemStatusCard {
+  +String health
+  +Object coverage
+  +String version
+  +load() Promise
+}
+
+%% ---------- 外部 API（src/api/index.js 现有签名） ----------
+class ApiClient {
+  +getDashboardStats()
+  +getSystemHealth()
+  +getTaskStats()
+  +getStorageStats()
+  +getViewingResume(params)
+  +getTasks(params)
+  +getTags(params)
+  +getSeries(params)
+  +getRecommendations(limit)
+  +getModulesConfig()
+  +getVersion()
+}
+
+class UnifiedSearch {
+  +unifiedSearch(keyword, params)
+}
+
+%% ---------- 关系 ----------
+NavApi ..> NavItem : 导出
+NavApi ..> ModuleDef : 导出
+NavApi ..> ToolGroup : 导出
+ToolGroup "1" o-- "*" ToolDef : tools
+NavItem "1" o-- "*" NavItem : children
+
+AppSidebar --> NavApi : NAV + enabled
+AppSidebar *-- NavGroup
+AppSidebar *-- SidebarStatus
+AppSidebar ..> ShellStatsStore : moduleMovies / health
+
+AppTopbar *-- PageBreadcrumb
+AppTopbar --> NavApi : resolveBreadcrumb
+AppTopbar ..> ShellStatsStore : runningTasks / version
+AppTopbar ..> ToolComponents : 常用工具
+
+CommandPalette --> NavApi : flattenNav
+CommandPalette ..> UnifiedSearch
+
+ToolPageShell --> NavApi : TOOL_GROUPS
+ToolPageShell ..> ToolComponents : getComponent
+ToolPageShell ..> ShellStatsStore : enabled
+
+Home *-- HeroBanner
+Home *-- ContinueWatching
+Home *-- KpiRow
+Home *-- ModulePills
+Home *-- QuickActions
+Home *-- RecentActivity
+Home *-- RecommendStrip
+Home *-- SystemStatusCard
+
+ShellStatsStore ..> ApiClient : dashboard / health / tasks / modules
+HeroBanner ..> ShellStatsStore
+KpiRow ..> ShellStatsStore
+ModulePills ..> ShellStatsStore
+SystemStatusCard ..> ShellStatsStore
+ContinueWatching ..> ApiClient : getViewingResume x N
+RecentActivity ..> ApiClient : getTasks
+RecommendStrip ..> ApiClient : getRecommendations
+KpiRow ..> ApiClient : getTags(1,1)

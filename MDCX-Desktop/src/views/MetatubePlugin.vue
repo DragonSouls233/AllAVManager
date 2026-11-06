@@ -188,19 +188,19 @@ onMounted(() => { loadConfig() })
 }
 .card-header .el-tag { margin-left: 8px; }
 .hint { margin-left: 8px; color: #999; font-size: 12px; }
-.guide h3 { margin: 16px 0 8px; color: #303133; font-size: 15px; }
+.guide h3 { margin: 16px 0 8px; color: var(--text-primary); font-size: 15px; }
 .guide h3:first-child { margin-top: 0; }
-.guide p { margin: 6px 0; color: #606266; line-height: 1.6; }
-.guide ul { margin: 6px 0 6px 20px; color: #606266; }
+.guide p { margin: 6px 0; color: var(--text-regular); line-height: 1.6; }
+.guide ul { margin: 6px 0 6px 20px; color: var(--text-regular); }
 .guide li { margin: 4px 0; }
 .guide code {
-  background: #f5f7fa;
+  background: var(--bg-page);
   padding: 2px 6px;
   border-radius: 3px;
   font-family: 'Consolas', 'Monaco', monospace;
   color: #c7254e;
   font-size: 13px;
 }
-.guide a { color: #409EFF; text-decoration: none; }
+.guide a { color: var(--accent); text-decoration: none; }
 .guide a:hover { text-decoration: underline; }
 </style>

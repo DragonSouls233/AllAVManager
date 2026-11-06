@@ -758,7 +758,7 @@
 
         <!-- 有新版本 -->
         <div v-else-if="updateStatus === 'available'" class="update-state">
-          <el-icon :size="40" color="#409EFF"><Download /></el-icon>
+          <el-icon :size="40" color="#5468d4"><Download /></el-icon>
           <h3>发现新版本 v{{ updateVersion }}</h3>
           <div v-if="updateReleaseNotes" class="update-notes" v-html="updateReleaseNotes"></div>
           <p class="update-hint">点击下方按钮下载更新</p>
@@ -769,7 +769,7 @@
 
         <!-- 下载进度 -->
         <div v-else-if="updateStatus === 'downloading'" class="update-state">
-          <el-icon :size="32" color="#409EFF"><Download /></el-icon>
+          <el-icon :size="32" color="#5468d4"><Download /></el-icon>
           <p>正在下载更新...</p>
           <el-progress :percentage="updateProgress" :stroke-width="8" />
           <p class="update-progress-text">
@@ -1533,7 +1533,7 @@ const logout = () => {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #409eff 0%, #6a5acd 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, #8b7fd6 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1587,10 +1587,10 @@ const logout = () => {
 }
 
 .menu :deep(.el-menu-item.is-active) {
-  background: linear-gradient(90deg, rgba(64, 158, 255, 0.25) 0%, rgba(64, 158, 255, 0.08) 100%) !important;
+  background: linear-gradient(90deg, rgba(84, 104, 212, 0.25) 0%, rgba(84, 104, 212, 0.08) 100%) !important;
   color: #fff !important;
   font-weight: 500;
-  box-shadow: inset 3px 0 0 #409eff;
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .menu :deep(.el-sub-menu .el-menu) {
@@ -1653,13 +1653,13 @@ const logout = () => {
 }
 
 .user-avatar {
-  background: linear-gradient(135deg, #409eff 0%, #6a5acd 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, #8b7fd6 100%);
   color: #fff;
 }
 
 .user-name {
   font-size: 13px;
-  color: var(--text-regular, #606266);
+  color: var(----text-regular, #606266);
 }
 
 .main-content {
@@ -1760,13 +1760,13 @@ const logout = () => {
 .nsfw-panel-title {
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   margin-bottom: 4px;
 }
 
 .nsfw-panel-desc {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-bottom: 12px;
   line-height: 1.5;
 }
@@ -1777,7 +1777,7 @@ const logout = () => {
   justify-content: space-between;
   padding: 6px 0;
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .nsfw-panel :deep(.el-divider) {
@@ -1795,7 +1795,7 @@ const logout = () => {
   transition: background 0.15s;
 }
 .search-result-item:hover {
-  background: var(--el-color-primary-light-9, #ecf5ff);
+  background: var(--el-color-primary-light-9, #eceefb);
 }
 .search-result-module {
   font-size: 11px;
@@ -1806,9 +1806,9 @@ const logout = () => {
   text-align: center;
   flex-shrink: 0;
 }
-.mod-chinese { background: #fef0f0; color: #dc2626; }
-.mod-uncensored { background: #fdf6ec; color: #e6a23c; }
-.mod-fc2 { background: #ecf5ff; color: #409eff; }
+.mod-chinese { background: var(--el-color-danger-light-9); color: #dc2626; }
+.mod-uncensored { background: var(--el-color-warning-light-9); color: #e6a23c; }
+.mod-fc2 { background: #eceefb; color: var(--accent); }
 .mod-pornhub { background: #f0fdf4; color: #16a34a; }
 .mod-western { background: #fdf2f8; color: #db2777; }
 .search-result-title {
@@ -1838,7 +1838,7 @@ const logout = () => {
   font-size: 18px;
 }
 .update-dialog-content .update-hint {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
   margin: 0;
 }
@@ -1851,7 +1851,7 @@ const logout = () => {
   max-height: 200px;
   overflow-y: auto;
   text-align: left;
-  background: var(--el-bg-page, #f5f7fa);
+  background: var(----el-bg-page, #f5f7fa);
   padding: 12px;
   border-radius: 8px;
   font-size: 13px;
@@ -1860,7 +1860,7 @@ const logout = () => {
   box-sizing: border-box;
 }
 .update-dialog-content .update-progress-text {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 12px;
   margin: 0;
 }
@@ -1874,11 +1874,11 @@ const logout = () => {
   align-items: center;
   justify-content: space-between;
   background: var(--statusbar-bg, var(--bg-card, #fff));
-  border-top: 1px solid var(--border-color, #ebeef5);
+  border-top: 1px solid var(----border-color, #ebeef5);
   padding: 0 var(--space-4, 16px);
   height: var(--statusbar-height, 24px);
   font-size: var(--font-size-xs, 12px);
-  color: var(--text-secondary, #606266);
+  color: var(----text-secondary, #606266);
   gap: var(--space-4, 16px);
   box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.04);
   z-index: 5;
@@ -1903,11 +1903,11 @@ const logout = () => {
 }
 
 .status-item.muted {
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(----text-placeholder, #c0c4cc);
 }
 
 .status-item.undo-state.disabled {
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(----text-placeholder, #c0c4cc);
   opacity: 0.6;
 }
 
@@ -1937,7 +1937,7 @@ const logout = () => {
   color: var(--el-color-danger, #f56c6c);
 }
 .status-item.health-unknown {
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(----text-placeholder, #c0c4cc);
 }
 
 /* 任务进度 */
@@ -1965,7 +1965,7 @@ const logout = () => {
   right: 20px;
   width: 300px;
   background: var(--bg-card, #fff);
-  border: 1px solid var(--border-color, #ebeef5);
+  border: 1px solid var(----border-color, #ebeef5);
   border-radius: 12px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
   padding: 14px 16px;
@@ -1980,7 +1980,7 @@ const logout = () => {
 }
 
 .avatar-scrape-float .asf-spin {
-  color: #409eff;
+  color: var(--accent);
   animation: rotating 1.5s linear infinite;
 }
 
@@ -1988,7 +1988,7 @@ const logout = () => {
   flex: 1;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #303133);
+  color: var(----text-primary, #303133);
 }
 
 .avatar-scrape-float .asf-cancel {
@@ -2005,12 +2005,12 @@ const logout = () => {
 
 .avatar-scrape-float .asf-text {
   font-size: 12px;
-  color: var(--text-secondary, #606266);
+  color: var(----text-secondary, #606266);
 }
 
 .avatar-scrape-float .asf-current {
   font-size: 12px;
-  color: var(--text-placeholder, #909399);
+  color: var(----text-placeholder, #909399);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

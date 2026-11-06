@@ -271,7 +271,7 @@ onMounted(() => {
 
 .subtitle {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -302,7 +302,7 @@ onMounted(() => {
 
 .field-name {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   font-size: 13px;
 }
 
@@ -312,6 +312,6 @@ onMounted(() => {
 }
 
 .muted {
-  color: #c0c4cc;
+  color: var(--text-placeholder);
 }
 </style>

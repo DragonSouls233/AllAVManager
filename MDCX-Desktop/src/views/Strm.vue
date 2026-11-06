@@ -377,7 +377,7 @@ onMounted(() => {
   justify-content: space-between;
   margin-bottom: 16px;
   padding: 16px 20px;
-  background: linear-gradient(135deg, #ffffff 0%, #f5f7fa 100%);
+  background: linear-gradient(135deg, #ffffff 0%, var(--bg-page) 100%);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
@@ -388,13 +388,13 @@ onMounted(() => {
   gap: 8px;
   margin: 0;
   font-size: 20px;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .page-subtitle {
   margin-top: 4px;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .page-header-actions {
@@ -406,7 +406,7 @@ onMounted(() => {
 .stats-card {
   margin-bottom: 16px;
   border-radius: 8px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
 }
 
 .card-title {
@@ -414,18 +414,18 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
   line-height: 1.5;
 }
 
 .hint code {
-  background: #f5f7fa;
+  background: var(--bg-page);
   padding: 1px 4px;
   border-radius: 3px;
   font-family: 'Consolas', 'Monaco', monospace;
@@ -435,7 +435,7 @@ onMounted(() => {
 .error-list {
   margin-top: 12px;
   padding: 10px 12px;
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
   border-radius: 4px;
 }
 
@@ -452,7 +452,7 @@ onMounted(() => {
   gap: 8px;
   padding: 4px 0;
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .stats-grid {
@@ -464,22 +464,22 @@ onMounted(() => {
 .stat-item {
   text-align: center;
   padding: 16px 8px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%);
+  background: linear-gradient(135deg, var(--bg-page) 0%, #ffffff 100%);
   border-radius: 8px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
 }
 
 .stat-value {
   font-size: 24px;
   font-weight: 700;
-  color: #409eff;
+  color: var(--accent);
   line-height: 1.2;
 }
 
 .stat-label {
   margin-top: 4px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .output-path {
@@ -488,15 +488,15 @@ onMounted(() => {
 
 .output-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 
 .tips {
   padding: 12px;
-  background: #ecf5ff;
+  background: #eceefb;
   border-radius: 6px;
-  border-left: 3px solid #409eff;
+  border-left: 3px solid var(--accent);
 }
 
 .tips-title {
@@ -504,7 +504,7 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   margin-bottom: 8px;
   font-size: 13px;
 }
@@ -513,7 +513,7 @@ onMounted(() => {
   margin: 0;
   padding-left: 18px;
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
   line-height: 1.7;
 }
 

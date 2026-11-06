@@ -251,7 +251,7 @@ const svgHeight = 560
 
 // 关联类型 → 颜色
 const TYPE_COLOR = {
-  actor: '#409EFF',    // 蓝
+  actor: '#5468d4',    // 蓝
   series: '#67C23A',   // 绿
   tag: '#E6A23C',      // 橙
   studio: '#9B59B6'    // 紫
@@ -330,7 +330,7 @@ const layoutNodes = computed(() => {
     y: cy,
     r: R_MAX,
     fill: TYPE_COLOR.actor,
-    stroke: 'var(--primary-color, #409eff)',
+    stroke: 'var(--primary-color, #5468d4)',
     isCenter: true
   })
 
@@ -541,7 +541,7 @@ function onDepthChange() {
   background: var(--text-placeholder);
 }
 
-.dot-actor { background: #409EFF; }
+.dot-actor { background: var(--accent); }
 .dot-series { background: #67C23A; }
 .dot-tag { background: #E6A23C; }
 .dot-studio { background: #9B59B6; }
@@ -557,7 +557,7 @@ function onDepthChange() {
   width: 100%;
   height: 560px;
   display: block;
-  background: radial-gradient(circle at center, rgba(64, 158, 255, 0.04) 0%, transparent 70%);
+  background: radial-gradient(circle at center, rgba(84, 104, 212, 0.04) 0%, transparent 70%);
 }
 
 .graph-node-g {

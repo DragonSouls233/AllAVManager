@@ -47,7 +47,7 @@
           @click="entry.type === 'directory' ? enter(entry) : undefined"
         >
           <div class="entry-icon">
-            <el-icon v-if="entry.type === 'directory'" size="22" color="#409eff"><FolderOpened /></el-icon>
+            <el-icon v-if="entry.type === 'directory'" size="22" color="#5468d4"><FolderOpened /></el-icon>
             <el-icon v-else size="22" color="#909399"><Document /></el-icon>
           </div>
           <div class="entry-name" :title="entry.name">{{ entry.name }}</div>
@@ -197,7 +197,7 @@ onMounted(() => {
 
 .subtitle {
   margin: 0;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -215,14 +215,14 @@ onMounted(() => {
   gap: 12px;
   margin-bottom: 12px;
   padding: 10px 14px;
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light, var(--bg-page));
   border-radius: 8px;
   flex-wrap: wrap;
 }
 
 .crumb-link {
   cursor: pointer;
-  color: #409eff;
+  color: var(--accent);
 }
 
 .crumb-link:hover {
@@ -231,7 +231,7 @@ onMounted(() => {
 
 .current-path {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   font-family: monospace;
   word-break: break-all;
 }
@@ -250,7 +250,7 @@ onMounted(() => {
   padding: 12px;
   border-radius: 10px;
   background: #fff;
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border: 1px solid var(--el-border-color-lighter, var(--hairline, var(--border-color)));
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
 }
@@ -277,7 +277,7 @@ onMounted(() => {
   flex: 1;
   min-width: 0;
   font-size: 13px;
-  color: #303133;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -285,7 +285,7 @@ onMounted(() => {
 
 .entry-meta {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 </style>

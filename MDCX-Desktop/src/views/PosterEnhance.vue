@@ -460,7 +460,7 @@ onMounted(loadConfig)
 .position-cell.active {
   border-color: var(--primary-color);
   background: var(--brand-gradient-soft);
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.2);
+  box-shadow: 0 0 0 2px rgba(84, 104, 212, 0.2);
 }
 
 .position-box {

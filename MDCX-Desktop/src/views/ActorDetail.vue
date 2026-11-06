@@ -965,7 +965,9 @@ onMounted(() => {
 
 .profile-card,
 .movies-card {
-  border-radius: 12px;
+  border-radius: var(--radius-card, 10px);
+  border: 1px solid var(--hairline, var(--border-color));
+  box-shadow: var(--shadow-card);
 }
 
 .profile {
@@ -977,9 +979,15 @@ onMounted(() => {
 .profile-avatar {
   width: 140px;
   height: 140px;
+  /* 刻意保留正圆，不套 14px：EntityHero 的默认 portrait 形状是 round，
+     jav/fc2/chinese/pornhub/western 等演员页共用同一形状；只把本页改成圆角方块
+     会让演员详情与其它 7 个演员页不一致。容器处理（hairline + shadow-card +
+     bg-hover）已与 MovieDetail 的 .cover-wrap 对齐，仅圆角保留形状语义。 */
   border-radius: 50%;
   overflow: hidden;
-  background: #eef2ff;
+  background: var(--bg-hover);
+  border: 1px solid var(--hairline, var(--border-color));
+  box-shadow: var(--shadow-card);
   flex-shrink: 0;
   position: relative;
   cursor: pointer;
@@ -1021,14 +1029,16 @@ onMounted(() => {
 }
 
 .profile-name {
-  font-size: 32px;
+  font-size: 27px;
   font-weight: 700;
-  color: #111827;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--text-primary);
 }
 
 .profile-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 /* 合并来源别名 */
@@ -1042,7 +1052,7 @@ onMounted(() => {
 
 .profile-alias .alias-label {
   font-size: 14px;
-  color: #b45309;
+  color: var(--warning-color);
   font-weight: 600;
 }
 
@@ -1051,7 +1061,7 @@ onMounted(() => {
 }
 
 .profile-alias .alias-hint {
-  color: #9ca3af;
+  color: var(--text-placeholder);
   cursor: help;
 }
 
@@ -1075,13 +1085,14 @@ onMounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 10px;
   margin-top: 18px;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .profile-grid span {
   display: block;
-  color: #9ca3af;
+  color: var(--text-secondary);
   font-size: 12px;
+  letter-spacing: 0.02em;
   margin-bottom: 2px;
 }
 
@@ -1092,8 +1103,9 @@ onMounted(() => {
 }
 
 .count {
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .movies-grid {
@@ -1105,22 +1117,27 @@ onMounted(() => {
 
 .movie-card {
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 12px;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #ebeef5;
-  transition: transform 0.2s, box-shadow 0.2s;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
+  box-shadow: var(--shadow-kpi);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
 }
 
 .movie-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-pop);
+  border-color: var(--card-border-hover);
 }
 
 .movie-cover {
   position: relative;
   height: 240px;
-  background: #eee;
+  background: var(--bg-hover);
 }
 
 .movie-cover img {
@@ -1168,7 +1185,7 @@ onMounted(() => {
 }
 
 .movie-badge.uncensored {
-  background: #409eff;
+  background: var(--accent);
 }
 
 .movie-badge.uc {
@@ -1213,12 +1230,15 @@ onMounted(() => {
 
 .movie-code {
   font-weight: 700;
-  color: #409eff;
+  color: var(--accent);
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .movie-title {
   margin-top: 4px;
-  color: #303133;
+  color: var(--text-primary);
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1227,8 +1247,9 @@ onMounted(() => {
 
 .movie-date {
   margin-top: 4px;
-  color: #909399;
+  color: var(--text-secondary);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .pagination {
@@ -1248,24 +1269,29 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #409eff;
+  color: var(--accent);
   font-size: 13px;
   text-decoration: none;
   padding: 4px 10px;
-  border: 1px solid #d9ecff;
-  border-radius: 4px;
-  background: #ecf5ff;
+  border: 1px solid var(--hairline, var(--border-color));
+  border-radius: var(--radius-ctl, 8px);
+  background: var(--bg-hover);
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease;
 }
 .social-link:hover {
-  background: #409eff;
+  background: var(--accent);
   color: #fff;
+  border-color: var(--accent);
 }
 
 /* v3.4 新增：演员标签 */
 .profile-tags {
   margin-top: 18px;
   padding-top: 14px;
-  border-top: 1px dashed #e4e7ed;
+  border-top: 1px dashed var(--hairline, var(--border-color));
 }
 .tags-header {
   display: flex;
@@ -1274,9 +1300,10 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 .tags-title {
-  font-size: 13px;
-  color: #606266;
+  font-size: 12px;
+  color: var(--text-secondary);
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .tags-list {
   display: flex;
@@ -1288,7 +1315,7 @@ onMounted(() => {
   margin: 0;
 }
 .tags-empty {
-  color: #c0c4cc;
+  color: var(--text-placeholder);
   font-size: 12px;
 }
 .popular-tags {
@@ -1328,9 +1355,9 @@ onMounted(() => {
   gap: 6px;
   height: 200px;
   padding: 12px 8px;
-  background: #fafbfc;
-  border-radius: 8px;
-  border: 1px solid #ebeef5;
+  background: var(--bg-hover);
+  border-radius: var(--radius-card, 10px);
+  border: 1px solid var(--hairline, var(--border-color));
   overflow-x: auto;
 }
 .chart-bar-wrapper {
@@ -1343,45 +1370,55 @@ onMounted(() => {
   cursor: pointer;
   padding: 0 2px;
   border-radius: 4px;
-  transition: background 0.2s;
+  transition: background-color 0.18s ease;
 }
 .chart-bar-wrapper:hover {
-  background: rgba(64, 158, 255, 0.08);
+  background: var(--hover-layer);
 }
 .chart-bar-wrapper.active {
-  background: rgba(64, 158, 255, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .chart-bar-count {
   font-size: 12px;
-  color: #606266;
+  color: var(--text-regular);
   margin-bottom: 4px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .chart-bar {
   width: 24px;
-  background: linear-gradient(180deg, #409eff 0%, #79bbff 100%);
+  background: linear-gradient(
+    180deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 55%, #fff) 100%
+  );
   border-radius: 3px 3px 0 0;
   min-height: 8px;
   transition: height 0.3s;
 }
 .chart-bar-wrapper.active .chart-bar {
-  background: linear-gradient(180deg, #e6a23c 0%, #f3d19e 100%);
+  background: linear-gradient(
+    180deg,
+    var(--warning-color) 0%,
+    color-mix(in srgb, var(--warning-color) 55%, #fff) 100%
+  );
 }
 .chart-bar-label {
   font-size: 11px;
-  color: #909399;
+  color: var(--text-placeholder);
   margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
 .chart-hint {
   text-align: center;
-  color: #c0c4cc;
+  color: var(--text-placeholder);
   font-size: 12px;
   margin-top: -8px;
 }
 
 /* 时间线年份作品列表 */
 .year-movies {
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--hairline, var(--border-color));
   padding-top: 16px;
 }
 .year-header {
@@ -1391,12 +1428,14 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 .year-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #303133;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 .unknown-year .year-title {
-  color: #909399;
+  color: var(--text-placeholder);
 }
 .year-movies-grid {
   display: grid;
@@ -1407,13 +1446,20 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   padding: 8px;
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
+  border: 1px solid var(--hairline, var(--border-color));
+  border-radius: 12px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-kpi);
   cursor: pointer;
-  transition: box-shadow 0.2s;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
 }
 .movie-card-mini:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-pop);
+  border-color: var(--card-border-hover);
 }
 .mini-cover {
   position: relative;
@@ -1422,7 +1468,7 @@ onMounted(() => {
   flex-shrink: 0;
   border-radius: 4px;
   overflow: hidden;
-  background: #f5f7fa;
+  background: var(--bg-hover);
 }
 .mini-cover img {
   width: 100%;
@@ -1438,12 +1484,14 @@ onMounted(() => {
 }
 .mini-code {
   font-weight: 700;
-  color: #409eff;
+  color: var(--accent);
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
 }
 .mini-title {
   margin-top: 2px;
-  color: #606266;
+  color: var(--text-secondary);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1453,18 +1501,19 @@ onMounted(() => {
 }
 .mini-date {
   margin-top: 2px;
-  color: #c0c4cc;
+  color: var(--text-placeholder);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .current-name {
   font-size: 16px;
-  color: #e6a23c;
+  color: var(--warning-color);
   font-weight: 500;
 }
 .fix-name-help {
   font-size: 12px;
   line-height: 1.8;
-  color: #606266;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 .fix-name-help p {

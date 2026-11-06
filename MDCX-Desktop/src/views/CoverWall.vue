@@ -149,16 +149,16 @@ onMounted(() => loadData())
 .header-right { display: flex; align-items: center; gap: 10px; }
 .cover-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 6px; padding: 6px;
+  gap: 8px; padding: 8px;
 }
-.cover-item { position: relative; cursor: pointer; border-radius: 4px; overflow: hidden; transition: transform .2s; }
+.cover-item { position: relative; cursor: pointer; border-radius: 8px; overflow: hidden; transition: transform var(--transition-base); }
 .cover-item:hover { transform: scale(1.03); z-index: 2; }
 .cover-image-wrapper { position: relative; aspect-ratio: 2/3; overflow: hidden; background: #1a1a1a; }
 .cover-image { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-badge { position: absolute; top: 4px; left: 4px; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; color: #fff; }
 .badge-jav { background: #e74c3c; } .badge-uncensored { background: #9b59b6; } .badge-fc2 { background: #2ecc71; } .badge-chinese { background: #f39c12; } .badge-western { background: #3498db; }
-.cover-code-overlay { position: absolute; bottom: 4px; left: 4px; padding: 1px 5px; background: rgba(0,0,0,0.7); color: #ddd; font-size: 10px; font-family: monospace; border-radius: 2px; }
-.cover-info { padding: 6px 8px; background: #1a1a1a; }
+.cover-code-overlay { position: absolute; bottom: 4px; left: 4px; padding: 1px 5px; background: rgba(0,0,0,0.7); color: #ddd; font-size: 10px; font-family: monospace; border-radius: 2px; font-variant-numeric: tabular-nums; }
+.cover-info { padding: 8px 10px; background: #1a1a1a; }
 .cover-title-line { margin: 0 0 3px; font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cover-tags { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 2px; }
 .tag-studio { font-size: 10px; color: #888; background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 2px; }

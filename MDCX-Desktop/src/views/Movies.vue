@@ -1,7 +1,7 @@
 <template>
   <div class="movies-page">
-    <!-- 工具栏 -->
-    <el-card shadow="never" class="toolbar-card">
+    <!-- 工具栏：用留白 + 底部分隔线区分区域，不套闭合卡片（Peach 准则：内容建层级） -->
+    <div class="toolbar-wrap">
       <div class="toolbar">
         <el-input
           v-model="keyword"
@@ -27,7 +27,6 @@
               v-for="mode in viewModes"
               :key="mode.value"
               :type="uiStore.viewMode === mode.value ? 'primary' : 'default'"
-              size="small"
               :title="mode.label"
               @click="uiStore.setViewMode(mode.value)"
             >
@@ -38,7 +37,6 @@
           <el-button-group class="image-mode-group">
             <el-button
               :type="uiStore.imageMode === 'poster' ? 'primary' : 'default'"
-              size="small"
               title="封面图"
               @click="uiStore.setImageMode('poster')"
             >
@@ -46,7 +44,6 @@
             </el-button>
             <el-button
               :type="uiStore.imageMode === 'thumbnail' ? 'primary' : 'default'"
-              size="small"
               title="缩略图（视频截图）"
               @click="uiStore.setImageMode('thumbnail')"
             >
@@ -56,7 +53,6 @@
           <!-- 海报模式切换：完整/马赛克/仅番号（B2 纯净模式） -->
           <el-radio-group
             v-model="posterModeProxy"
-            size="small"
             class="poster-mode-group"
           >
             <el-radio-button value="full" title="完整显示海报">完整</el-radio-button>
@@ -98,7 +94,7 @@
           </el-button>
         </div>
       </div>
-    </el-card>
+    </div>
 
     <!-- 首字母导航 -->
     <AlphabetNav
@@ -190,7 +186,8 @@
     <!-- 无限滚动哨兵 -->
     <div ref="sentinelRef" class="scroll-sentinel" v-if="total > 0" aria-live="polite">
       <div v-if="loadingMore" class="loading-more">
-        <el-icon class="is-loading"><Loading /></el-icon>
+        <!-- 不转圈：用细进度条表达"正在加载"，不产生成功结论（Peach 准则：反馈来自真实状态） -->
+        <div class="load-bar"><div class="load-bar-fill"></div></div>
         <span>加载更多...</span>
       </div>
       <div v-else-if="!hasMore" class="no-more">
@@ -222,7 +219,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  Search, Sort, Refresh, Star, Filter, Loading,
+  Search, Sort, Refresh, Star, Filter,
   Grid, Menu as MenuIcon, List, Picture, VideoCamera
 } from '@element-plus/icons-vue'
 // 注意：此处图标列表仅为占位，海报模式按钮组使用 el-radio-button 文本，无需额外图标
@@ -253,16 +250,16 @@ const cardSize = computed(() => {
   const isThumbnail = uiStore.imageMode === 'thumbnail'
   if (uiStore.viewMode === 'compact') {
     return isThumbnail
-      ? { minWidth: 200, height: 200, gap: 10 }
-      : { minWidth: 150, height: 300, gap: 10 }
+      ? { minWidth: 200, height: 200, gap: 12 }
+      : { minWidth: 150, height: 300, gap: 12 }
   }
   if (uiStore.viewMode === 'detail') {
-    return { minWidth: 560, height: 240, gap: 12 }
+    return { minWidth: 560, height: 240, gap: 14 }
   }
   // standard
   return isThumbnail
-    ? { minWidth: 280, height: 260, gap: 16 }
-    : { minWidth: 220, height: 420, gap: 16 }
+    ? { minWidth: 280, height: 260, gap: 18 }
+    : { minWidth: 220, height: 420, gap: 18 }
 })
 
 // 虚拟滚动容器高度:窗口高度 - 头部/工具栏/字母导航等估算空间
@@ -805,8 +802,11 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.toolbar-card {
-  border-radius: 8px !important;
+/* 工具栏：去掉闭合卡片框，改用留白 + 底部分隔线建立层级（Peach 准则 1） */
+.toolbar-wrap {
+  padding: 2px 0 14px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 4px;
 }
 
 .toolbar {
@@ -906,13 +906,31 @@ onBeforeUnmount(() => {
 .loading-more {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   color: var(--text-secondary);
   font-size: 13px;
 }
 
-.loading-more .is-loading {
-  animation: rotating 1.5s linear infinite;
+/* 增量加载：细进度条而非旋转图标（Peach 准则：反馈来自真实状态，动画不伪装成功） */
+.load-bar {
+  width: 120px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--border-color);
+  overflow: hidden;
+}
+
+.load-bar-fill {
+  width: 40%;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--primary-color);
+  animation: load-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes load-indeterminate {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
 }
 
 .no-more {

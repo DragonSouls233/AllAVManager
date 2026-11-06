@@ -340,19 +340,19 @@ onMounted(async () => {
 
 .logo h1 {
   font-size: 48px;
-  color: #409eff;
+  color: var(--accent);
   margin: 0;
 }
 
 .logo p {
-  color: #666;
+  color: #666666;
   margin-top: 8px;
 }
 
 .auto-login {
   text-align: center;
   padding: 40px 0;
-  color: #666;
+  color: #666666;
 }
 
 .auto-login p {
@@ -377,13 +377,13 @@ onMounted(async () => {
 .server-pop-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   margin-bottom: 10px;
 }
 
 .server-pop-tip {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 6px;
 }
 
@@ -404,12 +404,12 @@ onMounted(async () => {
 }
 
 .server-status.ok {
-  background: #f0f9eb;
+  background: var(--el-color-success-light-9);
   color: #67c23a;
 }
 
 .server-status.fail {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
   color: #f56c6c;
 }
 </style>

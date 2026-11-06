@@ -139,11 +139,11 @@ onMounted(loadAll)
   display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px;
 }
 .movie-card-item { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; overflow: hidden; }
-.cover { position: relative; aspect-ratio: 2 / 3; background: #f5f7fa; cursor: pointer; }
+.cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-page); cursor: pointer; }
 .cover-img { width: 100%; height: 100%; }
 .no-cover {
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
-  color: #c0c4cc; font-size: 12px;
+  color: var(--text-placeholder); font-size: 12px;
 }
 .module-tag { position: absolute; left: 6px; top: 6px; }
 .meta { padding: 8px; }

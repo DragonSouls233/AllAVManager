@@ -213,7 +213,18 @@ const MODULE_MAP = {
 }
 const DEFAULT_MODULE = { types: [], title: '全部爬虫', desc: '所有模块的刮削站点', alertType: '' }
 
+// 2026-11-01 工具中心（ARCH-phase1 §11-2）：
+// 本组件由 6 条旧路由（/jav/scrape 等）与工具中心 /tools/scrape 共用，
+// 模块来源存在两条路径：旧路由用 path 段，工具中心用 props.module / ?module=。
+// 优先级：props.module > route.query.module > path 段；旧路径行为完全不变。
+const props = defineProps({
+  module: { type: String, default: null },
+})
+
 const moduleKey = computed(() => {
+  if (props.module && MODULE_MAP[props.module]) return props.module
+  const q = route.query.module
+  if (typeof q === 'string' && MODULE_MAP[q]) return q
   const seg = route.path.split('/')
   return MODULE_MAP[seg[1]] ? seg[1] : null
 })
@@ -403,25 +414,25 @@ onMounted(() => { loadCrawlers() })
 </script>
 
 <style scoped>
-.crawlers { display:flex; flex-direction:column; gap:16px; }
+.crawlers { display:flex; flex-direction:column; gap:20px; }
 .module-banner { margin-bottom:0; }
 .stats-row { margin-bottom:0; }
-.stat-card { border-radius:10px; border:none; }
+/* .stat-card 的 border-radius/border 被 commercial.css 的 .el-card !important 覆盖，scoped 无效，删除 */
 .stat-inner { text-align:center; padding:8px 0; }
 .stat-num { font-size:28px; font-weight:700; line-height:1.2; }
-.stat-num.primary { color:#409eff; }
-.stat-num.success { color:#67c23a; }
-.stat-num.warning { color:#e6a23c; }
-.stat-num.info { color:#909399; }
-.stat-num.danger { color:#f56c6c; }
-.stat-label { color:#909399; font-size:13px; margin-top:4px; }
-.toolbar-card, .table-card { border-radius:10px; }
+.stat-num.primary { color:var(--accent); }
+.stat-num.success { color:var(--success-color); }
+.stat-num.warning { color:var(--warning-color); }
+.stat-num.info { color:var(--text-secondary); }
+.stat-num.danger { color:var(--danger-color); }
+.stat-label { color:var(--text-secondary); font-size:13px; margin-top:4px; }
+/* .toolbar-card/.table-card 的 border-radius 被 commercial.css 的 .el-card !important 覆盖，scoped 无效，删除 */
 .toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
 .toolbar-left, .toolbar-right { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.filter-hint { font-size:12px; color:#909399; }
-.crawler-name { font-family:Consolas,Monaco,monospace; font-weight:600; color:#303133; }
-.text-muted { color:#c0c4cc; }
-.text-ok { color:#67c23a; font-size:12px; }
+.filter-hint { font-size:12px; color:var(--text-secondary); }
+.crawler-name { font-family:Consolas,Monaco,monospace; font-weight:600; color:var(--text-primary); }
+.text-muted { color:var(--text-placeholder); }
+.text-ok { color:var(--success-color); font-size:12px; }
 
 /* 熔断横幅 */
 .breaker-banner { margin-bottom:12px; }
@@ -433,13 +444,14 @@ onMounted(() => { loadCrawlers() })
 .cap-tag { margin:0 4px 2px 0; }
 .breaker-cell { font-variant-numeric: tabular-nums; }
 .priority-badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:12px; font-weight:600; color:#fff; }
-.priority-badge.p-high { background:#f56c6c; }
-.priority-badge.p-mid { background:#e6a23c; }
-.priority-badge.p-low { background:#409eff; }
-.priority-badge.p-lowest { background:#909399; }
-.latency.good { color:#67c23a; font-weight:600; }
-.latency.ok { color:#e6a23c; font-weight:600; }
-.latency.slow { color:#f56c6c; font-weight:600; }
-.latency.bad { color:#f56c6c; font-weight:600; }
+.priority-badge.p-high { background:var(--danger-color); }
+.priority-badge.p-mid { background:var(--warning-color); }
+.priority-badge.p-low { background:var(--accent); }
+.priority-badge.p-lowest { background:var(--text-placeholder); }
+.latency.good { color:var(--success-color); font-weight:600; }
+.latency.ok { color:var(--warning-color); font-weight:600; }
+.latency.slow { color:var(--danger-color); font-weight:600; }
+.latency.bad { color:var(--danger-color); font-weight:600; }
+/* 测试输出：终端/代码表面，固定深底浅字，刻意不跟随主题（同 Logs 终端面板） */
 .test-result { background:#1a1a2e; color:#a5d6ff; padding:12px; border-radius:6px; font-size:12px; max-height:320px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
 </style>

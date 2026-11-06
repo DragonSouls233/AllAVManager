@@ -280,10 +280,10 @@ onMounted(() => {
   margin-bottom: 4px;
 }
 .group-item:hover {
-  background: #f5f7fa;
+  background: var(--bg-page);
 }
 .group-item.active {
-  background: #ecf5ff;
+  background: #eceefb;
 }
 .group-info {
   display: flex;
@@ -296,7 +296,7 @@ onMounted(() => {
 }
 .group-more {
   cursor: pointer;
-  color: #909399;
+  color: var(--text-secondary);
 }
 .items-card {
   min-height: 400px;
@@ -315,11 +315,11 @@ onMounted(() => {
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--hairline, var(--border-color));
 }
 .item-cover {
   height: 200px;
-  background: #f5f7fa;
+  background: var(--bg-page);
   cursor: pointer;
   overflow: hidden;
 }
@@ -333,7 +333,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #c0c4cc;
+  color: var(--text-placeholder);
 }
 .item-info {
   padding: 8px;

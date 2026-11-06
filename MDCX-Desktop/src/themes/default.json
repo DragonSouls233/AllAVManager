@@ -1,19 +1,19 @@
 {
   "name": "default",
-  "display_name": "经典蓝紫",
-  "description": "与系统默认一致的经典蓝紫色调，清爽舒适",
+  "display_name": "Peach 中性",
+  "description": "中性灰阶打底 + 极淡靛蓝强调（Peach 设计语言），清爽且内容优先",
   "colors": {
-    "primary": "#409eff",
-    "success": "#67c23a",
-    "warning": "#e6a23c",
-    "danger": "#f56c6c",
-    "info": "#909399",
-    "background": "#f0f2f5",
+    "primary": "#5468d4",
+    "success": "#10b981",
+    "warning": "#f59e0b",
+    "danger": "#ef4444",
+    "info": "#6b7280",
+    "background": "#f6f7f9",
     "surface": "#ffffff",
-    "text": "#303133",
-    "border": "#ebeef5",
-    "link": "#409eff"
+    "text": "#1b1e24",
+    "border": "#e5e7ec",
+    "link": "#5468d4"
   },
-  "radius": 8,
+  "radius": 12,
   "font_size": 14
 }

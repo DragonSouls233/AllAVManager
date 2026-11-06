@@ -630,53 +630,63 @@ function goFixName(row) {
 .actors-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 20px;
+  gap: 18px;
   min-height: 400px;
 }
 
 .actor-card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--hairline, var(--border-color));
+  border-radius: 14px;
+  padding: 18px 14px 14px;
   text-align: center;
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: var(--shadow-kpi);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
 .actor-card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+  transform: translateY(-3px);
+  border-color: var(--card-border-hover);
+  box-shadow: var(--shadow-card);
 }
 
 .actor-avatar {
-  width: 100px;
-  height: 100px;
-  margin: 0 auto 15px;
+  width: 104px;
+  height: 104px;
+  margin: 0 auto 14px;
   border-radius: 50%;
   overflow: hidden;
-  background: #eee;
+  background: var(--bg-hover);
+  box-shadow: 0 4px 14px -6px rgba(16, 24, 40, 0.35);
 }
 
 .actor-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
+}
+
+.actor-card:hover .actor-avatar img {
+  transform: scale(1.05);
 }
 
 .actor-name {
-  font-weight: bold;
-  color: #333;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .actor-name-jp {
   font-size: 12px;
-  color: #999;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
 .actor-movies {
   font-size: 12px;
-  color: #409eff;
+  color: var(--accent);
   margin-top: 8px;
 }
 
@@ -695,7 +705,7 @@ function goFixName(row) {
 }
 
 .muted {
-  color: #909399;
+  color: var(--text-secondary);
 }
 
 .avatar-actions {
@@ -712,15 +722,15 @@ function goFixName(row) {
 }
 
 .preview-chip {
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light, var(--bg-page));
   border-radius: 14px;
   padding: 4px 12px;
   font-size: 13px;
-  color: #606266;
+  color: var(--text-regular);
 }
 
 .preview-chip small {
-  color: #909399;
+  color: var(--text-secondary);
   margin-left: 2px;
 }
 

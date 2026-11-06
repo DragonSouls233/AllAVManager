@@ -25,7 +25,7 @@
       <!-- 概要卡片 -->
       <div class="summary-grid" v-if="report">
         <div class="summary-card">
-          <div class="summary-icon" style="background: rgba(64, 158, 255, 0.15); color: #409eff">
+          <div class="summary-icon" style="background: rgba(84, 104, 212, 0.15); color: #5468d4">
             <el-icon size="24"><VideoPlay /></el-icon>
           </div>
           <div class="summary-content">
@@ -213,7 +213,7 @@
               <polyline
                 :points="trendPoints"
                 fill="none"
-                stroke="#409eff"
+                stroke="#5468d4"
                 stroke-width="1.5"
               />
               <polygon
@@ -223,8 +223,8 @@
               />
               <defs>
                 <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#409eff" />
-                  <stop offset="100%" stop-color="#409eff" stop-opacity="0" />
+                  <stop offset="0%" stop-color="#5468d4" />
+                  <stop offset="100%" stop-color="#5468d4" stop-opacity="0" />
                 </linearGradient>
               </defs>
             </svg>
@@ -475,7 +475,7 @@ onMounted(() => {
 /* AI 洞察 */
 .insights-card {
   border-radius: 8px !important;
-  background: linear-gradient(135deg, rgba(64, 158, 255, 0.05), rgba(144, 147, 153, 0.05));
+  background: linear-gradient(135deg, rgba(84, 104, 212, 0.05), rgba(144, 147, 153, 0.05));
 }
 
 .card-title {
@@ -619,7 +619,7 @@ onMounted(() => {
 
 .hour-bar {
   width: 70%;
-  background: linear-gradient(180deg, #409eff, #79bbff);
+  background: linear-gradient(180deg, var(--accent), #9aa6f2);
   border-radius: 2px 2px 0 0;
   min-height: 2px;
   transition: height 0.3s;

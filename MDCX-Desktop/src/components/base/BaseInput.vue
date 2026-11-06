@@ -31,7 +31,7 @@ function handleInput(val) { emit('update:modelValue', val) }
   display: block;
   margin-bottom: 6px;
   font-size: 13px;
-  color: var(--text-regular, #606266);
+  color: var(----text-regular, #606266);
   font-weight: 500;
 }
 </style>

@@ -817,21 +817,25 @@ onMounted(() => {
   flex-direction: column;
 }
 
+/* 选项卡容器只补圆角；边框/底色由 EP 的 type="border-card" 自绘，不再叠一层 */
 .settings-tabs {
-  border-radius: 10px;
+  border-radius: var(--radius-card, 10px);
 }
 
-.setting-card {
-  border-radius: 8px;
-  border: none;
-}
+/* ⚠️ 原来这里写 `.setting-card { border: none; border-radius: 8px }` —— 属无效声明：
+   src/styles/commercial.css 的 `.el-card` 用 `!important` 统一了
+   border/radius/shadow（v6 规范），scoped 无 !important 的写法永远被覆盖。
+   卡片质感已由全局提供，此处刻意留空，避免后人误以为这里能改卡片样式。 */
 
+/* 分区标题：16px / 600 / -0.01em（v6 分区标题口径） */
 .card-title {
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
 }
 
 .header-actions {
@@ -840,41 +844,50 @@ onMounted(() => {
   gap: 8px;
 }
 
+/* .el-card__body 已有 20px 内边距，这里归零，避免 20+16 叠加 */
 .about-content {
-  padding: 16px;
+  padding: 0;
 }
 
 .about-content h2 {
-  color: #409eff;
   margin: 0 0 20px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--accent);
 }
 
+/* 表单说明文字：12px + 次级色（对齐"表单项标签 12–13px secondary"） */
 .form-tip {
   margin-top: 6px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
 }
 
 .about-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
+  gap: 20px;
 }
 
 .about-item {
   padding: 12px 16px;
-  background: #f5f7fa;
-  border-radius: 8px;
+  background: var(--bg-page);
+  border: 1px solid var(--hairline, var(--border-color));
+  border-radius: var(--radius-ctl, 8px);
 }
 
 .about-label {
-  color: #909399;
-  font-size: 12px;
   margin-bottom: 4px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
 }
 
 .about-value {
-  color: #303133;
   font-size: 14px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 </style>

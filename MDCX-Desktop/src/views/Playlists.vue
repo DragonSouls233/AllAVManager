@@ -319,7 +319,7 @@ onMounted(loadList)
 <style scoped>
 .pl-page { max-width: 1200px; margin: 0 auto; }
 .page-header h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
-.page-header .desc { color: #909399; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+.page-header .desc { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
 .pl-body { display: flex; gap: 16px; align-items: flex-start; }
 .pl-side {
   width: 240px; flex-shrink: 0; background: #fff; border-radius: 8px;
@@ -328,24 +328,24 @@ onMounted(loadList)
 .side-head {
   display: flex; justify-content: space-between; align-items: center;
   font-size: 13px; font-weight: 500; color: var(--text-secondary);
-  padding: 0 4px 8px; border-bottom: 1px solid var(--border-color, #ebeef5);
+  padding: 0 4px 8px; border-bottom: 1px solid var(--border-color, var(--hairline, var(--border-color)));
   margin-bottom: 8px;
 }
 .pl-menu { border: none; }
 .pl-item-title { display: flex; justify-content: space-between; align-items: center; width: 100%; }
 .pl-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
-.pl-count { font-size: 11px; color: #909399; flex-shrink: 0; }
+.pl-count { font-size: 11px; color: var(--text-secondary); flex-shrink: 0; }
 .pl-main { flex: 1; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 16px; min-height: 400px; }
 .main-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
 .head-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .head-left h3 { font-size: 16px; font-weight: 600; margin: 0; }
-.head-desc { font-size: 12px; color: #909399; }
+.head-desc { font-size: 12px; color: var(--text-secondary); }
 .code { font-family: var(--font-mono, monospace); font-size: 12px; }
-.muted { color: #909399; font-size: 12px; }
+.muted { color: var(--text-secondary); font-size: 12px; }
 .add-by-code {
-  margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border-color, #ebeef5);
+  margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border-color, var(--hairline, var(--border-color)));
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
 }
 .abc-label { font-size: 12px; color: var(--text-secondary); }
-.abc-hint { font-size: 11px; color: #909399; margin-left: 8px; }
+.abc-hint { font-size: 11px; color: var(--text-secondary); margin-left: 8px; }
 </style>

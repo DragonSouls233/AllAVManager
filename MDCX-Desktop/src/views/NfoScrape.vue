@@ -416,7 +416,7 @@ const onImgError = (e) => {
 
 .subtitle {
   margin: 0;
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
   font-size: 13px;
   line-height: 1.5;
 }
@@ -439,7 +439,7 @@ const onImgError = (e) => {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--el-color-primary, #409eff);
+  background: var(--el-color-primary, var(--accent));
   color: #fff;
   font-size: 12px;
   font-weight: 700;
@@ -457,7 +457,7 @@ const onImgError = (e) => {
 }
 
 .muted {
-  color: var(--text-placeholder, #c0c4cc);
+  color: var(--text-placeholder, var(--text-placeholder));
 }
 
 /* 预览对话框 */
@@ -473,7 +473,7 @@ const onImgError = (e) => {
 .preview-section h4 {
   margin: 0 0 8px;
   font-size: 14px;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
 }
 
 .plot-text {
@@ -481,7 +481,7 @@ const onImgError = (e) => {
   word-break: break-word;
   font-size: 13px;
   line-height: 1.6;
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
 }
 
 .actor-list,
@@ -509,12 +509,12 @@ const onImgError = (e) => {
   max-height: 200px;
   object-fit: contain;
   border-radius: 6px;
-  background: var(--bg-page, #f5f7fa);
+  background: var(--bg-page, var(--bg-page));
 }
 
 .image-label {
   font-size: 12px;
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
 }
 
 /* 导入汇总 */
@@ -538,12 +538,12 @@ const onImgError = (e) => {
 .error-item {
   font-size: 12px;
   padding: 4px 0;
-  border-bottom: 1px dashed var(--border-light, #ebeef5);
+  border-bottom: 1px dashed var(--border-light, var(--hairline, var(--border-color)));
 }
 
 .error-path {
   display: block;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
   word-break: break-all;
 }
 

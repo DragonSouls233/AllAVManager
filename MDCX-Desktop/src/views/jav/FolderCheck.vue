@@ -177,14 +177,14 @@ onMounted(search)
 <style scoped>
 .page-tip { margin-bottom: 12px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-.muted { color: #909399; font-size: 12px; }
+.muted { color: var(--text-secondary); font-size: 12px; }
 .stat-row { margin-bottom: 12px; }
 .stat-card { text-align: center; }
-.stat-value { font-size: 28px; font-weight: 600; color: #409eff; }
-.stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
+.stat-value { font-size: 28px; font-weight: 600; color: var(--accent); }
+.stat-label { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
 .top-actors { max-height: 120px; overflow-y: auto; text-align: left; }
 .top-tag { margin: 2px 4px 2px 0; cursor: pointer; }
-.code { color: #409eff; cursor: pointer; font-weight: 600; }
+.code { color: var(--accent); cursor: pointer; font-weight: 600; }
 .folder-tag { margin-right: 4px; }
 .diff-table { width: 100%; }
 .pagination-wrap { margin-top: 12px; display: flex; justify-content: flex-end; }

@@ -1945,7 +1945,7 @@ onUnmounted(() => {
 }
 
 .player-container {
-  background: #000;
+  background: #000000;
   border-radius: 8px;
   overflow: hidden;
   position: relative;
@@ -1990,10 +1990,10 @@ onUnmounted(() => {
 
 /* ===== 系列连播（Cinema v1 §5） ===== */
 .series-bar {
-  background: var(--bg-card, #fff);
+  background: var(--bg-card, #ffffff);
   padding: 14px 16px;
   border-radius: 8px;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
 }
 .series-head {
   display: flex;
@@ -2004,11 +2004,11 @@ onUnmounted(() => {
 .series-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
 }
 .series-count {
   font-size: 12px;
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
 }
 .series-list {
   display: flex;
@@ -2024,10 +2024,10 @@ onUnmounted(() => {
   overflow: hidden;
   border: 2px solid transparent;
   transition: border-color .2s;
-  background: #000;
+  background: #000000;
 }
 .series-item.active {
-  border-color: var(--el-color-primary, #409eff);
+  border-color: var(--el-color-primary, var(--accent));
 }
 .series-item.watched .series-cover {
   opacity: .55;
@@ -2040,29 +2040,29 @@ onUnmounted(() => {
 }
 .series-meta {
   padding: 4px 6px;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card, #ffffff);
 }
 .series-code {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .series-sub {
   font-size: 11px;
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .player-info {
-  background: var(--bg-card, #fff);
+  background: var(--bg-card, #ffffff);
   padding: 20px;
   border-radius: 8px;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
 }
 
 .info-header {
@@ -2076,7 +2076,7 @@ onUnmounted(() => {
 .movie-code {
   font-size: 24px;
   font-weight: bold;
-  color: var(--primary-color, #409eff);
+  color: var(--primary-color, var(--accent));
 }
 
 .info-actions {
@@ -2088,7 +2088,7 @@ onUnmounted(() => {
 .movie-title {
   font-size: 18px;
   margin-top: 10px;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
 }
 
 .movie-detail {
@@ -2099,9 +2099,9 @@ onUnmounted(() => {
   margin: 0 0 14px;
   font-size: 14px;
   line-height: 1.7;
-  color: var(--text-regular, #606266);
+  color: var(--text-regular, var(--text-regular));
   white-space: pre-wrap;
-  background: var(--bg-page, #f5f7fa);
+  background: var(--bg-page, var(--bg-page));
   border-radius: 6px;
   padding: 12px 14px;
 }
@@ -2126,12 +2126,12 @@ onUnmounted(() => {
 
 .detail-label {
   flex: 0 0 auto;
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
   font-weight: 600;
 }
 
 .detail-value {
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
   word-break: break-word;
 }
 
@@ -2155,7 +2155,7 @@ onUnmounted(() => {
 .rating-block {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--border-light, #ebeef5);
+  border-top: 1px solid var(--border-light, var(--hairline, var(--border-color)));
 }
 
 .rating-label {
@@ -2163,7 +2163,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: var(--text-regular, #606266);
+  color: var(--text-regular, var(--text-regular));
   margin-bottom: 8px;
 }
 
@@ -2206,13 +2206,13 @@ onUnmounted(() => {
 }
 
 .rating-max {
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
 }
 
 .player-tabs {
-  background: var(--bg-card, #fff);
+  background: var(--bg-card, #ffffff);
   border-radius: 8px;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
   padding: 0 16px;
 }
 
@@ -2232,7 +2232,7 @@ onUnmounted(() => {
 }
 
 .muted {
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
 }
 
 .gif-grid {
@@ -2242,16 +2242,16 @@ onUnmounted(() => {
 }
 
 .gif-card {
-  background: var(--bg-page, #f5f7fa);
+  background: var(--bg-page, var(--bg-page));
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
 }
 
 .gif-card img {
   width: 100%;
   display: block;
-  background: #000;
+  background: #000000;
 }
 
 .gif-meta {
@@ -2260,7 +2260,7 @@ onUnmounted(() => {
   align-items: center;
   padding: 6px 8px;
   font-size: 12px;
-  color: var(--text-secondary, #909399);
+  color: var(--text-secondary, var(--text-secondary));
 }
 
 .subtitle-group {
@@ -2282,7 +2282,7 @@ onUnmounted(() => {
 .group-title {
   font-weight: 600;
   margin-bottom: 8px;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
   font-size: 14px;
 }
 
@@ -2292,7 +2292,7 @@ onUnmounted(() => {
 
 .sprite-preview img {
   max-width: 100%;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
   border-radius: 4px;
 }
 
@@ -2306,9 +2306,9 @@ onUnmounted(() => {
   gap: 6px;
   overflow-x: auto;
   padding: 8px 4px;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
   border-radius: 6px;
-  background: var(--bg-page, #f5f7fa);
+  background: var(--bg-page, var(--bg-page));
 }
 
 .timeline-thumb {
@@ -2319,17 +2319,17 @@ onUnmounted(() => {
   overflow: hidden;
   cursor: pointer;
   position: relative;
-  background: #000;
+  background: #000000;
   transition: border-color 0.15s, transform 0.15s;
 }
 
 .timeline-thumb:hover {
-  border-color: var(--el-color-primary, #409eff);
+  border-color: var(--el-color-primary, var(--accent));
   transform: translateY(-2px);
 }
 
 .timeline-thumb.active {
-  border-color: var(--el-color-primary, #409eff);
+  border-color: var(--el-color-primary, var(--accent));
 }
 
 .timeline-thumb img {
@@ -2346,18 +2346,18 @@ onUnmounted(() => {
   right: 0;
   font-size: 10px;
   text-align: center;
-  color: #fff;
+  color: #ffffff;
   background: rgba(0, 0, 0, 0.6);
   padding: 2px 0;
 }
 
 /* ===== 来源对比 ===== */
 .player-tabs :deep(.compare-row-same) {
-  background: var(--el-color-success-light-9, #f0f9eb);
+  background: var(--el-color-success-light-9, var(--el-color-success-light-9));
 }
 
 .player-tabs :deep(.compare-row-same td) {
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
 }
 
 /* ===== Fanart 背景（v4.1 C1） ===== */
@@ -2380,10 +2380,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
   border-radius: 6px;
   overflow: hidden;
-  background: var(--bg-page, #f5f7fa);
+  background: var(--bg-page, var(--bg-page));
 }
 
 .fanart-item img {
@@ -2399,26 +2399,26 @@ onUnmounted(() => {
   align-items: center;
   padding: 4px 8px;
   font-size: 12px;
-  color: var(--text-secondary, #606266);
-  background: var(--bg-card, #fff);
+  color: var(--text-secondary, var(--text-regular));
+  background: var(--bg-card, #ffffff);
 }
 
 .fanart-search-result {
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px dashed var(--border-light, #ebeef5);
+  border-top: 1px dashed var(--border-light, var(--hairline, var(--border-color)));
 }
 
 .fanart-search-result h4 {
   margin: 0 0 8px;
   font-size: 14px;
-  color: var(--text-primary, #303133);
+  color: var(--text-primary, var(--text-primary));
 }
 
 .fanart-search-result h5 {
   margin: 16px 0 8px;
   font-size: 13px;
-  color: var(--text-secondary, #606266);
+  color: var(--text-secondary, var(--text-regular));
 }
 
 .fanart-poster-row .poster-strip {
@@ -2431,7 +2431,7 @@ onUnmounted(() => {
 .poster-thumb {
   height: 200px;
   border-radius: 4px;
-  border: 1px solid var(--border-light, #ebeef5);
+  border: 1px solid var(--border-light, var(--hairline, var(--border-color)));
   object-fit: cover;
 }
 </style>
