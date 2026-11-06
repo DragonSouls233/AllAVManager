@@ -467,8 +467,25 @@ class JavDBCrawler(BaseCrawler):
             return True
         return False
 
+    # 搜索卡片标题里的番号 token（形如 SSIS-698 / abp_0123）。
+    # 用它逐项抽番号做精确比较，而不是对整段标题做子串包含判断。
+    _TITLE_CODE_TOKEN_RE = re.compile(r"[A-Za-z]{2,8}[-_]?0*\d{2,7}", re.I)
+
     def _extract_detail_url(self, html_text: str, code: str) -> Optional[str]:
-        """从搜索结果 HTML 中提取详情页 URL"""
+        """从搜索结果 HTML 中提取**精确匹配**番号的详情页 URL。
+
+        🔴 2026-11-06 修正两处错配隐患（与主力 App API 链路的
+        ``reverse_code_check`` 口径对齐，见 ``scrape()`` 内注释）：
+        1. 旧实现用 ``code.upper() in title.upper()`` 子串包含 ⇒
+           ``ABP-123`` 会误命中标题含 ``ABP-1234`` 的别片；
+        2. 旧实现「没匹配就取第一个结果」⇒ 站点未收录时会直接进别片。
+
+        当前该方法是备份链路（主力走官方 App API），但保留精确匹配可
+        避免日后恢复 HTML 降级时批量串号。无精确匹配时返回 None，
+        由调用方决定是否换源，绝不猜测。
+        """
+        from app.utils.code_verify import reverse_code_check
+
         html = Selector(html_text)
         # 注意：javdb 搜索卡片 class 实际为 "box ..."（含额外 class），
         # 必须用 contains() 兼容，精确 @class='box' 会匹配不到导致刮削失败。
@@ -476,17 +493,15 @@ class JavDBCrawler(BaseCrawler):
         if not items:
             return None
 
-        # 精确匹配
         for item in items:
             href = item.xpath("@href").get()
             title = item.xpath("div[@class='video-title']/strong/text()").get()
-            if href and title and code.upper() in title.upper():
+            if not href or not title:
+                continue
+            # 标题可能就是纯番号，也可能是「番号 + 标题文字」；逐个 token 校验
+            candidates = [title.strip()] + self._TITLE_CODE_TOKEN_RE.findall(title)
+            if any(reverse_code_check(code, token)[0] for token in candidates):
                 return urljoin(self.base_url, href) + "?locale=zh"
-
-        # 取第一个结果
-        href = items[0].xpath("@href").get()
-        if href:
-            return urljoin(self.base_url, href) + "?locale=zh"
         return None
     
     async def search(self, keyword: str) -> list[ScrapeResult]:

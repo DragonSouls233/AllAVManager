@@ -297,6 +297,10 @@
           <el-button size="small" type="primary" plain @click="openOnlineSubtitles">
             <el-icon><Search /></el-icon> 在线字幕
           </el-button>
+          <!-- 独立可选工具：只做只读分析，不改变加载/预览的原有入口 -->
+          <el-button size="small" plain @click="openSubtitleQuality">
+            <el-icon><Check /></el-icon> 字幕质检
+          </el-button>
         </div>
 
         <div v-if="subtitles.embedded?.length || subtitles.external?.length">
@@ -398,6 +402,52 @@
         </div>
         <el-empty v-else-if="!onlineSubLoading && onlineSubSearched" description="未找到在线字幕" :image-size="60" />
         <div v-if="onlineSubError" class="online-sub-error">{{ onlineSubError }}</div>
+      </el-dialog>
+
+      <!-- 字幕质检：独立只读工具，不改动「加载 / 预览」原有操作 -->
+      <el-dialog v-model="qualityVisible" title="字幕质检" width="780px" append-to-body>
+        <div v-if="qualityLoading" class="quality-summary">正在分析字幕时间轴与视频时长…</div>
+        <template v-else>
+          <div class="quality-summary">
+            视频时长：<b>{{ formatDuration(qualityResult.video_duration_s) }}</b>
+            <span class="quality-src">（来源：{{ qualityDurationSourceLabel }}）</span>
+            · 已检查 {{ qualityResult.checked || 0 }} 个外挂字幕
+          </div>
+          <div v-if="qualityError" class="online-sub-error">{{ qualityError }}</div>
+          <el-table v-if="qualityResult.items?.length" :data="qualityResult.items" border size="small">
+            <el-table-column label="字幕文件" prop="filename" min-width="150" show-overflow-tooltip />
+            <el-table-column label="评分" width="76">
+              <template #default="{ row }">
+                <el-tag size="small" :type="qualityScoreType(row.score)">{{ row.score }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="判定" width="126">
+              <template #default="{ row }">
+                <el-tag size="small" :type="qualityVerdictType(row.verdict)">{{ qualityVerdictLabel(row.verdict) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="条数" width="66" prop="cue_count" />
+            <el-table-column label="末条 / 视频" width="160">
+              <template #default="{ row }">
+                {{ formatDuration(row.last_end_s) }} / {{ formatDuration(qualityResult.video_duration_s) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="问题" min-width="230">
+              <template #default="{ row }">
+                <div v-for="(t, i) in (row.issues || [])" :key="i" class="quality-issue">· {{ t }}</div>
+                <span v-if="!row.issues?.length">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-else-if="!qualityError" description="没有可检查的外挂字幕，或检查尚未完成" :image-size="60" />
+          <div v-if="qualityResult.registry_path" class="quality-foot">
+            结果已登记到服务器：{{ qualityResult.registry_path }}
+          </div>
+        </template>
+        <template #footer>
+          <el-button @click="qualityVisible = false">关闭</el-button>
+          <el-button type="primary" plain :loading="qualityLoading" @click="runSubtitleQuality">重新检查</el-button>
+        </template>
       </el-dialog>
 
       <!-- 缩略图进度条 -->
@@ -712,7 +762,7 @@ import {
   getPlayerConfig, getPlayerRemuxInfo, listChapters, addChapter, updateChapter, deleteChapter,
   autoDetectChapters, generateChapterThumbnails,
   listGifs, generateGif, deleteGif,
-  listSubtitles,
+  listSubtitles, checkSubtitleQuality,
   searchOnlineSubtitles, getOnlineSubtitleFiles, fetchOnlineSubtitleText,
   getThumbnailSprite, generateThumbnailSprite,
   getSourceMergeFields, previewSourceScrape, applySourceMerge,
@@ -788,6 +838,49 @@ const gifForm = reactive({ duration: 3.0, width: 480, fps: 12 })
 
 // 字幕
 const subtitles = ref({ embedded: [], external: [] })
+
+// ===== 字幕质检（只读分析，独立可选工具）=====
+const qualityVisible = ref(false)
+const qualityLoading = ref(false)
+const qualityResult = ref({})
+const qualityError = ref('')
+const qualityDurationSourceLabel = computed(() => {
+  const s = qualityResult.value.duration_source || ''
+  if (s === 'ffprobe') return 'ffprobe 实测'
+  if (s.includes('分钟')) return '媒体库时长（分钟换算）'
+  return '未取得'
+})
+const formatDuration = (s) => {
+  if (s === null || s === undefined || s === '') return '—'
+  const t = Math.round(Number(s) || 0)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(Math.floor(t / 3600))}:${p(Math.floor((t % 3600) / 60))}:${p(t % 60)}`
+}
+const qualityVerdictLabel = (v) => ({
+  good: '正常', mismatch: '疑似配错版本', suspect: '质量存疑',
+  unknown: '缺视频时长', unparseable: '无法解析', unreadable: '读取失败',
+}[v] || v || '—')
+const qualityVerdictType = (v) => ({
+  good: 'success', mismatch: 'danger', suspect: 'warning',
+  unknown: 'info', unparseable: 'info', unreadable: 'danger',
+}[v] || 'info')
+const qualityScoreType = (s) => (s >= 85 ? 'success' : s >= 60 ? 'warning' : 'danger')
+const runSubtitleQuality = async () => {
+  qualityLoading.value = true
+  qualityError.value = ''
+  try {
+    // api 拦截器已拆包 => data，这里直接拿返回对象，不要再取 .data
+    qualityResult.value = await checkSubtitleQuality(route.params.id, activeModule())
+  } catch (e) {
+    qualityError.value = e?.response?.data?.detail || e?.message || '字幕质检失败'
+  } finally {
+    qualityLoading.value = false
+  }
+}
+const openSubtitleQuality = () => {
+  qualityVisible.value = true
+  runSubtitleQuality()
+}
 
 // 在线字幕（SubtitleCat，移植自 peach）
 const onlineSubVisible = ref(false)
@@ -2265,6 +2358,26 @@ onUnmounted(() => {
 
 .subtitle-group {
   margin-bottom: 16px;
+}
+
+/* 字幕质检报告 */
+.quality-summary {
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-primary, #303133);
+}
+.quality-src, .quality-foot {
+  color: var(--text-secondary, #909399);
+  font-size: 12px;
+}
+.quality-foot {
+  margin-top: 10px;
+  word-break: break-all;
+}
+.quality-issue {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-regular, #606266);
 }
 
 /* 字幕预览弹窗：等宽字体 + 可滚动，长字幕不撑破布局 */

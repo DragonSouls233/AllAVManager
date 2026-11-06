@@ -740,7 +740,9 @@ class PatchEngine:
                     # 拷贝到 output_dir，按标准命名（{type}.jpg）
                     dst = output / f"{img_type.value}.jpg"
                     try:
-                        shutil.copy2(src, dst)
+                        # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+                        from app.utils.file_ops import copy_file_resilient
+                        copy_file_resilient(src, dst)
                         logger.info(f"从视频目录拷贝封面: {src} → {dst}")
                         copied.append(img_type.value)
                         found = True
@@ -754,7 +756,8 @@ class PatchEngine:
                 if src_png.exists() and src_png.stat().st_size > 1024:
                     dst = output / f"{img_type.value}.jpg"
                     try:
-                        shutil.copy2(src_png, dst)
+                        from app.utils.file_ops import copy_file_resilient
+                        copy_file_resilient(src_png, dst)
                         logger.info(f"从视频目录拷贝封面: {src_png} → {dst}")
                         copied.append(img_type.value)
                         found = True

@@ -327,6 +327,59 @@ async def serve_subtitle_file(
     return Response(content=text.encode("utf-8"), media_type=media_type, headers=headers)
 
 
+@router.get("/{movie_id}/subtitles/quality")
+async def check_subtitle_quality(
+    movie_id: int,
+    path: str | None = Query(None, description="字幕绝对路径；不传则检查该片全部外挂字幕"),
+    module: str = Query("jav", description="模块名: jav/fc2/uncensored/chinese/western/pornhub/anime"),
+    record: bool = Query(True, description="是否把结果写入 data/subtitle_quality.json 登记"),
+):
+    """外挂字幕质检（只读分析，不改文件、不拦截播放）。
+
+    对比末条字幕时间与视频真实时长，识别「字幕是另一个版本」这类
+    播放器不会报错、但看到后半段才发现对不上的静默错误；同时给出
+    条数/时间轴/乱码/空文本的 0-100 质量分。
+
+    安全检查与 ``/subtitles/file`` 一致：只允许检查该影片可用列表里的字幕。
+    """
+    from app.services import subtitle_quality
+
+    movie = await _get_movie(module, movie_id)
+    if not movie.file_path:
+        raise HTTPException(status_code=400, detail="影片无关联文件")
+
+    available = subtitle_matcher.find_local_subtitles(movie.file_path)
+    if path:
+        target = Path(path).resolve()
+        available = [
+            s for s in available if Path(s["path"]).resolve() == target
+        ]
+        if not available:
+            raise HTTPException(status_code=404, detail="字幕文件不在可用列表中")
+
+    duration_s, duration_source = subtitle_quality.probe_video_duration(
+        movie.file_path, getattr(movie, "duration", None),
+    )
+
+    items = []
+    for sub in available:
+        report = subtitle_quality.check_subtitle_file(
+            sub["path"], duration_s, record=record,
+        )
+        report["language"] = sub.get("language")
+        report["source"] = sub.get("source")
+        items.append(report)
+
+    return {
+        "movie_id": movie_id,
+        "video_duration_s": duration_s,
+        "duration_source": duration_source,
+        "checked": len(items),
+        "items": items,
+        "registry_path": str(subtitle_quality.registry_path()),
+    }
+
+
 # ===== 在线字幕（SubtitleCat，移植自 peach） =====
 
 class OnlineSubtitleSearch(BaseModel):

@@ -172,7 +172,9 @@ def copy_local_avatar(actor_id: int, src_path: Path, avatars_dir: Path) -> Path:
     """将本地头像文件复制到 DATA/avatars/{module}/actor_{id}.jpg（module 由 avatars_dir 决定）"""
     target = avatars_dir / f"actor_{actor_id}.jpg"
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src_path, target)
+    # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+    from app.utils.file_ops import copy_file_resilient
+    copy_file_resilient(src_path, target)
     return target
 
 

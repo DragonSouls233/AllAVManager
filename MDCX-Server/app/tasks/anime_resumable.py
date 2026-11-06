@@ -430,7 +430,9 @@ class ResumableAnimeScanner:
             if dst.exists() and dst.stat().st_size >= src.stat().st_size:
                 continue
             try:
-                shutil.copy2(src, dst)
+                # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+                from app.utils.file_ops import copy_file_resilient
+                copy_file_resilient(src, dst)
             except Exception:
                 pass
 
@@ -446,7 +448,8 @@ class ResumableAnimeScanner:
                     if dst.exists():
                         return
                     try:
-                        shutil.copy2(src, dst)
+                        from app.utils.file_ops import copy_file_resilient
+                        copy_file_resilient(src, dst)
                     except Exception:
                         pass
                     return

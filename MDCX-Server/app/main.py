@@ -1081,7 +1081,18 @@ def create_app() -> FastAPI:
     
     logger.info("✅ 应用创建完成！")
 
-    # 请求级数据库会话回收中间件（最内层）
+    # 本地图片条件缓存中间件（纯 ASGI，比 session_cleanup/Auth/CORS 更内层）
+    # Starlette 中先 add 的中间件更靠内：本行在 session_cleanup 之前注册，
+    # 因此能在 BaseHTTPMiddleware 重包装之后仍拿到 ETag/Last-Modified 头
+    # （BaseHTTPMiddleware 会透传 start 的 headers，已实测）。
+    # 作用：把本地图片的 max-age=86400 改成 no-cache，并补上 Starlette 缺失的
+    # If-None-Match / If-Modified-Since → 304 处理，使「换封面 / 换头像」后
+    # 浏览器立即拿到新图（详见 image_cache.py 文件头）。
+    # 非图片、无 ETag、非 200、非 GET/HEAD 一律原样透传，不影响 CORS 预检。
+    from app.middleware.image_cache import ImageRevalidationMiddleware
+    app.add_middleware(ImageRevalidationMiddleware)
+
+    # 请求级数据库会话回收中间件
     # 根治 ModuleDatabase / SystemDatabase 裸 session 泄漏：大量路由用
     # `session = await db.get_session()` 但忘记 close，连接最终靠 GC 回收并触发
     # SAWarning "non-checked-in connection"。该中间件在响应送出后统一关闭所有

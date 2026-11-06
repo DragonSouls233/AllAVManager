@@ -164,7 +164,9 @@ async def merge_actors(
             if src_avatar.exists():
                 try:
                     canonical_avatar.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_avatar, canonical_avatar)
+                    # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+                    from app.utils.file_ops import copy_file_resilient
+                    copy_file_resilient(src_avatar, canonical_avatar)
                     logger.info(f"[actor-merge] 头像继承: actor_{src.id}.jpg -> actor_{canonical_id}.jpg")
                     break
                 except Exception as e:

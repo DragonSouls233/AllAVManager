@@ -2811,7 +2811,9 @@ def _copy_local_previews(video_dir: Path, code: str) -> int:
                     ready += 1
                 continue
             try:
-                shutil.copy2(src, dst)
+                # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+                from app.utils.file_ops import copy_file_resilient
+                copy_file_resilient(src, dst)
                 ready += 1
             except OSError:
                 continue
@@ -2827,7 +2829,8 @@ def _copy_local_previews(video_dir: Path, code: str) -> int:
                 if df.exists():
                     continue
                 try:
-                    shutil.copy2(f, df)
+                    from app.utils.file_ops import copy_file_resilient
+                    copy_file_resilient(f, df)
                     ready += 1
                 except OSError:
                     continue

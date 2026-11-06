@@ -71,6 +71,19 @@ DISABLED_CRAWLERS: set[str] = {
     #   站点复活后从本集合移除即可，爬虫代码保留（见 app/crawlers/fc2club.py
     #   与 app/crawlers/md/fc2club.py 的兼容性修复）。
     "fc2club",
+    # 🔴 2026-11-06 实测：S1 官网已改版，旧爬虫 `s1style` 双重失效——
+    #   ① 它拼的 URL `www.s1s1s1.com/moviepages/{id}/index.html` 对 1234/0123
+    #      均返回 **HTTP 404**（6603B 的 404 页）；现行作品页是
+    #      `s1s1s1.com/works/detail/{无横线番号}`，实测 SSIS698 → 200/81KB
+    #      带真实标题/発売日（需 age_check cookie 过年龄门）。
+    #   ② `_convert_code()` 只认 `S1-1234` / `SQS-123` 老番号，现代番号
+    #      `SSIS-698` / `SONE-035` 一律返回 None ⇒ 根本不发请求就 `return None`。
+    #   该源注册在 jav_uncensored 类型，会被 jav / uncensored 两个模块的
+    #   `get_crawlers_for_module()` 捞到；`return None` 会被 engine 记成源失败
+    #   并喂熔断器（见 app/scraper/errors.py 文件头）⇒ 每刮一部就误熔断。
+    #   与其留着 0 命中拖慢每次刮削、污染熔断，不如禁用；站点若要复活需
+    #   同时改 URL 格式 + 番号前缀 + 年龄门 cookie + 新页面解析（非小改）。
+    "s1style",
 }
 
 

@@ -724,7 +724,9 @@ def _adopt_local_preview_images(module_name: str, code: str) -> dict:
                 ready[dst_name] = str(dst)
                 continue
             try:
-                shutil.copy2(src, dst)
+                # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+                from app.utils.file_ops import copy_file_resilient
+                copy_file_resilient(src, dst)
                 ready[dst_name] = str(dst)
             except OSError:
                 continue

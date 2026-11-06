@@ -1074,7 +1074,10 @@ async def upload_actor_avatar(
                     "avatar_path": str(output_path),
                 }
             else:
-                shutil.copy2(temp_path, output_path)
+                # 2026-11-06：网盘/SMB 上 copystat 可能返回 EPERM，
+                # copy2 会在内容已拷好后仍抛错 ⇒ 头像上传被误判失败。
+                from app.utils.file_ops import copy_file_resilient
+                copy_file_resilient(temp_path, output_path)
                 actor_to_update.avatar_url = str(output_path)
                 await sess.commit()
                 _cache.invalidate("actors:")

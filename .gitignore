@@ -158,6 +158,11 @@ stats*.py
 run_*.py
 sync_*.py
 batch_*.py
+# 🔴 核心业务模块例外（2026-11-06）：app/scraper/batch_scrape.py 是
+#    jav/fc2/uncensored/pornhub 共用的「批量刮削闭环」，因文件名前缀命中
+#    batch_*.py 长期被忽略，HEAD 里根本没有它 ⇒ 改动不进 git、按 git diff
+#    生成的部署清单也会漏推。显式放行，仅此一个文件。
+!MDCX-Server/app/scraper/batch_scrape.py
 verify_*.py
 verify_*.js
 verify_*.txt

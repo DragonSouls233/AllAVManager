@@ -1,5 +1,5 @@
-built_at=2026-11-06T15:18:49
+built_at=2026-11-06T17:24:14
 built_cfg=vite.config.web.js
-entry_js=assets/index-dw_8jxsI.js
+entry_js=assets/index-CRiSel3a.js
 entry_css=assets/index-CwJSz9cR.css
-src_tree_md5=0de17e4ca6b650dd574f287344dd6cfb
+src_tree_md5=de6423790702ae268e9ecf2a4b428506

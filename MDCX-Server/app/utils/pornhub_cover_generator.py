@@ -275,8 +275,9 @@ def _copy_as_cover(ffmpeg: str, src_path: str, dst_path: str, quality: int) -> N
         subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except Exception as e:
         logger.warning("封面复制失败: %s，回退直接复制文件", e)
-        import shutil
-        shutil.copy2(src_path, dst_path)
+        # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+        from app.utils.file_ops import copy_file_resilient
+        copy_file_resilient(src_path, dst_path)
 
 
 # ==================== 预览图（缩略图墙） ====================

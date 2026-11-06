@@ -621,6 +621,14 @@ export const generateChapterThumbnails = (movieId, module) =>
 export const listSubtitles = (movieId, module) =>
   api.get(`/player/${movieId}/subtitles`, { params: module ? { module } : {} })
 
+// 外挂字幕质检（只读分析：末条时间 vs 视频时长识别配错版本 + 质量打分）
+// ffprobe 取真实时长最多 15s，给足超时，别让慢盘把请求掐断。
+export const checkSubtitleQuality = (movieId, module) =>
+  api.get(`/player/${movieId}/subtitles/quality`, {
+    params: module ? { module } : {},
+    timeout: 60000,
+  })
+
 // 在线字幕（SubtitleCat，移植自 peach）
 export const searchOnlineSubtitles = (movieId, q, offset = 0, module) =>
   api.get(`/player/${movieId}/subtitles/online/search`, {

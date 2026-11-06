@@ -761,7 +761,9 @@ class ActorAvatarScraper:
                 avatar_dir = avatar_dir / module
             avatar_dir.mkdir(parents=True, exist_ok=True)
             output_path = avatar_dir / f"actor_{actor.id}.jpg"
-            shutil.copy2(src_path, output_path)
+            # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+            from app.utils.file_ops import copy_file_resilient
+            copy_file_resilient(src_path, output_path)
 
             async with self._actor_session() as session:
                 db_actor = await session.get(self.actor_model, actor.id)

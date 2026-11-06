@@ -503,8 +503,9 @@ class AnimeScanner(BaseScanner):
             dst = target_dir / "poster.jpg"
             if dst.exists():
                 return
-            import shutil
-            shutil.copy2(poster, dst)
+            # 2026-11-06：统一容错复制（copystat 被拒时退化为只拷内容）
+            from app.utils.file_ops import copy_file_resilient
+            copy_file_resilient(poster, dst)
             logger.info(f"[anime] 复制海报: {poster.name} → {dst}")
         except Exception as e:
             logger.debug(f"[anime] 海报复制失败（忽略）: {e}")
