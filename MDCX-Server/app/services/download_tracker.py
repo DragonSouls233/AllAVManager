@@ -20,6 +20,8 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Optional, List, Set, Tuple, Dict
 
+from app.utils.path_filters import skip_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -160,6 +162,7 @@ class DownloadTracker:
         chinese_codes: Set[str] = set()
 
         for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not skip_dir(d)]
             for filename in files:
                 ext = os.path.splitext(filename)[1].lower()
                 if ext not in self.VIDEO_EXTENSIONS:

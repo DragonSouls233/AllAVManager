@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
 from app.db.module_db import ModuleDatabase
+from app.utils.path_filters import skip_dir
 
 import os as _os
 from pathlib import Path as _Path
@@ -1166,7 +1167,8 @@ async def check_uncensored_folder(body: dict):
         raise HTTPException(status_code=400, detail="文件夹不存在")
 
     videos = []
-    for root, _, files in os.walk(folder_path):
+    for root, dirs, files in os.walk(folder_path):
+        dirs[:] = [d for d in dirs if not skip_dir(d)]
         for f in files:
             ext = os.path.splitext(f)[1].lower()
             if ext in (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"):
@@ -1199,7 +1201,8 @@ async def import_uncensored_nfo(body: dict):
         added = 0
         updated = 0
 
-        for root, _, files in os.walk(folder_path):
+        for root, dirs, files in os.walk(folder_path):
+            dirs[:] = [d for d in dirs if not skip_dir(d)]
             for f in files:
                 if not f.lower().endswith(".nfo"):
                     continue

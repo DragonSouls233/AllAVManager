@@ -14,6 +14,8 @@ import logging
 import os
 import re
 
+from app.utils.path_filters import skip_dir
+
 logger = logging.getLogger(__name__)
 
 # 最大扫描文件数 / 最大返回条数，防止超大目录导致请求超时
@@ -34,8 +36,13 @@ def _classify(name: str) -> str | None:
     # 系统垃圾文件优先判定（精确文件名）
     if low in ("thumbs.db", ".ds_store", "desktop.ini"):
         return "system"
+    # 🔴 必须用「去扩展名的主干」匹配（2026-11-07 修）：
+    #    旧实现拿整个文件名匹配，`sample(?:[\s_\-\)]|$)` 的收尾边界被 `.mp4` 挡住，
+    #    于是 `sample.mp4` / `ABC-002_sample.mp4` / `abc-123-sample.mkv` **全部判不出来**
+    #    （实测这三类是最常见的样本片命名）。去掉扩展名后 `$` 才能生效。
+    stem = os.path.splitext(low)[0]
     for reason, pat in _REASON_PATTERNS.items():
-        if pat.search(low):
+        if pat.search(stem):
             return reason
     return None
 
@@ -71,7 +78,9 @@ def _scan_sync(directories, max_files=_MAX_FILES, max_results=_MAX_RESULTS, max_
                     break
                 scanned += 1
                 if e.is_dir(follow_symlinks=False):
-                    if depth < max_depth:
+                    # 不下钻系统目录：@eaDir / .@__thumb 的缩略图会被当成垃圾图，
+                    # 而且会把 _MAX_FILES 的扫描预算吃光，真正的垃圾反而扫不到。
+                    if depth < max_depth and not skip_dir(e.name):
                         stack.append((e.path, depth + 1))
                     continue
                 if not e.is_file(follow_symlinks=False):

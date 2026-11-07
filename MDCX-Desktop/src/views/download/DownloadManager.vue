@@ -103,10 +103,12 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useDownloadStore } from '@/stores/download'
 import { ElMessage } from 'element-plus'
 
 const store = useDownloadStore()
+const { stats, cacheStats } = storeToRefs(store)
 const loading = ref(false)
 const filterStatus = ref('')
 const newTask = ref({ url: '', engine: 'auto' })

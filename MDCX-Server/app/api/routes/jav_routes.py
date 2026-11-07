@@ -258,6 +258,76 @@ async def api_code_extract_test(data: dict):
 # ========== 只读端点 ==========
 
 
+async def _compute_movie_counts_batch(session, movie_cls, actors) -> dict:
+    """一次性计算全部演员（含别名）的作品数，替代逐演员 count 的 N+1。
+
+    与 ``app.utils.actor_alias.count_actor_movies`` 的匹配语义严格等价：
+      * 变体来源同一 ``actor_name_variants(actor)``；
+      * 匹配口径复刻 ``actor_query.actor_name_condition`` 的 token 边界 LIKE：
+        列文本按 ``ACTOR_NAME_SEPARATORS`` 归一成 ','，两侧补 ','，
+        判断 ',token,' 是否为子串；SQLite ``LIKE`` 对 ASCII 大小写不敏感 → 统一小写比较；
+      * 同一影片命中该演员多个变体时**只计一次**（按演员文本分组去重 + 组成本累加，
+        与 SQL ``COUNT(*) WHERE (actor LIKE ... OR actor LIKE ...)`` 的行语义一致）。
+
+    性能：仅 **一次 DB 往返**（GROUP BY 演员文本 + COUNT），Python 侧用 token 倒排索引
+    归因，复杂度与原「演员数 × 逐演员全表扫描」解耦。
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import func, select
+
+    from app.db.actor_query import ACTOR_NAME_SEPARATORS
+    from app.utils.actor_alias import actor_name_variants
+
+    actor_cols = [c for c in (
+        getattr(movie_cls, "actor", None),
+        getattr(movie_cls, "folder_based_actors", None),
+    ) if c is not None]
+    if not actor_cols:
+        return {a.id: 0 for a in actors}
+
+    def _norm(text) -> str:
+        if not text:
+            return ""
+        s = str(text)
+        for sep in ACTOR_NAME_SEPARATORS:
+            s = s.replace(sep, ",")
+        return s
+
+    def _split_tokens(text) -> set:
+        q = _norm(text).strip(",")
+        out: set = set()
+        for x in q.split(","):
+            x = x.strip()
+            if x:
+                out.add(x.lower())
+        return out
+
+    # 单次聚合：distinct 演员文本组合 → 影片数
+    rows = (await session.execute(
+        select(*actor_cols, func.count(movie_cls.id)).group_by(*actor_cols)
+    )).all()
+
+    group_costs: list = []
+    token_groups: dict = defaultdict(list)
+    for idx, row in enumerate(rows):
+        group_costs.append(int(row[-1] or 0))
+        toks: set = set()
+        for val in row[:-1]:
+            toks.update(_split_tokens(val))
+        for t in toks:
+            token_groups[t].append(idx)
+
+    counts: dict = {}
+    for a in actors:
+        idx_set: set = set()
+        for v in actor_name_variants(a):
+            for t in _split_tokens(v):
+                idx_set.update(token_groups.get(t, ()))
+        counts[a.id] = sum(group_costs[i] for i in idx_set)
+    return counts
+
+
 @router.get("/actors")
 async def list_actors(
     search: Optional[str] = Query(None, description="按名字/日文名/别名搜索"),
@@ -291,10 +361,8 @@ async def list_actors(
         c = _movie_count_cache
         counts_map = c["counts"]
         if counts_map is None or now - c["ts"] >= _REAL_ACTOR_TTL:
-            counts_map = {}
-            for a in rows:
-                cnt = await count_actor_movies(session, JavMovie, a)
-                counts_map[a.id] = cnt
+            # 单次聚合替代原先「逐演员 count_actor_movies」的 N+1（原 ~36s/60s 周期卡顿）。
+            counts_map = await _compute_movie_counts_batch(session, JavMovie, rows)
             c.update({"ts": now, "counts": counts_map})
 
         # 真演员过滤（传入 real_counts 供 3-假名规则使用）

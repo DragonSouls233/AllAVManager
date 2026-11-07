@@ -25,7 +25,7 @@
       <el-empty v-if="!loading && !actors.length" description="暂无国产演员，请先同步文件夹" />
     </div>
 
-    <div class="pagination-wrap" v-if="total > pageSize">
+    <div class="pagination-wrap" v-if="total > store.actorPageSize">
       <el-pagination v-model:current-page="store.actorPage" v-model:page-size="store.actorPageSize"
         :total="store.actorTotal" :page-sizes="[24, 48, 96, 192, 480]" layout="total, sizes, prev, pager, next"
         @size-change="onActorPageSizeChange" @current-change="onActorPageChange" />
@@ -45,6 +45,7 @@ const store = useChineseStore()
 const keyword = ref('')
 const loading = ref(false)
 const actors = ref([])
+const total = ref(0)
 
 function onActorPageChange() {
   loadActors()

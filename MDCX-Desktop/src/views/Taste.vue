@@ -83,7 +83,7 @@ const dimensions = [
   { key: 'actors', title: '偏好的演员' },
   { key: 'series', title: '偏好的系列' },
 ]
-const profile = ref(null)
+const profile = ref({ evidence_count: 0, studios: [], actors: [], series: [] })
 const loading = ref(false)
 const recommends = ref([])
 const recommendTotal = ref(0)

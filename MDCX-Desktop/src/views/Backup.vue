@@ -210,8 +210,8 @@ async function loadData() {
       listBackups(),
       getBackupStats()
     ])
-    backups.value = listRes.data.backups || []
-    stats.value = statsRes.data
+    backups.value = listRes.backups || []
+    stats.value = statsRes
   } catch (e) {
     ElMessage.error('加载数据失败: ' + (e.response?.data?.detail || e.message))
   } finally {
@@ -222,7 +222,7 @@ async function loadData() {
 async function loadConfig() {
   try {
     const res = await getBackupConfig()
-    Object.assign(configForm, res.data)
+    Object.assign(configForm, res)
   } catch (e) {
     // 静默
   }
@@ -237,7 +237,7 @@ async function confirmCreateBackup() {
   creating.value = true
   try {
     const res = await createBackup(createNote.value)
-    ElMessage.success(`备份成功: ${res.data.backup.name}`)
+    ElMessage.success(`备份成功: ${res.backup?.name}`)
     createDialogVisible.value = false
     loadData()
   } catch (e) {
@@ -255,9 +255,9 @@ async function handleRestore(row) {
       { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' }
     )
     const res = await restoreBackup(row.name)
-    ElMessage.success(`恢复完成: ${res.data.result.restored.join(', ')}`)
-    if (res.data.result.errors?.length) {
-      ElMessage.warning(`部分错误: ${res.data.result.errors.join('; ')}`)
+    ElMessage.success(`恢复完成: ${res.result.restored.join(', ')}`)
+    if (res.result.errors?.length) {
+      ElMessage.warning(`部分错误: ${res.result.errors.join('; ')}`)
     }
     loadData()
   } catch (e) {

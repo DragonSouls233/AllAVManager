@@ -32,6 +32,7 @@ from typing import Optional
 
 from app.config.manager import get_config
 from app.utils.logger import get_logger
+from app.utils.path_filters import skip_dir
 
 logger = get_logger(__name__)
 
@@ -352,7 +353,9 @@ def _scan_tree_sync(root: Path, items: list, counters: dict,
                 return
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    if depth < SCAN_MAX_DEPTH:
+                    # 系统/厂商元数据目录整体跳过：@eaDir、.@__thumb 里是上万个缩略图，
+                    # 钻进既吃光 SCAN_MAX_ENTRIES 预算，也容易把缩略图当推广图误报。
+                    if depth < SCAN_MAX_DEPTH and not skip_dir(entry.name):
                         stack.append((Path(entry.path), depth + 1))
                     continue
                 if not entry.is_file(follow_symlinks=False):

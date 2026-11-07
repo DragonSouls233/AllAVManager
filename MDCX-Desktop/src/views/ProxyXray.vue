@@ -304,6 +304,8 @@ async function speedTest () {
   try {
     const r = await api.post(`${API}/speedtest`)
     ElMessage.success(`测速完成 ${r.data.alive}/${r.data.total} 存活`); loadStatus()
+  } catch (e) {
+    ElMessage.error('测速失败: ' + (e.response?.data?.detail || e.message))
   } finally { loading.value = false }
 }
 
@@ -320,8 +322,8 @@ const spTestResult = ref('')
 async function loadSiteProxy () {
   try {
     const r = await api.get('/config/site-proxy')
-    siteProxyEnabled.value = r.data.enabled
-    siteProxyRules.value = (r.data.items || []).map(i => ({ key: i.key, value: i.value }))
+    siteProxyEnabled.value = r.enabled
+    siteProxyRules.value = (r.items || []).map(i => ({ key: i.key, value: i.value }))
   } catch (e) { /* 非关键 */ }
 }
 async function saveSiteProxy () {
@@ -339,7 +341,7 @@ async function saveSiteProxy () {
 async function testSiteProxy () {
   try {
     const r = await api.post('/config/site-proxy/test', { site: spTestSite.value, url: spTestUrl.value })
-    spTestResult.value = `命中=${r.data.matched} 实际代理=${r.data.effective_proxy ?? '直连'}（${r.data.mode}）`
+    spTestResult.value = `命中=${r.matched} 实际代理=${r.effective_proxy ?? '直连'}（${r.mode}）`
   } catch (e) { spTestResult.value = '测试失败: ' + (e.response?.data?.detail || e.message) }
 }
 
@@ -351,8 +353,8 @@ const pmTestResult = ref('')
 async function loadPathMap () {
   try {
     const r = await api.get('/config/path-map')
-    pmEnabled.value = r.data.enabled
-    pathMapRules.value = (r.data.rules || []).map(r2 => ({ remote: r2.remote, local: r2.local, enabled: r2.enabled !== false }))
+    pmEnabled.value = r.enabled
+    pathMapRules.value = (r.rules || []).map(r2 => ({ remote: r2.remote, local: r2.local, enabled: r2.enabled !== false }))
   } catch (e) { /* 非关键 */ }
 }
 async function savePathMap () {
@@ -369,7 +371,7 @@ async function savePathMap () {
 async function testPathMap () {
   try {
     const r = await api.post('/config/path-map/test', { path: pmTestPath.value, direction: 'to_local' })
-    pmTestResult.value = r.data.changed ? `→ ${r.data.output}` : '未命中（原样返回）'
+    pmTestResult.value = r.changed ? `→ ${r.output}` : '未命中（原样返回）'
   } catch (e) { pmTestResult.value = '测试失败: ' + (e.response?.data?.detail || e.message) }
 }
 
@@ -383,7 +385,7 @@ const csValidateResult = ref(null)
 async function loadCustomSources () {
   try {
     const r = await api.get('/config/custom-sources')
-    csList.value = r.data.items || []
+    csList.value = r.items || []
   } catch (e) { /* 非关键 */ }
 }
 function editCustomSource (item) {
@@ -396,10 +398,10 @@ async function validateCustomSource () {
   csValidating.value = true
   try {
     const r = await api.post('/config/custom-sources/validate', { yaml: csYaml.value })
-    csValidateResult.value = r.data
-    if (r.data.valid && (r.data.test_results || []).every(t => t.passed)) ElMessage.success('校验通过，全部用例验收合格')
-    else if (r.data.valid) ElMessage.warning('校验通过，但有用例未通过')
-    else ElMessage.error('校验未通过：' + (r.data.errors || []).join('；'))
+    csValidateResult.value = r
+    if (r.valid && (r.test_results || []).every(t => t.passed)) ElMessage.success('校验通过，全部用例验收合格')
+    else if (r.valid) ElMessage.warning('校验通过，但有用例未通过')
+    else ElMessage.error('校验未通过：' + (r.errors || []).join('；'))
   } catch (e) { ElMessage.error('校验失败: ' + (e.response?.data?.detail || e.message)) }
   finally { csValidating.value = false }
 }

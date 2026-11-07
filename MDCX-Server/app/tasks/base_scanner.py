@@ -15,6 +15,7 @@ from pathlib import Path
 
 from app.utils.logger import get_logger
 from app.utils.file_ops import copy_file_resilient
+from app.utils.path_filters import skip_dir
 
 logger = get_logger(__name__)
 
@@ -304,12 +305,10 @@ def find_local_cover(video_file_path: str | Path, code: str) -> str | None:
     return None
 
 
-# 遍历时剪枝跳过的系统/垃圾目录名（整盘扫描时避免陷入回收站、系统卷信息等）
-_SKIP_WALK_DIRS = {
-    "$recycle.bin", "system volume information", "@eadir", "#recycle",
-    "found.000", "recycler", "$sysreset", "node_modules", "__pycache__",
-    ".git", ".svn", ".hg",
-}
+# 系统/垃圾目录的剪枝判据已统一到 app.utils.path_filters（见该模块注释：
+# 群晖 @Recently-Snapshot、飞牛 .wfm_upload、macOS __MACOSX 等以前漏掉了，
+# 会让快照目录里的整份历史副本被当真实媒体扫进库）。这里保留名字仅为兼容旧引用。
+_SKIP_WALK_DIRS = None
 
 
 def _list_dir_entries(path: Path) -> list:
@@ -492,11 +491,7 @@ def iter_media_entries(
                 for entry in it:
                     try:
                         if entry.is_dir(follow_symlinks=False):
-                            if (
-                                depth < max_depth
-                                and entry.name.lower() not in _SKIP_WALK_DIRS
-                                and not entry.name.startswith(".")
-                            ):
+                            if depth < max_depth and not skip_dir(entry.name):
                                 dirs.append(entry.name)
                         else:
                             files.append(entry.name)

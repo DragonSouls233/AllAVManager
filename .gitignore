@@ -25,6 +25,7 @@ ssl/
 private/
 *.keystore
 MDCX-Desktop.backup-20261031
+.playwright-cli
 
 # 应用凭据（仅匹配明确的凭据文件，勿用 auth*/*token*/*password* 等通配
 # —— 那会误伤 app/api/routes/auth.py、telegram_bot.py 等项目源码）
