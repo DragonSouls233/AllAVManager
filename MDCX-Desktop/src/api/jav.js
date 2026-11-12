@@ -28,9 +28,16 @@ export async function getLtxActor(name) {
   return api.get('/jav/ltx-library/actor', { params: { name } })
 }
 
-/** 服务器端抓取线上 LTX 库并写入 ltx_archive（走内置代理，增量 upsert + 后台下载封面/头像）。 */
+/** 服务器端抓取线上 LTX 库并写入 ltx_archive（走内置代理，增量 upsert + 后台下载封面/头像）。
+ *  实测服务端一次完整刷新约 40s（拉 2.5MB + upsert 近 3000 行 + 头像映射），
+ *  默认 60s 太紧，一旦超时前端拿不到结果就不会刷新列表，页面会停留在旧数据。 */
 export async function refreshLtxSnapshot() {
-  return api.post('/jav/ltx-snapshot/refresh')
+  return api.post('/jav/ltx-snapshot/refresh', null, { timeout: 240000 })
+}
+
+/** 同步状态：上次尝试/上次成功/距上次成功多久/失败原因（无数据也返回 200）。 */
+export async function getLtxSnapshotStatus() {
+  return api.get('/jav/ltx-snapshot/status')
 }
 
 export async function getJavMovie(id) {

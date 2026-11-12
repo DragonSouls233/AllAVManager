@@ -7,7 +7,8 @@
           线上 <b>{{ onlineTotal }}</b> 部 / <b>{{ actorTotal }}</b> 演员 ·
           本地 LTX <b>{{ localTotal }}</b> ·
           <b class="warn">新演员 {{ newActorTotal }}</b>
-          <span v-if="savedAt"> · 快照 {{ savedAt }}</span>
+          <span v-if="savedAt"> · 数据 {{ savedAt }}</span>
+          <span v-if="syncHint" class="sync" :class="syncBad ? 'bad' : 'ok'"> · {{ syncHint }}</span>
         </div>
       </div>
       <div class="hdr-r">
@@ -130,9 +131,39 @@ const actorTotal = ref(0)
 const localTotal = ref(0)
 const newActorTotal = ref(0)
 const savedAt = ref('')
+const syncStatus = ref(null)
 const actors = ref([])
 const current = ref('')
 const currentItems = ref([])
+
+/**
+ * 同步状态文案。
+ *
+ * 老页头只显示 `savedAt`（= MAX(fetched_at)，数据入库时间），一旦同步失败它就
+ * 停在旧日期，看着像「从来没自动同步过」——2026-11-09/10 的 429 限流正是如此。
+ * 这里改成直说「上次同步 成功/失败 + 距今多久」，且超过 30 小时未成功就标红。
+ */
+const syncBad = computed(() => {
+  const s = syncStatus.value
+  if (!s) return false
+  if (s.last_try_ok === false) return true
+  return typeof s.stale_hours === 'number' && s.stale_hours > 30
+})
+
+const syncHint = computed(() => {
+  const s = syncStatus.value
+  if (!s || !s.last_try_at) return ''
+  const ago = typeof s.stale_hours === 'number' ? `，已 ${s.stale_hours}h 未成功` : ''
+  if (s.last_try_ok) return `上次同步 ${fmtTime(s.last_try_at)}`
+  const why = s.last_http === 429 ? '远程限流 429' : s.last_error || '抓取失败'
+  return `上次同步失败 ${fmtTime(s.last_try_at)}（${why}${ago}）`
+})
+
+function fmtTime(v) {
+  // "2026-11-10T14:52:18" → "11-10 14:52"
+  const m = String(v || '').match(/^\d{4}-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/)
+  return m ? `${m[1]}-${m[2]} ${m[3]}:${m[4]}` : String(v || '')
+}
 
 const currentInfo = computed(() => actors.value.find((a) => a.name === current.value) || null)
 
@@ -169,6 +200,7 @@ function applyLibrary(lib) {
   localTotal.value = lib.local_total || 0
   newActorTotal.value = lib.new_actor_total || 0
   savedAt.value = (lib.snapshot && lib.snapshot.saved_at) || ''
+  syncStatus.value = lib.snapshot || null
   actors.value = lib.actors || []
 }
 
@@ -228,7 +260,15 @@ async function updateSnapshot() {
     await loadActor(current.value)
     ElMessage.success('已更新快照：' + (res.count != null ? res.count + ' 部' : 'OK') + '，封面/头像后台更新中')
   } catch (e) {
-    err.value = '更新失败：' + (e.message || e) + '（需服务器内置代理能访问外网）'
+    // 502 的 detail 里带真实原因（429 限流 / 代理不通），直接透出来比笼统提示有用
+    const detail = (e && e.response && e.response.data && e.response.data.detail) || e.message || e
+    err.value = '更新失败：' + detail
+    // 失败也要刷新状态条，别让页头继续显示旧的成功时间
+    try {
+      applyLibrary(await getLtxLibrary())
+    } catch (_) {
+      /* 拉不到就保留原状态 */
+    }
   } finally {
     loading.value = false
   }
@@ -319,6 +359,13 @@ onMounted(loadLibrary)
 }
 .hdr .sub .warn {
   color: var(--el-color-warning);
+}
+.hdr .sub .sync.ok {
+  color: var(--text-secondary);
+}
+.hdr .sub .sync.bad {
+  color: var(--el-color-danger);
+  font-weight: 500;
 }
 .hdr-r {
   display: flex;

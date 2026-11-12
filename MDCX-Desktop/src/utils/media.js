@@ -219,6 +219,11 @@ export const getMovieVersionBadges = (movie) => {
   } else if (movie?.is_uncensored) {
     list.push({ text: '无码', type: 'uncensored' })
   }
+  // 🔴 2026-11-11：外挂字幕徽标（扫描时按同目录字幕判定并落库 has_subtitle）。
+  //   独立成徽标，不与中字/无码混淆；播放器仍按需实时匹配字幕文件。
+  if (movie?.has_subtitle) {
+    list.push({ text: '字幕', type: 'sub' })
+  }
   return list
 }
 
@@ -231,6 +236,7 @@ export const versionBadgeType = (type) => {
     uc: 'warning',
     '4k': 'success',
     hd: 'primary',
+    sub: 'info',
   }
   return map[type] || 'info'
 }

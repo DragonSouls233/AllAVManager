@@ -45,6 +45,9 @@
       <el-button type="info" @click="startImportNfo" :loading="store.scraping">
         <el-icon><Document /></el-icon> 导入 NFO
       </el-button>
+      <el-button type="primary" plain @click="subtitleDialogVisible = true">
+        <el-icon><Download /></el-icon> 下载字幕
+      </el-button>
       <el-tag v-if="store.total">{{ store.total }} 部</el-tag>
       <!-- 批量刮削后台运行期间角标数字会自动刷新，给个轻提示免得以为卡住了 -->
       <el-tag v-if="statsPolling" size="small" type="info" effect="plain">待刮削数自动刷新中</el-tag>
@@ -55,7 +58,7 @@
       <el-tag v-if="route.query.code_prefix" type="info" closable @close="clearRouteFilter('code_prefix')">番号：{{ route.query.code_prefix }}</el-tag>
     </div>
 
-    <!-- 信息筛选 TAB：中文 / 没中文 / 无码 / 单人 / 信息全 / 信息不全 -->
+    <!-- 信息筛选 TAB：中文 / 没中文 / 无码 / 高清无码 / 单人 / 信息全 / 信息不全 / 有字幕 -->
     <div class="info-tabs" v-if="!hideTabs">
       <el-radio-group v-model="infoTab" @change="onInfoTabChange">
         <el-radio-button value="">全部</el-radio-button>
@@ -64,6 +67,8 @@
         <el-radio-button value="uncensored">无码</el-radio-button>
         <!-- 2026-10-22 后端新增：高清无码（-LTX / -C-LTX），画质高于普通 -U 破解版 -->
         <el-radio-button value="hd_uncensored" title="高清无码（文件名 -LTX / -C-LTX）">高清无码</el-radio-button>
+        <!-- 2026-11-11 新增：仅显示含外挂字幕（-LTX 等带 .srt/.ass/.vtt）的影片 -->
+        <el-radio-button value="subtitle" title="含外挂字幕（同目录 .srt/.ass/.vtt）">有字幕</el-radio-button>
         <el-radio-button value="solo">单人</el-radio-button>
         <el-radio-button value="complete">信息全</el-radio-button>
         <el-radio-button value="incomplete">信息不全</el-radio-button>
@@ -148,6 +153,14 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 字幕补全：只在有码 / 无码页面内，独立入口，不影响既有按钮 -->
+    <SubtitleBatchDialog
+      v-model="subtitleDialogVisible"
+      module="jav"
+      :preset-keyword="keyword"
+      @finished="loadMovies"
+    />
   </div>
 </template>
 
@@ -159,6 +172,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getCoverSrc, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
 import { forceScrapeJavMovie } from '@/api/jav'
 import { usePendingPoll } from '@/query'
+import SubtitleBatchDialog from '@/components/SubtitleBatchDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -173,6 +187,8 @@ const props = defineProps({
 const keyword = ref('')
 const scanning = ref(false)
 const sortBy = ref('')
+// 字幕补全弹窗（独立入口，不动既有工具条按钮）
+const subtitleDialogVisible = ref(false)
 
 // 待刮削角标自动刷新：批量刮削是后台串行任务，角标只在 loadMovies 时更新会一直停在旧值。
 // 只请求 limit=1 取 pending_count，归零/卸载自动停（详见 src/query/pending-poll.js）。
@@ -260,8 +276,9 @@ function resetFilters() {
   loadMovies()
 }
 
-// 信息筛选 TAB：''=全部 / chinese=有中文 / no_chinese=没中文 / uncensored=无码
-//              / hd_uncensored=高清无码(-LTX) / solo=单人 / complete=信息全 / incomplete=信息不全
+  // 信息筛选 TAB：''=全部 / chinese=有中文 / no_chinese=没中文 / uncensored=无码
+  //              / hd_uncensored=高清无码(-LTX) / subtitle=有字幕 / solo=单人
+  //              / complete=信息全 / incomplete=信息不全
 // 独立库（LTX）由 props.forcedTab 锁定初始值，配合 hideTabs 不可更改。
 const infoTab = ref(props.forcedTab || '')
 
@@ -277,6 +294,7 @@ async function loadMovies() {
   else if (infoTab.value === 'no_chinese') params.no_chinese = 1
   else if (infoTab.value === 'uncensored') params.is_uncensored = 1
   else if (infoTab.value === 'hd_uncensored') params.is_hd_uncensored = 1
+  else if (infoTab.value === 'subtitle') params.has_subtitle = 1
   else if (infoTab.value === 'solo') params.solo = 1
   else if (infoTab.value === 'complete' || infoTab.value === 'incomplete') params.info_state = infoTab.value
   await store.loadMovies(params)

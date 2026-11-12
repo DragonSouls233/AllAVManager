@@ -588,6 +588,7 @@ async def get_actor_movies(
                 "is_leak": m.is_leak,
                 "is_4k": m.is_4k,
                 "is_hd_uncensored": m.is_hd_uncensored,
+                "has_subtitle": m.has_subtitle,
                 "module_type": "jav",
                 "is_starring": _is_starring(m),
                 "file_path": m.file_path,
@@ -674,6 +675,7 @@ async def get_actor_timeline(actor_id: int):
                     "is_leak": m.is_leak,
                     "is_4k": m.is_4k,
                     "is_hd_uncensored": m.is_hd_uncensored,
+                    "has_subtitle": m.has_subtitle,
                     "module_type": "jav",
                 } for m in ms],
             })
@@ -794,6 +796,7 @@ async def list_movies(
     no_chinese: Optional[int] = Query(None, description="1=仅没中文(无中字，含未判定)"),
     is_uncensored: Optional[int] = Query(None, description="1=仅无码"),
     is_hd_uncensored: Optional[int] = Query(None, description="1=仅高清无码（文件名 -LTX / -C-LTX，2026-10-22 新增）"),
+    has_subtitle: Optional[int] = Query(None, description="1=仅含外挂字幕（同目录 .srt/.ass/.vtt 等，2026-11-11 新增）"),
     solo: Optional[int] = Query(None, description="1=仅单人作品（actor 字段恰好一个演员）"),
     info_state: Optional[str] = Query(None, description="complete=信息全 / incomplete=信息不全（NFO+封面+预览图）"),
     sort: Optional[str] = Query(None, description="排序字段: created_at, release_date, duration, rating, code。前缀-表示降序；code 为番号自然排序（ABC-001 < ABC-002 < ABC-010）"),
@@ -843,6 +846,9 @@ async def list_movies(
             # 🔴 2026-10-22：高清无码（LTX）。只按 is_hd_uncensored 列筛，
             #   不叠加 is_uncensored —— LTX 落库时两者同时为 True，加 AND 是冗余。
             filters.append(JavMovie.is_hd_uncensored == 1)
+        if has_subtitle:
+            # 🔴 2026-11-11：仅含外挂字幕（扫描时按同目录字幕判定并落库）。
+            filters.append(JavMovie.has_subtitle == 1)
         if solo:
             # v3.1 单人筛选：actor 字段非空且不含分隔符（不靠 MovieActor 表，其恒为空）
             filters.append(JavMovie.actor.isnot(None))
@@ -954,7 +960,8 @@ async def list_movies(
                  # 版本标识（列表页 badge 依赖）：中文/无码/4K/流出
                  "is_chinese": m.is_chinese, "is_uncensored": m.is_uncensored,
                  "is_4k": m.is_4k, "is_leak": m.is_leak,
-                 "is_hd_uncensored": m.is_hd_uncensored}
+                 "is_hd_uncensored": m.is_hd_uncensored,
+                 "has_subtitle": m.has_subtitle}
                 for m in movies
             ],
         }
@@ -1006,6 +1013,7 @@ async def get_movie(movie_id: int):
             "is_chinese": movie.is_chinese, "is_uncensored": movie.is_uncensored,
             "is_mosaic": movie.is_mosaic, "is_leak": movie.is_leak, "is_4k": movie.is_4k,
             "is_hd_uncensored": movie.is_hd_uncensored,
+            "has_subtitle": movie.has_subtitle,
             "cover_url": movie.cover_url, "poster_url": movie.poster_url,
             "thumb_url": movie.thumb_url, "sample_images": _parse_sample_images(movie.sample_images),
             "actor": _fill_amateur_actor(movie), "actor_ids": actor_ids, "studio": movie.studio,
@@ -3692,57 +3700,192 @@ async def javdb_top250_cover(url: str = Query(..., description="spfcas 原始封
 # ============================================================
 _LTX_REMOTE_URL = "https://ltx.libray.workers.dev/api/items"
 
+# 429 = Cloudflare 侧限流；5xx = 对端临时故障。都属于「等一会儿再来就好」，
+# 一次就放弃会让整天没有快照（2026-11-09 / 11-10 的每日任务就是这么废掉的）。
+_LTX_RETRY_STATUS = {429, 500, 502, 503, 504}
 
-def _fetch_ltx_catalog_sync() -> dict:
-    """同步抓取线上 LTX 库（走内置代理；服务器直连外网受限，必须带代理）。"""
+
+def _ltx_retry_after(resp) -> float | None:
+    """读 Retry-After（只认秒数形式），非法/缺失返回 None。"""
+    try:
+        v = resp.headers.get("Retry-After")
+        return min(float(v), 60.0) if v else None
+    except Exception:
+        return None
+
+
+def _ltx_sync_cookie() -> str | None:
+    """读取 LTX 站点的验证凭证，返回可直接放进 Cookie 请求头的字符串。
+
+    站点在 ``POST /api/verify``（Turnstile 验证通过）后下发 **HttpOnly 的
+    ``ltx_pass``**；另有非 HttpOnly 的 ``ltx_c``（客户端 ID）。两者都带上最稳。
+    部分场景也可能遇到 Cloudflare 通用 challenge 的 ``cf_clearance``。
+
+    来源（按顺序）：
+      1) 环境变量 ``MDCX_LTX_COOKIE``（推荐：直接填完整 cookie 串）
+      2) 环境变量 ``MDCX_LTX_CF_CLEARANCE``（旧版兼容：单值）
+      3) ``<ltx_archive>/_ltx_cookie.txt``（完整串或单值）
+      4) ``<ltx_archive>/_cf_clearance.txt``（旧版兼容：单值）
+
+    含 ``=`` 视为完整 cookie 串原样返回；否则按来源包装成
+    ``ltx_pass=<值>`` 或 ``cf_clearance=<值>``。缺失返回 None。
+    """
+    import os
+
+    def _wrap(v: str, legacy: bool) -> str:
+        return v if "=" in v else (("cf_clearance=" if legacy else "ltx_pass=") + v)
+
+    env = os.environ.get("MDCX_LTX_COOKIE")
+    if env and env.strip():
+        return _wrap(env.strip(), False)
+    legacy_env = os.environ.get("MDCX_LTX_CF_CLEARANCE")
+    if legacy_env and legacy_env.strip():
+        return _wrap(legacy_env.strip(), True)
+    try:
+        from app.services import ltx_archive
+
+        for fname, legacy in (("_ltx_cookie.txt", False), ("_cf_clearance.txt", True)):
+            p = ltx_archive.archive_dir() / fname
+            if p.exists():
+                v = p.read_text(encoding="utf-8").strip()
+                if v:
+                    return _wrap(v, legacy)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_ltx_catalog_sync(
+    attempts: int = 1,
+    per_timeout: int = 25,
+    backoff: tuple = (5, 15),
+) -> dict:
+    """同步抓取线上 LTX 库（走内置代理；服务器直连外网受限，必须带代理）。
+
+    ``attempts`` 次尝试，中间按 ``backoff`` 递增等待（并尊重 Retry-After）。
+    只对 429/5xx/网络异常重试 —— 其他 4xx 立刻抛错，重试没有意义。
+    """
+    import time
+
     import requests
 
     from app.services.proxy_manager import get_effective_proxy_url
 
+    attempts = max(1, int(attempts or 1))
     proxy = get_effective_proxy_url(url=_LTX_REMOTE_URL)
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    sess = requests.Session()
-    sess.trust_env = False
-    try:
-        r = sess.get(
-            _LTX_REMOTE_URL,
-            timeout=60,
-            verify=False,
-            proxies=proxies,
-            headers={"Accept": "application/json"},
-        )
-        r.raise_for_status()
-        data = r.json()
-    finally:
-        sess.close()
-    if not isinstance(data.get("items"), list):
-        raise RuntimeError("远程返回缺少 items 数组")
-    return data
+    cookie = _ltx_sync_cookie()
+    headers = {
+        "Accept": "application/json, */*",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+        # 只记有哪些 cookie 名，绝不打印凭证值
+        logger.info("[ltx] 已注入验证 cookie: %s",
+                    [part.split("=", 1)[0].strip() for part in cookie.split(";")])
+    wait = 0.0
+    last_err = ""
+    for i in range(attempts):
+        if i:
+            logger.warning("[ltx] 抓取重试 %d/%d（%.0fs 后）: %s", i + 1, attempts, wait, last_err)
+            time.sleep(wait)
+        sess = requests.Session()
+        sess.trust_env = False
+        try:
+            r = sess.get(
+                _LTX_REMOTE_URL,
+                timeout=per_timeout,
+                verify=False,
+                proxies=proxies,
+                headers=headers,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if not isinstance(data.get("items"), list):
+                    raise RuntimeError("远程返回缺少 items 数组")
+                return data
+            if r.status_code == 403:
+                # 验证类失败：重试无意义（不会因重试消失），立即清晰报错。
+                if cookie:
+                    raise RuntimeError(
+                        "HTTP 403：已注入验证 cookie 仍被拦截"
+                        "（ltx_pass 过期 / 绑定出口 IP 不符 / 验证已升级）；"
+                        "请在浏览器重新通过后更新凭证"
+                    )
+                raise RuntimeError(
+                    "HTTP 403：源站需要人机验证凭证；请在已通过验证的浏览器导出 "
+                    "ltx_pass cookie 并配置 MDCX_LTX_COOKIE"
+                )
+            if r.status_code in _LTX_RETRY_STATUS:
+                last_err = "HTTP %s（%s）" % (
+                    r.status_code,
+                    "远程限流" if r.status_code == 429 else "对端临时故障",
+                )
+                wait = _ltx_retry_after(r) or float(backoff[min(i, len(backoff) - 1)])
+                continue
+            raise RuntimeError("HTTP %s: %s" % (r.status_code, (r.text or "")[:120]))
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last_err = "%s: %s" % (type(e).__name__, str(e)[:150])
+            wait = float(backoff[min(i, len(backoff) - 1)])
+            continue
+        finally:
+            sess.close()
+    raise RuntimeError(last_err or "抓取失败")
 
 
 @router.post("/ltx-snapshot/refresh")
-async def refresh_ltx_snapshot():
-    """抓取线上 LTX 库 → 写入 SQLite（增量 upsert + 头像映射）→ 后台下载封面/头像。"""
+async def refresh_ltx_snapshot(
+    attempts: int = Query(2, ge=1, le=5, description="429/5xx 时的尝试次数（含首次）"),
+):
+    """抓取线上 LTX 库 → 写入 SQLite（增量 upsert + 头像映射）→ 后台下载封面/头像。
+
+    无论成功失败都会把「本次尝试」写进 ``ltx_archive/_sync_status.json``，
+    前端据此显示「上次同步 时间 / 失败原因」，不再用 ``MAX(fetched_at)`` 冒充。
+    """
     import asyncio as _asyncio
 
     from app.services import ltx_archive
 
     try:
-        data = await _asyncio.to_thread(_fetch_ltx_catalog_sync)
+        data = await _asyncio.to_thread(_fetch_ltx_catalog_sync, attempts)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail="抓取失败: %s" % str(e)[:200])
+        err = str(e)[:200]
+        await _asyncio.to_thread(ltx_archive.record_sync_result, False,
+                                 None, None, None, attempts, err)
+        raise HTTPException(status_code=502, detail="抓取失败: %s" % err)
 
     n = ltx_archive.upsert_items(data["items"], data.get("updated_at"))
     ltx_archive.save_avatars(data.get("avatars") or {})
     started = ltx_archive.start_download()
+    st = ltx_archive.record_sync_result(
+        True, 200, n, len(data.get("items") or []), attempts, ""
+    )
     meta = ltx_archive.snapshot_meta()
     return {
         "ok": True,
         "count": n,
         "saved_at": meta.get("saved_at"),
+        "synced_at": st.get("at"),
         "covers_started": started,
         "dir": str(ltx_archive.archive_dir()),
     }
+
+
+@router.get("/ltx-snapshot/status")
+async def get_ltx_snapshot_status():
+    """同步状态：上次尝试 / 上次成功 / 距上次成功多少小时 / 失败原因。
+
+    与 ``/ltx-snapshot`` 的区别：这里**不因无数据返回 404**，
+    所以前端能显示「上次同步失败（429）」而不是干等一个空页面。
+    """
+    from app.services import ltx_archive
+
+    return ltx_archive.snapshot_meta()
+
 
 
 @router.get("/ltx-snapshot")

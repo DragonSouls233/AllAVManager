@@ -167,6 +167,8 @@ class MovieResponse(BaseModel):
     is_mosaic: Optional[bool] = None
     is_chinese: Optional[bool] = None
     is_leak: Optional[bool] = None
+    # 2026-11-11：外挂字幕标记（扫描时按同目录 .srt/.ass/.vtt 等判定并落库，目前仅 jav 模块填充）
+    has_subtitle: Optional[bool] = None
     file_path: Optional[str] = None
     file_size: Optional[int] = None
     sample_images: list[str] = []
@@ -209,6 +211,7 @@ async def list_movies(
     min_rating: Optional[float] = Query(None, description="评分下限（含）"),
     max_rating: Optional[float] = Query(None, description="评分上限（含）"),
     letter: Optional[str] = Query(None, description="番号首字母过滤（A-Z 或 #，#表示数字开头）"),
+    has_subtitle: Optional[int] = Query(None, description="1=仅含外挂字幕（同目录 .srt/.ass/.vtt 等，2026-11-11 新增，仅 jav 模块生效）"),
     sort: Optional[str] = Query(None, description="排序字段: release_date, duration, play_count, title, file_size, rating, last_played_at, code。前缀-表示降序；code 为番号自然排序（ABC-001 < ABC-002 < ABC-010）"),
     seed: Optional[int] = Query(None, description="随机种子，提供时按种子做可复现随机排序"),
     module: str = Query("jav"),
@@ -241,12 +244,12 @@ async def list_movies(
     if tag_mode_upper not in ("AND", "OR"):
         tag_mode_upper = "OR"
 
-    # 搜索/排序/随机/多标签/收藏/评分/字母查询不缓存
+    # 搜索/排序/随机/多标签/收藏/评分/字母/字幕查询不缓存
     cacheable = (
         not search and not sort and seed is None
         and not tag_id_list and is_favorite is None
         and favorite_group_id is None and min_rating is None and max_rating is None
-        and not letter
+        and not letter and has_subtitle is None
     )
     cache_key = (
         f"movies:list:{module}:{page}:{page_size}:{status}:{maker}:{studio}:{series}:{tag_id}:{actor_id}"
@@ -346,6 +349,10 @@ async def list_movies(
             query = query.where(first.between("0", "9"))
         elif len(norm) == 1 and norm.isalpha():
             query = query.where(func.upper(func.substr(MovieModel.code, 1, 1)) == norm)
+
+    # 外挂字幕筛选（仅 jav 等已落库 has_subtitle 列的模块生效；其它模块模型无该列则跳过）
+    if has_subtitle and hasattr(MovieModel, "has_subtitle"):
+        query = query.where(MovieModel.has_subtitle == 1)
 
     # 计算总数
     count_query = select(func.count()).select_from(query.subquery())
@@ -477,6 +484,7 @@ async def list_movies(
             is_mosaic=m.is_mosaic,
             is_chinese=m.is_chinese,
             is_leak=m.is_leak,
+            has_subtitle=getattr(m, "has_subtitle", None),
             is_4k=getattr(m, "is_4k", None),
             is_hd_uncensored=getattr(m, "is_hd_uncensored", None),
             file_path=m.file_path,

@@ -99,7 +99,8 @@ def init_db() -> None:
                 maker TEXT,
                 score REAL,
                 remote_updated_at TEXT,
-                fetched_at TEXT
+                fetched_at TEXT,
+                subtitle_url TEXT
             )
             """
         )
@@ -108,6 +109,9 @@ def init_db() -> None:
             c.execute("ALTER TABLE ltx_items ADD COLUMN primary_actor TEXT")
         if "cover_source" not in cols:
             c.execute("ALTER TABLE ltx_items ADD COLUMN cover_source TEXT")
+        # 2026-11-12：线上 LTX 站新增「中文SRT字幕下载」，/api/items 每条带 subtitle 直链。
+        if "subtitle_url" not in cols:
+            c.execute("ALTER TABLE ltx_items ADD COLUMN subtitle_url TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_ltx_code_norm ON ltx_items(code_norm)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_ltx_primary ON ltx_items(primary_actor)")
         c.execute(
@@ -283,14 +287,94 @@ def local_jav_id_map(codes: set[str]) -> dict[str, int]:
     return out
 
 
+_STATUS_FILE = "_sync_status.json"
+
+
+def _status_path() -> Path:
+    return archive_dir() / _STATUS_FILE
+
+
+def read_sync_status() -> dict:
+    """读「最近一次同步尝试」的状态文件（不存在/损坏 → {}）。"""
+    p = _status_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def record_sync_result(
+    ok: bool,
+    http: int | None = None,
+    count: int | None = None,
+    items: int | None = None,
+    attempts: int = 1,
+    error: str = "",
+) -> dict:
+    """把「最近一次同步尝试」写盘，成功和失败都写。
+
+    为什么要单独一个文件：同步失败时 ``ltx_items`` 一行都不会变，
+    ``snapshot_meta()`` 的 ``saved_at``（= MAX(fetched_at)）就停在旧日期，
+    前端看起来像「从来没自动同步过」——2026-11-09/10 的 429 限流就是这样
+    （11-08 之后两天没更新，但每天 04:00 的任务其实都跑了）。
+    有了这个文件才能区分「没跑」和「跑了但失败（429）」。
+    """
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    prev = read_sync_status()
+    st = {
+        "at": now,
+        "ok": bool(ok),
+        "http": http,
+        "count": count,
+        "items": items,
+        "attempts": attempts,
+        "error": (error or "")[:300],
+        # 上次「成功」的时间要保留，否则失败时无从判断到底多久没成功过
+        "last_ok_at": now if ok else (prev.get("last_ok_at") or ""),
+    }
+    try:
+        _status_path().write_text(
+            json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except Exception:
+        logger.debug("[ltx] 写同步状态失败", exc_info=True)
+    return st
+
+
+def _stale_hours(since: str) -> float | None:
+    """距上次成功多少小时（解析失败返回 None）。"""
+    if not since:
+        return None
+    try:
+        t = datetime.datetime.fromisoformat(str(since))
+    except Exception:
+        return None
+    return round((datetime.datetime.now() - t).total_seconds() / 3600.0, 1)
+
+
 def snapshot_meta() -> dict:
     init_db()
     c = _conn()
     try:
         row = c.execute("SELECT COUNT(*), MAX(fetched_at) FROM ltx_items").fetchone()
-        return {"count": row[0] or 0, "saved_at": row[1] or ""}
     finally:
         c.close()
+    meta = {"count": row[0] or 0, "saved_at": row[1] or ""}
+    st = read_sync_status()
+    if st:
+        meta.update(
+            {
+                "last_try_at": st.get("at") or "",
+                "last_ok_at": st.get("last_ok_at") or "",
+                "last_try_ok": bool(st.get("ok")),
+                "last_http": st.get("http"),
+                "last_error": st.get("error") or "",
+                "stale_hours": _stale_hours(st.get("last_ok_at") or ""),
+            }
+        )
+    return meta
 
 
 def _cover_view(norm: str, cover_file: str | None, remote: str) -> str:

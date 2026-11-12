@@ -41,6 +41,13 @@ class JavMovie(MovieMixin, JAV_BASE):
     #   -LTX   → 高清无码
     #   -C-LTX → 中文 + 高清无码
     is_hd_uncensored: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    # 🔴 2026-11-11 新增：是否有外挂字幕（同目录 .srt/.ass/.vtt 等）。
+    #   扫描时用 has_external_subtitle 判定，落库后影片库可直接显示"有字幕"
+    #   徽标并支持筛选；播放器仍按需实时匹配（见 app/services/subtitle_matcher）。
+    #   与 is_chinese 同源（都来自同目录外挂字幕），但独立成列以便筛选/统计。
+    has_subtitle: Mapped[bool | None] = mapped_column(
+        Boolean, default=False, server_default="0", index=True
+    )
     label: Mapped[str | None] = mapped_column(String(100))
     tmdb_id: Mapped[int | None] = mapped_column(Integer, index=True)  # TMDB ID（fanart.tv查询）
 

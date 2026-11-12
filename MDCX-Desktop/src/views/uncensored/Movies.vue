@@ -9,6 +9,9 @@
       <el-button type="success" @click="startScan" :loading="scanning">
         <el-icon><FolderOpened /></el-icon> 扫描目录
       </el-button>
+      <el-button type="primary" plain @click="subtitleDialogVisible = true">
+        <el-icon><Download /></el-icon> 下载字幕
+      </el-button>
       <el-tag v-if="store.total">共 {{ store.total }} 部</el-tag>
       <!-- 详情页跳转筛选状态 -->
       <el-tag v-if="route.query.series" type="success" closable @close="clearRouteFilter('series')">系列：{{ route.query.series }}</el-tag>
@@ -51,6 +54,14 @@
         @size-change="onPageSizeChange"
       />
     </div>
+
+    <!-- 字幕补全：无码页面内独立入口，不改动既有按钮 -->
+    <SubtitleBatchDialog
+      v-model="subtitleDialogVisible"
+      module="uncensored"
+      :preset-keyword="keyword"
+      @finished="loadMovies"
+    />
   </div>
 </template>
 
@@ -62,6 +73,7 @@ import { useUncensoredStore } from '@/stores/uncensored'
 import { ElMessage } from 'element-plus'
 import defaultCover from '@/assets/default-cover.png'
 import { getCoverSrc, getMovieVersionBadges, versionBadgeType } from '@/utils/media'
+import SubtitleBatchDialog from '@/components/SubtitleBatchDialog.vue'
 
 // 🔴 2026-10-13：补每页条数选择器（对齐 JAV 有码）。
 // 换每页条数时必须回到第 1 页，否则可能停在一个不存在的页码上。
@@ -74,6 +86,8 @@ const route = useRoute()
 const store = useUncensoredStore()
 const keyword = ref('')
 const scanning = ref(false)
+// 字幕补全弹窗（无码页面内独立入口）
+const subtitleDialogVisible = ref(false)
 
 // 2026-08-08: 详情页跳转筛选（系列/片商/类别/番号前缀）
 function routeFilterParams() {

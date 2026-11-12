@@ -175,6 +175,36 @@ def is_valid_jav_code(code: str) -> bool:
     return bool(jav_pattern.match(code))
 
 
+def _path_is_ltx(file_path: str | None) -> bool:
+    """判断一个存量 ``file_path`` 是否**本身就是一个 LTX 文件**。
+
+    🔴 只看文件名后缀，不看目录名（2026-11-10 修，用户报「LTX 新的扫不出来」）。
+    旧实现写了「路径里有一段目录叫 LTX 就算 LTX」，于是
+    `X:\\LTX\\ABC-123.mp4`（LTX 目录里混着的**普通版**）被判成「已升级」：
+    `_needs_upgrade = (not _path_is_ltx(old)) or (not old_hd)` 两面都 False
+    ⇒ 同番号真正的 `ABC-123-LTX.mp4` 被静默跳过，LTX 库与标记都不更新。
+    这正是「有不是 LTX 的番号（文件）时，新的 LTX 收不进来」的根因。
+
+    现在目录名只作旁证、不再单独成立：路径在 `LTX\\` 下但文件名不带后缀 ⇒ 不是 LTX。
+    判定仍复用 ``detect_version_flags`` 这一唯一真相源（禁止裸比 "ltx" 字符串）。
+    """
+    if not file_path:
+        return False
+    normalized = str(file_path).replace("/", chr(92))
+    name = normalized.split(chr(92))[-1]
+    return bool(detect_version_flags(name)["is_hd_uncensored"])
+
+
+def _needs_ltx_upgrade(old_path: str | None, old_hd: bool) -> bool:
+    """存量行是否需要被「真实扫到的 LTX 文件」接管。
+
+    两个条件任一成立即升级：路径本身不是 LTX 文件，或高清无码标记还没置。
+    抽成函数是为了可测 —— 用户报的「LTX 新的扫不出来」原本就出在这个判据上
+    （`_path_is_ltx` 曾把 LTX 目录里的普通版误判成已升级 ⇒ 两个条件都 False）。
+    """
+    return (not _path_is_ltx(old_path)) or (not old_hd)
+
+
 class JavScanner(BaseScanner):
     """JAV 有码模块扫描器"""
 
@@ -186,7 +216,16 @@ class JavScanner(BaseScanner):
 
     async def scan(self) -> dict:
         """扫描有码媒体目录并落库"""
-        results = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0, "actors": set(), "errors": []}
+        results = {
+            "total": 0, "scanned": 0, "matched": 0, "movies_added": 0,
+            "movies_ltx_upgraded": 0,
+            # LTX 目录里混入的「文件名不带 -LTX 后缀」的普通版数量（诊断用）：
+            # 这些文件曾因 _path_is_ltx 只看目录名而把同番号真 LTX 挡在门外。
+            "ltx_dir_non_ltx": 0,
+            "ltx_dir_non_ltx_samples": [],
+            "skipped_duplicate": 0, "skipped_ext": 0, "skipped_no_code": 0,
+            "actors": set(), "errors": [],
+        }
 
         logger.info(f"[jav] 扫描启动: media_dirs={[str(d) for d in self.media_dirs]}")
         for media_dir in self.media_dirs:
@@ -195,12 +234,27 @@ class JavScanner(BaseScanner):
                 dir_result = await self._scan_directory(media_dir)
                 logger.info(
                     f"[jav] 目录扫描完成: {media_dir} 共发现 {dir_result['total']} 个文件，"
-                    f"新增 {dir_result.get('movies_added', 0)}"
+                    f"新增 {dir_result.get('movies_added', 0)}，"
+                    f"LTX 升级 {dir_result.get('movies_ltx_upgraded', 0)}，"
+                    f"LTX 目录非 LTX {dir_result.get('ltx_dir_non_ltx', 0)}，"
+                    f"跳过 重复/扩展名/无番号 "
+                    f"{dir_result.get('skipped_duplicate', 0)}/"
+                    f"{dir_result.get('skipped_ext', 0)}/"
+                    f"{dir_result.get('skipped_no_code', 0)}"
                 )
                 results["total"] += dir_result["total"]
                 results["scanned"] += dir_result["scanned"]
                 results["matched"] += dir_result["matched"]
                 results["movies_added"] += dir_result.get("movies_added", 0)
+                results["movies_ltx_upgraded"] += dir_result.get("movies_ltx_upgraded", 0)
+                results["ltx_dir_non_ltx"] += dir_result.get("ltx_dir_non_ltx", 0)
+                if dir_result.get("ltx_dir_non_ltx_samples"):
+                    results["ltx_dir_non_ltx_samples"].extend(
+                        dir_result["ltx_dir_non_ltx_samples"]
+                    )
+                results["skipped_duplicate"] += dir_result.get("skipped_duplicate", 0)
+                results["skipped_ext"] += dir_result.get("skipped_ext", 0)
+                results["skipped_no_code"] += dir_result.get("skipped_no_code", 0)
                 if dir_result.get("actors"):
                     results["actors"].update(dir_result["actors"])
             except Exception as e:
@@ -222,13 +276,30 @@ class JavScanner(BaseScanner):
         results["actors"] = list(results["actors"])
         logger.info(
             f"[jav] 扫描完成: 共发现 {results['total']} 个文件，新增 {results['movies_added']}，"
+            f"LTX 升级 {results['movies_ltx_upgraded']}，"
+            f"LTX 目录非 LTX {results['ltx_dir_non_ltx']}，"
+            f"跳过 重复/扩展名/无番号 "
+            f"{results['skipped_duplicate']}/{results['skipped_ext']}/{results['skipped_no_code']}，"
             f"错误 {len(results['errors'])} 个"
         )
+        if results["ltx_dir_non_ltx"]:
+            logger.warning(
+                "[jav] LTX 目录里有 %d 个文件名不带 -LTX 的普通版（示例: %s）；"
+                "它们不会被当成 LTX，也不会再挡住同番号真 LTX 的升级，建议清理或改名",
+                results["ltx_dir_non_ltx"],
+                ", ".join(results["ltx_dir_non_ltx_samples"][:5]),
+            )
         return results
 
     async def _scan_directory(self, media_dir: Path) -> dict:
         """扫描单个媒体目录并写入数据库"""
-        result = {"total": 0, "scanned": 0, "matched": 0, "movies_added": 0, "actors": set()}
+        result = {
+            "total": 0, "scanned": 0, "matched": 0, "movies_added": 0,
+            "movies_ltx_upgraded": 0,
+            "ltx_dir_non_ltx": 0, "ltx_dir_non_ltx_samples": [],
+            "skipped_duplicate": 0, "skipped_ext": 0, "skipped_no_code": 0,
+            "actors": set(),
+        }
         media_dir = Path(media_dir)
 
         from app.db.module_db import ModuleDatabase
@@ -242,9 +313,34 @@ class JavScanner(BaseScanner):
             # 性能修复：一次性载入已存在番号，避免"每个视频文件一次 SELECT"的 N+1 查询。
             # 旧写法在 8000+ 文件的库上要跑 8000 次 await 查询，
             # 极易触发 scan_control 的 600s 超时 → 扫描失败 → 新增文件永远扫不进来。
-            existing_codes: set[str] = set(
-                (await session.execute(select(JavMovie.code))).scalars().all()
+            # 🔴 2026-11-10：集合升级为单次查询 dict —— code -> (id, file_path,
+            # is_hd_uncensored)。LTX 优先升级要读存量路径与标记来判幂等/跨盘升级，
+            # 全部字段一次取回，杜绝逐文件查库。
+            # id 允许 None：本轮新登记、尚未 commit 的番号以 None 占位。
+            existing_rows: dict[str, tuple[int | None, str | None, bool]] = {
+                r.code: (r.id, r.file_path, bool(r.is_hd_uncensored))
+                for r in (
+                    await session.execute(
+                        select(
+                            JavMovie.id,
+                            JavMovie.code,
+                            JavMovie.file_path,
+                            JavMovie.is_hd_uncensored,
+                        )
+                    )
+                ).all()
+                if r.code
+            }
+            # LTX 优先升级候选（pop 去重）：同一 code/id 一轮只处理一次。
+            # 与 existing_rows 分离，判重仍用 existing_rows，升级消费本表。
+            ltx_candidates: dict[str, tuple[int | None, str | None, bool]] = dict(
+                existing_rows
             )
+            # 待落库的 UPDATE：(id, code, 旧路径, 新路径, 文件大小)。
+            # 与主提交分离：UNIQUE 重试路径会 rollback，不能把 UPDATE 卷进去。
+            ltx_updates: list[tuple[int, str, str | None, str, int]] = []
+            # 本轮新插入、尚未提交的对象（id 为 None），供同番号后续 LTX 文件就地升级。
+            new_movies_by_code: dict[str, JavMovie] = {}
             # 🔴 2026-10-05：同时载入 status='pending' 的行，用于「已刮好但没登记」
             # 的就地回填（避免这些行永远停在 pending 被反复重刮）。
             pending_rows = (
@@ -268,21 +364,27 @@ class JavScanner(BaseScanner):
                 if m.code
             }
             chinese_selfheal_ids: list[int] = []
-            # 存量 is_hd_uncensored 自愈：文件名含 LTX 但库里还不是 True 的行（code→id）。
-            # 旧版扫描器入库时漏传该字段（只传了 is_uncensored），存量 LTX 片全是
-            # 「无码但非高清无码」；与新行入库同理，靠每次全量扫描重扫自愈。
-            hd_missing_by_code: dict[str, int] = {
+            # 🔴 2026-11-11：存量 has_subtitle 自愈（与 is_chinese 同源，都来自同目录
+            #   外挂字幕）。全量扫描走查每个文件时按本地证据补充 True——「没字幕」TAB
+            #   靠每次全量扫描自愈，无需另跑回填脚本（只加不减，无证据的保持原值）。
+            subtitle_missing_by_code: dict[str, int] = {
                 m.code: m.id
                 for m in (
                     await session.execute(
                         select(JavMovie.id, JavMovie.code).where(
-                            JavMovie.is_hd_uncensored.isnot(True)
+                            JavMovie.has_subtitle.isnot(True)
                         )
                     )
                 ).all()
                 if m.code
             }
-            hd_selfheal_ids: list[int] = []
+            subtitle_selfheal_ids: list[int] = []
+            # 🔴 2026-11-10：原「存量 is_hd_uncensored 自愈」(hd_missing_by_code /
+            # hd_selfheal_ids / 提交后只改三个标记的 UPDATE 块) 已整体删除。
+            # 旧逻辑是全库无盘符过滤的 code→id，只在文件名含裸 "ltx" 时补标记，
+            # 不动 file_path，日志还写「（LTX 文件）」——与判重分支的 LTX 升级
+            # 形成两套并存写库代码。现合并为判重分支里唯一一套「LTX 优先升级」：
+            # 用 detect_version_flags 判定、原地升级路径+大小+三个标记、pop 去重。
             # file_path 为空的存量行（code→id）。缺口补全/批量刮削的 persist() 会建
             # file_path=NULL 的影片行（视频可能不在盘上，也可能后来才出现），而下面
             # known 分支只查 pending 且从不写 file_path ⇒ 这些行永远停在「没视频路径」。
@@ -316,6 +418,7 @@ class JavScanner(BaseScanner):
                 for file_name in files:
                     ext = Path(file_name).suffix.lower()
                     if ext not in self.video_extensions:
+                        result["skipped_ext"] += 1
                         continue
 
                     file_path = dir_path / file_name
@@ -324,13 +427,70 @@ class JavScanner(BaseScanner):
                     # 使用统一番号提取（从 number.py 或内置逻辑）
                     code = self._extract_code(file_name, dir_path)
                     if not code:
+                        result["skipped_no_code"] += 1
                         continue
                     result["matched"] += 1
+
+                    # 本文件是否为真实扫到的 LTX 文件（-LTX / -C-LTX / -U-LTX）。
+                    # 判定只走 detect_version_flags 唯一真相源，禁止裸 "ltx" 字符串。
+                    file_is_ltx = bool(
+                        detect_version_flags(file_name)["is_hd_uncensored"]
+                    )
+                    # 诊断：文件放在 LTX 目录里、名字却不带 -LTX 后缀 ⇒ 普通版混进来了。
+                    # 这类文件以前会被 _path_is_ltx 误判成「已升级」，把同番号真 LTX 挡住。
+                    # 现在只做计数与告警，不改任何落库行为。
+                    if not file_is_ltx and any(
+                        p.upper() == "LTX" for p in file_path.parts[:-1]
+                    ):
+                        result["ltx_dir_non_ltx"] += 1
+                        if len(result["ltx_dir_non_ltx_samples"]) < 5:
+                            result["ltx_dir_non_ltx_samples"].append(file_name)
 
                     # 🔴 2026-10-05：已存在且仍是 pending ⇒ 若磁盘上已有 NFO，
                     # 说明它早就刮好了，只是没写回库。**就地回填并转 scraped**，
                     # 绝不能 continue 跳过 —— 那正是"缺口永不消失"的根因。
-                    if code in existing_codes:
+                    if code in existing_rows:
+                        result["skipped_duplicate"] += 1
+
+                        # ── LTX 优先升级（唯一一套写库逻辑）──────────────────
+                        # 产品口径：有 LTX 时 LTX 第一优先级（关系 LTX 库与更新，
+                        # 用户会删掉普通版）。仅当**真实扫到 LTX 文件**才考虑升级；
+                        # 已有行路径不是 LTX 或高清无码标记未置 ⇒ 原地 UPDATE
+                        # file_path / file_size + 三个标记；已是 LTX 路径且标记已置
+                        # ⇒ 幂等不动。允许跨盘升级路径（W:/Y:/Z: → X:\LTX\）。
+                        # ltx_candidates.pop ⇒ 同一 code/id 一轮只处理一次。
+                        # 逐条 info 日志含 code + 旧→新路径，独立计数不混入新增。
+                        if file_is_ltx and code in ltx_candidates:
+                            _row_id, _old_path, _old_hd = ltx_candidates.pop(code)
+                            _needs_upgrade = _needs_ltx_upgrade(_old_path, _old_hd)
+                            if _needs_upgrade:
+                                _new_path = str(file_path)
+                                _new_size = _file_size(file_path) or 0
+                                if _row_id is None:
+                                    # 本轮新插入、尚未 commit 的对象：就地改属性，
+                                    # 随整目录一次 commit 落库，避免按 id UPDATE 落空。
+                                    _obj = new_movies_by_code.get(code)
+                                    if _obj is not None:
+                                        _obj.file_path = _new_path
+                                        _obj.file_size = _new_size
+                                        _obj.is_hd_uncensored = True
+                                        _obj.is_uncensored = True
+                                        _obj.is_mosaic = False
+                                else:
+                                    ltx_updates.append(
+                                        (_row_id, code, _old_path, _new_path, _new_size)
+                                    )
+                                # 已被 LTX 升级接管的行不再走旧的「补空 file_path」，
+                                # 防止普通版路径反向覆盖刚升级的 LTX 路径。
+                                fp_missing_by_code.pop(code, None)
+                                result["movies_ltx_upgraded"] += 1
+                                logger.info(
+                                    "[jav] LTX 优先升级: %s | %s -> %s",
+                                    code,
+                                    _old_path or "(空路径)",
+                                    _new_path,
+                                )
+
                         # 🔴 存量补 file_path（2026-10-13）：见 fp_missing_by_code 注释。
                         # pop ⇒ 同番号多文件（分卷/副本）只链第一个，避免互相覆盖。
                         if code in fp_missing_by_code:
@@ -344,28 +504,33 @@ class JavScanner(BaseScanner):
                         known = pending_by_code.get(code)
                         if known is not None:
                             nfo_path = _find_local_nfo(code, dir_path)
-                            if nfo_path is None:
-                                continue
-                            try:
-                                from app.utils.nfo_fields import parse_nfo_fields
+                            # 🔴 2026-11-10 修：旧写法 `if nfo_path is None: continue`
+                            # 提前跳出整个文件循环，吞掉下面的中字自愈与 LTX 升级
+                            # （status='pending' 且无本地 NFO 的行永远升不了级）。
+                            # 改为 if/else 只包住 NFO 回填块，无 NFO / 解析失败时
+                            # 不再 continue，兄弟级自愈照常执行。
+                            if nfo_path is not None:
+                                try:
+                                    from app.utils.nfo_fields import parse_nfo_fields
 
-                                meta = parse_nfo_fields(nfo_path)
-                            except Exception as e:
-                                logger.debug(
-                                    "[jav] 回填 NFO 失败 %s: %s", code, e
-                                )
-                                continue
-                            from app.config.manager import DATA_DIR
+                                    meta = parse_nfo_fields(nfo_path)
+                                except Exception as e:
+                                    logger.debug(
+                                        "[jav] 回填 NFO 失败 %s: %s", code, e
+                                    )
+                                    meta = None
+                                if meta:
+                                    from app.config.manager import DATA_DIR
 
-                            data_movie = Path(DATA_DIR) / "movies" / "jav" / code
-                            if _apply_nfo_to_movie(known, meta, code, data_movie):
-                                known.status = "scraped"
-                                result["movies_backfilled"] = (
-                                    result.get("movies_backfilled", 0) + 1
-                                )
-                                logger.info(
-                                    "[jav] 回填已刮削影片（磁盘已有 NFO）: %s", code
-                                )
+                                    data_movie = Path(DATA_DIR) / "movies" / "jav" / code
+                                    if _apply_nfo_to_movie(known, meta, code, data_movie):
+                                        known.status = "scraped"
+                                        result["movies_backfilled"] = (
+                                            result.get("movies_backfilled", 0) + 1
+                                        )
+                                        logger.info(
+                                            "[jav] 回填已刮削影片（磁盘已有 NFO）: %s", code
+                                        )
                         # 存量自愈：本地有中字证据（文件名标记 ∪ 同目录外挂字幕）
                         # 而库里 is_chinese 还不是 True ⇒ 收集 id 稍后批量置 True。
                         # 🔴 必须在 `if known is not None:` 之外（pending 回填分支的
@@ -381,11 +546,19 @@ class JavScanner(BaseScanner):
                             chinese_selfheal_ids.append(
                                 chinese_missing_by_code[code]
                             )
-                        # 存量自愈：文件名含 LTX（-LTX / -C-LTX）而库里还没标高清明码。
-                        if code in hd_missing_by_code and "ltx" in file_name.lower():
-                            hd_selfheal_ids.append(hd_missing_by_code[code])
+                        # 存量自愈：本地有外挂字幕证据而库里 has_subtitle 还不是 True
+                        # ⇒ 收集 id 稍后批量置 True（与 is_chinese 同源，同样只加不减）。
+                        if code in subtitle_missing_by_code and has_external_subtitle(
+                            Path(file_name).stem, sub_stems, code
+                        ):
+                            subtitle_selfheal_ids.append(
+                                subtitle_missing_by_code[code]
+                            )
                         continue
-                    existing_codes.add(code)
+                    # 新番号登记：后续同番号文件走判重分支，id 尚未 commit 置 None。
+                    # 同时进 ltx_candidates，使同轮后到的 LTX 文件能就地升级新对象。
+                    existing_rows[code] = (None, str(file_path), file_is_ltx)
+                    ltx_candidates[code] = (None, str(file_path), file_is_ltx)
 
                     # 提取演员（素人目录中的文件不走文件夹名提取）
                     is_amateur = False
@@ -462,6 +635,7 @@ class JavScanner(BaseScanner):
                         is_chinese=is_chinese,
                         is_uncensored=is_uncensored,
                         is_hd_uncensored=flags["is_hd_uncensored"],
+                        has_subtitle=has_sub,
                         is_mosaic=not is_uncensored,
                         is_leak=flags["is_leak"],
                         is_4k=flags["is_4k"],
@@ -479,6 +653,8 @@ class JavScanner(BaseScanner):
                         )
                     session.add(new_movie)
                     pending_movies.append(new_movie)
+                    # 供同轮后到的 LTX 文件按 code 就地升级（id 尚未 commit）。
+                    new_movies_by_code[code] = new_movie
                     result["movies_added"] += 1
                     result["scanned"] += 1
 
@@ -495,7 +671,7 @@ class JavScanner(BaseScanner):
                 await session.commit()
             except IntegrityError:
                 # 并发扫描（自动扫描 + 手动触发 + 目录监听可能同时跑）时，各 session
-                # 各自查 existing_codes 看不到对方已插入的番号，commit 会撞 UNIQUE。
+                # 各自查 existing_rows 看不到对方已插入的番号，commit 会撞 UNIQUE。
                 # 回滚后逐条重插，冲突的跳过，避免整个目录扫描失败丢数据。
                 logger.warning(
                     f"[jav] 目录 {media_dir} 批量提交撞 UNIQUE 冲突，回滚后逐条重插跳过重复番号"
@@ -536,40 +712,70 @@ class JavScanner(BaseScanner):
                     )
                 except Exception as e:
                     logger.warning("[jav] 存量 is_chinese 自愈失败: %s", e)
-            # 存量 is_hd_uncensored 自愈落库：盘上有 LTX 文件但库里没标高清明码。
-            # 同时补 is_uncensored / is_mosaic，与 detect_version_flags 口径一致。
-            if hd_selfheal_ids:
+            # ── 存量 has_subtitle 自愈落库 ──
+            # 与 is_chinese 自愈同理：独立提交，UNIQUE 重试路径会 rollback，不能卷进去。
+            if subtitle_selfheal_ids:
                 try:
                     from sqlalchemy import update as _update
 
-                    for i in range(0, len(hd_selfheal_ids), 500):
+                    for i in range(0, len(subtitle_selfheal_ids), 500):
                         await session.execute(
                             _update(JavMovie)
                             .where(
-                                JavMovie.id.in_(hd_selfheal_ids[i : i + 500])
+                                JavMovie.id.in_(subtitle_selfheal_ids[i : i + 500])
                             )
-                            .values(
-                                is_hd_uncensored=True,
-                                is_uncensored=True,
-                                is_mosaic=False,
-                            )
+                            .values(has_subtitle=True)
                         )
                     await session.commit()
                     logger.info(
-                        "[jav] 存量 is_hd_uncensored 自愈: %d 部（LTX 文件）",
-                        len(hd_selfheal_ids),
+                        "[jav] 存量 has_subtitle 自愈: %d 部（本地外挂字幕证据）",
+                        len(subtitle_selfheal_ids),
                     )
                 except Exception as e:
-                    logger.warning(
-                        "[jav] 存量 is_hd_uncensored 自愈失败: %s", e
-                    )
-            # 存量 file_path 补链落库。与自愈同理独立提交：UNIQUE 重试路径会
-            # rollback，不能把补链 UPDATE 卷进去；单表 UPDATE 无唯一约束风险。
-            if fp_link_updates:
+                    logger.warning("[jav] 存量 has_subtitle 自愈失败: %s", e)
+            # ── LTX 优先升级落库（合并旧 is_hd_uncensored 自愈后的唯一写库路径）──
+            # 判重分支收集、主提交之后独立提交：UNIQUE 重试路径会 rollback，不能把
+            # 升级 UPDATE 卷进去；单表 UPDATE 无唯一约束风险。原地改 file_path /
+            # file_size + 三个标记，允许跨盘升级路径，绝不新增行、不动 code UNIQUE。
+            # 逐条 info 日志已在判重分支打印（含 code + 旧→新路径），此处只汇总。
+            if ltx_updates:
                 try:
                     from sqlalchemy import update as _update
 
-                    for _mid, _fp, _sz in fp_link_updates:
+                    for i in range(0, len(ltx_updates), 500):
+                        batch = ltx_updates[i : i + 500]
+                        for _mid, _code, _old, _new, _sz in batch:
+                            await session.execute(
+                                _update(JavMovie)
+                                .where(JavMovie.id == _mid)
+                                .values(
+                                    file_path=_new,
+                                    file_size=_sz,
+                                    is_hd_uncensored=True,
+                                    is_uncensored=True,
+                                    is_mosaic=False,
+                                )
+                            )
+                    await session.commit()
+                    logger.info(
+                        "[jav] LTX 优先升级落库: %d 部（路径/大小/三个标记，含跨盘）",
+                        len(ltx_updates),
+                    )
+                except Exception as e:
+                    logger.warning("[jav] LTX 优先升级落库失败: %s", e)
+                    result["movies_ltx_upgraded"] -= len(ltx_updates)
+            # 存量 file_path 补链落库。与自愈同理独立提交：UNIQUE 重试路径会
+            # rollback，不能把补链 UPDATE 卷进去；单表 UPDATE 无唯一约束风险。
+            # 🔴 2026-11-10：剔除本轮已被 LTX 优先升级接管的 id —— 本补链块在
+            # LTX 升级块之后提交，若同 id 先见到普通版文件已追加了补链，不剔除
+            # 就会用普通版路径反向覆盖刚落库的 X:\LTX\ 路径（LTX 优先被破坏）。
+            _ltx_ids = {u[0] for u in ltx_updates}
+            _fp_final = [u for u in fp_link_updates if u[0] not in _ltx_ids]
+            if _fp_final:
+                try:
+                    from sqlalchemy import update as _update
+
+                    for _mid, _fp, _sz in _fp_final:
                         await session.execute(
                             _update(JavMovie)
                             .where(JavMovie.id == _mid)
@@ -578,7 +784,7 @@ class JavScanner(BaseScanner):
                     await session.commit()
                     logger.info(
                         "[jav] 存量补 file_path: %d 部（扫描见到视频文件）",
-                        len(fp_link_updates),
+                        len(_fp_final),
                     )
                 except Exception as e:
                     logger.warning("[jav] 存量补 file_path 失败: %s", e)

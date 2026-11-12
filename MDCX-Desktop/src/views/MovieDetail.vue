@@ -224,6 +224,15 @@
       <el-button @click="generatePoster" :loading="generatingPoster" type="warning" plain>
         <el-icon><VideoCamera /></el-icon> 视频截图生成海报
       </el-button>
+      <!-- 字幕下载：仅 JAV 有码 / 无码模块显示，独立按钮，不影响既有操作 -->
+      <el-button
+        v-if="moduleType === 'jav' || moduleType === 'uncensored'"
+        @click="downloadSubtitle"
+        :loading="subtitleLoading"
+        title="从 SubtitleCat / 爱译网抓取中文字幕，保存为视频同目录的同名 .srt"
+      >
+        <el-icon><Download /></el-icon> 下载字幕
+      </el-button>
     </div>
 
     <!-- TA們還出演過 -->
@@ -308,6 +317,7 @@ import {
 } from '@element-plus/icons-vue'
 import { getMovieCoverUrl, defaultCover, getFileProxyUrl, getServerBaseUrl } from '@/utils/media'
 import http from '@/api'
+import { downloadMovieSubtitle, subtitleReasonText } from '@/api/subtitle'
 
 const route = useRoute()
 const router = useRouter()
@@ -806,6 +816,28 @@ const generatePoster = async () => {
     ElMessage.error(`失败: ${e?.response?.data?.detail || e?.message}`)
   } finally {
     generatingPoster.value = false
+  }
+}
+
+// ---------- 字幕下载（仅 JAV 有码 / 无码）----------
+// 失败也是 HTTP 200 + ok:false，原因走统一中文表，不弹空错误框。
+const subtitleLoading = ref(false)
+const downloadSubtitle = async () => {
+  subtitleLoading.value = true
+  try {
+    const res = await downloadMovieSubtitle(moduleType.value, movieId.value, { overwrite: false })
+    if (res?.status === 'downloaded') {
+      ElMessage.success(res.message || '字幕已下载')
+      await load()
+    } else if (res?.status === 'skipped') {
+      ElMessage.info(subtitleReasonText(res))
+    } else {
+      ElMessage.warning(subtitleReasonText(res))
+    }
+  } catch (e) {
+    ElMessage.error('字幕下载失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+  } finally {
+    subtitleLoading.value = false
   }
 }
 
