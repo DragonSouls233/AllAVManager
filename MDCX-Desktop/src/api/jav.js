@@ -40,6 +40,17 @@ export async function getLtxSnapshotStatus() {
   return api.get('/jav/ltx-snapshot/status')
 }
 
+/** LTX 同步凭证状态（不含凭证值）：是否配置/到期时间/剩余天数/生效来源。 */
+export async function getLtxCredential() {
+  return api.get('/jav/ltx-snapshot/credential')
+}
+
+/** 自助更新同步凭证：保存后立即生效（服务端热读，无需重启）。
+ *  data: { cookie, verify=true, refresh=false }；refresh 会顺带跑一次完整同步，较慢。 */
+export async function saveLtxCredential(data) {
+  return api.post('/jav/ltx-snapshot/credential', data, { timeout: 240000 })
+}
+
 export async function getJavMovie(id) {
   return api.get(`/jav/movies/${id}`)
 }

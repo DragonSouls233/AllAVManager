@@ -16,6 +16,15 @@
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
         <el-checkbox v-model="onlyNew">只看本地没有</el-checkbox>
+        <!-- 独立的凭证自助入口：不替换「更新快照」，凭证到期/临期时额外给醒目提示 -->
+        <el-tag
+          v-if="credNeedsRenew"
+          type="danger" size="small" effect="dark" class="cred-tag"
+          @click="openCredential"
+        >{{ credExpired ? '凭证已过期' : '凭证即将过期' }} · 点此更新</el-tag>
+        <el-button :type="credNeedsRenew ? 'warning' : 'default'" plain @click="openCredential">
+          凭证设置
+        </el-button>
         <el-button type="primary" :loading="loading" @click="updateSnapshot">更新快照</el-button>
       </div>
     </header>
@@ -106,6 +115,46 @@
         </div>
       </section>
     </div>
+
+    <!-- LTX 同步凭证自助更新：站点 ltx_pass 约 7 天到期且不会自动续签，
+         到期后用户可直接在 LTX 库页自己粘贴更新，无需找运维 / 重启服务。 -->
+    <el-dialog v-model="credDialog" title="LTX 同步凭证设置" width="640px" :close-on-click-modal="false">
+      <el-alert
+        v-if="credInfo"
+        :type="credExpired ? 'error' : (credNeedsRenew ? 'warning' : 'success')"
+        :closable="false" show-icon class="cred-alert"
+      >
+        <template #title>{{ credSummary }}</template>
+      </el-alert>
+      <el-alert
+        v-if="credInfo && credInfo.env_override"
+        type="warning" :closable="false" show-icon class="cred-alert"
+        title="当前由环境变量 MDCX_LTX_COOKIE 生效，此处保存的文件不会生效；如需用页面更新请先移除该环境变量"
+      />
+      <div class="cred-help">
+        <p>
+          源站有人机验证，同步需带 <code>ltx_pass</code> 凭证（约 7 天有效，站点不会自动续期）。
+          到期后按下面步骤重新取一次，粘贴保存即可，<b>无需重启服务</b>：
+        </p>
+        <ol>
+          <li>在浏览器打开 <b>https://ltx.libray.workers.dev/</b> 并通过验证，能看到影片列表；</li>
+          <li>按 <b>F12</b> → <b>Network</b> → 刷新 → 点 <code>/api/items</code> 请求；</li>
+          <li>在 <b>Request Headers</b> 里复制整行 <code>Cookie:</code> 后面的内容（形如 <code>ltx_c=...; ltx_pass=...</code>）。</li>
+        </ol>
+      </div>
+      <el-input
+        v-model="credInput" type="textarea" :rows="4"
+        placeholder="粘贴 Cookie，例如：ltx_c=xxxx; ltx_pass=yyyy"
+      />
+      <el-checkbox v-model="credRefreshAfterSave" class="cred-check">保存后立即同步一次快照</el-checkbox>
+      <div v-if="credResult" class="cred-result" :class="credResultOk ? 'ok' : 'bad'">
+        {{ credResultText }}
+      </div>
+      <template #footer>
+        <el-button @click="credDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="credSaving" @click="saveCredential">保存并验证</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -114,7 +163,10 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { getLtxLibrary, getLtxActor, refreshLtxSnapshot } from '@/api/jav'
+import {
+  getLtxLibrary, getLtxActor, refreshLtxSnapshot,
+  getLtxCredential, saveLtxCredential,
+} from '@/api/jav'
 
 const router = useRouter()
 
@@ -135,6 +187,14 @@ const syncStatus = ref(null)
 const actors = ref([])
 const current = ref('')
 const currentItems = ref([])
+
+// LTX 同步凭证（ltx_pass）自助管理
+const credInfo = ref(null)
+const credDialog = ref(false)
+const credInput = ref('')
+const credSaving = ref(false)
+const credResult = ref(null)
+const credRefreshAfterSave = ref(true)
 
 /**
  * 同步状态文案。
@@ -164,6 +224,43 @@ function fmtTime(v) {
   const m = String(v || '').match(/^\d{4}-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/)
   return m ? `${m[1]}-${m[2]} ${m[3]}:${m[4]}` : String(v || '')
 }
+
+const credExpired = computed(() => !!(credInfo.value && credInfo.value.expired))
+const credNeedsRenew = computed(() => !!(credInfo.value && credInfo.value.needs_renew))
+
+const credSummary = computed(() => {
+  const c = credInfo.value
+  if (!c) return '正在读取凭证状态…'
+  if (!c.configured) return '尚未配置凭证，LTX 同步会被源站拦截'
+  const names = (c.cookie_names || []).join(' / ')
+  const exp = c.expires_at ? `，到期 ${c.expires_at}` : ''
+  const left = c.expired
+    ? '，已过期'
+    : (typeof c.expires_in_days === 'number' ? `，剩余 ${c.expires_in_days} 天` : '')
+  return `凭证已配置（${names}）${exp}${left}`
+})
+
+const credResultOk = computed(() => {
+  const r = credResult.value
+  if (!r) return false
+  return !!(r.verify && r.verify.ok) || !!(r.refresh && r.refresh.ok)
+})
+
+const credResultText = computed(() => {
+  const r = credResult.value
+  if (!r) return ''
+  if (r.refresh) {
+    return r.refresh.ok
+      ? `凭证有效，已完成同步：${r.refresh.count} 部（${r.refresh.saved_at || ''}）`
+      : `凭证已保存，但同步失败：${r.refresh.detail || '未知原因'}`
+  }
+  if (r.verify) {
+    return r.verify.ok
+      ? `凭证有效，成功读取 ${r.verify.items} 部片单；已保存，后续同步自动生效`
+      : `凭证已保存，但验证失败：${r.verify.detail || '未知原因'}`
+  }
+  return '凭证已保存，后续同步自动生效'
+})
 
 const currentInfo = computed(() => actors.value.find((a) => a.name === current.value) || null)
 
@@ -201,6 +298,8 @@ function applyLibrary(lib) {
   newActorTotal.value = lib.new_actor_total || 0
   savedAt.value = (lib.snapshot && lib.snapshot.saved_at) || ''
   syncStatus.value = lib.snapshot || null
+  // 凭证状态随 snapshot_meta 一起下发，页头徽标据此预警（无需额外请求）
+  if (lib.snapshot && lib.snapshot.credential) credInfo.value = lib.snapshot.credential
   actors.value = lib.actors || []
 }
 
@@ -271,6 +370,48 @@ async function updateSnapshot() {
     }
   } finally {
     loading.value = false
+  }
+}
+
+async function openCredential() {
+  credDialog.value = true
+  credInput.value = ''
+  credResult.value = null
+  try {
+    credInfo.value = await getLtxCredential()
+  } catch (e) {
+    ElMessage.warning('读取凭证状态失败：' + (e.message || e))
+  }
+}
+
+async function saveCredential() {
+  const v = credInput.value.trim()
+  if (!v) {
+    ElMessage.warning('请先粘贴 Cookie')
+    return
+  }
+  credSaving.value = true
+  credResult.value = null
+  try {
+    const res = await saveLtxCredential({
+      cookie: v,
+      verify: true,
+      refresh: credRefreshAfterSave.value,
+    })
+    credResult.value = res
+    if (res.credential) credInfo.value = res.credential
+    if (credResultOk.value) {
+      ElMessage.success('凭证已更新并生效')
+    } else {
+      ElMessage.error('凭证已保存，但验证未通过，请检查是否复制完整')
+    }
+    // 无论验证成败都刷新页头状态（同步过的话顺便拿到最新数据）
+    await loadLibrary()
+  } catch (e) {
+    const detail = (e && e.response && e.response.data && e.response.data.detail) || e.message || e
+    ElMessage.error('保存失败：' + detail)
+  } finally {
+    credSaving.value = false
   }
 }
 
@@ -634,5 +775,48 @@ onMounted(loadLibrary)
 }
 .kind.other {
   background: var(--text-placeholder);
+}
+/* LTX 同步凭证自助设置 */
+.cred-tag {
+  cursor: pointer;
+}
+.cred-alert {
+  margin-bottom: 12px;
+}
+.cred-help {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-regular);
+  margin-bottom: 12px;
+}
+.cred-help p {
+  margin: 0 0 6px;
+}
+.cred-help ol {
+  margin: 0;
+  padding-left: 20px;
+}
+.cred-help code {
+  background: var(--el-fill-color-light);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.cred-check {
+  margin-top: 10px;
+}
+.cred-result {
+  margin-top: 12px;
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  line-height: 1.6;
+}
+.cred-result.ok {
+  color: var(--el-color-success);
+  background: var(--el-color-success-light-9);
+}
+.cred-result.bad {
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
 }
 </style>

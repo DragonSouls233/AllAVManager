@@ -52,6 +52,132 @@ def archive_dir() -> Path:
     return d
 
 
+# ============================================================
+# LTX 站点验证凭证（ltx_pass）管理 —— 单一真源
+# ------------------------------------------------------------
+# 2026-11-12：源站对 /api/* 加了 Cloudflare Turnstile gate，验证通过后
+# POST /api/verify 下发 HttpOnly 的 ltx_pass（值内嵌 13 位毫秒时间戳=到期时间，
+# 实测约 7 天）。**实测站点在后续请求里不会 Set-Cookie 续签**，所以到期只能
+# 重新从浏览器导出一次。能自动化的部分是：
+#   * 每次同步自动读取注入，保存后立即生效（热读文件）、无需重启；
+#   * 页头显示到期日/剩余天数，剩余 ≤3 天预警，过期时同步失败原因直说；
+#   * 用户在 LTX 补全页自助粘贴更新，不必回控制台找运维。
+# ============================================================
+_LTX_COOKIE_FILE = "_ltx_cookie.txt"
+_CF_CLEARANCE_FILE = "_cf_clearance.txt"  # 旧版兼容：通用 CF challenge 凭证
+_LTX_PASS_TS_RE = re.compile(r"\.(\d{13})\.")
+
+
+def credential_path() -> Path:
+    return archive_dir() / _LTX_COOKIE_FILE
+
+
+def _clean_cookie(raw: str) -> str:
+    """清洗从 DevTools 直接复制的 Cookie（可能带 ``Cookie:`` 前缀、引号、换行）。"""
+    s = re.sub(r"^\s*cookie\s*:\s*", "", str(raw or "").strip(), flags=re.I)
+    return " ".join(s.splitlines()).strip().strip('"').strip()
+
+
+def _wrap_cookie(v: str, legacy: bool = False) -> str:
+    """完整串原样返回；单值按来源包装成 ltx_pass= / cf_clearance=。"""
+    return v if "=" in v else (("cf_clearance=" if legacy else "ltx_pass=") + v)
+
+
+def credential_value() -> tuple[str | None, str]:
+    """返回 ``(可直接放进 Cookie 头的串, 生效来源)``。
+
+    顺序与旧版 ``jav_routes._ltx_sync_cookie`` 一致：环境变量优先、其次文件。
+    环境变量是容器化部署留的口子；页面自助保存写的是 ``_ltx_cookie.txt``。
+    """
+    import os
+
+    env = os.environ.get("MDCX_LTX_COOKIE")
+    if env and env.strip():
+        return _wrap_cookie(_clean_cookie(env), False), "env:MDCX_LTX_COOKIE"
+    legacy_env = os.environ.get("MDCX_LTX_CF_CLEARANCE")
+    if legacy_env and legacy_env.strip():
+        return _wrap_cookie(_clean_cookie(legacy_env), True), "env:MDCX_LTX_CF_CLEARANCE"
+    for fname, legacy in ((_LTX_COOKIE_FILE, False), (_CF_CLEARANCE_FILE, True)):
+        p = archive_dir() / fname
+        try:
+            if p.exists():
+                v = _clean_cookie(p.read_text(encoding="utf-8"))
+                if v:
+                    return _wrap_cookie(v, legacy), "file:" + fname
+        except Exception:
+            logger.debug("[ltx] 读凭证文件失败 %s", p, exc_info=True)
+    return None, "none"
+
+
+def credential_info() -> dict:
+    """凭证状态（**绝不返回凭证值**，供前端展示与预警）。"""
+    value, source = credential_value()
+    info = {
+        "configured": bool(value),
+        "source": source,
+        "cookie_names": [],
+        "expires_at": "",
+        "expires_in_days": None,
+        "expired": False,
+        "needs_renew": False,   # 过期或剩余 ≤3 天
+        "updated_at": "",
+        "env_override": source.startswith("env:"),
+    }
+    if not value:
+        info["needs_renew"] = True
+        return info
+    info["cookie_names"] = [
+        p.split("=", 1)[0].strip() for p in value.split(";") if p.strip()
+    ]
+    m = re.search(r"(?:^|;)\s*ltx_pass=([^;]+)", value)
+    if m:
+        ts = _LTX_PASS_TS_RE.search(m.group(1).strip())
+        if ts:
+            try:
+                exp = datetime.datetime.fromtimestamp(int(ts.group(1)) / 1000)
+                days = (exp - datetime.datetime.now()).total_seconds() / 86400.0
+                info["expires_at"] = exp.strftime("%Y-%m-%d %H:%M:%S")
+                info["expires_in_days"] = round(days, 1)
+                info["expired"] = days <= 0
+                # 每日 08:10 有定时同步，留 3 天缓冲，避免周末/出差期间失效
+                info["needs_renew"] = days <= 3
+            except (ValueError, OverflowError, OSError):
+                pass
+    try:
+        p = credential_path()
+        if p.exists():
+            info["updated_at"] = datetime.datetime.fromtimestamp(
+                p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    if "ltx_pass" not in info["cookie_names"]:
+        # 只有 cf_clearance / ltx_c 的旧凭证对该站的 gate 无效
+        info["needs_renew"] = True
+    return info
+
+
+def save_credential(raw: str) -> dict:
+    """保存凭证（原子写，避免每日定时任务读到半截文件），返回 ``credential_info()``。"""
+    v = _clean_cookie(raw)
+    if not v:
+        raise ValueError("Cookie 内容为空")
+    names = [p.split("=", 1)[0].strip() for p in v.split(";") if p.strip()]
+    if "ltx_pass" not in names:
+        if "=" not in v:
+            v = "ltx_pass=" + v  # 只贴了 ltx_pass 的值
+        else:
+            raise ValueError(
+                "Cookie 里没有 ltx_pass；请在浏览器 Network 面板复制 "
+                "/api/items 请求的完整 Cookie 头"
+            )
+    p = credential_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(v, encoding="utf-8")
+    tmp.replace(p)
+    logger.info("[ltx] 验证凭证已更新（页面自助保存，立即生效，无需重启）")
+    return credential_info()
+
+
 def db_path() -> Path:
     return archive_dir() / "ltx.db"
 
@@ -143,19 +269,22 @@ def upsert_items(items: list[dict], remote_updated_at=None) -> int:
             primary = actors[0] if actors else "(未知演员)"
             c.execute(
                 """INSERT INTO ltx_items(code, code_norm, title, actors_json, primary_actor, cover_url,
-                        links_json, release_date, maker, score, remote_updated_at, fetched_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                        links_json, release_date, maker, score, remote_updated_at, fetched_at,
+                        subtitle_url)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(code) DO UPDATE SET
                         code_norm=excluded.code_norm, title=excluded.title,
                         actors_json=excluded.actors_json, primary_actor=excluded.primary_actor,
                         cover_url=excluded.cover_url, links_json=excluded.links_json,
                         release_date=excluded.release_date, maker=excluded.maker, score=excluded.score,
-                        remote_updated_at=excluded.remote_updated_at, fetched_at=excluded.fetched_at""",
+                        remote_updated_at=excluded.remote_updated_at, fetched_at=excluded.fetched_at,
+                        subtitle_url=excluded.subtitle_url""",
                 (
                     code, norm, it.get("title_zh") or it.get("title") or "",
                     json.dumps(actors, ensure_ascii=False), primary,
                     it.get("cover") or "", json.dumps(it.get("links") or [], ensure_ascii=False),
                     it.get("date"), it.get("maker"), it.get("score"), remote_updated_at, now,
+                    str(it.get("subtitle") or "").strip(),
                 ),
             )
             n += 1
@@ -374,6 +503,9 @@ def snapshot_meta() -> dict:
                 "stale_hours": _stale_hours(st.get("last_ok_at") or ""),
             }
         )
+    # 2026-11-12：凭证状态随快照一起下发，页头可直接显示「X 天后过期」并预警，
+    # 免得每日定时任务失败时用户还得回控制台查原因。
+    meta["credential"] = credential_info()
     return meta
 
 

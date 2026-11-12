@@ -23,8 +23,8 @@
         </el-radio-group>
       </el-form-item>
       <el-form-item label="数量上限">
-        <el-input-number v-model="form.limit" :min="1" :max="500" :step="10" />
-        <span class="hint">最多处理 {{ form.limit }} 部</span>
+        <el-input-number v-model="form.limit" :min="1" :max="200" :step="10" />
+        <span class="hint">按「最新入库」顺序处理前 {{ form.limit }} 部（上限 200）</span>
       </el-form-item>
       <el-form-item label="并发">
         <el-select v-model="form.concurrency" style="width: 120px">
@@ -197,6 +197,9 @@ async function start () {
   starting.value = true
   try {
     const res = await startSubtitleBatch(props.module, {
+      // 批量必须显式声明范围：全库 = scope:'all' + confirm + limit（后端不接受空参数）
+      scope: 'all',
+      confirm: true,
       only_missing: form.value.onlyMissing,
       limit: form.value.limit,
       concurrency: form.value.concurrency,

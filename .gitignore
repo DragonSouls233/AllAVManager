@@ -132,6 +132,8 @@ tmp_*.md
 .apply_*.py
 _debug_*.py
 _*.py
+# 例外：`_*.py` 会误伤 Python 包必需的 __init__.py；字幕源注册表（SOURCES）曾因此无法入库
+!MDCX-Server/app/services/subtitle_sources/__init__.py
 # 一次性临时分析脚本
 analyze_*.py
 analyze_*.js

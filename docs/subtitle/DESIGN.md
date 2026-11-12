@@ -234,7 +234,7 @@ class SubtitleCatSource:
     SITE = "https://www.subtitlecat.com"
 
     async def search(self, code: str, *, budget: Budget) -> list[SubtitleCandidate]:
-        # 1) GET /index.php?search={code}  （限速闸门：700ms / 20s / 2 次）
+        # 1) GET /index.php?search={code}  （限速闸门：间隔 700ms / 读超时 20s / 重试 2 次）
         # 2) bs4 解析：结果表内的 <a href="/subs/{id}/{slug}.html">，
         #    标题文本必须通过 _title_matches_code() 校验（见 §3.6）
         # 3) 逐条 GET 详情页（串行！每条都过闸门；预算不足立即返回已得结果）
@@ -262,7 +262,7 @@ class Aiyi1Source:
     SITE = "https://www.aiyi1.com"
 
     async def search(self, code: str, *, budget: Budget) -> list[SubtitleCandidate]:
-        # 1) GET /?s={code}  （闸门：1000ms / 15s / 1 次）
+        # 1) GET /?s={code}  （闸门：间隔 1000ms / 读超时 15s / 重试 1 次）
         # 2) bs4：标题链接 <h2><a href="https://www.aiyi1.com/{id}.html">
         #    块内纯文本字段正则：
         #      语种  r"字幕语种[：:]\s*(简体|繁体|英文|[^\s<]+)"
@@ -313,25 +313,31 @@ def http_client(url: str, *, timeout: httpx.Timeout, site_key: str = "") -> http
 ```python
 @dataclass(frozen=True)
 class RatePolicy:
-    min_interval: float    # 两次请求最小间隔（秒）
-    window: float          # 窗口长度（秒）
-    max_in_window: int     # 窗口内最大请求数
+    min_interval: float    # 两次请求最小间隔（秒）——唯一硬约束
+    read_timeout: float    # 单次读超时（秒）
+    retries: int           # 额外重试次数（429 走指数退避，仍受此上限约束）
+    window: float = 0.0    # 可选滑动窗口（0 = 不启用，默认关闭）
+    max_in_window: int = 0
 
 POLICIES: dict[str, RatePolicy] = {
-    "subtitlecat":    RatePolicy(0.70, 20.0, 2),
-    "aiyi1":          RatePolicy(1.00, 15.0, 1),
-    "subtitle_cdn":   RatePolicy(0.20, 60.0, 2),   # 字幕文件（含 subtitlecat /subs/ 与 a.hinimg.com）
+    # 站点            间隔   读超时 重试
+    "subtitlecat":   RatePolicy(0.70, 20.0, 2),
+    "aiyi1":         RatePolicy(1.00, 15.0, 1),
+    "subtitle_cdn":  RatePolicy(0.20, 60.0, 2),   # 字幕文件（含 subtitlecat /subs/ 与 a.hinimg.com）
 }
 
 class RateGate:
-    """min_interval + 滑动窗口双约束。asyncio.Lock 保护，跨任务共享。"""
-    async def acquire(self) -> None: ...
-    def try_acquire_nowait(self) -> bool: ...   # 预算不足时用，拿不到就放弃而不是干等
+    """按 min_interval 串行放行。asyncio.Lock 保护，跨任务共享。"""
+    async def acquire(self, budget: Budget | None = None) -> float:
+        ...  # 预算不足以等到下一个放行点时抛 BudgetExceeded，而不是干等
 ```
+
+> 🔴 **三元组的含义是「请求间隔 / 读超时 / 重试次数」，不是「间隔 / 窗口 / 次数」。**
+> 字幕 CDN 的实际口径是**间隔 200ms**；若误读成「2 次 / 60s」，批量吞吐会慢近百倍（详见附录 C）。
 
 - 闸门按**域名**取键：`subtitlecat.com` → `subtitlecat`；`aiyi1.com` → `aiyi1`；`a.hinimg.com` 与 `subtitlecat.com/subs/*.srt` → `subtitle_cdn`。
 - 闸门实现在**同一个事件循环**内共享（`_GATES: dict[str, RateGate]` 惰性创建），批量任务与单条请求共用，天然不会被并发打穿。
-- ⚠️ **吞吐量预期必须提前对齐**：`subtitle_cdn = 2 次 / 60s` 意味着批量下 **最坏约 2 部/分钟**。这是参考项目「不被封」的口径，本方案保留为默认值。若验收时认为过慢，只改 `POLICIES["subtitle_cdn"]` 一个常量（建议上限 `6/60s`，属可接受风险），**不改任何调用点**。
+- ⚠️ **吞吐量预期**：`subtitle_cdn` 只约束**间隔 200ms**（不是「2 次 / 60s」）。单部影片的主要耗时来自 `subtitlecat` 的 0.7s 间隔 + 详情页串行抓取（实测单部约 17~22s），CDN 200ms 几乎不构成瓶颈。若仍嫌慢，只改 `POLICIES` 一个常量，**不改任何调用点**。
 
 **超时与重试**
 
@@ -907,7 +913,7 @@ export function getLatestSubtitleBatch (module) {
 
 | # | 任务 | 依赖 | 改动文件 | 验收点 |
 |---|---|---|---|---|
-| **T1** | 基础设施：`SubtitleCandidate`、`RateGate`、`http_client()`、`Budget`、`normalize_srt()`、选优 `merge_and_rank()`、登记读写 | — | `app/services/subtitle_sources/base.py`（新） | ① 单测：`normalize_srt()` 覆盖 N1–N10 全部规则（含 UTF-16 样本、全角冒号样本、4 位毫秒样本、`->` 样本），输出 UTF-8 无 BOM；② `RateGate` 单测：2 次请求间隔 ≥ `min_interval`，20s 内不超 2 次；③ `merge_and_rank()` 简>繁、同语言大者优先 |
+| **T1** | 基础设施：`SubtitleCandidate`、`RateGate`、`http_client()`、`Budget`、`normalize_srt()`、选优 `merge_and_rank()`、登记读写 | — | `app/services/subtitle_sources/base.py`（新） | ① 单测：`normalize_srt()` 覆盖 N1–N10 全部规则（含 UTF-16 样本、全角冒号样本、4 位毫秒样本、`->` 样本），输出 UTF-8 无 BOM；② `RateGate` 单测：并发 acquire 时相邻两次放行间隔 ≥ `min_interval`（实测 708/710/713/713/714ms）；③ `merge_and_rank()` 简>繁、同语言大者优先 |
 | **T2** | subtitlecat 适配器 | T1 | `app/services/subtitle_sources/subtitlecat.py`、`__init__.py` | 真实搜 `SSIS-001` 得 ≥1 条 `zh-CN` 候选；详情页解析出 `-zh-CN.srt` 直链；`_title_matches_code` 拒绝无关结果；403 归因 `blocked` |
 | **T3** | 爱译网适配器 | T1 | `app/services/subtitle_sources/aiyi1.py` | 真实搜 `SSIS-001` 得候选，`字幕语种`→`zh-CN`、`下载字幕 \| NKB`→字节数；文章页取到 CDN 直链；下载 200 且 >10KB |
 | **T4** | 编排：两站并发、番号守卫、选优、探测 size、失败回退、45s 预算 | T2、T3 | `app/services/subtitle_fetcher.py`（新） | ① 模拟「首个候选下载失败」→ 自动换候选并成功；② 两站都超时 → `reason=timeout`；③ 两站空 → `site_empty`；④ 单次调用总耗时 ≤ 45s（打表） |
@@ -934,7 +940,7 @@ export function getLatestSubtitleBatch (module) {
 6. **失败回退**：人为让首候选返回 404（或临时改 URL）→ 日志出现 2 条 `attempts`，最终成功；把两站全部置为不可达 → `reason` 为 `timeout` 或 `download_failed`，不抛 500。
 7. **批量并发与进度**：50 部影片启动批量（并发 2）→ 首 3s 内能拿到 `job_id`；轮询 `done/total` 单调递增；完成后 `ok+skipped+failed == total`；期间 `GET /health` 与 `/jav/movies` 响应 < 1s（不阻塞事件循环）。
 8. **批量取消**：运行中点取消 → 10s 内 `status=cancelled`，且不再发起新的出网请求（日志验证）。
-9. **代理与限速**：断开代理后单条请求 → `blocked`/`timeout`，**不出现长时间挂起**；开启代理后连续 10 部 → 服务端日志中 subtitlecat 请求间隔 ≥ 700ms、aiyi1 ≥ 1000ms，窗口内次数不超策略；站点无 403/429/验证码（`turnstile`）出现。
+9. **代理与限速**：断开代理后单条请求 → `blocked`/`timeout`，**不出现长时间挂起**；开启代理后连续 10 部 → 服务端日志中 subtitlecat 相邻请求间隔 ≥ 700ms、aiyi1 ≥ 1000ms、字幕 CDN ≥ 200ms；站点无 403/429/验证码（`turnstile`）出现。
 10. **不破坏既有功能**：`/api/v1/player/{id}/subtitles*`（本地/在线/VTT）、`/jav/movies`、`/uncensored/movies`、扫描器 `has_subtitle/is_chinese` 逻辑、`code` UNIQUE 均无回归。
 11. **前端三入口**：`/jav/movies`、`/jav/ltx`、`/uncensored/movies` 各有独立「下载字幕」按钮；JAV/无码详情页各有单条按钮；其它模块详情页（fc2/chinese 等）**不出现**该按钮。
 12. **零配置改动**：`git diff` 只含 §2.1 列出的文件；无 `config.yaml`/`*.json` 配置项新增；无新依赖（`httpx[socks]`/`bs4`/`lxml` 均已有）。
@@ -956,8 +962,8 @@ export function getLatestSubtitleBatch (module) {
 |---|---|---|---|
 | **R1** | **Cloudflare / 风控变化**（subtitlecat 加挑战、aiyi1 加验证码） | 全量失败，`reason=blocked` | ① 检测 `cf-chl`/`turnstile`/403/503 即快速失败（不重试、不放大流量）；② 文案明确「站点暂时拒绝访问」；③ 保留 `site_proxy` 覆盖能力（`get_effective_proxy_url(site=..., url=...)`，用户可给这两站配独立出口）→ **零代码改动即可换 IP** |
 | **R2** | **站点改版**（HTML 结构/字段名变化） | 解析返回空 → `site_empty`，静默退化 | ① 解析器对「字段缺失」逐条容错，不因一个字段失败整页；② 每次搜索记录 `candidates_total` 与命中字段，便于 5 分钟定位；③ 单测用离线 HTML 夹具锁定结构，改版时改夹具即可 |
-| **R3** | **限速被封** | 站点 403/429、IP 进黑名单 | ① 默认沿用参考项目的保守策略（CDN 2/60s）；② 闸门进程级共享，**并发提高不会突破限速**；③ 批量同时只允许 1 个任务、并发默认 2；④ 403/429 立即熔断该源（本次调用内不再请求），不做指数重试 |
-| **R4** | **批量吞吐极低**（CDN 2/60s ⇒ ~2 部/分钟） | 200 部要 100 分钟 | ① 弹窗明确提示「站点限速，请勿重复点击」；② 支持取消；③ `POLICIES` 单点可调（建议上限 6/60s）；④ 二次补全天然幂等（已下载的会被跳过） |
+| **R3** | **限速被封** | 站点 403/429、IP 进黑名单 | ① 沿用参考项目口径：subtitlecat 0.7s / aiyi1 1.0s / CDN 0.2s **请求间隔**；② 闸门进程级共享，**并发提高不会突破限速**；③ 批量同模块同时只允许 1 个任务、并发默认 3；④ 403 立即失败（不重试）；⑤ 429 指数退避 1s→2s→4s（上限 30s，重试次数仍受 2 次上限约束）；⑥ **任务级源熔断**：同一任务内某源连续 5 次 blocked 后不再请求它（新任务重新探测） |
+| **R4** | **批量吞吐受站点间隔约束**（单部约 17~22s，瓶颈是 subtitlecat 0.7s 间隔 + 详情页串行） | 200 部约 1 小时（并发 3 时更短） | ① 弹窗明确提示「站点限速，请勿重复点击」；② 支持取消；③ `POLICIES` 单点可调；④ 二次补全天然幂等（已下载的会被跳过）；⑤ 源级熔断避免对已封禁的源空转 |
 | **R5** | **网络盘写权限 / 断连**（SMB 只读、盘符离线） | `write_failed`，任务大面积为失败 | ① 原子写保证不留半个文件；② 单部失败不影响批次；③ 文案指明「检查盘符权限/网络盘是否在线」；④ 建议上线前对目标盘做一次 `os.access` 试写检查（可放在批量启动前的预检，返回「3 个目录不可写」） |
 | **R6** | **`.strm` 占位文件能否同目录写 .srt** | 若 strm 所在目录为只读（常见于「唯读来源」模式），写不进去 | ① 语义上正确（`X.strm` → `X.srt`，Emby 认）；② 实际取决于目录权限 → 归入 `write_failed` 并给明确文案；③ **不在本次做「写到 data 目录再软链」的兜底**（会引入新复杂度与跨盘问题），仅在文档标注 |
 | **R7** | **字幕与视频版本不匹配**（不同片源/剪辑/分卷导致时间轴错位） | 字幕能显示但不同步 | ① 本设计只保证「文件存在且格式标准」，不做对齐；② 多分卷（`-CD1/-CD2`）各自写自身同名文件，不跨卷复制（避免整片字幕套到单卷上）；③ 已有 `subtitle_quality.check_subtitle_file()` 可做时长比对，**建议后续在单条成功后异步跑一次质检**（本期不做，避免范围膨胀） |
@@ -985,9 +991,9 @@ export function getLatestSubtitleBatch (module) {
 # subtitle_sources/base.py 顶部，全部集中于此，禁止散落在适配器里
 UA_VER               = "Chrome/122.0.0.0"
 MAX_BYTES            = 4 * 1024 * 1024          # 单文件上限
-POLICIES             = {"subtitlecat": (0.70, 20.0, 2),
+POLICIES             = {"subtitlecat": (0.70, 20.0, 2),    # (间隔s, 读超时s, 重试次数)
                         "aiyi1":       (1.00, 15.0, 1),
-                        "subtitle_cdn":(0.20, 60.0, 2)}
+                        "subtitle_cdn":(0.20, 60.0, 2)}     # 间隔 200ms，不是 2 次/60s
 TIMEOUT_SEARCH       = dict(connect=8.0, read=15.0)
 TIMEOUT_DETAIL       = dict(connect=8.0, read=20.0)
 TIMEOUT_DOWNLOAD     = dict(connect=8.0, read=30.0)
@@ -996,8 +1002,8 @@ RETRY_BACKOFF        = 0.8
 VIDEO_BUDGET_S       = 45.0                     # 单部影片总预算
 MAX_CANDIDATES_TRY   = 3                        # 最多尝试几个候选
 SEARCH_RESULTS_LIMIT = 4                        # subtitlecat 详情页最多抓 4 条
-BATCH_CONCURRENCY    = (1, 4, 2)                # (min, max, default)
-BATCH_LIMIT_MAX      = 500
+BATCH_CONCURRENCY    = (1, 4, 3)                # (min, max, default)
+BATCH_LIMIT_MAX      = 500                      # 服务层上限；scope=all 路由层再收紧到 200
 JOB_HISTORY          = 20
 JOB_ITEMS_KEEP       = 500
 REGISTRY_KEEP        = 5000
@@ -1017,6 +1023,27 @@ REGISTRY_KEEP        = 5000
 
 ## 附录 C：实现偏差记录（T10 填写）
 
+### C.1 已落地但与设计稿不同的地方（均已验证）
+
 | 设计条目 | 实际实现 | 偏差原因 | 影响 |
 |---|---|---|---|
-| （待实现后填写） | | | |
+| §3.4 限速「subtitle_cdn 2 次 / 60s」 | **间隔 200ms**（`subtitle_cdn = (0.20, 60.0, 2)` 中的 60.0 是**读超时**、2 是**重试次数**） | 原三元组被误读成「间隔/窗口/次数」。参考项目口径是「间隔 / 超时 / 重试」，按窗口限流会让批量慢近百倍 | 批量吞吐恢复；实测单部 17~22s，CDN 200ms 不构成瓶颈 |
+| §3.4 限速闸门「min_interval + 滑动窗口双约束」 | 只保留 `min_interval` 硬约束；`window/max_in_window` 字段保留但默认 0（关闭） | 同上，窗口约束本身是误读的产物 | 并发提高仍不突破间隔（实测 6 并发 acquire 间隔 201/202/203/204/201ms） |
+| §4.3 批量并发默认 2 | **默认 3**（范围 1~4） | 单部主要耗时是站点间隔而非带宽，3 并发在闸门约束下不会加速封禁 | 吞吐提升，闸门仍是唯一限速源 |
+| §4.3 批量 `limit` 默认 200 / 上限 500 | 路由层改为 **`movie_ids` 或 `scope=all + confirm + limit`**；`scope=all` 时 limit 上限 **200**；服务层 `BATCH_LIMIT_MAX` 仍为 500（供 `movie_ids` 指定列表用） | 空参数默认全库会「点一下就把全库跑起来」，风险不可接受 | 空 body / 空数组一律 400；全库必须三要素齐全 |
+| §2.3 最多尝试 3 个候选（按 rank 截断） | `_trial_queue()`：先各源取头名，再按 rank 补满 3 个 | 纯 rank 截断会让「排名靠后的源」永远轮不到，该源整体挂掉时无候选可回退 | 跨源回退实测可用（subtitlecat 全失败 → aiyi1 成功，58,050 B） |
+| §3.6 时间轴「含箭头即块起始」 | **两侧时间戳都能解析才算块起始**；正文里的 `-->` / `->` / `→` 原样保留 | 原实现在正文含箭头时会把整块连同后续正文行一起吞掉（QA P1-1） | 块数与正文一条不丢（三条样本 + 真实 SSIS-001 1339 块回归） |
+| §9 R3「403/429 立即熔断（仅本次调用）」 | 403 立即失败；**429 指数退避 1s→2s→4s（≤30s）**；**任务级源熔断**：连续 5 次 blocked 后本任务跳过该源 | 单次调用内熔断对批量无意义，下一部仍会打同一个已封禁的源 | 8 部压测：第 6 部起该源 0 请求，任务正常收尾，`sources.*.circuit_open=true` |
+| 单条请求无 per-movie 锁 | 未加锁（依赖原子写保证文件不损坏） | 不扩大范围；并发同一影片属低频操作 | 极端并发下可能两次都 `downloaded`（幂等性由原子写与二次覆盖兜底）——**本期不修** |
+| §4.3 无码 `only_missing` | 无码表没有 `has_subtitle` 列 ⇒ 逐部 `find_external_subtitle()`（一次 listdir） | 不改表结构是硬约束 | 无码批量选片多一次目录 IO；**性能未优化，本期不修** |
+| 爱译网「字幕格式」字段 | 非 SRT（ASS/SSA）候选**直接丢弃**，不做转换 | 规范化只输出 SRT，写出非 SRT 内容会污染播放器 | 命中率略降；宁缺勿错 |
+| §5 批量进度持久化 | 仍为内存态，服务重启后 `latest` 返回 404 | 本期不做落盘 | 前端提示「任务已结束或服务已重启」并停止轮询——**本期不修** |
+
+### C.2 明确记录但本期不修
+
+| 项 | 现状 | 为什么不修 |
+|---|---|---|
+| per-movie 并发锁 | 同一影片并发两次请求可能都走完下载 | 低频场景；原子写已保证不出半截文件 |
+| 无码 `only_missing` 的 listdir 性能 | 每部一次目录遍历（网络盘有开销） | 需改表结构或加索引，超出本期范围 |
+| 源站广告块 / 未闭合标签过滤 | 字幕正文可能带站点广告行、HTML 片段原样保留 | 属内容清洗范畴，易误删台词，需单独评估 |
+| 批量进度不持久化 | 重启后进度丢失 | 落盘会引入状态恢复与并发一致性问题 |

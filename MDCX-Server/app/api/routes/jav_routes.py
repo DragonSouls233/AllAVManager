@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.db.actor_query import actor_name_condition, actor_name_conditions_for_columns
@@ -3715,44 +3715,16 @@ def _ltx_retry_after(resp) -> float | None:
 
 
 def _ltx_sync_cookie() -> str | None:
-    """读取 LTX 站点的验证凭证，返回可直接放进 Cookie 请求头的字符串。
+    """读取 LTX 验证凭证（可直接放进 Cookie 头），单一真源在 ``ltx_archive``。
 
-    站点在 ``POST /api/verify``（Turnstile 验证通过）后下发 **HttpOnly 的
-    ``ltx_pass``**；另有非 HttpOnly 的 ``ltx_c``（客户端 ID）。两者都带上最稳。
-    部分场景也可能遇到 Cloudflare 通用 challenge 的 ``cf_clearance``。
-
-    来源（按顺序）：
-      1) 环境变量 ``MDCX_LTX_COOKIE``（推荐：直接填完整 cookie 串）
-      2) 环境变量 ``MDCX_LTX_CF_CLEARANCE``（旧版兼容：单值）
-      3) ``<ltx_archive>/_ltx_cookie.txt``（完整串或单值）
-      4) ``<ltx_archive>/_cf_clearance.txt``（旧版兼容：单值）
-
-    含 ``=`` 视为完整 cookie 串原样返回；否则按来源包装成
-    ``ltx_pass=<值>`` 或 ``cf_clearance=<值>``。缺失返回 None。
+    2026-11-12：凭证读写统一收敛到 ``app.services.ltx_archive.credential_value()``，
+    页面自助保存写文件、这里每次请求热读，因此**保存后立即生效、无需重启**。
+    站点在 Turnstile 通过后下发 HttpOnly 的 ``ltx_pass``（约 7 天），另有
+    ``ltx_c``（客户端 ID）；旧版 ``cf_clearance`` 路径保留兼容。
     """
-    import os
+    from app.services import ltx_archive
 
-    def _wrap(v: str, legacy: bool) -> str:
-        return v if "=" in v else (("cf_clearance=" if legacy else "ltx_pass=") + v)
-
-    env = os.environ.get("MDCX_LTX_COOKIE")
-    if env and env.strip():
-        return _wrap(env.strip(), False)
-    legacy_env = os.environ.get("MDCX_LTX_CF_CLEARANCE")
-    if legacy_env and legacy_env.strip():
-        return _wrap(legacy_env.strip(), True)
-    try:
-        from app.services import ltx_archive
-
-        for fname, legacy in (("_ltx_cookie.txt", False), ("_cf_clearance.txt", True)):
-            p = ltx_archive.archive_dir() / fname
-            if p.exists():
-                v = p.read_text(encoding="utf-8").strip()
-                if v:
-                    return _wrap(v, legacy)
-    except Exception:
-        pass
-    return None
+    return ltx_archive.credential_value()[0]
 
 
 def _fetch_ltx_catalog_sync(
@@ -3810,15 +3782,25 @@ def _fetch_ltx_catalog_sync(
                 return data
             if r.status_code == 403:
                 # 验证类失败：重试无意义（不会因重试消失），立即清晰报错。
+                # 2026-11-12：带上凭证到期信息并指向页面自助入口 —— 每日 08:10
+                # 的定时任务失败时，用户看状态条就知道该去哪更新，不必回控制台。
+                from app.services import ltx_archive as _arch
+
+                ci = _arch.credential_info()
+                if cookie and ci.get("expired"):
+                    raise RuntimeError(
+                        "HTTP 403：LTX 验证凭证已于 %s 过期；"
+                        "请在「JAV · LTX 库」页点『凭证设置』重新粘贴 Cookie"
+                        % ci.get("expires_at", "（未知）")
+                    )
                 if cookie:
                     raise RuntimeError(
-                        "HTTP 403：已注入验证 cookie 仍被拦截"
-                        "（ltx_pass 过期 / 绑定出口 IP 不符 / 验证已升级）；"
-                        "请在浏览器重新通过后更新凭证"
+                        "HTTP 403：已注入验证 cookie 仍被拦截（凭证失效 / 验证升级）；"
+                        "请在「JAV · LTX 库」页点『凭证设置』重新粘贴 Cookie"
                     )
                 raise RuntimeError(
-                    "HTTP 403：源站需要人机验证凭证；请在已通过验证的浏览器导出 "
-                    "ltx_pass cookie 并配置 MDCX_LTX_COOKIE"
+                    "HTTP 403：源站需要人机验证凭证；请在「JAV · LTX 库」页点"
+                    "『凭证设置』粘贴 ltx_pass Cookie"
                 )
             if r.status_code in _LTX_RETRY_STATUS:
                 last_err = "HTTP %s（%s）" % (
@@ -3837,26 +3819,21 @@ def _fetch_ltx_catalog_sync(
     raise RuntimeError(last_err or "抓取失败")
 
 
-@router.post("/ltx-snapshot/refresh")
-async def refresh_ltx_snapshot(
-    attempts: int = Query(2, ge=1, le=5, description="429/5xx 时的尝试次数（含首次）"),
-):
-    """抓取线上 LTX 库 → 写入 SQLite（增量 upsert + 头像映射）→ 后台下载封面/头像。
+def _do_ltx_refresh(attempts: int = 2) -> dict:
+    """抓 → upsert → 头像映射 → 后台下封面（同步函数，供 ``to_thread`` 调用）。
 
-    无论成功失败都会把「本次尝试」写进 ``ltx_archive/_sync_status.json``，
-    前端据此显示「上次同步 时间 / 失败原因」，不再用 ``MAX(fetched_at)`` 冒充。
+    无论成功失败都写 ``ltx_archive/_sync_status.json``，前端据此显示
+    「上次同步 时间 / 失败原因」，不再用 ``MAX(fetched_at)`` 冒充。
+    2026-11-12 抽出：凭证自助保存后可选「立即同步」，复用同一条链路。
     """
-    import asyncio as _asyncio
-
     from app.services import ltx_archive
 
     try:
-        data = await _asyncio.to_thread(_fetch_ltx_catalog_sync, attempts)
+        data = _fetch_ltx_catalog_sync(attempts)
     except Exception as e:  # noqa: BLE001
         err = str(e)[:200]
-        await _asyncio.to_thread(ltx_archive.record_sync_result, False,
-                                 None, None, None, attempts, err)
-        raise HTTPException(status_code=502, detail="抓取失败: %s" % err)
+        ltx_archive.record_sync_result(False, None, None, None, attempts, err)
+        raise RuntimeError(err)
 
     n = ltx_archive.upsert_items(data["items"], data.get("updated_at"))
     ltx_archive.save_avatars(data.get("avatars") or {})
@@ -3875,9 +3852,22 @@ async def refresh_ltx_snapshot(
     }
 
 
+@router.post("/ltx-snapshot/refresh")
+async def refresh_ltx_snapshot(
+    attempts: int = Query(2, ge=1, le=5, description="429/5xx 时的尝试次数（含首次）"),
+):
+    """抓取线上 LTX 库 → 写入 SQLite（增量 upsert + 头像映射）→ 后台下载封面/头像。"""
+    import asyncio as _asyncio
+
+    try:
+        return await _asyncio.to_thread(_do_ltx_refresh, attempts)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail="抓取失败: %s" % str(e))
+
+
 @router.get("/ltx-snapshot/status")
 async def get_ltx_snapshot_status():
-    """同步状态：上次尝试 / 上次成功 / 距上次成功多少小时 / 失败原因。
+    """同步状态：上次尝试 / 上次成功 / 距上次成功多少小时 / 失败原因 / 凭证状态。
 
     与 ``/ltx-snapshot`` 的区别：这里**不因无数据返回 404**，
     所以前端能显示「上次同步失败（429）」而不是干等一个空页面。
@@ -3885,6 +3875,66 @@ async def get_ltx_snapshot_status():
     from app.services import ltx_archive
 
     return ltx_archive.snapshot_meta()
+
+
+@router.get("/ltx-snapshot/credential")
+async def get_ltx_credential():
+    """当前同步凭证状态（**不返回凭证值**）：是否配置 / 到期时间 / 剩余天数 / 来源。"""
+    from app.services import ltx_archive
+
+    return ltx_archive.credential_info()
+
+
+@router.post("/ltx-snapshot/credential")
+async def set_ltx_credential(request: Request):
+    """自助更新 LTX 同步凭证：保存 → 实测 → 可选立即同步。
+
+    body: ``{"cookie": "...", "verify": true, "refresh": true}``
+
+    凭证写入 ``ltx_archive/_ltx_cookie.txt``（原子写），抓取函数每次请求热读，
+    因此**保存后立即生效、无需重启服务**。``refresh`` 为真时直接跑完整同步
+    （内部抓取顺带验证凭证，不重复请求源站），把凭证过期期间漏掉的数据补上。
+    """
+    import asyncio as _asyncio
+
+    from app.services import ltx_archive
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+
+    try:
+        info = await _asyncio.to_thread(
+            ltx_archive.save_credential, body.get("cookie") or ""
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="保存凭证失败: %s" % e)
+
+    out: dict = {"ok": True, "credential": info, "verify": None, "refresh": None}
+
+    if body.get("refresh", False):
+        try:
+            res = await _asyncio.to_thread(_do_ltx_refresh, 1)
+            out["refresh"] = {
+                "ok": True, "count": res.get("count"), "saved_at": res.get("saved_at")
+            }
+            out["verify"] = {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            detail = str(e)[:200]
+            out["refresh"] = {"ok": False, "detail": detail}
+            out["verify"] = {"ok": False, "detail": detail}
+    elif body.get("verify", True):
+        try:
+            data = await _asyncio.to_thread(_fetch_ltx_catalog_sync, 1)
+            out["verify"] = {"ok": True, "items": len(data.get("items") or [])}
+        except Exception as e:  # noqa: BLE001
+            out["verify"] = {"ok": False, "detail": str(e)[:200]}
+    return out
 
 
 

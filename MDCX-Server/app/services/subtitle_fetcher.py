@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 from dataclasses import dataclass, field
@@ -89,6 +90,7 @@ class FetchResult:
     elapsed_ms: int = 0
     candidates_total: int = 0
     attempts: list[dict] = field(default_factory=list)
+    circuit_skipped: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -108,6 +110,7 @@ class FetchResult:
             "elapsed_ms": self.elapsed_ms,
             "candidates_total": self.candidates_total,
             "attempts": self.attempts,
+            "circuit_skipped": self.circuit_skipped,
         }
 
 
@@ -181,8 +184,71 @@ def _has_subtitle(video_path: str, code: str) -> bool:
     return find_external_subtitle(video_path, code or None)
 
 
-async def _search_sources(code: str, budget: Budget) -> tuple[list[SubtitleCandidate], list[BaseException]]:
-    names = list(SOURCES)
+# ---------------------------------------------------------------- 源级熔断
+SOURCE_BLOCK_LIMIT = 5
+
+
+@dataclass
+class SourceBreaker:
+    """**任务级**源熔断：同一任务内某源连续 N 次 403/429 后不再请求它。
+
+    只对「被站点拦截」计数；超时/空结果不算（那些是网络与内容问题，不是封禁）。
+    新任务会新建实例 ⇒ 熔断不会跨任务污染，下一批重新探测。
+    """
+
+    limit: int = SOURCE_BLOCK_LIMIT
+    state: dict[str, dict] = field(default_factory=dict)
+
+    def _item(self, source: str) -> dict:
+        return self.state.setdefault(
+            source, {"blocked_streak": 0, "circuit_open": False, "requests": 0},
+        )
+
+    def is_open(self, source: str) -> bool:
+        return bool(self._item(source).get("circuit_open"))
+
+    def record_request(self, source: str) -> None:
+        self._item(source)["requests"] += 1
+
+    def record_blocked(self, source: str, detail: str = "") -> None:
+        item = self._item(source)
+        item["blocked_streak"] += 1
+        if item["blocked_streak"] >= self.limit and not item["circuit_open"]:
+            item["circuit_open"] = True
+            item["opened_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            item["reason"] = "source_circuit_open"
+            item["detail"] = detail or "连续被站点拦截"
+            logger.warning(
+                "[subtitle] 源熔断开启 %s（连续 %d 次 blocked）：%s",
+                source, item["blocked_streak"], detail,
+            )
+
+    def record_success(self, source: str) -> None:
+        item = self._item(source)
+        item["blocked_streak"] = 0
+
+    def snapshot(self) -> dict:
+        return {name: dict(item) for name, item in self.state.items() if item.get("requests")}
+
+
+_CURRENT_BREAKER: contextvars.ContextVar[SourceBreaker | None] = contextvars.ContextVar(
+    "subtitle_source_breaker", default=None,
+)
+
+
+def _breaker() -> SourceBreaker | None:
+    return _CURRENT_BREAKER.get()
+
+
+async def _search_sources(code: str, budget: Budget) -> tuple[list[SubtitleCandidate], list[BaseException], list[str]]:
+    breaker = _breaker()
+    names = [name for name in SOURCES if not (breaker and breaker.is_open(name))]
+    skipped = [name for name in SOURCES if breaker and breaker.is_open(name)]
+    if skipped:
+        logger.info("[subtitle] 源熔断中，本次跳过: %s", ",".join(skipped))
+    if not names:
+        return [], [], skipped
+
     results = await asyncio.gather(
         *(SOURCES[name].search(code, budget=budget) for name in names),
         return_exceptions=True,
@@ -190,18 +256,29 @@ async def _search_sources(code: str, budget: Budget) -> tuple[list[SubtitleCandi
     candidates: list[SubtitleCandidate] = []
     errors: list[BaseException] = []
     for name, item in zip(names, results):
+        if breaker:
+            breaker.record_request(name)
         if isinstance(item, BaseException):
             logger.info("[subtitle] %s 搜索失败 code=%s: %s", name, code, item)
             errors.append(item)
+            if breaker and isinstance(item, SubtitleError) and item.reason == "blocked":
+                breaker.record_blocked(name, f"搜索被拦截：{item}")
         else:
+            if breaker:
+                breaker.record_success(name)
             candidates.extend(item)
-    return candidates, errors
+    return candidates, errors, skipped
 
 
-def _empty_reason(candidates: list[SubtitleCandidate], errors: list[BaseException]) -> FailReason:
+def _empty_reason(candidates: list[SubtitleCandidate], errors: list[BaseException],
+                  circuit_skipped: list[str] | None = None) -> FailReason:
     if candidates:
         return FailReason.SITE_EMPTY
+    skipped = circuit_skipped or []
     if not errors:
+        # 所有源都被本任务熔断挡掉 ⇒ 说「被拦截」比「没有结果」更贴近事实
+        if skipped and len(skipped) >= len(SOURCES):
+            return FailReason.BLOCKED
         return FailReason.SITE_EMPTY
     if all(isinstance(err, SubtitleError) and err.reason == "blocked" for err in errors):
         return FailReason.BLOCKED
@@ -318,13 +395,14 @@ def _trial_queue(queue: list[SubtitleCandidate], limit: int) -> list[SubtitleCan
 
 async def _download_for(code: str, video_path: str, budget: Budget, result: FetchResult,
                         module: str | None, movie_id: int | None) -> FetchResult:
-    candidates, errors = await _search_sources(code, budget)
+    candidates, errors, circuit_skipped = await _search_sources(code, budget)
+    result.circuit_skipped = circuit_skipped
     candidates = [cand for cand in candidates if title_matches_code(cand.title, code)]
     queue = merge_and_rank(candidates)
     result.candidates_total = len(queue)
 
     if not queue:
-        reason = _empty_reason(candidates, errors)
+        reason = _empty_reason(candidates, errors, circuit_skipped)
         result.ok = False
         result.status = "failed"
         result.reason = reason
@@ -339,6 +417,11 @@ async def _download_for(code: str, video_path: str, budget: Budget, result: Fetc
 
     for cand in _trial_queue(queue, MAX_CANDIDATES_TRY):
         started = time.monotonic()
+        breaker = _breaker()
+        if breaker:
+            if breaker.is_open(cand.source):
+                continue
+            breaker.record_request(cand.source)
         attempt = {
             "source": cand.source,
             "language": cand.language,
@@ -361,6 +444,8 @@ async def _download_for(code: str, video_path: str, budget: Budget, result: Fetc
             attempt["elapsed_ms"] = int((time.monotonic() - started) * 1000)
             result.attempts.append(attempt)
             if result.ok:
+                if breaker:
+                    breaker.record_success(cand.source)
                 return result
         except (asyncio.TimeoutError,):
             attempt["reason"] = FailReason.TIMEOUT.value
@@ -368,6 +453,8 @@ async def _download_for(code: str, video_path: str, budget: Budget, result: Fetc
         except SubtitleError as exc:
             attempt["reason"] = getattr(exc, "reason", "download_failed")
             attempt["message"] = str(exc) or "下载失败，已切换下一个候选"
+            if breaker and attempt["reason"] == "blocked":
+                breaker.record_blocked(cand.source, f"下载被拦截：{exc}")
         except Exception as exc:  # noqa: BLE001
             attempt["reason"] = FailReason.DOWNLOAD_FAILED.value
             attempt["message"] = f"下载异常：{type(exc).__name__}"
@@ -378,7 +465,10 @@ async def _download_for(code: str, video_path: str, budget: Budget, result: Fetc
     reasons = {item.get("reason") for item in result.attempts}
     result.ok = False
     result.status = "failed"
-    if reasons and reasons <= {FailReason.TIMEOUT.value}:
+    if not result.attempts and circuit_skipped:
+        # 所有源都被熔断挡掉：按「站点被拦截」收尾，比空结果更贴近事实
+        result.reason = FailReason.BLOCKED
+    elif reasons and reasons <= {FailReason.TIMEOUT.value}:
         result.reason = FailReason.TIMEOUT
     elif FailReason.WRITE_FAILED.value in reasons:
         result.reason = FailReason.WRITE_FAILED
@@ -483,6 +573,7 @@ class BatchJob:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancel_requested: bool = False
+    breaker: "SourceBreaker" = field(default_factory=lambda: SourceBreaker())
 
     def eta_seconds(self) -> int | None:
         if self.status != "running" or self.done <= 0:
@@ -507,6 +598,7 @@ class BatchJob:
             "eta_seconds": self.eta_seconds(),
             "current": self.current,
             "items": self.items,
+            "sources": self.breaker.snapshot(),
         }
 
 
@@ -633,7 +725,12 @@ async def _run_batch(job: BatchJob, movies: list[dict]) -> None:
     recorded: set[int] = set()
 
     async def one(movie: dict) -> None:
-        """单部处理；取消时也补一条 cancelled 明细，保证 total = ok+skipped+failed。"""
+        """单部处理；取消时也补一条 cancelled 明细，保证 total = ok+skipped+failed。
+
+        熔断器通过 ContextVar 注入：本任务内所有请求共享同一份源状态，
+        任务结束即失效（新任务重新探测）。
+        """
+        token = _CURRENT_BREAKER.set(job.breaker)
         try:
             if job.cancel_requested:
                 await _record(job, _item_of(movie, None))
@@ -665,6 +762,8 @@ async def _run_batch(job: BatchJob, movies: list[dict]) -> None:
                 "source": None, "elapsed_ms": 0,
             })
             recorded.add(movie["id"])
+        finally:
+            _CURRENT_BREAKER.reset(token)
 
     tasks = {asyncio.create_task(one(movie)): movie for movie in movies}
     pending = set(tasks)

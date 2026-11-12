@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -33,11 +34,20 @@ class DownloadRequest(BaseModel):
 
 
 class BatchRequest(BaseModel):
+    """批量参数。
+
+    🔴 不允许「空参数即全库」：批量会真实下载并写盘，必须显式给出范围。
+    - 指定影片：``movie_ids`` 非空；
+    - 全库：``scope="all"`` + ``confirm=true`` + ``limit``（1~200）三者齐全。
+    """
+
     movie_ids: list[int] | None = None
+    scope: str | None = None
+    confirm: bool = False
+    limit: int | None = None
     only_missing: bool = True
     keyword: str | None = None
     code_prefix: str | None = None
-    limit: int = Field(200, ge=1, le=500)
     concurrency: int = Field(3, ge=1, le=4)
     overwrite: bool = False
 
@@ -73,11 +83,18 @@ async def subtitle_status(module: str, movie_id: int):
     has_subtitle = False
     if file_path:
         try:
-            has_subtitle = find_external_subtitle(file_path, code or None)
+            # 网络盘 listdir 可能阻塞数百毫秒，放线程池别卡事件循环
+            has_subtitle = await asyncio.to_thread(find_external_subtitle, file_path, code or None)
         except Exception:  # noqa: BLE001
             has_subtitle = False
 
     target = str(srt_target_path(file_path)) if file_path else None
+    target_exists = False
+    if target:
+        try:
+            target_exists = await asyncio.to_thread(lambda: Path(target).is_file())
+        except OSError:
+            target_exists = False
     entry = await registry_lookup(file_path)
     registry = None
     if entry:
@@ -98,7 +115,7 @@ async def subtitle_status(module: str, movie_id: int):
         "file_path": file_path or None,
         "has_subtitle": bool(has_subtitle),
         "target_path": target,
-        "target_exists": bool(target and Path(target).is_file()),
+        "target_exists": target_exists,
         "registry": registry,
     }
 
@@ -128,17 +145,49 @@ async def download_subtitle(module: str, movie_id: int, payload: DownloadRequest
 
 @router.post("/{module}/batch")
 async def start_batch(module: str, payload: BatchRequest | None = None):
-    """启动批量补全（同模块同时只允许一个任务）。"""
+    """启动批量补全（同模块同时只允许一个任务）。
+
+    空参数**不再默认全库**：批量会真实下载并写盘，必须明确范围。
+    """
     mod = _normalize_module(module)
     body = payload or BatchRequest()
+
+    movie_ids = [int(item) for item in (body.movie_ids or [])]
+    if not movie_ids:
+        scope = (body.scope or "").strip().lower()
+        if scope != "all":
+            raise HTTPException(
+                status_code=400,
+                detail="必须指定影片范围：请传 movie_ids；如需全库，请传 scope=all + confirm=true + limit",
+            )
+        if not body.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="全库模式需显式确认：请同时传 confirm=true",
+            )
+        if body.limit is None:
+            raise HTTPException(
+                status_code=400,
+                detail="全库模式必须指定 limit（1~200）",
+            )
+        if not 1 <= int(body.limit) <= 200:
+            raise HTTPException(
+                status_code=400,
+                detail="全库模式 limit 必须在 1~200 之间",
+            )
+        limit = int(body.limit)
+    else:
+        # 指定影片：上限就是所选数量，避免被 SQL limit 意外截断
+        limit = len(movie_ids)
+
     try:
         return await fetcher.start_batch(
             mod,
-            movie_ids=body.movie_ids,
+            movie_ids=movie_ids or None,
             only_missing=body.only_missing,
             keyword=body.keyword,
             code_prefix=body.code_prefix,
-            limit=body.limit,
+            limit=limit,
             concurrency=body.concurrency,
             overwrite=body.overwrite,
         )

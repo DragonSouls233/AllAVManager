@@ -49,6 +49,8 @@ SEARCH_RESULTS_LIMIT = 4         # 每站最多展开几条结果详情页
 MAX_SIZE_PROBES = 3              # 最多几次 HEAD 补大小
 REGISTRY_KEEP = 5000             # 落盘登记最多保留条数
 RETRY_BACKOFF = 0.8
+BACKOFF_BASE = 1.0               # 429 退避基数：1s→2s→4s→…
+BACKOFF_MAX = 30.0               # 429 退避上限
 
 LANG_RANK = {"zh-CN": 2, "zh-TW": 1}          # 简体优先
 LANG_LABEL = {"zh-CN": "简体中文", "zh-TW": "繁体中文"}
@@ -213,11 +215,16 @@ def http_client(url: str, policy: RatePolicy | None = None) -> httpx.AsyncClient
 
 
 _BLOCK_MARKERS = ("just a moment", "cf-chl", "turnstile", "attention required")
+_BLOCK_STATUS = (401, 403, 503)
 
 
-def _is_blocked_response(status: int, body: bytes) -> bool:
-    if status in (401, 403, 429, 503):
-        return True
+class _RateLimited(SubtitleError):
+    """429：可退避重试，最终仍归因 blocked。"""
+
+    reason = "blocked"
+
+
+def _looks_like_challenge(body: bytes) -> bool:
     head = body[:4096].decode("utf-8", "ignore").lower()
     return any(marker in head for marker in _BLOCK_MARKERS)
 
@@ -234,8 +241,12 @@ async def request(
 ) -> tuple[httpx.Response, bytes]:
     """带闸门 + 重试的唯一请求实现。
 
-    重试只针对连接错误 / 读超时 / 5xx；403/404/解析失败不重试（重试只会加速封禁）。
-    每次重试前重新过闸门。
+    重试策略：
+    - 连接错误 / 读超时 / 代理不可用 / 5xx → 固定 0.8s 退避重试；
+    - **429 → 指数退避 1s→2s→4s（上限 30s）**，重试次数仍受 ``pol.retries`` 约束；
+    - 403/401/503/Cloudflare 挑战页 → 立刻失败，重试只会加速封禁。
+
+    响应体**流式读取**并边读边判 ``max_bytes``，避免被超大文件打爆内存。
     """
     key = gate_name or gate_key_for(url)
     pol = policy or POLICIES.get(key, POLICIES["subtitle_cdn"])
@@ -248,17 +259,55 @@ async def request(
         await gate(key).acquire(budget)
         try:
             async with http_client(url, pol) as client:
-                response = await client.request(method, url, headers=extra)
-                body = response.content
-                if _is_blocked_response(response.status_code, body[:4096] if method != "HEAD" else b""):
-                    raise SourceBlocked(f"站点拒绝访问（HTTP {response.status_code}）")
-                if response.status_code >= 500:
-                    raise SourceTimeout(f"站点返回 {response.status_code}")
-                if response.status_code >= 400:
-                    raise DownloadFailed(f"站点返回 HTTP {response.status_code}")
-                if method != "HEAD" and len(body) > max_bytes:
-                    raise DownloadFailed(f"响应超过 {max_bytes // 1024 // 1024} MiB")
-                return response, body
+                if method == "HEAD":
+                    response = await client.request(method, url, headers=extra)
+                    status = response.status_code
+                    if status == 429:
+                        raise _RateLimited("站点限流 429")
+                    if status in _BLOCK_STATUS:
+                        raise SourceBlocked(f"站点拒绝访问（HTTP {status}）")
+                    if status >= 500:
+                        raise SourceTimeout(f"站点返回 {status}")
+                    if status >= 400:
+                        raise DownloadFailed(f"站点返回 HTTP {status}")
+                    return response, b""
+
+                async with client.stream(method, url, headers=extra) as response:
+                    status = response.status_code
+                    if status == 429:
+                        raise _RateLimited("站点限流 429")
+                    if status in _BLOCK_STATUS:
+                        raise SourceBlocked(f"站点拒绝访问（HTTP {status}）")
+                    if status >= 500:
+                        raise SourceTimeout(f"站点返回 {status}")
+                    if status >= 400:
+                        raise DownloadFailed(f"站点返回 HTTP {status}")
+
+                    buffer = bytearray()
+                    checked = False
+                    async for chunk in response.aiter_bytes():
+                        buffer.extend(chunk)
+                        if len(buffer) > max_bytes:
+                            raise DownloadFailed(
+                                f"响应超过 {max_bytes // 1024 // 1024} MiB"
+                            )
+                        if not checked and len(buffer) >= 2048:
+                            checked = True
+                            if _looks_like_challenge(bytes(buffer[:4096])):
+                                raise SourceBlocked("站点返回风控挑战页")
+                    if not checked and _looks_like_challenge(bytes(buffer[:4096])):
+                        raise SourceBlocked("站点返回风控挑战页")
+                    return response, bytes(buffer)
+        except _RateLimited as exc:
+            # 429：指数退避后重试，次数仍受 pol.retries 限制
+            last_error = exc
+            if attempt >= pol.retries:
+                raise SourceBlocked("站点持续限流（HTTP 429），已用尽重试") from exc
+            delay = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** attempt))
+            if budget is not None and budget.left() < delay:
+                raise SourceBlocked("站点限流 429 且本次时间预算不足") from exc
+            logger.info("[subtitle] 429 退避 %.1fs 后重试: %s", delay, url)
+            await asyncio.sleep(delay)
         except SourceBlocked:
             raise
         except DownloadFailed:
@@ -428,10 +477,13 @@ _FULLWIDTH_MAP.update({ord("："): ord(":"), ord("．"): ord("."), ord("。"): o
 _ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u2060\ufeff"), None)
 
 
-def _normalize_time_axis(line: str) -> tuple[str, list[str]]:
-    """把一行时间轴规整成 "HH:MM:SS,mmm --> HH:MM:SS,mmm"，返回 (行, 生效的修复项)。"""
+def _normalize_time_axis(line: str) -> tuple[str, list[str]] | None:
+    """把一行时间轴规整成 "HH:MM:SS,mmm --> HH:MM:SS,mmm"。
+
+    返回 ``None`` 表示**这一行不是时间轴**（例如正文里出现 `A→B` 这种箭头），
+    调用方必须把它当正文原样保留，绝不能因为「含箭头」就丢行。
+    """
     fixes: list[str] = []
-    raw = line
     translated = line.translate(_FULLWIDTH_MAP)
     if translated != line:
         fixes.append("fullwidth_colon")
@@ -439,7 +491,7 @@ def _normalize_time_axis(line: str) -> tuple[str, list[str]]:
 
     parts = _ARROW_RE.split(line)
     if len(parts) < 2:
-        return raw, []
+        return None
     if "-->" not in line:
         fixes.append("arrow")
 
@@ -447,10 +499,10 @@ def _normalize_time_axis(line: str) -> tuple[str, list[str]]:
     for chunk in parts[:2]:
         token = _TIME_TOKEN_RE.search(chunk)
         if not token:
-            return raw, []
+            return None
         stamp, stamp_fixes = _normalize_stamp(token.group(0))
         if stamp is None:
-            return raw, []
+            return None
         fixes.extend(stamp_fixes)
         stamps.append(stamp)
     return f"{stamps[0]} --> {stamps[1]}", fixes
@@ -515,11 +567,37 @@ def _seconds_to_stamp(value: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 
+def _parse_time_axis(line: str) -> tuple[str, str, list[str]] | None:
+    """严格解析一行时间轴；两侧都解析成功才算块起点，否则返回 None。"""
+    normalized = _normalize_time_axis(line)
+    if normalized is None:
+        return None
+    stamp_line, fixes = normalized
+    if "-->" not in stamp_line:
+        return None
+    start_text, end_text = stamp_line.split("-->", 1)
+    start_stamp = start_text.strip()
+    end_stamp = end_text.strip()
+    try:
+        start_value = _stamp_to_seconds(start_stamp)
+        end_value = _stamp_to_seconds(end_stamp)
+    except (ValueError, IndexError):
+        return None
+    if end_value <= start_value:
+        end_stamp = _seconds_to_stamp(start_value + 1.0)
+        if "end_fix" not in fixes:
+            fixes.append("end_fix")
+    return start_stamp, end_stamp, fixes
+
+
 def normalize_srt(raw: bytes) -> tuple[str, dict]:
     """字节 → 标准 SRT 文本（UTF-8、LF、块号 1..N）。
 
     规则见 DESIGN.md §3.7（N1~N10）：编码嗅探 / BOM / 零宽字符（保留 U+200D）/
     全角标点 / 箭头变体 / 分钟重复 / 4 位毫秒 / 时间合法性 / 块重建 / 无 BOM 输出。
+
+    🔴 块边界判据是「两侧时间戳都能解析」，**不是**「这行含箭头」：
+    正文里出现 `A→B` / `A -> B` / `A --> B` 时属于正常台词，必须原样保留。
     """
     meta: dict[str, Any] = {
         "source_encoding": "utf-8",
@@ -561,38 +639,23 @@ def normalize_srt(raw: bytes) -> tuple[str, dict]:
     index = 0
     total = len(lines)
     while index < total:
-        line = lines[index]
-        if not _ARROW_RE.search(line.lstrip("\ufeff")):
+        parsed = _parse_time_axis(lines[index].lstrip("\ufeff"))
+        if parsed is None:
+            # 不是合法时间轴（含正文里的箭头）= 无归属的普通行，跳过即可；
+            # 已在块内的正文由下面的 body 循环收集，绝不会走到这里。
             index += 1
             continue
-        stamp_line, line_fixes = _normalize_time_axis(line)
-        if not _ARROW_RE.search(stamp_line) or "-->" not in stamp_line:
-            index += 1
-            continue
-        start_text, end_text = stamp_line.split("-->", 1)
-        start_stamp = start_text.strip()
-        end_stamp = end_text.strip()
-        try:
-            start_value = _stamp_to_seconds(start_stamp)
-            end_value = _stamp_to_seconds(end_stamp)
-        except (ValueError, IndexError):
-            index += 1
-            dropped += 1
-            continue
+        start_stamp, end_stamp, line_fixes = parsed
         for item in line_fixes:
             if item not in fixes:
                 fixes.append(item)
-        if end_value <= start_value:
-            end_value = start_value + 1.0
-            if "end_fix" not in fixes:
-                fixes.append("end_fix")
-            end_stamp = _seconds_to_stamp(end_value)
 
         index += 1
         body: list[str] = []
         while index < total:
             candidate = lines[index]
-            if _ARROW_RE.search(candidate):
+            # 只有「两侧时间戳都合法」才算下一块开始；正文里的 --> / -> / → 保留
+            if _parse_time_axis(candidate) is not None:
                 break
             if _looks_like_index(candidate) and _next_is_timing(lines, index + 1):
                 break
@@ -632,7 +695,7 @@ def _next_is_timing(lines: list[str], start: int) -> bool:
         text = lines[index].strip()
         if not text:
             continue
-        return bool(_ARROW_RE.search(text))
+        return _parse_time_axis(text) is not None
     return False
 
 
